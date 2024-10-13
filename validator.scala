@@ -40,15 +40,18 @@ object BitcoinValidator {
         nonce: BigInt
     )
     enum State:
-        case Initial
-        case Open(blockHeader: BlockHeader)
+        case Initial(blockHeader: BlockHeader)
+        case Tip(valid: BlockHeader, pending: BlockHeader)
+
+    case class Proposal(blockHeader: BlockHeader, bondTxOutRef: TxInInfo, signature: ByteString)
 
     enum Action:
-        case NewTip(blockHeader: BlockHeader)
+        case ProposeNewTip(proposal: Proposal)
 
     given FromData[BlockHeader] = FromData.deriveCaseClass[BlockHeader]
+    given FromData[Proposal] = FromData.deriveCaseClass[Proposal]
 //    given ToData[BlockHeader] = ToData.deriveCaseClass[BlockHeader](0)
-//    given FromData[State] = FromData.deriveEnum[State]
+    given FromData[State] = FromData.deriveEnum[State]
 //    given ToData[State] = ToData.deriveEnum[State]
     given FromData[Action] = FromData.deriveEnum[Action]
 //    given ToData[Action] = ToData.deriveEnum[Action]
@@ -171,18 +174,18 @@ object BitcoinValidator {
         )
 
     def blockHeaderHash(blockHeader: BlockHeader): ByteString =
-        val serialized = serializeBlockHeader(blockHeader)
-        reverse32(sha2_256(sha2_256(serialized)))
+        reverse32(sha2_256(sha2_256(serializeBlockHeader(blockHeader))))
 
     def validator(ctx: Data): Unit = {
         val action = ctx.field[ScriptContext](_.redeemer).to[Action]
         val scriptInfo = ctx.field[ScriptContext](_.scriptInfo).to[SpendingScriptInfo]
-//        val state = scriptInfo.datum match
-//            case Maybe.Just(state) => state.to[State]
-//            case _                 => throw new Exception("No datum")
+        val state = scriptInfo.datum match
+            case Maybe.Just(state) => state.to[State]
+            case _                 => throw new Exception("No datum")
         action match
-            case Action.NewTip(blockHeader) =>
-                val hash = serializeBlockHeader(blockHeader)
+            case Action.ProposeNewTip(proposal) =>
+                val hash = blockHeaderHash(proposal.blockHeader)
+
                 ()
         ()
     }

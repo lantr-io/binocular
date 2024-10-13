@@ -16,7 +16,7 @@ class ValidatorTests extends munit.ScalaCheckSuite {
 
     test(s"Bitcoin validator size is ${bitcoinProgram.doubleCborEncoded.length}") {
         println(compiledBitcoinValidator.showHighlighted)
-        assertEquals(bitcoinProgram.doubleCborEncoded.length, 720)
+        assertEquals(bitcoinProgram.doubleCborEncoded.length, 1343)
     }
 
     test("Block Header serialization") {
