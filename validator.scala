@@ -8,21 +8,21 @@ import scalus.builtin.Data
 import scalus.builtin.Data.FromData
 import scalus.builtin.Data.ToData
 import scalus.builtin.FromData
-import scalus.builtin.List
+import scalus.builtin.FromDataInstances.given
 import scalus.builtin.ToData
 import scalus.builtin.ToDataInstances.given
-import scalus.builtin.FromDataInstances.given
 import scalus.builtin.given
 import scalus.ledger.api.v1.FromDataInstances.given
-import scalus.ledger.api.v3.FromDataInstances.given
 import scalus.ledger.api.v3.*
+import scalus.ledger.api.v3.FromDataInstances.given
 import scalus.prelude.?
+import scalus.prelude.List
 import scalus.prelude.Maybe
 import scalus.prelude.Prelude.log
-import scalus.utils.Utils
-import scalus.uplc.Term
-import scalus.uplc.Program
 import scalus.sir.RemoveRecursivity
+import scalus.uplc.Program
+import scalus.uplc.Term
+import scalus.utils.Utils
 
 extension (a: Array[Byte]) def toHex: String = Utils.bytesToHex(a)
 
@@ -39,123 +39,27 @@ object BitcoinValidator {
         bits: BigInt,
         nonce: BigInt
     )
-    enum State:
-        case Initial(blockHeader: BlockHeader)
-        case Tip(valid: BlockHeader, pending: BlockHeader)
 
-    case class Proposal(blockHeader: BlockHeader, bondTxOutRef: TxInInfo, signature: ByteString)
+    case class State(blockHeader: BlockHeader, ownerPubKey: ByteString, signature: ByteString)
 
     enum Action:
-        case ProposeNewTip(proposal: Proposal)
+        case NewTip(
+            blockHeader: BlockHeader,
+            ownerPubKey: ByteString,
+            signature: ByteString,
+            coinbaseTx: ByteString,
+            coinbaseInclusionProof: List[ByteString]
+        )
+        case FraudProof(
+            blockHeader: BlockHeader
+        )
 
     given FromData[BlockHeader] = FromData.deriveCaseClass[BlockHeader]
-    given FromData[Proposal] = FromData.deriveCaseClass[Proposal]
 //    given ToData[BlockHeader] = ToData.deriveCaseClass[BlockHeader](0)
-    given FromData[State] = FromData.deriveEnum[State]
+    given FromData[State] = FromData.deriveCaseClass[State]
 //    given ToData[State] = ToData.deriveEnum[State]
     given FromData[Action] = FromData.deriveEnum[Action]
 //    given ToData[Action] = ToData.deriveEnum[Action]
-
-    def reverse32(bs: ByteString): ByteString =
-        import consByteString as cons
-        val index = indexByteString(bs, _)
-        cons(
-          index(31),
-          cons(
-            index(30),
-            cons(
-              index(29),
-              cons(
-                index(28),
-                cons(
-                  index(27),
-                  cons(
-                    index(26),
-                    cons(
-                      index(25),
-                      cons(
-                        index(24),
-                        cons(
-                          index(23),
-                          cons(
-                            index(22),
-                            cons(
-                              index(21),
-                              cons(
-                                index(20),
-                                cons(
-                                  index(19),
-                                  cons(
-                                    index(18),
-                                    cons(
-                                      index(17),
-                                      cons(
-                                        index(16),
-                                        cons(
-                                          index(15),
-                                          cons(
-                                            index(14),
-                                            cons(
-                                              index(13),
-                                              cons(
-                                                index(12),
-                                                cons(
-                                                  index(11),
-                                                  cons(
-                                                    index(10),
-                                                    cons(
-                                                      index(9),
-                                                      cons(
-                                                        index(8),
-                                                        cons(
-                                                          index(7),
-                                                          cons(
-                                                            index(6),
-                                                            cons(
-                                                              index(5),
-                                                              cons(
-                                                                index(4),
-                                                                cons(
-                                                                  index(3),
-                                                                  cons(
-                                                                    index(2),
-                                                                    cons(
-                                                                      index(1),
-                                                                      cons(
-                                                                        index(0),
-                                                                        ByteString.empty
-                                                                      )
-                                                                    )
-                                                                  )
-                                                                )
-                                                              )
-                                                            )
-                                                          )
-                                                        )
-                                                      )
-                                                    )
-                                                  )
-                                                )
-                                              )
-                                            )
-                                          )
-                                        )
-                                      )
-                                    )
-                                  )
-                                )
-                              )
-                            )
-                          )
-                        )
-                      )
-                    )
-                  )
-                )
-              )
-            )
-          )
-        )
 
     /// Bitcoin block header serialization
     def serializeBlockHeader(blockHeader: BlockHeader): ByteString =
@@ -176,6 +80,31 @@ object BitcoinValidator {
     def blockHeaderHash(blockHeader: BlockHeader): ByteString =
         reverse32(sha2_256(sha2_256(serializeBlockHeader(blockHeader))))
 
+    def checkSignature(
+        blockHeader: BlockHeader,
+        ownerPubKey: ByteString,
+        signature: ByteString
+    ): Boolean =
+        val hash = blockHeaderHash(blockHeader)
+        verifyEd25519Signature(ownerPubKey, hash, signature)
+
+    def verifyNewTip(
+        state: State,
+        blockHeader: BlockHeader,
+        ownerPubKey: ByteString,
+        signature: ByteString,
+        coinbaseTx: ByteString,
+        inclusionProof: List[ByteString]
+    ): Unit =
+        val hash = blockHeaderHash(blockHeader)
+        val validHash = hash == blockHeader.hash
+        val validSignature = verifyEd25519Signature(ownerPubKey, hash, signature)
+        val isValid = validHash.? && validSignature.?
+        if isValid then () else throw new Exception("Block is not valid")
+
+    def verifyFraudProof(state: State, blockHeader: BlockHeader): Unit =
+        ()
+
     def validator(ctx: Data): Unit = {
         val action = ctx.field[ScriptContext](_.redeemer).to[Action]
         val scriptInfo = ctx.field[ScriptContext](_.scriptInfo).to[SpendingScriptInfo]
@@ -183,12 +112,16 @@ object BitcoinValidator {
             case Maybe.Just(state) => state.to[State]
             case _                 => throw new Exception("No datum")
         action match
-            case Action.ProposeNewTip(proposal) =>
-                val hash = blockHeaderHash(proposal.blockHeader)
-
-                ()
-        ()
+            case Action.NewTip(blockHeader, ownerPubKey, signature, coinbaseTx, inclusionProof) =>
+                verifyNewTip(state, blockHeader, ownerPubKey, signature, coinbaseTx, inclusionProof)
+            case Action.FraudProof(blockHeader) => verifyFraudProof(state, blockHeader)
     }
+
+    def reverse32(bs: ByteString): ByteString =
+        def loop(idx: BigInt, acc: ByteString): ByteString =
+            if idx > 31 then acc
+            else loop(idx + 1, consByteString(indexByteString(bs, idx), acc))
+        loop(0, ByteString.empty)
 }
 
 val compiledBitcoinValidator =
