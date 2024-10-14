@@ -39,8 +39,8 @@ object BitcoinValidator {
         prevBlockHash: ByteString,
         merkleRoot: ByteString,
         timestamp: BigInt,
-        bits: BigInt,
-        nonce: BigInt
+        bits: ByteString,
+        nonce: ByteString
     )
 
     case class State(blockHeader: BlockHeader, ownerPubKey: ByteString, signature: ByteString)
@@ -68,21 +68,22 @@ object BitcoinValidator {
     /// Bitcoin block header serialization
     def serializeBlockHeader(blockHeader: BlockHeader): ByteString =
         val v = integerToByteString(false, 4, blockHeader.version)
-        val pbh = reverse32(blockHeader.prevBlockHash)
-        val mr = reverse32(blockHeader.merkleRoot)
+        val pbh = reverse(blockHeader.prevBlockHash)
+        val mr = reverse(blockHeader.merkleRoot)
         val ts = integerToByteString(false, 4, blockHeader.timestamp)
-        val bits = integerToByteString(false, 4, blockHeader.bits)
-        val nonce = integerToByteString(false, 4, blockHeader.nonce)
         appendByteString(
           v,
           appendByteString(
             pbh,
-            appendByteString(mr, appendByteString(ts, appendByteString(bits, nonce)))
+            appendByteString(
+              mr,
+              appendByteString(ts, appendByteString(blockHeader.bits, blockHeader.nonce))
+            )
           )
         )
 
     def blockHeaderHash(blockHeader: BlockHeader): ByteString =
-        reverse32(sha2_256(sha2_256(serializeBlockHeader(blockHeader))))
+        reverse(sha2_256(sha2_256(serializeBlockHeader(blockHeader))))
 
     def checkSignature(
         blockHeader: BlockHeader,
@@ -91,6 +92,19 @@ object BitcoinValidator {
     ): Boolean =
         val hash = blockHeaderHash(blockHeader)
         verifyEd25519Signature(ownerPubKey, hash, signature)
+
+    def bitsToTarget(bits: ByteString): ByteString =
+        val exponent = indexByteString(bits, 3)
+        val coefficient = sliceByteString(0, 3, bits)
+        // produce a 32 byte ByteString target, where the `coefficient` is 3 bytes and it is shifted left by `exponent` bytes and left padded with zeros
+        def loop(i: BigInt, acc: ByteString): ByteString =
+            if i < exponent then loop(i + 1, consByteString(0, acc))
+            else if i == exponent then loop(i + 3, appendByteString(reverse(coefficient), acc))
+            else if i < 32 then loop(i + 1, consByteString(0, acc))
+            else acc
+        val target = loop(0, ByteString.empty)
+        val maxTarget = hex"00000000ffff0000000000000000000000000000000000000000000000000000"
+        if lessThanByteString(maxTarget, target) then maxTarget else target
 
     def merkleRootFromInclusionProof(
         merkleProof: builtin.List[Data],
@@ -150,8 +164,8 @@ object BitcoinValidator {
             // Format: [nVersion][marker][flag][txins][txouts][witness][nLockTime]
             val version = sliceByteString(0, 4, rawTx)
             val txInsStartIndex = BigInt(6) // Skip marker and flag bytes
-            val txOutsOffset = parseTxIns(rawTx, txInsStartIndex)
-            val outsEnd = parseTxOuts(rawTx, txOutsOffset)
+            val txOutsOffset = skipTxIns(rawTx, txInsStartIndex)
+            val outsEnd = skipTxOuts(rawTx, txOutsOffset)
             val txIns = sliceByteString(txInsStartIndex, txOutsOffset - txInsStartIndex, rawTx)
             val txOuts = sliceByteString(txOutsOffset, outsEnd - txOutsOffset, rawTx)
             val lockTimeOsset = outsEnd + 1 + 1 + 32 // Skip witness data
@@ -159,11 +173,14 @@ object BitcoinValidator {
             appendByteString(version, appendByteString(txIns, appendByteString(txOuts, lockTime)))
         else rawTx
 
-    def parseTxIns(rawTx: ByteString, txInsStartIndex: BigInt): BigInt =
+    def skipTxIns(rawTx: ByteString, txInsStartIndex: BigInt): BigInt =
         val (numIns, newOffset) = readVarInt(rawTx, txInsStartIndex)
-        skipTxIn(rawTx, newOffset) // Skip 1 txIn in Coinbase
+        def loop(num: BigInt, offset: BigInt): BigInt =
+            if num == BigInt(0) then offset
+            else loop(num - 1, skipTxIn(rawTx, offset))
+        loop(numIns, newOffset)
 
-    def parseTxOuts(rawTx: ByteString, offset: BigInt): BigInt =
+    def skipTxOuts(rawTx: ByteString, offset: BigInt): BigInt =
         val (numOuts, newOffset) = readVarInt(rawTx, offset)
         def loop(numOuts: BigInt, offset: BigInt): BigInt =
             if numOuts == BigInt(0) then offset
@@ -190,12 +207,16 @@ object BitcoinValidator {
     ): Unit =
         val hash = blockHeaderHash(blockHeader)
         val validHash = hash == blockHeader.hash
+        val target = bitsToTarget(blockHeader.bits)
+        val blockHashSatisfiesTarget = lessThanByteString(hash, target)
+
         val validSignature = verifyEd25519Signature(ownerPubKey, hash, signature)
         val coinbaseTxHash = getTxHash(coinbaseTx)
         val merkleRoot = merkleRootFromInclusionProof(inclusionProof, coinbaseTxHash, 0)
         val validCoinbaseInclusionProof = merkleRoot == blockHeader.merkleRoot
 
-        val isValid = validHash.? && validSignature.? && validCoinbaseInclusionProof.?
+        val isValid =
+            validHash.? && validSignature.? && validCoinbaseInclusionProof.? && blockHashSatisfiesTarget.?
         if isValid then () else throw new Exception("Block is not valid")
 
     def verifyFraudProof(state: State, blockHeader: BlockHeader): Unit =
@@ -220,9 +241,10 @@ object BitcoinValidator {
             case Action.FraudProof(blockHeader) => verifyFraudProof(state, blockHeader)
     }
 
-    def reverse32(bs: ByteString): ByteString =
+    def reverse(bs: ByteString): ByteString =
+        val len = lengthOfByteString(bs)
         def loop(idx: BigInt, acc: ByteString): ByteString =
-            if idx > 31 then acc
+            if idx == len then acc
             else loop(idx + 1, consByteString(indexByteString(bs, idx), acc))
         loop(0, ByteString.empty)
 }
