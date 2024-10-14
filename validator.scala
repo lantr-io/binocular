@@ -1,6 +1,7 @@
 package binocular
 
 import scalus.*
+import scalus.builtin
 import scalus.builtin.Builtins
 import scalus.builtin.Builtins.*
 import scalus.builtin.ByteString
@@ -8,6 +9,7 @@ import scalus.builtin.Data
 import scalus.builtin.Data.FromData
 import scalus.builtin.Data.ToData
 import scalus.builtin.FromData
+import scalus.builtin.ByteString.given
 import scalus.builtin.FromDataInstances.given
 import scalus.builtin.ToData
 import scalus.builtin.ToDataInstances.given
@@ -16,17 +18,18 @@ import scalus.ledger.api.v1.FromDataInstances.given
 import scalus.ledger.api.v3.*
 import scalus.ledger.api.v3.FromDataInstances.given
 import scalus.prelude.?
-import scalus.prelude.List
 import scalus.prelude.Maybe
 import scalus.prelude.Prelude.log
 import scalus.sir.RemoveRecursivity
 import scalus.uplc.Program
 import scalus.uplc.Term
 import scalus.utils.Utils
+import dotty.tools.repl.Quit
 
 extension (a: Array[Byte]) def toHex: String = Utils.bytesToHex(a)
+extension (a: ByteString) def reverse: ByteString = ByteString.fromArray(a.bytes.reverse)
 
-@Compile
+// @Compile
 object BitcoinValidator {
 
     case class BlockHeader(
@@ -48,7 +51,7 @@ object BitcoinValidator {
             ownerPubKey: ByteString,
             signature: ByteString,
             coinbaseTx: ByteString,
-            coinbaseInclusionProof: List[ByteString]
+            coinbaseInclusionProof: Data
         )
         case FraudProof(
             blockHeader: BlockHeader
@@ -58,6 +61,7 @@ object BitcoinValidator {
 //    given ToData[BlockHeader] = ToData.deriveCaseClass[BlockHeader](0)
     given FromData[State] = FromData.deriveCaseClass[State]
 //    given ToData[State] = ToData.deriveEnum[State]
+    given FromData[Data] = (data: Data) => data
     given FromData[Action] = FromData.deriveEnum[Action]
 //    given ToData[Action] = ToData.deriveEnum[Action]
 
@@ -88,18 +92,110 @@ object BitcoinValidator {
         val hash = blockHeaderHash(blockHeader)
         verifyEd25519Signature(ownerPubKey, hash, signature)
 
+    def merkleRootFromInclusionProof(
+        merkleProof: builtin.List[Data],
+        hash: ByteString,
+        index: BigInt
+    ): ByteString =
+        def loop(index: BigInt, curHash: ByteString, siblings: builtin.List[Data]): ByteString =
+            if siblings.isEmpty then curHash
+            else
+                val sibling = siblings.head.toByteString
+                val nextHash =
+                    if index % 2 == BigInt(0)
+                    then sha2_256(appendByteString(curHash, sibling))
+                    else sha2_256(appendByteString(sibling, curHash))
+                loop(index / 2, nextHash, siblings.tail)
+
+        loop(index, hash, merkleProof)
+
+    def readVarInt(input: ByteString, offset: BigInt): (BigInt, BigInt) =
+        val firstByte = indexByteString(input, offset)
+        if firstByte < BigInt(0xfd) then (firstByte, offset + 1)
+        else if firstByte == BigInt(0xfd) then
+            (byteStringToInteger(false, sliceByteString(offset + 1, 2, input)), offset + 3)
+        else if firstByte == BigInt(0xfe) then
+            (byteStringToInteger(false, sliceByteString(offset + 1, 4, input)), offset + 5)
+        else (byteStringToInteger(false, sliceByteString(offset + 1, 8, input)), offset + 9)
+
+    def parseCoinbaseTxScriptSig(coinbaseTx: ByteString): ByteString =
+        // Skip version
+        // 4
+        // marker and flag of witness transaction
+        // + 1 + 1
+        // Read input count (should be 1 for coinbase)
+        // + 1
+        // Skip previous transaction hash and output index
+        // + 32 + 4
+        val offset = BigInt(43)
+        val (scriptLength, newOffset) = readVarInt(coinbaseTx, offset)
+        val scriptSig = sliceByteString(newOffset, scriptLength, coinbaseTx)
+        scriptSig
+
+    def parseBlockHeightFromScriptSig(scriptSig: ByteString): BigInt =
+        val len = indexByteString(scriptSig, 0)
+        if len < 1 || len > 8 then throw new Exception("Invalid block height length")
+        val height = byteStringToInteger(false, sliceByteString(1, len, scriptSig))
+        height
+
+    def getTxHash(rawTx: ByteString): ByteString =
+        val serializedTx = stripWitnessData(rawTx)
+        sha2_256(sha2_256(serializedTx))
+
+    def isWitnessTransaction(rawTx: ByteString): Boolean =
+        indexByteString(rawTx, 4) == BigInt(0) && indexByteString(rawTx, 5) == BigInt(1)
+
+    def stripWitnessData(rawTx: ByteString): ByteString =
+        if isWitnessTransaction(rawTx) then
+            // Format: [nVersion][marker][flag][txins][txouts][witness][nLockTime]
+            val version = sliceByteString(0, 4, rawTx)
+            val txInsStartIndex = BigInt(6) // Skip marker and flag bytes
+            val txOutsOffset = parseTxIns(rawTx, txInsStartIndex)
+            val outsEnd = parseTxOuts(rawTx, txOutsOffset)
+            val txIns = sliceByteString(txInsStartIndex, txOutsOffset - txInsStartIndex, rawTx)
+            val txOuts = sliceByteString(txOutsOffset, outsEnd - txOutsOffset, rawTx)
+            val lockTimeOsset = outsEnd + 1 + 1 + 32 // Skip witness data
+            val lockTime = sliceByteString(lockTimeOsset, 4, rawTx)
+            appendByteString(version, appendByteString(txIns, appendByteString(txOuts, lockTime)))
+        else rawTx
+
+    def parseTxIns(rawTx: ByteString, txInsStartIndex: BigInt): BigInt =
+        val (numIns, newOffset) = readVarInt(rawTx, txInsStartIndex)
+        skipTxIn(rawTx, newOffset) // Skip 1 txIn in Coinbase
+
+    def parseTxOuts(rawTx: ByteString, offset: BigInt): BigInt =
+        val (numOuts, newOffset) = readVarInt(rawTx, offset)
+        def loop(numOuts: BigInt, offset: BigInt): BigInt =
+            if numOuts == BigInt(0) then offset
+            else loop(numOuts - 1, skipTxOut(rawTx, offset))
+        loop(numOuts, newOffset)
+
+    def skipTxIn(rawTx: ByteString, offset: BigInt): BigInt =
+        // Skip tx hash 32 and index 4
+        val (scriptLength, newOffset) = readVarInt(rawTx, offset + 36)
+        newOffset + scriptLength + 4 // sequence is 4
+
+    def skipTxOut(rawTx: ByteString, offset: BigInt): BigInt =
+        // Skip tx hash 32 and index 4
+        val (scriptLength, newOffset) = readVarInt(rawTx, offset + 8) // skip amount
+        newOffset + scriptLength
+
     def verifyNewTip(
         state: State,
         blockHeader: BlockHeader,
         ownerPubKey: ByteString,
         signature: ByteString,
         coinbaseTx: ByteString,
-        inclusionProof: List[ByteString]
+        inclusionProof: builtin.List[Data]
     ): Unit =
         val hash = blockHeaderHash(blockHeader)
         val validHash = hash == blockHeader.hash
         val validSignature = verifyEd25519Signature(ownerPubKey, hash, signature)
-        val isValid = validHash.? && validSignature.?
+        val coinbaseTxHash = getTxHash(coinbaseTx)
+        val merkleRoot = merkleRootFromInclusionProof(inclusionProof, coinbaseTxHash, 0)
+        val validCoinbaseInclusionProof = merkleRoot == blockHeader.merkleRoot
+
+        val isValid = validHash.? && validSignature.? && validCoinbaseInclusionProof.?
         if isValid then () else throw new Exception("Block is not valid")
 
     def verifyFraudProof(state: State, blockHeader: BlockHeader): Unit =
@@ -113,7 +209,14 @@ object BitcoinValidator {
             case _                 => throw new Exception("No datum")
         action match
             case Action.NewTip(blockHeader, ownerPubKey, signature, coinbaseTx, inclusionProof) =>
-                verifyNewTip(state, blockHeader, ownerPubKey, signature, coinbaseTx, inclusionProof)
+                verifyNewTip(
+                  state,
+                  blockHeader,
+                  ownerPubKey,
+                  signature,
+                  coinbaseTx,
+                  inclusionProof.toList
+                )
             case Action.FraudProof(blockHeader) => verifyFraudProof(state, blockHeader)
     }
 
