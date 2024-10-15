@@ -1,14 +1,6 @@
 package binocular
 
 import binocular.BitcoinValidator.Action
-import scalus.*
-import scalus.uplc.eval
-import scalus.uplc.eval.*
-import scalus.builtin.given
-import scalus.builtin.ByteString.given
-
-import scala.jdk.CollectionConverters.*
-import scala.language.implicitConversions
 import binocular.BitcoinValidator.BlockHeader
 import binocular.BitcoinValidator.State
 import com.bloxbean.cardano.client.account.Account
@@ -24,25 +16,27 @@ import com.bloxbean.cardano.client.transaction.spec.TransactionInput
 import com.bloxbean.cardano.client.transaction.spec.TransactionOutput
 import com.bloxbean.cardano.client.transaction.spec.TransactionWitnessSet
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil
-import io.bullet.borer.Cbor
 import org.bouncycastle.crypto.AsymmetricCipherKeyPair
 import org.bouncycastle.crypto.generators.Ed25519KeyPairGenerator
 import org.bouncycastle.crypto.params.Ed25519KeyGenerationParameters
 import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
 import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
 import org.bouncycastle.crypto.signers.Ed25519Signer
+import scalus.*
 import scalus.bloxbean.Interop
 import scalus.bloxbean.Interop.getScriptInfoV3
 import scalus.bloxbean.Interop.getTxInfoV3
 import scalus.bloxbean.Interop.toScalusData
 import scalus.bloxbean.SlotConfig
-import scalus.builtin.ByteString
 import scalus.builtin.Builtins
+import scalus.builtin.ByteString
+import scalus.builtin.ByteString.hex
 import scalus.builtin.Data
 import scalus.builtin.Data.toData
 import scalus.ledger.api.v3.PubKeyHash
 import scalus.ledger.api.v3.ScriptContext
-import scalus.uplc.TermDSL.{*, given}
+import scalus.uplc.eval
+import scalus.uplc.eval.*
 import upickle.default.*
 
 import java.math.BigInteger
@@ -50,6 +44,8 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.security.SecureRandom
 import java.util
+import scala.jdk.CollectionConverters.*
+import scala.language.implicitConversions
 
 case class BitcoinBlock(
     hash: String,
@@ -89,7 +85,7 @@ class ValidatorTests extends munit.ScalaCheckSuite {
             hex"010000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff2503233708184d696e656420627920416e74506f6f6c373946205b8160a4256c0000946e0100ffffffff02f595814a000000001976a914edf10a7fac6b32e24daa5305c723f3de58db1bc888ac0000000000000000266a24aa21a9edfaa194df59043645ba0f58aad74bfd5693fa497093174d12a4bb3b0574a878db0120000000000000000000000000000000000000000000000000000000000000000000000000"
         println(blockHeader.length)
         val coinbase = Bitcoin.makeCoinbaseTxFromByteString(coinbaseTx)
-        val coinbaseSize = Cbor.encode(coinbase.toData).toByteArray.length
+        val coinbaseSize = coinbase.toData.toCbor.length
         println(s"Coinbase size: $coinbaseSize")
 //        val action = BitcoinValidator.Action.NewTip(blockHeader, coinbase)
     }
@@ -178,8 +174,6 @@ class ValidatorTests extends munit.ScalaCheckSuite {
     test("Evaluate") {
         import scalus.ledger.api.v3.ToDataInstances.given
         import scalus.builtin.ToDataInstances.given
-        import BitcoinValidator.given
-
         val block = read[BitcoinBlock](
           Files.readString(
             Path.of("00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c.json")
@@ -200,7 +194,7 @@ class ValidatorTests extends munit.ScalaCheckSuite {
         println(s"Merkle root: ${merkleRoot.reverse}")
         println(s"Merkle proof: ${merkleProof}")
 
-        val coinbaseTxInclusionProof = prelude.List.from(merkleProof).toData
+        val coinbaseTxInclusionProof = scalus.prelude.List.from(merkleProof).toData
 
         val blockHeader = BlockHeader(
           bytes =
@@ -231,7 +225,7 @@ class ValidatorTests extends munit.ScalaCheckSuite {
             )
             .toData
 
-        println(s"Redeemer size: ${Cbor.encode(redeemer).toByteArray.length}")
+        println(s"Redeemer size: ${redeemer.toCbor.length}")
 
         val (scriptContext, tx) = makeScriptContextAndTransaction(
           State(865494, blockHash = hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c").toData,
@@ -239,6 +233,7 @@ class ValidatorTests extends munit.ScalaCheckSuite {
           Seq.empty
         )
         println(s"Tx size: ${tx.serialize().length}")
+        import scalus.uplc.TermDSL.{*, given}
         val applied = bitcoinValidator $ scriptContext.toData
         BitcoinValidator.validator(scriptContext.toData)
         println(applied.evalDebug)
