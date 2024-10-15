@@ -35,18 +35,16 @@ object BitcoinValidator {
         txOutsAndLockTime: ByteString
     )
 
-    case class BlockHeader(
-        blockHeight: BigInt,
-        hash: ByteString,
-        version: BigInt,
-        prevBlockHash: ByteString,
-        merkleRoot: ByteString,
-        timestamp: BigInt,
-        bits: ByteString,
-        nonce: ByteString
-    )
+    case class BlockHeader(bytes: ByteString)
 
-    case class State(a: BigInt)
+    extension (bh: BlockHeader)
+        inline def bits: ByteString =
+            sliceByteString(72, 4, bh.bytes)
+
+        inline def merkleRoot: ByteString =
+            sliceByteString(36, 32, bh.bytes)
+
+    case class State(blockHeight: BigInt, blockHash: ByteString)
 
     enum Action:
         case NewTip(
@@ -71,24 +69,24 @@ object BitcoinValidator {
     given ToData[Action] = ToData.deriveEnum[Action]
 
     /// Bitcoin block header serialization
-    def serializeBlockHeader(blockHeader: BlockHeader): ByteString =
-        val v = integerToByteString(false, 4, blockHeader.version)
-        val pbh = reverse(blockHeader.prevBlockHash)
-        val mr = reverse(blockHeader.merkleRoot)
-        val ts = integerToByteString(false, 4, blockHeader.timestamp)
-        appendByteString(
-          v,
-          appendByteString(
-            pbh,
-            appendByteString(
-              mr,
-              appendByteString(ts, appendByteString(blockHeader.bits, blockHeader.nonce))
-            )
-          )
-        )
+//    def serializeBlockHeader(blockHeader: BlockHeader): ByteString =
+//        val v = integerToByteString(false, 4, blockHeader.version)
+//        val pbh = reverse(blockHeader.prevBlockHash)
+//        val mr = reverse(blockHeader.merkleRoot)
+//        val ts = integerToByteString(false, 4, blockHeader.timestamp)
+//        appendByteString(
+//          v,
+//          appendByteString(
+//            pbh,
+//            appendByteString(
+//              mr,
+//              appendByteString(ts, appendByteString(blockHeader.bits, blockHeader.nonce))
+//            )
+//          )
+//        )
 
     def blockHeaderHash(blockHeader: BlockHeader): ByteString =
-        reverse(sha2_256(sha2_256(serializeBlockHeader(blockHeader))))
+        reverse(sha2_256(sha2_256(blockHeader.bytes)))
 
     def checkSignature(
         blockHeader: BlockHeader,
@@ -230,16 +228,16 @@ object BitcoinValidator {
         inclusionProof: builtin.List[Data]
     ): Unit =
         val hash = blockHeaderHash(blockHeader)
-        val validHash = hash == blockHeader.hash
+        val validHash = hash == state.blockHash
         val target = bitsToTarget(blockHeader.bits)
         val blockHashSatisfiesTarget = lessThanByteString(hash, target)
         val height = getBlockHeightFromCoinbaseTx(coinbaseTx)
-        val validBlockHeight = height == blockHeader.blockHeight
+        val validBlockHeight = height == state.blockHeight
 
         val validSignature = verifyEd25519Signature(ownerPubKey, hash, signature)
         val coinbaseTxHash = getCoinbaseTxHash(coinbaseTx)
         val merkleRoot = merkleRootFromInclusionProof(inclusionProof, coinbaseTxHash, 0)
-        val validCoinbaseInclusionProof = merkleRoot == reverse(blockHeader.merkleRoot)
+        val validCoinbaseInclusionProof = merkleRoot == blockHeader.merkleRoot
 
         val isValid = validHash.?
             && validSignature.?
