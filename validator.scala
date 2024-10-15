@@ -14,22 +14,19 @@ import scalus.builtin.FromDataInstances.given
 import scalus.builtin.ToData
 import scalus.builtin.ToDataInstances.given
 import scalus.builtin.given
-import scalus.ledger.api.v1.FromDataInstances.given
 import scalus.ledger.api.v3.*
 import scalus.ledger.api.v3.FromDataInstances.given
 import scalus.prelude.?
 import scalus.prelude.Maybe
-import scalus.prelude.Prelude.log
 import scalus.sir.RemoveRecursivity
 import scalus.uplc.Program
 import scalus.uplc.Term
 import scalus.utils.Utils
-import dotty.tools.repl.Quit
 
 extension (a: Array[Byte]) def toHex: String = Utils.bytesToHex(a)
 extension (a: ByteString) def reverse: ByteString = ByteString.fromArray(a.bytes.reverse)
 
-// @Compile
+@Compile
 object BitcoinValidator {
 
     case class CoinbaseTx(
@@ -49,7 +46,7 @@ object BitcoinValidator {
         nonce: ByteString
     )
 
-    case class State(blockHeader: BlockHeader, ownerPubKey: ByteString, signature: ByteString)
+    case class State(a: BigInt)
 
     enum Action:
         case NewTip(
@@ -66,12 +63,12 @@ object BitcoinValidator {
     given FromData[CoinbaseTx] = FromData.deriveCaseClass[CoinbaseTx]
     given ToData[CoinbaseTx] = ToData.deriveCaseClass[CoinbaseTx](0)
     given FromData[BlockHeader] = FromData.deriveCaseClass[BlockHeader]
-//    given ToData[BlockHeader] = ToData.deriveCaseClass[BlockHeader](0)
+    given ToData[BlockHeader] = ToData.deriveCaseClass[BlockHeader](0)
     given FromData[State] = FromData.deriveCaseClass[State]
-//    given ToData[State] = ToData.deriveEnum[State]
+    given ToData[State] = ToData.deriveCaseClass[State](0)
     given FromData[Data] = (data: Data) => data
     given FromData[Action] = FromData.deriveEnum[Action]
-//    given ToData[Action] = ToData.deriveEnum[Action]
+    given ToData[Action] = ToData.deriveEnum[Action]
 
     /// Bitcoin block header serialization
     def serializeBlockHeader(blockHeader: BlockHeader): ByteString =
@@ -125,8 +122,8 @@ object BitcoinValidator {
                 val sibling = siblings.head.toByteString
                 val nextHash =
                     if index % 2 == BigInt(0)
-                    then sha2_256(appendByteString(curHash, sibling))
-                    else sha2_256(appendByteString(sibling, curHash))
+                    then sha2_256(sha2_256(appendByteString(curHash, sibling)))
+                    else sha2_256(sha2_256(appendByteString(sibling, curHash)))
                 loop(index / 2, nextHash, siblings.tail)
 
         loop(index, hash, merkleProof)
@@ -242,7 +239,7 @@ object BitcoinValidator {
         val validSignature = verifyEd25519Signature(ownerPubKey, hash, signature)
         val coinbaseTxHash = getCoinbaseTxHash(coinbaseTx)
         val merkleRoot = merkleRootFromInclusionProof(inclusionProof, coinbaseTxHash, 0)
-        val validCoinbaseInclusionProof = merkleRoot == blockHeader.merkleRoot
+        val validCoinbaseInclusionProof = merkleRoot == reverse(blockHeader.merkleRoot)
 
         val isValid = validHash.?
             && validSignature.?

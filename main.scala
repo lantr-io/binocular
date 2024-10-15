@@ -22,7 +22,6 @@ import scalus.sir.RemoveRecursivity
 import scalus.uplc.Program
 import scalus.uplc.Term
 
-
 def info(): Unit =
     println(s"Script address")
 
