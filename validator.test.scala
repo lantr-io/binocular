@@ -3,13 +3,16 @@ package binocular
 import scalus.*
 import scalus.uplc.eval
 import scalus.uplc.eval.*
+import scalus.builtin.given
 import scalus.builtin.ByteString.given
 
 import scala.jdk.CollectionConverters.*
 import scala.language.implicitConversions
 import binocular.BitcoinValidator.BlockHeader
+import io.bullet.borer.Cbor
 import scalus.builtin.ByteString
 import scalus.builtin.Builtins
+import scalus.builtin.Data.toData
 
 case class CekResult(budget: ExBudget, logs: Seq[String])
 
@@ -19,6 +22,18 @@ class ValidatorTests extends munit.ScalaCheckSuite {
     // println(compiledBitcoinValidator.showHighlighted)
     // assertEquals(bitcoinProgram.doubleCborEncoded.length, 900)
     // }
+
+    test("Tx size makes sense") {
+        val blockHeader = hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
+        val coinbaseTx =
+            hex"010000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff2503233708184d696e656420627920416e74506f6f6c373946205b8160a4256c0000946e0100ffffffff02f595814a000000001976a914edf10a7fac6b32e24daa5305c723f3de58db1bc888ac0000000000000000266a24aa21a9edfaa194df59043645ba0f58aad74bfd5693fa497093174d12a4bb3b0574a878db0120000000000000000000000000000000000000000000000000000000000000000000000000"
+        println(blockHeader.length)
+        val coinbase = Bitcoin.makeCoinbaseTxFromByteString(coinbaseTx)
+        val coinbaseSize = Cbor.encode(coinbase.toData).toByteArray.length
+        println(s"Coinbase size: $coinbaseSize")
+        val action = BitcoinValidator.Action.NewTip(blockHeader, coinbase)
+    }
+
 
     test("Block Header serialization") {
         val blockHeader = BlockHeader(
@@ -45,6 +60,17 @@ class ValidatorTests extends munit.ScalaCheckSuite {
         assertEquals(
           scriptSig,
           hex"03233708184d696e656420627920416e74506f6f6c373946205b8160a4256c0000946e0100"
+        )
+    }
+
+    test("construct CoinbaseTx") {
+        val coinbaseTx =
+            hex"010000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff2503233708184d696e656420627920416e74506f6f6c373946205b8160a4256c0000946e0100ffffffff02f595814a000000001976a914edf10a7fac6b32e24daa5305c723f3de58db1bc888ac0000000000000000266a24aa21a9edfaa194df59043645ba0f58aad74bfd5693fa497093174d12a4bb3b0574a878db0120000000000000000000000000000000000000000000000000000000000000000000000000"
+        val coinbase = Bitcoin.makeCoinbaseTxFromByteString(coinbaseTx)
+        val txHash = BitcoinValidator.getCoinbaseTxHash(coinbase)
+        assertEquals(
+            txHash,
+            hex"31e9370f45eb48f6f52ef683b0737332f09f1cead75608021185450422ec1a71".reverse
         )
     }
 

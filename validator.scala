@@ -32,6 +32,12 @@ extension (a: ByteString) def reverse: ByteString = ByteString.fromArray(a.bytes
 // @Compile
 object BitcoinValidator {
 
+    case class CoinbaseTx(
+        version: ByteString,
+        inputScriptSigAndSequence: ByteString,
+        txOutsAndLockTime: ByteString
+    )
+
     case class BlockHeader(
         blockHeight: BigInt,
         hash: ByteString,
@@ -50,13 +56,15 @@ object BitcoinValidator {
             blockHeader: BlockHeader,
             ownerPubKey: ByteString,
             signature: ByteString,
-            coinbaseTx: ByteString,
+            coinbaseTx: CoinbaseTx,
             coinbaseInclusionProof: Data
         )
         case FraudProof(
             blockHeader: BlockHeader
         )
 
+    given FromData[CoinbaseTx] = FromData.deriveCaseClass[CoinbaseTx]
+    given ToData[CoinbaseTx] = ToData.deriveCaseClass[CoinbaseTx](0)
     given FromData[BlockHeader] = FromData.deriveCaseClass[BlockHeader]
 //    given ToData[BlockHeader] = ToData.deriveCaseClass[BlockHeader](0)
     given FromData[State] = FromData.deriveCaseClass[State]
@@ -152,6 +160,15 @@ object BitcoinValidator {
         val height = byteStringToInteger(false, sliceByteString(1, len, scriptSig))
         height
 
+    def getBlockHeightFromCoinbaseTx(tx: CoinbaseTx): BigInt =
+        val (scriptLength, newOffset) = readVarInt(tx.inputScriptSigAndSequence, 0)
+        // read first byte of scriptSig
+        // this MUST be OP_PUSHBYTES_len
+        val len = indexByteString(tx.inputScriptSigAndSequence, newOffset)
+        if len < 1 || len > 8 then throw new Exception("Invalid block height length")
+        val height = byteStringToInteger(false, sliceByteString(newOffset + 1, len, tx.inputScriptSigAndSequence))
+        height
+
     def getTxHash(rawTx: ByteString): ByteString =
         val serializedTx = stripWitnessData(rawTx)
         sha2_256(sha2_256(serializedTx))
@@ -172,6 +189,16 @@ object BitcoinValidator {
             val lockTime = sliceByteString(lockTimeOsset, 4, rawTx)
             appendByteString(version, appendByteString(txIns, appendByteString(txOuts, lockTime)))
         else rawTx
+
+    def getCoinbaseTxHash(coinbaseTx: CoinbaseTx): ByteString =
+        val serializedTx = appendByteString(
+          coinbaseTx.version,
+          appendByteString(
+            hex"010000000000000000000000000000000000000000000000000000000000000000ffffffff",
+            appendByteString(coinbaseTx.inputScriptSigAndSequence, coinbaseTx.txOutsAndLockTime)
+          )
+        )
+        sha2_256(sha2_256(serializedTx))
 
     def skipTxIns(rawTx: ByteString, txInsStartIndex: BigInt): BigInt =
         val (numIns, newOffset) = readVarInt(rawTx, txInsStartIndex)
@@ -202,21 +229,26 @@ object BitcoinValidator {
         blockHeader: BlockHeader,
         ownerPubKey: ByteString,
         signature: ByteString,
-        coinbaseTx: ByteString,
+        coinbaseTx: CoinbaseTx,
         inclusionProof: builtin.List[Data]
     ): Unit =
         val hash = blockHeaderHash(blockHeader)
         val validHash = hash == blockHeader.hash
         val target = bitsToTarget(blockHeader.bits)
         val blockHashSatisfiesTarget = lessThanByteString(hash, target)
+        val height = getBlockHeightFromCoinbaseTx(coinbaseTx)
+        val validBlockHeight = height == blockHeader.blockHeight
 
         val validSignature = verifyEd25519Signature(ownerPubKey, hash, signature)
-        val coinbaseTxHash = getTxHash(coinbaseTx)
+        val coinbaseTxHash = getCoinbaseTxHash(coinbaseTx)
         val merkleRoot = merkleRootFromInclusionProof(inclusionProof, coinbaseTxHash, 0)
         val validCoinbaseInclusionProof = merkleRoot == blockHeader.merkleRoot
 
-        val isValid =
-            validHash.? && validSignature.? && validCoinbaseInclusionProof.? && blockHashSatisfiesTarget.?
+        val isValid = validHash.?
+            && validSignature.?
+            && validCoinbaseInclusionProof.?
+            && blockHashSatisfiesTarget.?
+            && validBlockHeight.?
         if isValid then () else throw new Exception("Block is not valid")
 
     def verifyFraudProof(state: State, blockHeader: BlockHeader): Unit =
