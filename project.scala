@@ -1,8 +1,8 @@
 //> using scala 3.3.4
 //> using options -deprecation -feature
-//> using plugin org.scalus:scalus-plugin_3:0.8.2
-//> using dep org.scalus:scalus_3:0.8.2+8-23811828-SNAPSHOT
-//> using dep org.scalus:scalus-bloxbean-cardano-client-lib_3:0.8.2
+//> using plugin org.scalus:scalus-plugin_3:0.8.2+9-9fd526e4+20241016-1437-SNAPSHOT
+//> using dep org.scalus:scalus_3:0.8.2+9-9fd526e4+20241016-1437-SNAPSHOT
+//> using dep org.scalus:scalus-bloxbean-cardano-client-lib_3:0.8.2+9-9fd526e4+20241016-1437-SNAPSHOT
 //> using dep org.slf4j:slf4j-simple:2.0.16
 //> using dep org.bouncycastle:bcprov-jdk18on:1.78.1
 //> using dep net.i2p.crypto:eddsa:0.3.0

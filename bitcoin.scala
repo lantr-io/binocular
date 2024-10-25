@@ -1,15 +1,16 @@
 package binocular
 
 import scalus.builtin.ByteString
+import onchain.*
 import scalus.builtin.Builtins.*
 import BitcoinValidator.*
 
 object Bitcoin {
     def isWitnessTransaction(rawTx: ByteString): Boolean =
-        indexByteString(rawTx, 4) == BigInt(0) && indexByteString(rawTx, 5) == BigInt(1)
+        rawTx.index(4) == BigInt(0) && indexByteString(rawTx, 5) == BigInt(1)
 
     def makeCoinbaseTxFromByteString(rawTx: ByteString): CoinbaseTx = {
-        val version = sliceByteString(0, 4, rawTx)
+        val version = rawTx.slice(0, 4)
         if isWitnessTransaction(rawTx) then
             val (inputScriptSigAndSequence, txOutsOffset) =
                 val scriptSigStart =

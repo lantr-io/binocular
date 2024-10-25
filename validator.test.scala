@@ -338,4 +338,15 @@ class ValidatorTests extends munit.ScalaCheckSuite {
         )
         (scriptContext, tx)
 
+
+    test("block header Merkle tree size") {
+        def log2(n: Int) = {
+            if (n <= 0) throw new IllegalArgumentException
+            31 - Integer.numberOfLeadingZeros(n)
+        }
+        val numHashes = log2(1000000)
+        println(numHashes)
+        println(s"Size: ${numHashes*32}")
+    }
+
 }

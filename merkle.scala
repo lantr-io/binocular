@@ -1,6 +1,5 @@
 package binocular
 
-import org.bouncycastle.crypto.digests.SHA256Digest
 import scalus.builtin.Builtins.sha2_256
 import scalus.builtin.given
 import scalus.builtin.ByteString

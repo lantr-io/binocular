@@ -26,6 +26,21 @@ import scalus.utils.Utils
 extension (a: Array[Byte]) def toHex: String = Utils.bytesToHex(a)
 extension (a: ByteString) def reverse: ByteString = ByteString.fromArray(a.bytes.reverse)
 
+object onchain {
+    extension (bs: ByteString)
+        inline infix def <(that: ByteString): Boolean = Builtins.lessThanByteString(bs, that)
+        inline infix def <=(that: ByteString): Boolean =
+            Builtins.lessThanEqualsByteString(bs, that)
+        inline infix def >(that: ByteString): Boolean = Builtins.lessThanByteString(that, bs)
+        inline infix def >=(that: ByteString): Boolean =
+            Builtins.lessThanEqualsByteString(that, bs)
+        inline def slice(from: BigInt, len: BigInt): ByteString =
+            Builtins.sliceByteString(from, len, bs)
+        inline def index(index: BigInt): BigInt = Builtins.indexByteString(bs, index)
+}
+
+import onchain.*
+
 @Compile
 object BitcoinValidator {
 
@@ -97,8 +112,8 @@ object BitcoinValidator {
         verifyEd25519Signature(ownerPubKey, hash, signature)
 
     def bitsToTarget(bits: ByteString): ByteString =
-        val exponent = indexByteString(bits, 3)
-        val coefficient = sliceByteString(0, 3, bits)
+        val exponent = bits.index(3)
+        val coefficient = bits.slice(0, 3)
         // produce a 32 byte ByteString target, where the `coefficient` is 3 bytes and it is shifted left by `exponent` bytes and left padded with zeros
         def loop(i: BigInt, acc: ByteString): ByteString =
             if i < exponent then loop(i + 1, consByteString(0, acc))
@@ -107,7 +122,7 @@ object BitcoinValidator {
             else acc
         val target = loop(0, ByteString.empty)
         val maxTarget = hex"00000000ffff0000000000000000000000000000000000000000000000000000"
-        if lessThanByteString(maxTarget, target) then maxTarget else target
+        if maxTarget < target then maxTarget else target
 
     def merkleRootFromInclusionProof(
         merkleProof: builtin.List[Data],
@@ -230,7 +245,7 @@ object BitcoinValidator {
         val hash = blockHeaderHash(blockHeader)
         val validHash = hash == state.blockHash
         val target = bitsToTarget(blockHeader.bits)
-        val blockHashSatisfiesTarget = lessThanByteString(hash, target)
+        val blockHashSatisfiesTarget = hash < target
         val height = getBlockHeightFromCoinbaseTx(coinbaseTx)
         val validBlockHeight = height == state.blockHeight
 
