@@ -3,6 +3,7 @@ package binocular
 import binocular.BitcoinValidator.Action
 import binocular.BitcoinValidator.BlockHeader
 import binocular.BitcoinValidator.State
+import binocular.BitcoinValidator.getChainwork
 import com.bloxbean.cardano.client.account.Account
 import com.bloxbean.cardano.client.common.ADAConversionUtil
 import com.bloxbean.cardano.client.plutus.spec.ExUnits
@@ -227,12 +228,19 @@ class ValidatorTests extends munit.ScalaCheckSuite {
 
         println(s"Redeemer size: ${redeemer.toCbor.length}")
 
+        val prevState = State(
+          865493,
+          blockHash = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b",
+          totalChainwork = BigInt("94b1874d991d4e1fc51005a", 16)
+        )
+        val newState = State(
+          prevState.blockHeight + 1,
+          blockHash = hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c",
+          totalChainwork = prevState.totalChainwork + getChainwork(target)
+        )
         val (scriptContext, tx) = makeScriptContextAndTransaction(
-          State(
-            865494,
-            blockHash = hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c",
-            totalChainwork = BigInt("94b1874d991d4e1fc51005a", 16)
-          ).toData,
+          prevState.toData,
+          newState.toData,
           redeemer,
           Seq.empty
         )
@@ -270,6 +278,7 @@ class ValidatorTests extends munit.ScalaCheckSuite {
     lazy val sender = new Account()
 
     def makeScriptContextAndTransaction(
+        prevState: Data,
         datum: Data,
         redeemer: Data,
         signatories: Seq[PubKeyHash]
@@ -308,7 +317,7 @@ class ValidatorTests extends munit.ScalaCheckSuite {
               .builder()
               .value(spec.Value.builder().coin(BigInteger.valueOf(20)).build())
               .address(payeeAddress)
-              .inlineDatum(Interop.toPlutusData(datum))
+              .inlineDatum(Interop.toPlutusData(prevState))
               .build()
         )
         val tx = Transaction
@@ -330,7 +339,6 @@ class ValidatorTests extends munit.ScalaCheckSuite {
             )
             .build()
 
-        val protocolVersion = 9
         val scriptContext = getScriptContextV3(
           rdmr,
           Some(datum),
@@ -338,7 +346,7 @@ class ValidatorTests extends munit.ScalaCheckSuite {
           TransactionUtil.getTxHash(tx),
           utxo,
           SlotConfig.Mainnet,
-          protocolVersion
+          protocolVersion = 9
         )
         (scriptContext, tx)
 

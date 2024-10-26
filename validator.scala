@@ -54,6 +54,9 @@ object BitcoinValidator {
     case class BlockHeader(bytes: ByteString)
 
     extension (bh: BlockHeader)
+        inline def prevBlockHash: ByteString =
+            sliceByteString(4, 32, bh.bytes)
+
         inline def bits: ByteString =
             sliceByteString(72, 4, bh.bytes)
 
@@ -235,6 +238,11 @@ object BitcoinValidator {
         val (scriptLength, newOffset) = readVarInt(rawTx, offset + 8) // skip amount
         newOffset + scriptLength
 
+    def getChainwork(target: ByteString): BigInt =
+        val targetNumber = byteStringToInteger(true, target)
+        val two_256 = BigInt("115792089237316195423570985008687907853269984665640564039457584007913129639936")
+        two_256 / (targetNumber + 1)
+
     def verifyNewTip(
         prevState: State,
         newState: State,
@@ -246,8 +254,13 @@ object BitcoinValidator {
     ): Unit =
         val hash = blockHeaderHash(blockHeader)
         val validHash = hash == newState.blockHash
+
+        // check previous block hash
+        val validPrevBlockHash = reverse(blockHeader.prevBlockHash) == prevState.blockHash
+
         val target = bitsToTarget(blockHeader.bits)
         val blockHashSatisfiesTarget = hash < target
+
         val height = getBlockHeightFromCoinbaseTx(coinbaseTx)
         val validBlockHeight = height == newState.blockHeight
 
@@ -260,10 +273,11 @@ object BitcoinValidator {
         val targetNumber = byteStringToInteger(true, target)
         val two_256 = BigInt("115792089237316195423570985008687907853269984665640564039457584007913129639936")
         val chainwork = two_256 / (targetNumber + 1)
-        val totalChainwork = prevState.totalChainwork + chainwork
+        val totalChainwork = getChainwork(target) + prevState.totalChainwork
         val validChainwork = totalChainwork == newState.totalChainwork
 
         val isValid = validHash.?
+            && validPrevBlockHash.?
             && validSignature.?
             && validCoinbaseInclusionProof.?
             && blockHashSatisfiesTarget.?
