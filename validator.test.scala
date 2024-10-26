@@ -228,7 +228,11 @@ class ValidatorTests extends munit.ScalaCheckSuite {
         println(s"Redeemer size: ${redeemer.toCbor.length}")
 
         val (scriptContext, tx) = makeScriptContextAndTransaction(
-          State(865494, blockHash = hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c").toData,
+          State(
+            865494,
+            blockHash = hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c",
+            totalChainwork = BigInt("94b1874d991d4e1fc51005a", 16)
+          ).toData,
           redeemer,
           Seq.empty
         )
@@ -338,7 +342,6 @@ class ValidatorTests extends munit.ScalaCheckSuite {
         )
         (scriptContext, tx)
 
-
     test("block header Merkle tree size") {
         def log2(n: Int) = {
             if (n <= 0) throw new IllegalArgumentException
@@ -346,7 +349,7 @@ class ValidatorTests extends munit.ScalaCheckSuite {
         }
         val numHashes = log2(1000000)
         println(numHashes)
-        println(s"Size: ${numHashes*32}")
+        println(s"Size: ${numHashes * 32}")
     }
 
 }

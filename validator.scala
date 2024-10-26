@@ -14,6 +14,7 @@ import scalus.builtin.FromDataInstances.given
 import scalus.builtin.ToData
 import scalus.builtin.ToDataInstances.given
 import scalus.builtin.given
+import scalus.ledger.api.v2.OutputDatum
 import scalus.ledger.api.v3.*
 import scalus.ledger.api.v3.FromDataInstances.given
 import scalus.prelude.?
@@ -59,7 +60,7 @@ object BitcoinValidator {
         inline def merkleRoot: ByteString =
             sliceByteString(36, 32, bh.bytes)
 
-    case class State(blockHeight: BigInt, blockHash: ByteString)
+    case class State(blockHeight: BigInt, blockHash: ByteString, totalChainwork: BigInt)
 
     enum Action:
         case NewTip(
@@ -235,7 +236,8 @@ object BitcoinValidator {
         newOffset + scriptLength
 
     def verifyNewTip(
-        state: State,
+        prevState: State,
+        newState: State,
         blockHeader: BlockHeader,
         ownerPubKey: ByteString,
         signature: ByteString,
@@ -243,22 +245,31 @@ object BitcoinValidator {
         inclusionProof: builtin.List[Data]
     ): Unit =
         val hash = blockHeaderHash(blockHeader)
-        val validHash = hash == state.blockHash
+        val validHash = hash == newState.blockHash
         val target = bitsToTarget(blockHeader.bits)
         val blockHashSatisfiesTarget = hash < target
         val height = getBlockHeightFromCoinbaseTx(coinbaseTx)
-        val validBlockHeight = height == state.blockHeight
+        val validBlockHeight = height == newState.blockHeight
 
         val validSignature = verifyEd25519Signature(ownerPubKey, hash, signature)
         val coinbaseTxHash = getCoinbaseTxHash(coinbaseTx)
         val merkleRoot = merkleRootFromInclusionProof(inclusionProof, coinbaseTxHash, 0)
         val validCoinbaseInclusionProof = merkleRoot == blockHeader.merkleRoot
 
+        // check chainwork
+        val targetNumber = byteStringToInteger(true, target)
+        val two_256 = BigInt("115792089237316195423570985008687907853269984665640564039457584007913129639936")
+        val chainwork = two_256 / (targetNumber + 1)
+        val totalChainwork = prevState.totalChainwork + chainwork
+        val validChainwork = totalChainwork == newState.totalChainwork
+
         val isValid = validHash.?
             && validSignature.?
             && validCoinbaseInclusionProof.?
             && blockHashSatisfiesTarget.?
             && validBlockHeight.?
+            && validChainwork.?
+
         if isValid then () else throw new Exception("Block is not valid")
 
     def verifyFraudProof(state: State, blockHeader: BlockHeader): Unit =
@@ -267,12 +278,20 @@ object BitcoinValidator {
     def validator(ctx: Data): Unit = {
         val action = ctx.field[ScriptContext](_.redeemer).to[Action]
         val scriptInfo = ctx.field[ScriptContext](_.scriptInfo).to[SpendingScriptInfo]
+        val inputs = ctx.field[ScriptContext](_.txInfo.inputs).to[prelude.List[TxInInfo]]
+        val prevState =
+            val input = prelude.List.findOrFail(inputs): (input: TxInInfo) =>
+                input.outRef.id.hash == scriptInfo.txOutRef.id.hash && input.outRef.idx == scriptInfo.txOutRef.idx
+            input.resolved.datum match
+                case OutputDatum.OutputDatum(datum) => datum.to[State]
+                case _                              => throw new Exception("No datum")
         val state = scriptInfo.datum match
             case Maybe.Just(state) => state.to[State]
             case _                 => throw new Exception("No datum")
         action match
             case Action.NewTip(blockHeader, ownerPubKey, signature, coinbaseTx, inclusionProof) =>
                 verifyNewTip(
+                  prevState,
                   state,
                   blockHeader,
                   ownerPubKey,
