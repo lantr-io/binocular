@@ -29,6 +29,7 @@ import scalus.bloxbean.Interop.getScriptInfoV3
 import scalus.bloxbean.Interop.getTxInfoV3
 import scalus.bloxbean.Interop.toScalusData
 import scalus.bloxbean.SlotConfig
+import scalus.builtin.given
 import scalus.builtin.Builtins
 import scalus.builtin.ByteString
 import scalus.builtin.ByteString.hex
@@ -73,6 +74,7 @@ case class BitcoinBlock(
 case class CekResult(budget: ExBudget, logs: Seq[String])
 
 class ValidatorTests extends munit.ScalaCheckSuite {
+    private given PlutusVM = PlutusVM.makePlutusV3VM()
 
     // test(s"Bitcoin validator size is ${bitcoinProgram.doubleCborEncoded.length}") {
     // println(compiledBitcoinValidator.showHighlighted)
@@ -278,10 +280,10 @@ class ValidatorTests extends munit.ScalaCheckSuite {
         )
         println(s"Tx size: ${tx.serialize().length}")
         import scalus.uplc.TermDSL.{*, given}
-        val applied = bitcoinValidator $ scriptContext.toData
+        val applied = bitcoinProgram $ scriptContext.toData
         println(s"Validator size: ${bitcoinProgram.flatEncoded.length}")
         BitcoinValidator.validator(scriptContext.toData)
-        applied.evalDebug match
+        applied.evaluateDebug match
             case r: Result.Success => println(r)
             case r: Result.Failure => fail(r.toString)
     }
