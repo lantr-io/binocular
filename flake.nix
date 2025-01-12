@@ -24,6 +24,9 @@
             scala-cli
             scalafmt
             nixpkgs-fmt
+            nodejs
+            pandoc
+            texlive.combined.scheme-medium
           ];
         };
       })
