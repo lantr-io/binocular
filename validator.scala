@@ -53,7 +53,7 @@ object ListOps {
         else
             list match
                 case List.Nil              => List.Nil
-                case List.Cons(head, tail) => new List.Cons(head, take(tail)(n - 1))
+                case List.Cons(head, tail) => List.Cons(head, take(tail)(n - 1))
 }
 
 import onchain.*
@@ -312,10 +312,10 @@ object BitcoinValidator {
     def insertReverseSorted(value: BigInt, sortedValues: List[BigInt]): List[BigInt] =
         sortedValues match
             case List.Nil =>
-                new List.Cons(value, List.Nil)
+                List.Cons(value, List.Nil)
             case List.Cons(head, tail) =>
-                if value >= head then new List.Cons(value, sortedValues)
-                else new List.Cons(head, insertReverseSorted(value, tail))
+                if value >= head then List.Cons(value, sortedValues)
+                else List.Cons(head, insertReverseSorted(value, tail))
 
     def getNextWorkRequired(nHeight: BigInt, bits: BigInt, blockTime: BigInt, nFirstBlockTime: BigInt) = {
         // Only change once per difficulty adjustment interval
@@ -385,7 +385,7 @@ object BitcoinValidator {
             && validVersion.?
 
         if validBlockHeader then
-            new ChainState(
+            ChainState(
               blockHeight = prevState.blockHeight + 1,
               blockHash = hash,
               currentDifficulty = nextDifficulty,
@@ -456,7 +456,9 @@ object BitcoinValidator {
 }
 
 val compiledBitcoinValidator =
-    Compiler.compile(BitcoinValidator.validator) |> RemoveRecursivity.apply
+    val sir = Compiler.compile(BitcoinValidator.validator) |> RemoveRecursivity.apply
+    println(sir.showHighlighted)
+    sir
 val bitcoinValidator: Term =
     val uplc = compiledBitcoinValidator.toUplcOptimized(generateErrorTraces = false)
     println(uplc.showHighlighted)
