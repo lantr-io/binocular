@@ -282,7 +282,7 @@ class ValidatorTests extends munit.ScalaCheckSuite {
         import scalus.uplc.TermDSL.{*, given}
         val applied = bitcoinProgram $ scriptContext.toData
         println(s"Validator size: ${bitcoinProgram.flatEncoded.length}")
-        BitcoinValidator.validator(scriptContext.toData)
+        BitcoinValidator.validate(scriptContext.toData)
         applied.evaluateDebug match
             case r: Result.Success => println(r)
             case r: Result.Failure => fail(r.toString)

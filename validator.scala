@@ -1,30 +1,16 @@
 package binocular
 
 import scalus.*
-import scalus.builtin
-import scalus.builtin.Builtins
 import scalus.builtin.Builtins.*
-import scalus.builtin.ByteString
-import scalus.builtin.Data
-import scalus.builtin.Data.FromData
-import scalus.builtin.Data.ToData
-import scalus.builtin.FromData
 import scalus.builtin.ByteString.given
-import scalus.builtin.Data.toData
+import scalus.builtin.Data.{FromData, ToData, toData}
 import scalus.builtin.FromDataInstances.given
-import scalus.builtin.ToData
 import scalus.builtin.ToDataInstances.given
-import scalus.builtin.given
+import scalus.builtin.{Builtins, ByteString, Data, FromData, ToData}
 import scalus.ledger.api.v2.OutputDatum
 import scalus.ledger.api.v3.*
-import scalus.ledger.api.v3.FromDataInstances.given
-import scalus.ledger.api.v1.FromDataInstances.given_FromData_IntervalBoundType
-import scalus.prelude.?
-import scalus.prelude.Maybe
-import scalus.prelude.List
-import scalus.sir.RemoveRecursivity
+import scalus.prelude.*
 import scalus.uplc.Program
-import scalus.uplc.Term
 import scalus.utils.Utils
 
 extension (a: Array[Byte]) def toHex: String = Utils.bytesToHex(a)
@@ -40,14 +26,11 @@ object onchain {
             Builtins.lessThanEqualsByteString(that, bs)
         inline def slice(from: BigInt, len: BigInt): ByteString =
             Builtins.sliceByteString(from, len, bs)
-        inline def index(index: BigInt): BigInt = Builtins.indexByteString(bs, index)
+        inline def at(index: BigInt): BigInt = Builtins.indexByteString(bs, index)
 }
 
 @Compile
 object ListOps {
-    def size[A](list: List[A]): BigInt =
-        List.foldLeft(list, BigInt(0))((acc, _) => acc + 1)
-
     def take[A](list: List[A])(n: BigInt): List[A] =
         if n <= BigInt(0) then List.Nil
         else
@@ -56,15 +39,15 @@ object ListOps {
                 case List.Cons(head, tail) => List.Cons(head, take(tail)(n - 1))
 }
 
-import onchain.*
+import binocular.onchain.*
 
 @Compile
-object BitcoinValidator {
+object BitcoinValidator extends Validator {
 
-    val UnixEpoch: BigInt = BigInt(1231006505)
-    val TargetBlockTime: BigInt = BigInt(600)
-    val DifficultyAdjustmentInterval: BigInt = BigInt(2016)
-    val MaxFutureBlockTime: BigInt = BigInt(7200) // 2 hours in the future in seconds
+    val UnixEpoch: BigInt = 1231006505
+    val TargetBlockTime: BigInt = 600
+    val DifficultyAdjustmentInterval: BigInt = 2016
+    val MaxFutureBlockTime: BigInt = 7200 // 2 hours in the future in seconds
     val MedianTimeSpan: BigInt = 11
     val PowLimit = byteStringToInteger(true, hex"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
 
@@ -78,7 +61,7 @@ object BitcoinValidator {
 
     extension (bh: BlockHeader)
         inline def version: BigInt =
-            byteStringToInteger(false, sliceByteString(0, 4, bh.bytes))
+            byteStringToInteger(false, bh.bytes.slice(0, 4))
 
         inline def prevBlockHash: ByteString =
             sliceByteString(4, 32, bh.bytes)
@@ -164,7 +147,7 @@ object BitcoinValidator {
         else pow(n, e)
 
     def bitsToBigInt(bits: ByteString): BigInt =
-        val exponent = bits.index(3)
+        val exponent = bits.at(3)
         val coefficient = byteStringToInteger(false, bits.slice(0, 3))
         if coefficient > BigInt(0x007fffff) then throw new RuntimeException("Negative bits")
         else if exponent < BigInt(3) then coefficient / pow(256, BigInt(3) - exponent)
@@ -188,12 +171,8 @@ object BitcoinValidator {
                 timestamps !! index
 
     def verifyTimestamp(timestamp: BigInt, medianTimePast: BigInt, currentTime: BigInt): Unit =
-        if timestamp > currentTime + MaxFutureBlockTime then
-            throw new RuntimeException("Block timestamp too far in the future")
-        else if timestamp <= medianTimePast then
-            throw new RuntimeException(
-              "Block timestamp must be greater than median time of past 11 blocks"
-            )
+        require(timestamp <= currentTime + MaxFutureBlockTime, "Block timestamp too far in the future")
+        require(timestamp > medianTimePast, "Block timestamp must be greater than median time of past 11 blocks")
 
     def merkleRootFromInclusionProof(
         merkleProof: builtin.List[Data],
@@ -213,7 +192,7 @@ object BitcoinValidator {
         loop(index, hash, merkleProof)
 
     def readVarInt(input: ByteString, offset: BigInt): (BigInt, BigInt) =
-        val firstByte = indexByteString(input, offset)
+        val firstByte = input.at(offset)
         if firstByte < BigInt(0xfd) then (firstByte, offset + 1)
         else if firstByte == BigInt(0xfd) then
             (byteStringToInteger(false, sliceByteString(offset + 1, 2, input)), offset + 3)
@@ -236,21 +215,18 @@ object BitcoinValidator {
         scriptSig
 
     def parseBlockHeightFromScriptSig(scriptSig: ByteString): BigInt =
-        val len = indexByteString(scriptSig, 0)
-        if len < 1 || len > 8 then throw new Exception("Invalid block height length")
-        val height = byteStringToInteger(false, sliceByteString(1, len, scriptSig))
+        val len = scriptSig.at(0)
+        require(1 <= len && len <= 8, "Invalid block height length")
+        val height = byteStringToInteger(false, scriptSig.slice(1, len))
         height
 
     def getBlockHeightFromCoinbaseTx(tx: CoinbaseTx): BigInt =
         val (scriptLength, newOffset) = readVarInt(tx.inputScriptSigAndSequence, 0)
         // read first byte of scriptSig
         // this MUST be OP_PUSHBYTES_len
-        val len = indexByteString(tx.inputScriptSigAndSequence, newOffset)
-        if len < 1 || len > 8 then throw new Exception("Invalid block height length")
-        val height = byteStringToInteger(
-          false,
-          sliceByteString(newOffset + 1, len, tx.inputScriptSigAndSequence)
-        )
+        val len = tx.inputScriptSigAndSequence.at(newOffset)
+        require(1 <= len && len <= 8, "Invalid block height length")
+        val height = byteStringToInteger(false, tx.inputScriptSigAndSequence.slice(newOffset + 1, len))
         height
 
     def getTxHash(rawTx: ByteString): ByteString =
@@ -258,7 +234,7 @@ object BitcoinValidator {
         sha2_256(sha2_256(serializedTx))
 
     def isWitnessTransaction(rawTx: ByteString): Boolean =
-        indexByteString(rawTx, 4) == BigInt(0) && indexByteString(rawTx, 5) == BigInt(1)
+        rawTx.at(4) == BigInt(0) && rawTx.at(5) == BigInt(1)
 
     def stripWitnessData(rawTx: ByteString): ByteString =
         if isWitnessTransaction(rawTx) then
@@ -362,7 +338,7 @@ object BitcoinValidator {
         val validDifficulty = target == nextDifficulty
 
         // Check blockTime against median of last 11 blocks
-        val numTimestamps = ListOps.size(prevState.recentTimestamps)
+        val numTimestamps = prevState.recentTimestamps.size
         val medianTimePast = getMedianTimePast(prevState.recentTimestamps, numTimestamps)
         verifyTimestamp(blockTime, medianTimePast, currentTime)
 
@@ -377,23 +353,22 @@ object BitcoinValidator {
 
         // Reject blocks with outdated version
 
-        val validVersion = blockHeader.version >= BigInt(4)
+        val validVersion = blockHeader.version >= 4
 
         val validBlockHeader = validPrevBlockHash.?
             && validProofOfWork.?
             && validDifficulty.?
             && validVersion.?
 
-        if validBlockHeader then
-            ChainState(
-              blockHeight = prevState.blockHeight + 1,
-              blockHash = hash,
-              currentDifficulty = nextDifficulty,
-              cumulativeDifficulty = newCumulativeDifficulty,
-              recentTimestamps = newTimestamps,
-              previousDifficultyAdjustmentTimestamp = newDifficultyAdjustmentTimestamp
-            )
-        else throw new Exception("Block header is not valid")
+        require(validBlockHeader, "Block header is not valid")
+        ChainState(
+          blockHeight = prevState.blockHeight + 1,
+          blockHash = hash,
+          currentDifficulty = nextDifficulty,
+          cumulativeDifficulty = newCumulativeDifficulty,
+          recentTimestamps = newTimestamps,
+          previousDifficultyAdjustmentTimestamp = newDifficultyAdjustmentTimestamp
+        )
 
     def verifyNewTip(
         intervalStartInSeconds: BigInt,
@@ -412,30 +387,25 @@ object BitcoinValidator {
 
         val isValid = validNewState.? && validSignature.?
 
-        if isValid then () else throw new Exception("Block is not valid")
+        require(isValid, "Block is not valid")
 
     def verifyFraudProof(state: ChainState, blockHeader: BlockHeader): Unit =
         ()
 
-    def validator(ctx: Data): Unit = {
-        val action = ctx.field[ScriptContext](_.redeemer).to[Action]
-        val scriptInfo = ctx.field[ScriptContext](_.scriptInfo).to[SpendingScriptInfo]
-        val inputs = ctx.field[ScriptContext](_.txInfo.inputs).to[List[TxInInfo]]
-        val intervalStartInSeconds =
-            ctx.field[ScriptContext](_.txInfo.validRange.from.boundType).to[IntervalBoundType] match
-                case IntervalBoundType.Finite(time) => time / 1000
-                case _                              => throw new Exception("Must have finite interval start")
+    override def spend(datum: Option[Datum], redeemer: Datum, tx: TxInfo, outRef: TxOutRef): Unit = {
+        val action = redeemer.to[Action]
+        val intervalStartInSeconds = tx.validRange.from.boundType match
+            case IntervalBoundType.Finite(time) => time / 1000
+            case _                              => fail("Must have finite interval start")
         val prevState =
-            val input = List.findOrFail(inputs): (input: TxInInfo) =>
-                input.outRef.id.hash == scriptInfo.txOutRef.id.hash && input.outRef.idx == scriptInfo.txOutRef.idx
+            val input = tx.inputs.find { _.outRef === outRef }.getOrFail("Input not found")
+
             input.resolved.datum match
                 case OutputDatum.OutputDatum(datum) => datum.to[ChainState]
-                case _                              => throw new Exception("No datum")
-        val state = scriptInfo.datum match
-            case Maybe.Just(state) => state
-            case _                 => throw new Exception("No datum")
+                case _                              => fail("No datum")
         action match
             case Action.NewTip(blockHeader, ownerPubKey, signature) =>
+                val state = datum.getOrFail("No datum")
                 verifyNewTip(
                   intervalStartInSeconds,
                   prevState,
@@ -451,16 +421,12 @@ object BitcoinValidator {
         val len = lengthOfByteString(bs)
         def loop(idx: BigInt, acc: ByteString): ByteString =
             if idx == len then acc
-            else loop(idx + 1, consByteString(indexByteString(bs, idx), acc))
+            else loop(idx + 1, consByteString(bs.at(idx), acc))
         loop(0, ByteString.empty)
 }
 
-val compiledBitcoinValidator =
-    val sir = Compiler.compile(BitcoinValidator.validator) |> RemoveRecursivity.apply
-    println(sir.showHighlighted)
-    sir
-val bitcoinValidator: Term =
-    val uplc = compiledBitcoinValidator.toUplcOptimized(generateErrorTraces = false)
-    println(uplc.showHighlighted)
-    uplc
-val bitcoinProgram: Program = Program((1, 1, 0), bitcoinValidator)
+val bitcoinProgram: Program =
+    val sir = Compiler.compile(BitcoinValidator.validate)
+    //    println(sir.showHighlighted)
+    sir.toUplcOptimized(generateErrorTraces = false).plutusV3
+    //    println(uplc.showHighlighted)

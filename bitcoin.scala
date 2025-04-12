@@ -19,7 +19,7 @@ import scala.concurrent.Future
 object Bitcoin {
     import onchain.*
     def isWitnessTransaction(rawTx: ByteString): Boolean =
-        rawTx.index(4) == BigInt(0) && indexByteString(rawTx, 5) == BigInt(1)
+        rawTx.at(4) == BigInt(0) && indexByteString(rawTx, 5) == BigInt(1)
 
     def makeCoinbaseTxFromByteString(rawTx: ByteString): CoinbaseTx = {
         val version = rawTx.slice(0, 4)
