@@ -201,8 +201,6 @@ class ValidatorTests extends munit.ScalaCheckSuite {
     }
 
     test("Evaluate") {
-        import scalus.ledger.api.v3.ToDataInstances.given
-        import scalus.builtin.ToDataInstances.given
         val block = read[BitcoinBlock](
           Files.readString(
             Path.of("00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c.json")

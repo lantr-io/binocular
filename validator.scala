@@ -4,8 +4,6 @@ import scalus.*
 import scalus.builtin.Builtins.*
 import scalus.builtin.ByteString.given
 import scalus.builtin.Data.{FromData, ToData, toData}
-import scalus.builtin.FromDataInstances.given
-import scalus.builtin.ToDataInstances.given
 import scalus.builtin.{Builtins, ByteString, Data, FromData, ToData}
 import scalus.ledger.api.v2.OutputDatum
 import scalus.ledger.api.v3.*
@@ -94,15 +92,14 @@ object BitcoinValidator extends Validator {
             blockHeader: BlockHeader
         )
 
-    given FromData[CoinbaseTx] = FromData.deriveCaseClass[CoinbaseTx]
-    given ToData[CoinbaseTx] = ToData.deriveCaseClass[CoinbaseTx](0)
-    given FromData[BlockHeader] = FromData.deriveCaseClass[BlockHeader]
-    given ToData[BlockHeader] = ToData.deriveCaseClass[BlockHeader](0)
-    given FromData[ChainState] = FromData.deriveCaseClass[ChainState]
-    given ToData[ChainState] = ToData.deriveCaseClass[ChainState](0)
-    given FromData[Data] = (data: Data) => data
-    given FromData[Action] = FromData.deriveEnum[Action]
-    given ToData[Action] = ToData.deriveEnum[Action]
+    given FromData[CoinbaseTx] = FromData.derived
+    given ToData[CoinbaseTx] = ToData.derived
+    given FromData[BlockHeader] = FromData.derived
+    given ToData[BlockHeader] = ToData.derived
+    given FromData[ChainState] = FromData.derived
+    given ToData[ChainState] = ToData.derived
+    given FromData[Action] = FromData.derived
+    given ToData[Action] = ToData.derived
 
     /// Bitcoin block header serialization
     //    def serializeBlockHeader(blockHeader: BlockHeader): ByteString =
