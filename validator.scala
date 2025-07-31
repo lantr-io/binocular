@@ -2,42 +2,15 @@ package binocular
 
 import scalus.*
 import scalus.builtin.Builtins.*
-import scalus.builtin.ByteString.given
+import scalus.builtin.ByteString.*
 import scalus.builtin.Data.{FromData, ToData, toData}
 import scalus.builtin.{Builtins, ByteString, Data, FromData, ToData}
 import scalus.ledger.api.v2.OutputDatum
 import scalus.ledger.api.v3.*
 import scalus.prelude.*
 import scalus.uplc.Program
-import scalus.utils.Utils
 
-extension (a: Array[Byte]) def toHex: String = Utils.bytesToHex(a)
 extension (a: ByteString) def reverse: ByteString = ByteString.fromArray(a.bytes.reverse)
-
-object onchain {
-    extension (bs: ByteString)
-        inline infix def <(that: ByteString): Boolean = Builtins.lessThanByteString(bs, that)
-        inline infix def <=(that: ByteString): Boolean =
-            Builtins.lessThanEqualsByteString(bs, that)
-        inline infix def >(that: ByteString): Boolean = Builtins.lessThanByteString(that, bs)
-        inline infix def >=(that: ByteString): Boolean =
-            Builtins.lessThanEqualsByteString(that, bs)
-        inline def slice(from: BigInt, len: BigInt): ByteString =
-            Builtins.sliceByteString(from, len, bs)
-        inline def at(index: BigInt): BigInt = Builtins.indexByteString(bs, index)
-}
-
-@Compile
-object ListOps {
-    def take[A](list: List[A])(n: BigInt): List[A] =
-        if n <= BigInt(0) then List.Nil
-        else
-            list match
-                case List.Nil              => List.Nil
-                case List.Cons(head, tail) => List.Cons(head, take(tail)(n - 1))
-}
-
-import binocular.onchain.*
 
 @Compile
 object BitcoinValidator extends Validator {
@@ -346,7 +319,7 @@ object BitcoinValidator extends Validator {
 
         // Insert new blockTime maintaining reverse sort order
         val withNewTimestamp = insertReverseSorted(blockTime, prevState.recentTimestamps)
-        val newTimestamps = ListOps.take(withNewTimestamp)(MedianTimeSpan)
+        val newTimestamps = withNewTimestamp.take(MedianTimeSpan)
 
         // Reject blocks with outdated version
 
@@ -375,16 +348,15 @@ object BitcoinValidator extends Validator {
         ownerPubKey: ByteString,
         signature: ByteString
     ): Unit =
-
         val expectedNewState = updateTip(prevState, blockHeader, intervalStartInSeconds)
         val validNewState = newState == expectedNewState.toData
+
+        require(validNewState, "New state does not match expected state")
 
         val validSignature =
             verifyEd25519Signature(ownerPubKey, expectedNewState.blockHash, signature)
 
-        val isValid = validNewState.? && validSignature.?
-
-        require(isValid, "Block is not valid")
+        require(validSignature, "Signature is not valid")
 
     def verifyFraudProof(state: ChainState, blockHeader: BlockHeader): Unit =
         ()

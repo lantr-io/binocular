@@ -17,7 +17,6 @@ import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 
 object Bitcoin {
-    import onchain.*
     def isWitnessTransaction(rawTx: ByteString): Boolean =
         rawTx.at(4) == BigInt(0) && indexByteString(rawTx, 5) == BigInt(1)
 
