@@ -1,6 +1,7 @@
 package binocular
 
 import scalus.*
+import scalus.Compiler.TargetLoweringBackend
 import scalus.builtin.Builtins.*
 import scalus.builtin.ByteString.*
 import scalus.builtin.Data.{FromData, ToData, toData}
@@ -399,8 +400,8 @@ val bitcoinProgram: Program =
     val sir = Compiler.compile(BitcoinValidator.validate)
     //    println(sir.showHighlighted)
     sir.toUplcOptimized(generateErrorTraces = false).plutusV3
-//    sir.toUplcOptimized(using
-//      Compiler.defaultOptions.copy(targetLoweringBackend = TargetLoweringBackend.SirToUplcV3Lowering)
-//    )(generateErrorTraces = false)
-//        .plutusV3
+    sir.toUplcOptimized(using
+      Compiler.defaultOptions.copy(targetLoweringBackend = TargetLoweringBackend.SirToUplcV3Lowering)
+    )(generateErrorTraces = false)
+        .plutusV3
     //    println(uplc.showHighlighted)
