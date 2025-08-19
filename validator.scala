@@ -35,17 +35,13 @@ object BitcoinValidator extends Validator {
         inline def version: BigInt =
             byteStringToInteger(false, bh.bytes.slice(0, 4))
 
-        inline def prevBlockHash: ByteString =
-            sliceByteString(4, 32, bh.bytes)
+        inline def prevBlockHash: ByteString = bh.bytes.slice(4, 32)
 
-        inline def bits: ByteString =
-            sliceByteString(72, 4, bh.bytes)
+        inline def bits: ByteString = bh.bytes.slice(72, 4)
 
-        inline def merkleRoot: ByteString =
-            sliceByteString(36, 32, bh.bytes)
+        inline def merkleRoot: ByteString = bh.bytes.slice(36, 32)
 
-        inline def timestamp: BigInt =
-            byteStringToInteger(false, sliceByteString(68, 4, bh.bytes))
+        inline def timestamp: BigInt = byteStringToInteger(false, bh.bytes.slice(68, 4))
 
     case class ChainState(
         blockHeight: BigInt,
@@ -114,22 +110,22 @@ object BitcoinValidator extends Validator {
             if e == BigInt(0) then 1
             else if e % 2 == BigInt(0) then pow(n * n, e / 2)
             else n * pow(n, e - 1)
-        if e < BigInt(0) then throw new RuntimeException("Negative exponent")
+        if e < BigInt(0) then fail("Negative exponent")
         else pow(n, e)
 
     def bitsToBigInt(bits: ByteString): BigInt =
         val exponent = bits.at(3)
         val coefficient = byteStringToInteger(false, bits.slice(0, 3))
-        if coefficient > BigInt(0x007fffff) then throw new RuntimeException("Negative bits")
+        if coefficient > BigInt(0x007fffff) then fail("Negative bits")
         else if exponent < BigInt(3) then coefficient / pow(256, BigInt(3) - exponent)
         // check overflow
         else if coefficient != BigInt(0) && ((exponent > 34) ||
                 (coefficient > 0xff && exponent > 33) ||
                 (coefficient > 0xffff && exponent > 32))
-        then throw new RuntimeException("Bits overflow")
+        then fail("Bits overflow")
         else
             val result = coefficient * pow(256, exponent - 3)
-            if result > PowLimit then throw new RuntimeException("Bits over PowLimit")
+            if result > PowLimit then fail("Bits over PowLimit")
             else result
 
     // Get median from reverse-sorted list (newest first)
@@ -156,8 +152,8 @@ object BitcoinValidator extends Validator {
                 val sibling = siblings.head.toByteString
                 val nextHash =
                     if index % 2 == BigInt(0)
-                    then sha2_256(sha2_256(appendByteString(curHash, sibling)))
-                    else sha2_256(sha2_256(appendByteString(sibling, curHash)))
+                    then sha2_256(sha2_256(curHash ++ sibling))
+                    else sha2_256(sha2_256(sibling ++ curHash))
                 loop(index / 2, nextHash, siblings.tail)
 
         loop(index, hash, merkleProof)
@@ -165,11 +161,9 @@ object BitcoinValidator extends Validator {
     def readVarInt(input: ByteString, offset: BigInt): (BigInt, BigInt) =
         val firstByte = input.at(offset)
         if firstByte < BigInt(0xfd) then (firstByte, offset + 1)
-        else if firstByte == BigInt(0xfd) then
-            (byteStringToInteger(false, sliceByteString(offset + 1, 2, input)), offset + 3)
-        else if firstByte == BigInt(0xfe) then
-            (byteStringToInteger(false, sliceByteString(offset + 1, 4, input)), offset + 5)
-        else (byteStringToInteger(false, sliceByteString(offset + 1, 8, input)), offset + 9)
+        else if firstByte == BigInt(0xfd) then (byteStringToInteger(false, input.slice(offset + 1, 2)), offset + 3)
+        else if firstByte == BigInt(0xfe) then (byteStringToInteger(false, input.slice(offset + 1, 4)), offset + 5)
+        else (byteStringToInteger(false, input.slice(offset + 1, 8)), offset + 9)
 
     def parseCoinbaseTxScriptSig(coinbaseTx: ByteString): ByteString =
         // Skip version
@@ -182,7 +176,7 @@ object BitcoinValidator extends Validator {
         // + 32 + 4
         val offset = BigInt(43)
         val (scriptLength, newOffset) = readVarInt(coinbaseTx, offset)
-        val scriptSig = sliceByteString(newOffset, scriptLength, coinbaseTx)
+        val scriptSig = coinbaseTx.slice(newOffset, scriptLength)
         scriptSig
 
     def parseBlockHeightFromScriptSig(scriptSig: ByteString): BigInt =
@@ -192,12 +186,13 @@ object BitcoinValidator extends Validator {
         height
 
     def getBlockHeightFromCoinbaseTx(tx: CoinbaseTx): BigInt =
-        val (scriptLength, newOffset) = readVarInt(tx.inputScriptSigAndSequence, 0)
+        val scriptSigAndSequence = tx.inputScriptSigAndSequence
+        val (scriptLength, newOffset) = readVarInt(scriptSigAndSequence, 0)
         // read first byte of scriptSig
         // this MUST be OP_PUSHBYTES_len
-        val len = tx.inputScriptSigAndSequence.at(newOffset)
+        val len = scriptSigAndSequence.at(newOffset)
         require(1 <= len && len <= 8, "Invalid block height length")
-        val height = byteStringToInteger(false, tx.inputScriptSigAndSequence.slice(newOffset + 1, len))
+        val height = byteStringToInteger(false, scriptSigAndSequence.slice(newOffset + 1, len))
         height
 
     def getTxHash(rawTx: ByteString): ByteString =
@@ -210,25 +205,22 @@ object BitcoinValidator extends Validator {
     def stripWitnessData(rawTx: ByteString): ByteString =
         if isWitnessTransaction(rawTx) then
             // Format: [nVersion][marker][flag][txins][txouts][witness][nLockTime]
-            val version = sliceByteString(0, 4, rawTx)
+            val version = rawTx.slice(0, 4)
             val txInsStartIndex = BigInt(6) // Skip marker and flag bytes
             val txOutsOffset = skipTxIns(rawTx, txInsStartIndex)
             val outsEnd = skipTxOuts(rawTx, txOutsOffset)
-            val txIns = sliceByteString(txInsStartIndex, txOutsOffset - txInsStartIndex, rawTx)
-            val txOuts = sliceByteString(txOutsOffset, outsEnd - txOutsOffset, rawTx)
+            val txIns = rawTx.slice(txInsStartIndex, txOutsOffset - txInsStartIndex)
+            val txOuts = rawTx.slice(txOutsOffset, outsEnd - txOutsOffset)
             val lockTimeOsset = outsEnd + 1 + 1 + 32 // Skip witness data
-            val lockTime = sliceByteString(lockTimeOsset, 4, rawTx)
-            appendByteString(version, appendByteString(txIns, appendByteString(txOuts, lockTime)))
+            val lockTime = rawTx.slice(lockTimeOsset, 4)
+            version ++ txIns ++ txOuts ++ lockTime
         else rawTx
 
     def getCoinbaseTxHash(coinbaseTx: CoinbaseTx): ByteString =
-        val serializedTx = appendByteString(
-          coinbaseTx.version,
-          appendByteString(
-            hex"010000000000000000000000000000000000000000000000000000000000000000ffffffff",
-            appendByteString(coinbaseTx.inputScriptSigAndSequence, coinbaseTx.txOutsAndLockTime)
-          )
-        )
+        val serializedTx = coinbaseTx.version
+            ++ hex"010000000000000000000000000000000000000000000000000000000000000000ffffffff"
+            ++ coinbaseTx.inputScriptSigAndSequence
+            ++ coinbaseTx.txOutsAndLockTime
         sha2_256(sha2_256(serializedTx))
 
     def skipTxIns(rawTx: ByteString, txInsStartIndex: BigInt): BigInt =
