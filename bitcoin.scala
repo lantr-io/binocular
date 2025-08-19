@@ -74,7 +74,7 @@ class HeaderSyncWithRpc(bitcoindUri: URI, bitcoindUser: String, bitcoindPassword
       authCredentials = BitcoindAuthCredentials.PasswordBased(bitcoindUser, bitcoindPassword)
     )
 
-    private val client = BitcoindV27RpcClient(instance)
+    private val client = new BitcoindV27RpcClient(instance)(using system, null)
 
     private def convertHeader(btcHeader: BlockHeader): BitcoinValidator.BlockHeader =
         BitcoinValidator.BlockHeader(ByteString.fromArray(btcHeader.bytes.toArray))

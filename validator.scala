@@ -20,7 +20,8 @@ object BitcoinValidator extends Validator {
     val DifficultyAdjustmentInterval: BigInt = 2016
     val MaxFutureBlockTime: BigInt = 7200 // 2 hours in the future in seconds
     val MedianTimeSpan: BigInt = 11
-    val PowLimit = byteStringToInteger(true, hex"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+    val PowLimit: BigInt =
+        byteStringToInteger(true, hex"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
 
     case class CoinbaseTx(
         version: ByteString,
@@ -257,13 +258,12 @@ object BitcoinValidator extends Validator {
     // Insert a timestamp into a sorted list while maintaining order
     def insertReverseSorted(value: BigInt, sortedValues: List[BigInt]): List[BigInt] =
         sortedValues match
-            case List.Nil =>
-                List.Cons(value, List.Nil)
+            case List.Nil => List.single(value)
             case List.Cons(head, tail) =>
                 if value >= head then List.Cons(value, sortedValues)
                 else List.Cons(head, insertReverseSorted(value, tail))
 
-    def getNextWorkRequired(nHeight: BigInt, bits: BigInt, blockTime: BigInt, nFirstBlockTime: BigInt) = {
+    def getNextWorkRequired(nHeight: BigInt, bits: BigInt, blockTime: BigInt, nFirstBlockTime: BigInt): BigInt = {
         // Only change once per difficulty adjustment interval
         if nHeight + 1 % DifficultyAdjustmentInterval == BigInt(0) then
             calculateNextWorkRequired(bits, blockTime, nFirstBlockTime)
@@ -296,6 +296,7 @@ object BitcoinValidator extends Validator {
         val validPrevBlockHash = blockHeader.prevBlockHash == prevState.blockHash
 
         // check proof of work
+        // FIXME: check if bits are valid
         val target = bitsToBigInt(blockHeader.bits)
         val validProofOfWork = hashBigInt <= target
 
@@ -398,4 +399,8 @@ val bitcoinProgram: Program =
     val sir = Compiler.compile(BitcoinValidator.validate)
     //    println(sir.showHighlighted)
     sir.toUplcOptimized(generateErrorTraces = false).plutusV3
+//    sir.toUplcOptimized(using
+//      Compiler.defaultOptions.copy(targetLoweringBackend = TargetLoweringBackend.SirToUplcV3Lowering)
+//    )(generateErrorTraces = false)
+//        .plutusV3
     //    println(uplc.showHighlighted)
