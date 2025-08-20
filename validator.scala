@@ -15,11 +15,14 @@ extension (a: ByteString) def reverse: ByteString = ByteString.fromArray(a.bytes
 @Compile
 object BitcoinValidator extends Validator {
 
+    // Bitcoin consensus constants - matches Bitcoin Core chainparams.cpp
     val UnixEpoch: BigInt = 1231006505
-    val TargetBlockTime: BigInt = 600
-    val DifficultyAdjustmentInterval: BigInt = 2016
-    val MaxFutureBlockTime: BigInt = 7200 // 2 hours in the future in seconds
-    val MedianTimeSpan: BigInt = 11
+    val TargetBlockTime: BigInt = 600 // 10 minutes - matches nPowTargetSpacing in chainparams.cpp
+    val DifficultyAdjustmentInterval: BigInt = 2016 // matches DifficultyAdjustmentInterval() in chainparams.cpp
+    val MaxFutureBlockTime: BigInt =
+        7200 // 2 hours in the future in seconds - matches MAX_FUTURE_BLOCK_TIME in validation.cpp
+    val MedianTimeSpan: BigInt = 11 // matches CBlockIndex::nMedianTimeSpan in chain.h:276
+    // Proof of work limit - matches consensus.powLimit in chainparams.cpp
     val PowLimit: BigInt =
         byteStringToInteger(true, hex"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
 
@@ -88,6 +91,7 @@ object BitcoinValidator extends Validator {
     //          )
     //        )
 
+    // Double SHA256 hash - matches CBlockHeader::GetHash() in primitives/block.h
     def blockHeaderHash(blockHeader: BlockHeader): ByteString =
         sha2_256(sha2_256(blockHeader.bytes))
 
@@ -113,6 +117,10 @@ object BitcoinValidator extends Validator {
         if e < BigInt(0) then fail("Negative exponent")
         else pow(n, e)
 
+    /** Converts compact bits representation to target value
+      *
+      * Matches `arith_uint256::SetCompact()` in arith_uint256.cpp
+      */
     def bitsToBigInt(bits: ByteString): BigInt =
         val exponent = bits.at(3)
         val coefficient = byteStringToInteger(false, bits.slice(0, 3))
@@ -128,7 +136,10 @@ object BitcoinValidator extends Validator {
             if result > PowLimit then fail("Bits over PowLimit")
             else result
 
-    // Get median from reverse-sorted list (newest first)
+    /** Gets median from reverse-sorted list (newest first)
+      *
+      * Matches CBlockIndex::GetMedianTimePast() in chain.h:278-290
+      */
     def getMedianTimePast(timestamps: List[BigInt], size: BigInt): BigInt =
         timestamps match
             case List.Nil => UnixEpoch
@@ -137,6 +148,7 @@ object BitcoinValidator extends Validator {
                 // List is sorted, so just get middle element
                 timestamps !! index
 
+    // Timestamp validation - matches ContextualCheckBlockHeader() in validation.cpp:4180-4198
     def verifyTimestamp(timestamp: BigInt, medianTimePast: BigInt, currentTime: BigInt): Unit =
         require(timestamp <= currentTime + MaxFutureBlockTime, "Block timestamp too far in the future")
         require(timestamp > medianTimePast, "Block timestamp must be greater than median time of past 11 blocks")
@@ -255,6 +267,7 @@ object BitcoinValidator extends Validator {
                 if value >= head then List.Cons(value, sortedValues)
                 else List.Cons(head, insertReverseSorted(value, tail))
 
+    // Difficulty adjustment - matches GetNextWorkRequired() in pow.cpp:14-48
     def getNextWorkRequired(nHeight: BigInt, bits: BigInt, blockTime: BigInt, nFirstBlockTime: BigInt): BigInt = {
         // Only change once per difficulty adjustment interval
         if (nHeight + 1) % DifficultyAdjustmentInterval == BigInt(0) then
@@ -262,10 +275,12 @@ object BitcoinValidator extends Validator {
         else bits
     }
 
+    // Calculate next work required - matches CalculateNextWorkRequired() in pow.cpp:50-84
     def calculateNextWorkRequired(bits: BigInt, blockTime: BigInt, nFirstBlockTime: BigInt): BigInt = {
         val PowTargetTimespan = DifficultyAdjustmentInterval * TargetBlockTime
         val actualTimespan =
             val timespan = blockTime - nFirstBlockTime
+            // Limit adjustment step - matches pow.cpp:55-60
             min(
               max(timespan, PowTargetTimespan / 4),
               PowTargetTimespan * 4
@@ -287,11 +302,12 @@ object BitcoinValidator extends Validator {
         // check previous block hash
         val validPrevBlockHash = blockHeader.prevBlockHash == prevState.blockHash
 
-        // check proof of work
+        // check proof of work - matches CheckProofOfWork() in pow.cpp:140-163
         // FIXME: check if bits are valid
         val target = bitsToBigInt(blockHeader.bits)
         val validProofOfWork = hashBigInt <= target
 
+        // Difficulty validation - matches ContextualCheckBlockHeader() in validation.cpp:4165
         val nextDifficulty = getNextWorkRequired(
           prevState.blockHeight,
           target,
@@ -301,6 +317,7 @@ object BitcoinValidator extends Validator {
         val validDifficulty = target == nextDifficulty
 
         // Check blockTime against median of last 11 blocks
+        // Matches ContextualCheckBlockHeader() in validation.cpp:4180-4182
         val numTimestamps = prevState.recentTimestamps.size
         val medianTimePast = getMedianTimePast(prevState.recentTimestamps, numTimestamps)
         verifyTimestamp(blockTime, medianTimePast, currentTime)
@@ -315,7 +332,7 @@ object BitcoinValidator extends Validator {
         val newTimestamps = withNewTimestamp.take(MedianTimeSpan)
 
         // Reject blocks with outdated version
-
+        // Matches ContextualCheckBlockHeader() in validation.cpp:4201-4206
         val validVersion = blockHeader.version >= 4
 
         val validBlockHeader = validPrevBlockHash.?
@@ -395,4 +412,4 @@ val bitcoinProgram: Program =
 //      Compiler.defaultOptions.copy(targetLoweringBackend = TargetLoweringBackend.SirToUplcV3Lowering)
 //    )(generateErrorTraces = false)
 //        .plutusV3
-    //    println(uplc.showHighlighted)
+//    println(uplc.showHighlighted)
