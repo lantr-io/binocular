@@ -404,14 +404,153 @@ class ValidatorTests extends munit.ScalaCheckSuite {
         )
         (scriptContext, tx)
 
-    test("block header Merkle tree size") {
-        def log2(n: Int) = {
-            if (n <= 0) throw new IllegalArgumentException
-            31 - Integer.numberOfLeadingZeros(n)
-        }
-        val numHashes = log2(1000000)
-        println(numHashes)
-        println(s"Size: ${numHashes * 32}")
+    test("merkleRootFromInclusionProof - single transaction") {
+        val txHash = hex"abcd1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
+        val emptyProof = scalus.prelude.List.empty[Data].toData
+        val result = BitcoinValidator.merkleRootFromInclusionProof(emptyProof.toList, txHash, BigInt(0))
+        assertEquals(result, txHash)
     }
 
+    test("merkleRootFromInclusionProof - two transactions, left") {
+        val leftTxHash = hex"abcd1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
+        val rightTxHash = hex"1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd"
+        val proof = scalus.prelude.List.single(rightTxHash.toData).toData
+        val expectedRoot = Builtins.sha2_256(Builtins.sha2_256(leftTxHash ++ rightTxHash))
+        val result = BitcoinValidator.merkleRootFromInclusionProof(proof.toList, leftTxHash, BigInt(0))
+        assertEquals(result, expectedRoot)
+    }
+
+    test("merkleRootFromInclusionProof - two transactions, right") {
+        val leftTxHash = hex"abcd1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
+        val rightTxHash = hex"1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd"
+        val proof = scalus.prelude.List.single(leftTxHash.toData).toData
+        val expectedRoot = Builtins.sha2_256(Builtins.sha2_256(leftTxHash ++ rightTxHash))
+        val result = BitcoinValidator.merkleRootFromInclusionProof(proof.toList, rightTxHash, BigInt(1))
+        assertEquals(result, expectedRoot)
+    }
+
+    test("merkleRootFromInclusionProof - four transactions, various positions") {
+        val tx0 = hex"0000000000000000000000000000000000000000000000000000000000000000"
+        val tx1 = hex"1111111111111111111111111111111111111111111111111111111111111111"
+        val tx2 = hex"2222222222222222222222222222222222222222222222222222222222222222"
+        val tx3 = hex"3333333333333333333333333333333333333333333333333333333333333333"
+
+        // Build tree manually
+        val hash01 = Builtins.sha2_256(Builtins.sha2_256(tx0 ++ tx1))
+        val hash23 = Builtins.sha2_256(Builtins.sha2_256(tx2 ++ tx3))
+        val root = Builtins.sha2_256(Builtins.sha2_256(hash01 ++ hash23))
+
+        // Test tx0 (index 0): proof should be [tx1, hash23]
+        val proof0 = scalus.prelude.List.from(Seq(tx1.toData, hash23.toData)).toData
+        val result0 = BitcoinValidator.merkleRootFromInclusionProof(proof0.toList, tx0, BigInt(0))
+        assertEquals(result0, root)
+
+        // Test tx1 (index 1): proof should be [tx0, hash23]
+        val proof1 = scalus.prelude.List.from(Seq(tx0.toData, hash23.toData)).toData
+        val result1 = BitcoinValidator.merkleRootFromInclusionProof(proof1.toList, tx1, BigInt(1))
+        assertEquals(result1, root)
+
+        // Test tx2 (index 2): proof should be [tx3, hash01]
+        val proof2 = scalus.prelude.List.from(Seq(tx3.toData, hash01.toData)).toData
+        val result2 = BitcoinValidator.merkleRootFromInclusionProof(proof2.toList, tx2, BigInt(2))
+        assertEquals(result2, root)
+
+        // Test tx3 (index 3): proof should be [tx2, hash01]
+        val proof3 = scalus.prelude.List.from(Seq(tx2.toData, hash01.toData)).toData
+        val result3 = BitcoinValidator.merkleRootFromInclusionProof(proof3.toList, tx3, BigInt(3))
+        assertEquals(result3, root)
+    }
+
+    test("merkleRootFromInclusionProof - real Bitcoin data") {
+        // Use the existing test data from the "Evaluate" test
+        val block = read[BitcoinBlock](
+          Files.readString(
+            Path.of("00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c.json")
+          )
+        )
+
+        val txHashes = block.tx.map(h => ByteString.fromHex(h).reverse)
+        val merkleTree = MerkleTree.fromHashes(txHashes)
+        val expectedMerkleRoot = merkleTree.getMerkleRoot
+
+        // Test coinbase transaction (index 0)
+        val coinbaseHash = txHashes.head
+        val merkleProof = merkleTree.makeMerkleProof(0)
+        val proofData = scalus.prelude.List.from(merkleProof).toData
+
+        val computedRoot = BitcoinValidator.merkleRootFromInclusionProof(
+          proofData.toList,
+          coinbaseHash,
+          BigInt(0)
+        )
+
+        assertEquals(computedRoot, expectedMerkleRoot)
+
+        // Test a few other transactions if there are more than one
+        if (txHashes.length > 1) {
+            val lastTxHash = txHashes.last
+            val lastIndex = txHashes.length - 1
+            val lastMerkleProof = merkleTree.makeMerkleProof(lastIndex)
+            val lastProofData = scalus.prelude.List.from(lastMerkleProof).toData
+
+            val lastComputedRoot = BitcoinValidator.merkleRootFromInclusionProof(
+              lastProofData.toList,
+              lastTxHash,
+              BigInt(lastIndex)
+            )
+
+            assertEquals(lastComputedRoot, expectedMerkleRoot)
+        }
+    }
+
+    test("merkleRootFromInclusionProof - edge cases") {
+        val txHash = hex"abcd1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
+
+        // Empty proof with index 0 should return the hash itself
+        val emptyProof = scalus.prelude.List.empty[Data].toData
+        val result = BitcoinValidator.merkleRootFromInclusionProof(emptyProof.toList, txHash, BigInt(0))
+        assertEquals(result, txHash)
+    }
+
+    test("getNextWorkRequired - difficulty adjustment timing") {
+        val currentBits = BigInt("1d00ffff", 16)
+        val blockTime = BigInt(1234567890)
+        val firstBlockTime = BigInt(1234567890 - 600 * 2016) // 2016 blocks * 10 minutes
+
+        // Test block heights that should NOT trigger difficulty adjustment
+        val noAdjustmentHeights = Seq(0, 1, 100, 1000, 2014) // Not at 2016 interval
+        for height <- noAdjustmentHeights do
+            val result = BitcoinValidator.getNextWorkRequired(height, currentBits, blockTime, firstBlockTime)
+            assertEquals(result, currentBits, s"Height $height should not trigger difficulty adjustment")
+
+        // Test block heights that SHOULD trigger difficulty adjustment
+        val adjustmentHeights = Seq(2015, 4031, 6047) // Heights where (height + 1) % 2016 == 0
+        for height <- adjustmentHeights do
+            val result = BitcoinValidator.getNextWorkRequired(height, currentBits, blockTime, firstBlockTime)
+            // Result should be different from currentBits (actually calculated)
+            assert(result != currentBits, s"Height $height should trigger difficulty adjustment")
+    }
+
+    test("getNextWorkRequired - operator precedence regression test") {
+        // This test specifically checks for the operator precedence bug
+        // If the bug existed: nHeight + 1 % 2016 == 0 would be nHeight + (1 % 2016) == 0
+        // which means nHeight + 1 == 0, only true for height -1 (impossible)
+
+        val currentBits = BigInt("1d00ffff", 16)
+        val blockTime = BigInt(1234567890)
+        val firstBlockTime = BigInt(1234567890 - 600 * 2016)
+
+        // Height 2015: (2015 + 1) % 2016 = 0 (should adjust)
+        // With bug: 2015 + (1 % 2016) = 2015 + 1 = 2016 ≠ 0 (would not adjust)
+        val result2015 = BitcoinValidator.getNextWorkRequired(2015, currentBits, blockTime, firstBlockTime)
+        assert(result2015 != currentBits, "Height 2015 should trigger difficulty adjustment")
+
+        // Height 4031: (4031 + 1) % 2016 = 0 (should adjust)
+        val result4031 = BitcoinValidator.getNextWorkRequired(4031, currentBits, blockTime, firstBlockTime)
+        assert(result4031 != currentBits, "Height 4031 should trigger difficulty adjustment")
+
+        // Height 1000: (1000 + 1) % 2016 = 1001 ≠ 0 (should not adjust)
+        val result1000 = BitcoinValidator.getNextWorkRequired(1000, currentBits, blockTime, firstBlockTime)
+        assertEquals(result1000, currentBits, "Height 1000 should not trigger difficulty adjustment")
+    }
 }

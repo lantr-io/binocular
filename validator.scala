@@ -257,7 +257,7 @@ object BitcoinValidator extends Validator {
 
     def getNextWorkRequired(nHeight: BigInt, bits: BigInt, blockTime: BigInt, nFirstBlockTime: BigInt): BigInt = {
         // Only change once per difficulty adjustment interval
-        if nHeight + 1 % DifficultyAdjustmentInterval == BigInt(0) then
+        if (nHeight + 1) % DifficultyAdjustmentInterval == BigInt(0) then
             calculateNextWorkRequired(bits, blockTime, nFirstBlockTime)
         else bits
     }
@@ -307,7 +307,7 @@ object BitcoinValidator extends Validator {
 
         val newCumulativeDifficulty = prevState.cumulativeDifficulty + target
         val newDifficultyAdjustmentTimestamp =
-            if prevState.blockHeight + 1 % DifficultyAdjustmentInterval == BigInt(0) then blockTime
+            if (prevState.blockHeight + 1) % DifficultyAdjustmentInterval == BigInt(0) then blockTime
             else prevState.previousDifficultyAdjustmentTimestamp
 
         // Insert new blockTime maintaining reverse sort order
