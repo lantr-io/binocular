@@ -513,22 +513,23 @@ class ValidatorTests extends munit.ScalaCheckSuite {
     }
 
     test("getNextWorkRequired - difficulty adjustment timing") {
-        val currentBits = BigInt("1d00ffff", 16)
+        val currentBitsCompact = BigInt("1d00ffff", 16)
+        val currentTarget = BitcoinValidator.compactBitsToTarget(hex"1d00ffff".reverse)
         val blockTime = BigInt(1234567890)
-        val firstBlockTime = BigInt(1234567890 - 600 * 2016) // 2016 blocks * 10 minutes
+        val firstBlockTime = BigInt(1234567890 - 600 * 2016 * 2) // 2016 blocks * 20 minutes (double time, should make difficulty easier)
 
         // Test block heights that should NOT trigger difficulty adjustment
         val noAdjustmentHeights = Seq(0, 1, 100, 1000, 2014) // Not at 2016 interval
         for height <- noAdjustmentHeights do
-            val result = BitcoinValidator.getNextWorkRequired(height, currentBits, blockTime, firstBlockTime)
-            assertEquals(result, currentBits, s"Height $height should not trigger difficulty adjustment")
+            val result = BitcoinValidator.getNextWorkRequired(height, currentTarget, blockTime, firstBlockTime)
+            assertEquals(result, currentTarget, s"Height $height should not trigger difficulty adjustment")
 
         // Test block heights that SHOULD trigger difficulty adjustment
         val adjustmentHeights = Seq(2015, 4031, 6047) // Heights where (height + 1) % 2016 == 0
         for height <- adjustmentHeights do
-            val result = BitcoinValidator.getNextWorkRequired(height, currentBits, blockTime, firstBlockTime)
-            // Result should be different from currentBits (actually calculated)
-            assert(result != currentBits, s"Height $height should trigger difficulty adjustment")
+            val result = BitcoinValidator.getNextWorkRequired(height, currentTarget, blockTime, firstBlockTime)
+            // Result should be different from currentTarget (actually calculated)
+            assert(result != currentTarget, s"Height $height should trigger difficulty adjustment")
     }
 
     test("getNextWorkRequired - operator precedence regression test") {
@@ -536,21 +537,21 @@ class ValidatorTests extends munit.ScalaCheckSuite {
         // If the bug existed: nHeight + 1 % 2016 == 0 would be nHeight + (1 % 2016) == 0
         // which means nHeight + 1 == 0, only true for height -1 (impossible)
 
-        val currentBits = BigInt("1d00ffff", 16)
+        val currentTarget = BitcoinValidator.compactBitsToTarget(hex"1d00ffff".reverse)
         val blockTime = BigInt(1234567890)
-        val firstBlockTime = BigInt(1234567890 - 600 * 2016)
+        val firstBlockTime = BigInt(1234567890 - 600 * 2016 * 2) // Double time, should make difficulty easier
 
         // Height 2015: (2015 + 1) % 2016 = 0 (should adjust)
         // With bug: 2015 + (1 % 2016) = 2015 + 1 = 2016 ≠ 0 (would not adjust)
-        val result2015 = BitcoinValidator.getNextWorkRequired(2015, currentBits, blockTime, firstBlockTime)
-        assert(result2015 != currentBits, "Height 2015 should trigger difficulty adjustment")
+        val result2015 = BitcoinValidator.getNextWorkRequired(2015, currentTarget, blockTime, firstBlockTime)
+        assert(result2015 != currentTarget, "Height 2015 should trigger difficulty adjustment")
 
         // Height 4031: (4031 + 1) % 2016 = 0 (should adjust)
-        val result4031 = BitcoinValidator.getNextWorkRequired(4031, currentBits, blockTime, firstBlockTime)
-        assert(result4031 != currentBits, "Height 4031 should trigger difficulty adjustment")
+        val result4031 = BitcoinValidator.getNextWorkRequired(4031, currentTarget, blockTime, firstBlockTime)
+        assert(result4031 != currentTarget, "Height 4031 should trigger difficulty adjustment")
 
         // Height 1000: (1000 + 1) % 2016 = 1001 ≠ 0 (should not adjust)
-        val result1000 = BitcoinValidator.getNextWorkRequired(1000, currentBits, blockTime, firstBlockTime)
-        assertEquals(result1000, currentBits, "Height 1000 should not trigger difficulty adjustment")
+        val result1000 = BitcoinValidator.getNextWorkRequired(1000, currentTarget, blockTime, firstBlockTime)
+        assertEquals(result1000, currentTarget, "Height 1000 should not trigger difficulty adjustment")
     }
 }

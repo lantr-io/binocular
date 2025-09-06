@@ -268,15 +268,15 @@ object BitcoinValidator extends Validator {
                 else List.Cons(head, insertReverseSorted(value, tail))
 
     // Difficulty adjustment - matches GetNextWorkRequired() in pow.cpp:14-48
-    def getNextWorkRequired(nHeight: BigInt, bits: BigInt, blockTime: BigInt, nFirstBlockTime: BigInt): BigInt = {
+    def getNextWorkRequired(nHeight: BigInt, currentTarget: BigInt, blockTime: BigInt, nFirstBlockTime: BigInt): BigInt = {
         // Only change once per difficulty adjustment interval
         if (nHeight + 1) % DifficultyAdjustmentInterval == BigInt(0) then
-            calculateNextWorkRequired(bits, blockTime, nFirstBlockTime)
-        else bits
+            calculateNextWorkRequired(currentTarget, blockTime, nFirstBlockTime)
+        else currentTarget
     }
 
     // Calculate next work required - matches CalculateNextWorkRequired() in pow.cpp:50-84
-    def calculateNextWorkRequired(bits: BigInt, blockTime: BigInt, nFirstBlockTime: BigInt): BigInt = {
+    def calculateNextWorkRequired(currentTarget: BigInt, blockTime: BigInt, nFirstBlockTime: BigInt): BigInt = {
         val PowTargetTimespan = DifficultyAdjustmentInterval * TargetBlockTime
         val actualTimespan =
             val timespan = blockTime - nFirstBlockTime
@@ -286,7 +286,7 @@ object BitcoinValidator extends Validator {
               PowTargetTimespan * 4
             )
 
-        val bnNew = bits * actualTimespan / PowTargetTimespan
+        val bnNew = currentTarget * actualTimespan / PowTargetTimespan
         min(bnNew, PowLimit)
     }
 
