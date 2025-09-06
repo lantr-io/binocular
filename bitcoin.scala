@@ -80,17 +80,21 @@ class HeaderSyncWithRpc(bitcoindUri: URI, bitcoindUser: String, bitcoindPassword
         BitcoinValidator.BlockHeader(ByteString.fromArray(btcHeader.bytes.toArray))
 
     private def getInitialChainState(blockHeight: Int): Future[ChainState] = {
+        val interval = BitcoinValidator.DifficultyAdjustmentInterval.toInt
+        val previousDifficultyAdjustmentBlockHeight = blockHeight / interval * interval
         for
+            adjustmentBlockHash <- client.getBlockHash(previousDifficultyAdjustmentBlockHeight)
+            adjustmentBlockHeader <- client.getBlockHeader(adjustmentBlockHash)
             blockHash <- client.getBlockHash(blockHeight)
             header <- client.getBlockHeader(blockHash)
             bits = ByteString.fromArray(header.blockHeader.nBits.bytes.reverse.toArray)
         yield ChainState(
           blockHeight = blockHeight,
           blockHash = ByteString.fromArray(header.blockHeader.hash.bytes.toArray),
-          currentDifficulty = BitcoinValidator.bitsToBigInt(bits),
+          currentTarget = BitcoinValidator.compactBitsToTarget(bits),
           cumulativeDifficulty = 0,
           recentTimestamps = prelude.List(header.blockHeader.time.toBigInt),
-          previousDifficultyAdjustmentTimestamp = header.blockHeader.time.toBigInt
+          previousDifficultyAdjustmentTimestamp = adjustmentBlockHeader.blockHeader.time.toBigInt
         )
     }
 
@@ -160,7 +164,7 @@ object HeaderSyncWithRpc {
         val program =
             for
                 _ <- syncer.printNodeInfo()
-                _ <- syncer.syncHeadersFrom(866868)
+                _ <- syncer.syncHeadersFrom(866879)
             yield ()
 
         program

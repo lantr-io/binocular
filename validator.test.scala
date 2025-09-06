@@ -149,24 +149,24 @@ class ValidatorTests extends munit.ScalaCheckSuite {
     test("bitsToBigInt") {
         // 0 exponent
         assertEquals(
-          BitcoinValidator.bitsToBigInt(hex"0002f128".reverse),
+          BitcoinValidator.compactBitsToTarget(hex"0002f128".reverse),
           BigInt("0", 16)
         )
         // real bits from block 867936
         assertEquals(
-          BitcoinValidator.bitsToBigInt(hex"0202f128".reverse),
+          BitcoinValidator.compactBitsToTarget(hex"0202f128".reverse),
           BigInt("00000000000000000000000000000000000000000000000000000000000002f1", 16)
         )
         assertEquals(
-          BitcoinValidator.bitsToBigInt(hex"1a030ecd".reverse),
+          BitcoinValidator.compactBitsToTarget(hex"1a030ecd".reverse),
           BigInt("000000000000030ecd0000000000000000000000000000000000000000000000", 16)
         )
         assertEquals(
-          BitcoinValidator.bitsToBigInt(hex"1d00ffff".reverse),
+          BitcoinValidator.compactBitsToTarget(hex"1d00ffff".reverse),
           BigInt("00000000ffff0000000000000000000000000000000000000000000000000000", 16)
         )
         // too large exponent
-        intercept[RuntimeException](BitcoinValidator.bitsToBigInt(hex"1e00ffff".reverse))
+        intercept[RuntimeException](BitcoinValidator.compactBitsToTarget(hex"1e00ffff".reverse))
     }
 
     test("Block Header hash") {
@@ -182,7 +182,7 @@ class ValidatorTests extends munit.ScalaCheckSuite {
           hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
         )
         val hash = BitcoinValidator.blockHeaderHash(blockHeader)
-        val target = BitcoinValidator.bitsToBigInt(hex"17030ecd".reverse)
+        val target = BitcoinValidator.compactBitsToTarget(hex"17030ecd".reverse)
         val proofOfWork = Builtins.byteStringToInteger(false, hash)
         assertEquals(hash, hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c".reverse)
         assertEquals(target, BigInt("000000000000000000030ecd0000000000000000000000000000000000000000", 16))
@@ -227,7 +227,7 @@ class ValidatorTests extends munit.ScalaCheckSuite {
               hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
         )
         val hash = BitcoinValidator.blockHeaderHash(blockHeader)
-        val target = BitcoinValidator.bitsToBigInt(hex"17030ecd".reverse)
+        val target = BitcoinValidator.compactBitsToTarget(hex"17030ecd".reverse)
         val timestamp = blockHeader.timestamp
 
         val keyPairGenerator = new Ed25519KeyPairGenerator()
@@ -255,7 +255,7 @@ class ValidatorTests extends munit.ScalaCheckSuite {
         val prevState = ChainState(
           865493,
           blockHash = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse,
-          currentDifficulty = target,
+          currentTarget = target,
           cumulativeDifficulty = 0,
           recentTimestamps = prelude.List(timestamp - 600),
           previousDifficultyAdjustmentTimestamp = timestamp - 600 * BitcoinValidator.DifficultyAdjustmentInterval
@@ -263,7 +263,7 @@ class ValidatorTests extends munit.ScalaCheckSuite {
         val newState = ChainState(
           prevState.blockHeight + 1,
           blockHash = hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c".reverse,
-          currentDifficulty = target,
+          currentTarget = target,
           cumulativeDifficulty = BigInt("292880543616200952099263829421844968289989913814761472"),
           recentTimestamps = prelude.List(timestamp, timestamp - 600),
           previousDifficultyAdjustmentTimestamp = timestamp - 600 * BitcoinValidator.DifficultyAdjustmentInterval

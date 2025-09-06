@@ -49,7 +49,7 @@ object BitcoinValidator extends Validator {
     case class ChainState(
         blockHeight: BigInt,
         blockHash: ByteString,
-        currentDifficulty: BigInt,
+        currentTarget: BigInt,
         cumulativeDifficulty: BigInt,
         recentTimestamps: List[BigInt], // Newest first
         previousDifficultyAdjustmentTimestamp: BigInt
@@ -120,12 +120,17 @@ object BitcoinValidator extends Validator {
     /** Converts compact bits representation to target value
       *
       * Matches `arith_uint256::SetCompact()` in arith_uint256.cpp
+      * @note
+      *   only works for positive numbers. Here we use it only for `target` which is always positive, so it's fine.
       */
-    def bitsToBigInt(bits: ByteString): BigInt =
+    def compactBitsToTarget(bits: ByteString): BigInt =
+        // int nSize = nCompact >> 24;
         val exponent = bits.at(3)
+        // uint32_t nWord = nCompact & 0x007fffff;
         val coefficient = byteStringToInteger(false, bits.slice(0, 3))
         if coefficient > BigInt(0x007fffff) then fail("Negative bits")
-        else if exponent < BigInt(3) then coefficient / pow(256, BigInt(3) - exponent)
+        else if exponent < BigInt(3)
+        then coefficient / pow(256, BigInt(3) - exponent)
         // check overflow
         else if coefficient != BigInt(0) && ((exponent > 34) ||
                 (coefficient > 0xff && exponent > 33) ||
@@ -147,11 +152,6 @@ object BitcoinValidator extends Validator {
                 val index = size / 2
                 // List is sorted, so just get middle element
                 timestamps !! index
-
-    // Timestamp validation - matches ContextualCheckBlockHeader() in validation.cpp:4180-4198
-    def verifyTimestamp(timestamp: BigInt, medianTimePast: BigInt, currentTime: BigInt): Unit =
-        require(timestamp <= currentTime + MaxFutureBlockTime, "Block timestamp too far in the future")
-        require(timestamp > medianTimePast, "Block timestamp must be greater than median time of past 11 blocks")
 
     def merkleRootFromInclusionProof(
         merkleProof: builtin.List[Data],
@@ -287,7 +287,7 @@ object BitcoinValidator extends Validator {
             )
 
         val bnNew = bits * actualTimespan / PowTargetTimespan
-        max(bnNew, PowLimit)
+        min(bnNew, PowLimit)
     }
 
     def updateTip(
@@ -304,13 +304,13 @@ object BitcoinValidator extends Validator {
 
         // check proof of work - matches CheckProofOfWork() in pow.cpp:140-163
         // FIXME: check if bits are valid
-        val target = bitsToBigInt(blockHeader.bits)
+        val target = compactBitsToTarget(blockHeader.bits)
         val validProofOfWork = hashBigInt <= target
 
         // Difficulty validation - matches ContextualCheckBlockHeader() in validation.cpp:4165
         val nextDifficulty = getNextWorkRequired(
           prevState.blockHeight,
-          target,
+          prevState.currentTarget,
           blockTime,
           prevState.previousDifficultyAdjustmentTimestamp
         )
@@ -320,7 +320,9 @@ object BitcoinValidator extends Validator {
         // Matches ContextualCheckBlockHeader() in validation.cpp:4180-4182
         val numTimestamps = prevState.recentTimestamps.size
         val medianTimePast = getMedianTimePast(prevState.recentTimestamps, numTimestamps)
-        verifyTimestamp(blockTime, medianTimePast, currentTime)
+        // verify the block timestamp
+        require(blockTime <= currentTime + MaxFutureBlockTime, "Block timestamp too far in the future")
+        require(blockTime > medianTimePast, "Block timestamp must be greater than median time of past 11 blocks")
 
         val newCumulativeDifficulty = prevState.cumulativeDifficulty + target
         val newDifficultyAdjustmentTimestamp =
@@ -344,7 +346,7 @@ object BitcoinValidator extends Validator {
         ChainState(
           blockHeight = prevState.blockHeight + 1,
           blockHash = hash,
-          currentDifficulty = nextDifficulty,
+          currentTarget = nextDifficulty,
           cumulativeDifficulty = newCumulativeDifficulty,
           recentTimestamps = newTimestamps,
           previousDifficultyAdjustmentTimestamp = newDifficultyAdjustmentTimestamp

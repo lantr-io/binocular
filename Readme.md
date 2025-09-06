@@ -15,5 +15,5 @@ This will install all the dependencies and set up the environment.
     scala-cli setup-ide .
     scala-cli test .
 
-Setup `bitcoind_rpc_url`, `bitcoind_rpc_user`, `bitcoind_rpc_password` environment variables to download the Bitcoin
-headers.
+Setup `bitcoind_rpc_url`, `bitcoind_rpc_user`, `bitcoind_rpc_password` environment variables to
+download the Bitcoin headers.
