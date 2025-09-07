@@ -1,8 +1,8 @@
 # Binocular: A Decentralized Optimistic Bitcoin Oracle on Cardano
 
-Alexander Nemish @ Lantr
+Alexander Nemish @ Lantr (<alex@lantr.io>)
 
-*Draft v0.1*
+*Draft v0.2*
 
 ## Abstract
 
@@ -24,28 +24,23 @@ detect and report fraud.
 
 *Note: See the Whitepaper for full technical details.*
 
-The core Binocular system consists of several interacting on-chain components:
+The core Binocular system consists of a two-tier architecture with confirmed and unconfirmed Bitcoin chain states:
 
 ```mermaid
-graph LR
-    A[Fraud Bond] --> B[Miner Token]
-    B --> C[Oracle UTxO]
-    D[Bitcoin Block Header] --> C
-    E[Fraud Proof] -.-> A
+graph TB
+    A[Bitcoin Network] --> B[Fork UTxOs]
+    B -->|101 blocks after 200 minutes| C[Confirmed State UTxO]
+    D[Honest Parties] --> B
 ```
 
-- **The Fraud Bond** is a Cardano script locking each miner's security deposit. It can be reclaimed after a timeout or
-  forfeited if fraud is proven.
-- **Miner Tokens** represent each active Oracle Miner. They are minted when locking a Fraud Bond and burnt to reclaim
-  it.
-- The **Oracle UTxO** holds the latest block header provided by Miners. It is updated over time as Miners provide new
-  block headers.
+- **The Confirmed State UTxO** holds the canonical Bitcoin chain state with a 100-block confirmation requirement.
+- **Fork UTxOs** contain unconfirmed Bitcoin chain state that can be created by anyone to track new Bitcoin blocks.
+- **Maturation Process** moves the oldest block from a qualified fork (101+ blocks, 200+ minutes old) to the confirmed state.
+- **Challenge Period** provides 200 minutes for honest parties to create competing forks with higher chainwork.
 
-The off-chain Miner role monitors the Bitcoin chain and submits block header updates to the Oracle UTxO. The Binocular
-contract validates that each update builds on the previous and increases the cummulative work proven.
+Anyone can create fork UTxOs to track unconfirmed Bitcoin blocks. The system validates each block according to Bitcoin consensus rules including proof-of-work, difficulty adjustment, and timestamp verification.
 
-Fraud Proofs involve submitting an alternative block header at the same height or in a specific timeframe with more
-accumulated work, demonstrating an Oracle update was not part of Bitcoin's true canonical chain.
+Fork competition follows Bitcoin's longest chain rule - a fork can eliminate another fork by demonstrating higher cumulative chainwork, ensuring only the valid Bitcoin chain survives.
 
 With access to verified Bitcoin block headers, applications can trustlessly derive inclusion proofs for Bitcoin
 transactions. This is done by providing a merkle path demonstrating the transaction's inclusion in a block that is
@@ -60,83 +55,105 @@ graph TD
 
 ### Key Concepts
 
-- **Miners:** Participants who update the oracle with valid block headers.
-- **Fraud Proofs:** Evidence showing a submitted block header is invalid.
-- **Chainwork:** Measures cumulative proof of work for chain validation.
+- **Confirmed State:** The canonical Bitcoin chain state with 100-block confirmation requirement.
+- **Fork UTxOs:** Unconfirmed chain states that anyone can create to track new Bitcoin blocks.
+- **Maturation Period:** 100-block confirmation requirement before blocks can move to confirmed state.
+- **Challenge Period:** 200-minute timeout allowing honest parties to create competing forks.
+- **Chainwork:** Measures cumulative proof of work for chain validation and fork competition.
 
 ## Workflow
 
-### 1. Registering as a Miner
+### 1. Creating Fork UTxOs
 
-- Deposit ADA into the Fraud Bond Contract.
-- Mint a Miner token representing update rights.
-- Token metadata includes deposit timeout.
+- Anyone can create a fork UTxO extending from the confirmed state.
+- Initial fork contains the confirmed chain state as starting point.
+- No registration or bonding required for fork creation.
 
 ```mermaid
 graph LR
-A[Deposit ADA] --> B[Mint Miner Token]
-B --> C[Right to Submit Updates]
+A[Confirmed State] --> B[Create Fork UTxO]
+B --> C[Track Unconfirmed Blocks]
 ```
 
-### 2. Submitting Oracle Updates
+### 2. Updating Fork UTxOs
 
-- Submit block headers to the Oracle UTXO.
-- Validation checks:
-    - Valid Miner token.
-    - Block height is higher.
-    - Timestamp is in the past.
-    - Chainwork increased.
-    - Coinbase transaction has a valid Merkle proof.
+- Add new Bitcoin blocks to fork UTxOs as they appear.
+- Validation checks for each block:
+    - Valid proof of work (hash ≤ target).
+    - Correct difficulty adjustment.
+    - Valid timestamps.
+    - Proper block height sequence.
+    - Block hashes accumulated in Merkle tree.
 
 ```mermaid
 graph TD
-X[Submit Block Header] --> Y{Validation Checks}
-Y -->|Pass| Z[Update Oracle]
-Y -->|Fail| F[Reject Submission]
+X[New Bitcoin Block] --> Y{Validation Checks}
+Y -->|Pass| Z[Update Fork UTxO]
+Y -->|Fail| F[Reject Block]
 ```
 
-### 3. Verifying Proof of Work
+### 3. Fork Competition
 
-- Compute "target" from block header's "bits" field.
-- Ensure block header hash <= target.
+- Multiple forks can exist simultaneously.
+- Higher chainwork fork can eliminate lower chainwork forks.
+- Follows Bitcoin's longest chain rule.
 
-### 4. Submitting Fraud Proofs
+### 4. Maturation Process
 
-- Submit conflicting block header.
-- Valid proofs include:
-    - Header with same height but higher chainwork.
-    - Same parent, earlier timestamp, and higher chainwork.
-- Successful fraud proofs confiscate the bond.
+- Fork qualifies when it has 101+ blocks AND oldest block is 200+ minutes old.
+- The 200-minute aging requirement prevents pre-computed attack forks from immediately updating the confirmed state.
+- Any party can create a maturation transaction for qualified forks.
+- Maturation transaction moves oldest unconfirmed block from fork to confirmed state.
+- Updates both confirmed state UTxO and fork UTxO in a single transaction.
+
+```mermaid
+graph TD
+A[Fork: 101+ blocks] --> B{Oldest block 200+ min old?}
+B -->|Yes| C[Move block to confirmed state]
+B -->|No| D[Wait for timeout]
+```
 
 ## Security Mechanisms
 
-### Fraud Bond
+### Economic Security
 
-- Holds collateral to disincentivize invalid updates.
-- Reclaimable only after the timeout period.
+- Cost of mining 100+ Bitcoin blocks exceeds potential attack rewards.
+- No explicit bonding required, but economic incentives favor honest participation.
 
-### Consensus Safety Assumptions
+### Challenge Period
 
-- Mining a Bitcoin block is costlier than the fraud bond.
-- SHA256 and Ed25519 are secure.
+- 200-minute timeout provides sufficient time for honest parties to respond while being faster than Bitcoin's 10-minute blocks.
+- Prevents pre-computed attacks: malicious parties cannot mine 100+ blocks offline and immediately update the confirmed state, as forks must exist on-chain for at least 200 minutes before qualification.
+- Honest parties can create competing forks with higher chainwork to correct invalid states during this challenge window.
 
-### Optimistic Assumption
+### Liveness Assumption
 
-- Most miners are honest. If not, fraud-proof mechanisms correct the state.
+- At least one honest party actively maintains valid fork UTxOs.
+- Honest parties have access to canonical Bitcoin chain data.
 
 ## Key Protocol Features
 
 ### Permissionless Participation
 
-- Anyone can become a miner by locking a deposit.
+- Anyone can create and maintain fork UTxOs without bonding requirements.
+- No registration or special privileges needed.
 
 ### Decentralized Verification
 
-- Verification is decentralized, with no trusted authorities.
+- Bitcoin consensus rules enforced on-chain via smart contract validation.
+- No trusted authorities or centralized components.
 
-### Flexible Challenge Period
+### Manual Maturation Process
 
-- Adjustable based on Miner token metadata.
+- Qualified forks (101+ blocks, 200+ minutes old) can be matured by anyone creating a transaction.
+- Maturation transaction updates both confirmed state UTxO and fork UTxO simultaneously.
+- Moves the oldest unconfirmed block from fork to confirmed state.
+- 100-block confirmation requirement with 200-minute safety timeout enforced on-chain.
+
+### Fork Competition
+
+- Multiple competing forks can coexist until resolution.
+- Higher chainwork forks naturally supersede lower chainwork forks.
 
 ## Conclusion
 
