@@ -25,6 +25,7 @@
             openjdk23
             scala-cli
             scalafmt
+            visualvm
             nixpkgs-fmt
             nodejs
             pandoc

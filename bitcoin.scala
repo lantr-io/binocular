@@ -116,9 +116,8 @@ class HeaderSyncWithRpc(bitcoindUri: URI, bitcoindUser: String, bitcoindPassword
                 newState =
                     try
                         val newState = processHeader(currentState, header.blockHeader)
-                        println(
-                          s"Validated header at height $height: ${header.blockHeader}, new state: ${newState}"
-                        )
+                        print(s"\rValidated header at height $height: ${header.blockHeader.hashBE.hex}, bits: ${header.blockHeader.nBits.hex}")
+//                        println(s"new state: ${newState}")
                         newState
                     catch
                         case e: Exception =>
