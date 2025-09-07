@@ -123,7 +123,7 @@ object BitcoinValidator extends Validator {
       * @note
       *   only works for positive numbers. Here we use it only for `target` which is always positive, so it's fine.
       */
-    def compactBitsToTarget(bits: ByteString): BigInt =
+    def compactBitsToTarget(bits: ByteString): BigInt = {
         // int nSize = nCompact >> 24;
         val exponent = bits.at(3)
         // uint32_t nWord = nCompact & 0x007fffff;
@@ -140,6 +140,40 @@ object BitcoinValidator extends Validator {
             val result = coefficient * pow(256, exponent - 3)
             if result > PowLimit then fail("Bits over PowLimit")
             else result
+    }
+
+    def targetToCompactBits(target: BigInt): BigInt = {
+
+        if target == BigInt(0) then 0
+        else
+            // Calculate the number of significant bytes by finding the highest non-zero byte
+            // Convert to 32-byte little-endian representation to find significant bytes easily
+            val targetBytes = integerToByteString(false, 32, target)
+
+            // Find the number of significant bytes (from most significant end)
+            def findSignificantBytes(bytes: ByteString, index: BigInt): BigInt = {
+                if index < 0 then BigInt(0)
+                else if bytes.at(index) != BigInt(0) then index + 1
+                else findSignificantBytes(bytes, index - 1)
+            }
+
+            val nSize = findSignificantBytes(targetBytes, BigInt(31))
+
+            // Extract nCompact according to Bitcoin Core GetCompact logic
+            val nCompact =
+                if nSize <= 3 then
+                    // nCompact = GetLow64() << 8 * (3 - nSize)
+                    target * pow(256, 3 - nSize)
+                // For large values: extract the most significant 3 bytes
+                else target / pow(BigInt(256), nSize - 3)
+
+            // only non-negative numbers are supported
+            require(nCompact < BigInt(0x800000), "Negative compact representation not supported")
+            // Pack into compact representation: [3 bytes mantissa][1 byte size]
+            val result = nCompact + (nSize * BigInt(0x1000000)) // size << 24
+            val bs = integerToByteString(true, 4, result)
+            result
+    }
 
     /** Gets median from reverse-sorted list (newest first)
       *
@@ -154,11 +188,11 @@ object BitcoinValidator extends Validator {
                 timestamps !! index
 
     def merkleRootFromInclusionProof(
-        merkleProof: builtin.List[Data],
+        merkleProof: builtin.BuiltinList[Data],
         hash: ByteString,
         index: BigInt
     ): ByteString =
-        def loop(index: BigInt, curHash: ByteString, siblings: builtin.List[Data]): ByteString =
+        def loop(index: BigInt, curHash: ByteString, siblings: builtin.BuiltinList[Data]): ByteString =
             if siblings.isEmpty then curHash
             else
                 val sibling = siblings.head.toByteString
@@ -268,7 +302,12 @@ object BitcoinValidator extends Validator {
                 else List.Cons(head, insertReverseSorted(value, tail))
 
     // Difficulty adjustment - matches GetNextWorkRequired() in pow.cpp:14-48
-    def getNextWorkRequired(nHeight: BigInt, currentTarget: BigInt, blockTime: BigInt, nFirstBlockTime: BigInt): BigInt = {
+    def getNextWorkRequired(
+        nHeight: BigInt,
+        currentTarget: BigInt,
+        blockTime: BigInt,
+        nFirstBlockTime: BigInt
+    ): BigInt = {
         // Only change once per difficulty adjustment interval
         if (nHeight + 1) % DifficultyAdjustmentInterval == BigInt(0) then
             calculateNextWorkRequired(currentTarget, blockTime, nFirstBlockTime)
