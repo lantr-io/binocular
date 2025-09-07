@@ -10,6 +10,8 @@ import scalus.ledger.api.v3.*
 import scalus.prelude.*
 import scalus.uplc.Program
 
+import scala.annotation.tailrec
+
 extension (a: ByteString) def reverse: ByteString = ByteString.fromArray(a.bytes.reverse)
 
 @Compile
@@ -50,7 +52,7 @@ object BitcoinValidator extends Validator {
         blockHeight: BigInt,
         blockHash: ByteString,
         currentTarget: ByteString,
-        cumulativeDifficulty: BigInt,
+        blockTimestamp: BigInt,
         recentTimestamps: List[BigInt], // Newest first
         previousDifficultyAdjustmentTimestamp: BigInt
     )
@@ -117,17 +119,17 @@ object BitcoinValidator extends Validator {
         if e < BigInt(0) then fail("Negative exponent")
         else pow(n, e)
 
-    /** Converts compact bits representation to target value
+    /** Converts little-endian compact bits representation to target value
       *
       * Matches `arith_uint256::SetCompact()` in arith_uint256.cpp
       * @note
       *   only works for positive numbers. Here we use it only for `target` which is always positive, so it's fine.
       */
-    def compactBitsToTarget(bits: ByteString): BigInt = {
+    def compactBitsToTarget(compact: ByteString): BigInt = {
         // int nSize = nCompact >> 24;
-        val exponent = bits.at(3)
+        val exponent = compact.at(3)
         // uint32_t nWord = nCompact & 0x007fffff;
-        val coefficient = byteStringToInteger(false, bits.slice(0, 3))
+        val coefficient = byteStringToInteger(false, compact.slice(0, 3))
         if coefficient > BigInt(0x007fffff) then fail("Negative bits")
         else if exponent < BigInt(3)
         then coefficient / pow(256, BigInt(3) - exponent)
@@ -142,8 +144,13 @@ object BitcoinValidator extends Validator {
             else result
     }
 
+    /** Converts target value (256 bits BigInt) to a little-endian compact 32 bits representation
+      *
+      * Matches `arith_uint256::GetCompact()` in arith_uint256.cpp
+      * @note
+      *   only works for positive numbers. Here we use it only for `target` which is always positive, so it's fine.
+      */
     def targetToCompactBits(target: BigInt): BigInt = {
-
         if target == BigInt(0) then 0
         else
             // Calculate the number of significant bytes by finding the highest non-zero byte
@@ -151,6 +158,7 @@ object BitcoinValidator extends Validator {
             val targetBytes = integerToByteString(false, 32, target)
 
             // Find the number of significant bytes (from most significant end)
+            @tailrec
             def findSignificantBytes(bytes: ByteString, index: BigInt): BigInt = {
                 if index < 0 then BigInt(0)
                 else if bytes.at(index) != BigInt(0) then index + 1
@@ -167,16 +175,19 @@ object BitcoinValidator extends Validator {
                 // For large values: extract the most significant 3 bytes
                 else target / pow(BigInt(256), nSize - 3)
 
-            // only non-negative numbers are supported
             val (finalSize, finalCompact) =
                 if nCompact >= BigInt(0x800000) then (nSize + 1, nCompact / BigInt(256))
                 else (nSize, nCompact)
             // Pack into compact representation: [3 bytes mantissa][1 byte size]
-            val result = finalCompact + (finalSize * BigInt(0x1000000)) // size << 24
-            val bs = integerToByteString(true, 4, result)
-            result
+            finalCompact + (finalSize * BigInt(0x1000000)) // size << 24
     }
 
+    /** Converts target value to little-endian compact bits representation
+      *
+      * Matches `arith_uint256::GetCompact()` in arith_uint256.cpp
+      * @note
+      *   only works for positive numbers. Here we use it only for `target` which is always positive, so it's fine.
+      */
     def targetToCompactByteString(target: BigInt): ByteString = {
         val compact = targetToCompactBits(target)
         integerToByteString(false, 4, compact)
@@ -195,11 +206,11 @@ object BitcoinValidator extends Validator {
                 timestamps !! index
 
     def merkleRootFromInclusionProof(
-        merkleProof: builtin.BuiltinList[Data],
+        merkleProof: builtin.List[Data],
         hash: ByteString,
         index: BigInt
     ): ByteString =
-        def loop(index: BigInt, curHash: ByteString, siblings: builtin.BuiltinList[Data]): ByteString =
+        def loop(index: BigInt, curHash: ByteString, siblings: builtin.List[Data]): ByteString =
             if siblings.isEmpty then curHash
             else
                 val sibling = siblings.head.toByteString
@@ -361,7 +372,7 @@ object BitcoinValidator extends Validator {
         val nextDifficulty = getNextWorkRequired(
           prevState.blockHeight,
           prevState.currentTarget,
-          blockTime,
+          prevState.blockTimestamp,
           prevState.previousDifficultyAdjustmentTimestamp
         )
         val validDifficulty = compactTarget == nextDifficulty
@@ -374,7 +385,6 @@ object BitcoinValidator extends Validator {
         require(blockTime <= currentTime + MaxFutureBlockTime, "Block timestamp too far in the future")
         require(blockTime > medianTimePast, "Block timestamp must be greater than median time of past 11 blocks")
 
-        val newCumulativeDifficulty = prevState.cumulativeDifficulty + target
         val newDifficultyAdjustmentTimestamp =
             if (prevState.blockHeight + 1) % DifficultyAdjustmentInterval == BigInt(0) then blockTime
             else prevState.previousDifficultyAdjustmentTimestamp
@@ -397,7 +407,7 @@ object BitcoinValidator extends Validator {
           blockHeight = prevState.blockHeight + 1,
           blockHash = hash,
           currentTarget = nextDifficulty,
-          cumulativeDifficulty = newCumulativeDifficulty,
+          blockTimestamp = blockTime,
           recentTimestamps = newTimestamps,
           previousDifficultyAdjustmentTimestamp = newDifficultyAdjustmentTimestamp
         )

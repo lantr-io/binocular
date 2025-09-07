@@ -288,7 +288,7 @@ class ValidatorTests extends munit.ScalaCheckSuite {
           865493,
           blockHash = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse,
           currentTarget = bits,
-          cumulativeDifficulty = 0,
+          blockTimestamp = timestamp - 600,
           recentTimestamps = prelude.List(timestamp - 600),
           previousDifficultyAdjustmentTimestamp = timestamp - 600 * BitcoinValidator.DifficultyAdjustmentInterval
         )
@@ -296,7 +296,7 @@ class ValidatorTests extends munit.ScalaCheckSuite {
           prevState.blockHeight + 1,
           blockHash = hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c".reverse,
           currentTarget = bits,
-          cumulativeDifficulty = BigInt("292880543616200952099263829421844968289989913814761472"),
+          blockTimestamp = timestamp,
           recentTimestamps = prelude.List(timestamp, timestamp - 600),
           previousDifficultyAdjustmentTimestamp = timestamp - 600 * BitcoinValidator.DifficultyAdjustmentInterval
         )

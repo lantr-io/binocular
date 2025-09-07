@@ -5,8 +5,7 @@ import org.apache.pekko.actor.ActorSystem
 import org.bitcoins.core.config.MainNet
 import org.bitcoins.core.protocol.blockchain.BlockHeader
 import org.bitcoins.rpc.client.v27.BitcoindV27RpcClient
-import org.bitcoins.rpc.config.BitcoindAuthCredentials
-import org.bitcoins.rpc.config.BitcoindInstanceRemote
+import org.bitcoins.rpc.config.{BitcoindAuthCredentials, BitcoindInstanceRemote, BitcoindRpcAppConfig}
 import scalus.bloxbean.Interop.??
 import scalus.builtin.Builtins.*
 import scalus.builtin.ByteString
@@ -68,26 +67,25 @@ object Bitcoin {
 class HeaderSyncWithRpc(bitcoindUri: URI, bitcoindUser: String, bitcoindPassword: String)(using system: ActorSystem) {
     private given ec: ExecutionContext = system.dispatcher
 
-//    private given BitcoindRpcAppConfig = BitcoindRpcAppConfig(
-//      baseDatadir = Path.of("."),
-//      configOverrides = Vector.empty,
-//      authCredentinalsOpt = Some(BitcoindAuthCredentials.PasswordBased(bitcoindUser, bitcoindPassword))
-//    )
+    private given BitcoindRpcAppConfig = BitcoindRpcAppConfig(
+      baseDatadir = Path.of("."),
+      configOverrides = Vector.empty,
+      authCredentinalsOpt = Some(BitcoindAuthCredentials.PasswordBased(bitcoindUser, bitcoindPassword))
+    )
     private val instance = BitcoindInstanceRemote(
       network = MainNet,
       uri = bitcoindUri,
-      rpcUri = bitcoindUri,
-      authCredentials = BitcoindAuthCredentials.PasswordBased(bitcoindUser, bitcoindPassword)
+      rpcUri = bitcoindUri
     )
 
-    private val client = new BitcoindV27RpcClient(instance)(using system, null)
+    private val client = new BitcoindV27RpcClient(instance)
 
     private def convertHeader(btcHeader: BlockHeader): BitcoinValidator.BlockHeader =
         BitcoinValidator.BlockHeader(ByteString.fromArray(btcHeader.bytes.toArray))
 
     private def getInitialChainState(blockHeight: Int): Future[ChainState] = {
         val interval = BitcoinValidator.DifficultyAdjustmentInterval.toInt
-        val previousDifficultyAdjustmentBlockHeight = blockHeight / interval * interval
+        val previousDifficultyAdjustmentBlockHeight = blockHeight - (blockHeight % interval)
         for
             adjustmentBlockHash <- client.getBlockHash(previousDifficultyAdjustmentBlockHeight)
             adjustmentBlockHeader <- client.getBlockHeader(adjustmentBlockHash)
@@ -98,7 +96,7 @@ class HeaderSyncWithRpc(bitcoindUri: URI, bitcoindUser: String, bitcoindPassword
           blockHeight = blockHeight,
           blockHash = ByteString.fromArray(header.blockHeader.hash.bytes.toArray),
           currentTarget = bits,
-          cumulativeDifficulty = 0,
+          blockTimestamp = header.blockHeader.time.toBigInt,
           recentTimestamps = prelude.List(header.blockHeader.time.toBigInt),
           previousDifficultyAdjustmentTimestamp = adjustmentBlockHeader.blockHeader.time.toBigInt
         )
