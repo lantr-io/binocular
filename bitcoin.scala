@@ -13,6 +13,7 @@ import scalus.builtin.ByteString
 import scalus.prelude
 
 import java.net.URI
+import java.nio.file.Path
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 
@@ -67,6 +68,11 @@ object Bitcoin {
 class HeaderSyncWithRpc(bitcoindUri: URI, bitcoindUser: String, bitcoindPassword: String)(using system: ActorSystem) {
     private given ec: ExecutionContext = system.dispatcher
 
+//    private given BitcoindRpcAppConfig = BitcoindRpcAppConfig(
+//      baseDatadir = Path.of("."),
+//      configOverrides = Vector.empty,
+//      authCredentinalsOpt = Some(BitcoindAuthCredentials.PasswordBased(bitcoindUser, bitcoindPassword))
+//    )
     private val instance = BitcoindInstanceRemote(
       network = MainNet,
       uri = bitcoindUri,
@@ -91,7 +97,7 @@ class HeaderSyncWithRpc(bitcoindUri: URI, bitcoindUser: String, bitcoindPassword
         yield ChainState(
           blockHeight = blockHeight,
           blockHash = ByteString.fromArray(header.blockHeader.hash.bytes.toArray),
-          currentTarget = BitcoinValidator.compactBitsToTarget(bits),
+          currentTarget = bits,
           cumulativeDifficulty = 0,
           recentTimestamps = prelude.List(header.blockHeader.time.toBigInt),
           previousDifficultyAdjustmentTimestamp = adjustmentBlockHeader.blockHeader.time.toBigInt
@@ -164,7 +170,7 @@ object HeaderSyncWithRpc {
         val program =
             for
                 _ <- syncer.printNodeInfo()
-                _ <- syncer.syncHeadersFrom(866879)
+                _ <- syncer.syncHeadersFrom(866870)
             yield ()
 
         program
