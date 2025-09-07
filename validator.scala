@@ -49,7 +49,7 @@ object BitcoinValidator extends Validator {
     case class ChainState(
         blockHeight: BigInt,
         blockHash: ByteString,
-        currentTarget: BigInt,
+        currentTarget: ByteString,
         cumulativeDifficulty: BigInt,
         recentTimestamps: List[BigInt], // Newest first
         previousDifficultyAdjustmentTimestamp: BigInt
@@ -168,11 +168,18 @@ object BitcoinValidator extends Validator {
                 else target / pow(BigInt(256), nSize - 3)
 
             // only non-negative numbers are supported
-            require(nCompact < BigInt(0x800000), "Negative compact representation not supported")
+            val (finalSize, finalCompact) =
+                if nCompact >= BigInt(0x800000) then (nSize + 1, nCompact / BigInt(256))
+                else (nSize, nCompact)
             // Pack into compact representation: [3 bytes mantissa][1 byte size]
-            val result = nCompact + (nSize * BigInt(0x1000000)) // size << 24
+            val result = finalCompact + (finalSize * BigInt(0x1000000)) // size << 24
             val bs = integerToByteString(true, 4, result)
             result
+    }
+
+    def targetToCompactByteString(target: BigInt): ByteString = {
+        val compact = targetToCompactBits(target)
+        integerToByteString(false, 4, compact)
     }
 
     /** Gets median from reverse-sorted list (newest first)
@@ -304,18 +311,20 @@ object BitcoinValidator extends Validator {
     // Difficulty adjustment - matches GetNextWorkRequired() in pow.cpp:14-48
     def getNextWorkRequired(
         nHeight: BigInt,
-        currentTarget: BigInt,
+        currentTarget: ByteString,
         blockTime: BigInt,
         nFirstBlockTime: BigInt
-    ): BigInt = {
+    ): ByteString = {
         // Only change once per difficulty adjustment interval
         if (nHeight + 1) % DifficultyAdjustmentInterval == BigInt(0) then
-            calculateNextWorkRequired(currentTarget, blockTime, nFirstBlockTime)
+            val newTarget = calculateNextWorkRequired(currentTarget, blockTime, nFirstBlockTime)
+            val r = targetToCompactByteString(newTarget)
+            r
         else currentTarget
     }
 
     // Calculate next work required - matches CalculateNextWorkRequired() in pow.cpp:50-84
-    def calculateNextWorkRequired(currentTarget: BigInt, blockTime: BigInt, nFirstBlockTime: BigInt): BigInt = {
+    def calculateNextWorkRequired(currentTarget: ByteString, blockTime: BigInt, nFirstBlockTime: BigInt): BigInt = {
         val PowTargetTimespan = DifficultyAdjustmentInterval * TargetBlockTime
         val actualTimespan =
             val timespan = blockTime - nFirstBlockTime
@@ -325,7 +334,8 @@ object BitcoinValidator extends Validator {
               PowTargetTimespan * 4
             )
 
-        val bnNew = currentTarget * actualTimespan / PowTargetTimespan
+        val t = compactBitsToTarget(currentTarget)
+        val bnNew = t * actualTimespan / PowTargetTimespan
         min(bnNew, PowLimit)
     }
 
@@ -343,7 +353,8 @@ object BitcoinValidator extends Validator {
 
         // check proof of work - matches CheckProofOfWork() in pow.cpp:140-163
         // FIXME: check if bits are valid
-        val target = compactBitsToTarget(blockHeader.bits)
+        val compactTarget = blockHeader.bits
+        val target = compactBitsToTarget(compactTarget)
         val validProofOfWork = hashBigInt <= target
 
         // Difficulty validation - matches ContextualCheckBlockHeader() in validation.cpp:4165
@@ -353,7 +364,7 @@ object BitcoinValidator extends Validator {
           blockTime,
           prevState.previousDifficultyAdjustmentTimestamp
         )
-        val validDifficulty = target == nextDifficulty
+        val validDifficulty = compactTarget == nextDifficulty
 
         // Check blockTime against median of last 11 blocks
         // Matches ContextualCheckBlockHeader() in validation.cpp:4180-4182

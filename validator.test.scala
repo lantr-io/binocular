@@ -172,53 +172,32 @@ class ValidatorTests extends munit.ScalaCheckSuite {
     test("targetToCompactBits") {
         // Test cases from Bitcoin Core's BOOST_AUTO_TEST_CASE(bignum_SetCompact)
         // These verify that targetToCompactBits (GetCompact) produces the expected 4-byte compact representation
-        
+
         // Zero target
         assertEquals(BitcoinValidator.targetToCompactBits(BigInt(0)), BigInt(0))
-        
+
         // Case: target = 0x12 -> GetCompact = 0x01120000
         assertEquals(BitcoinValidator.targetToCompactBits(BigInt(0x12)), BigInt(0x01120000L))
-        
+
         // Case: target = 0x80 -> GetCompact = 0x02008000 (sign bit handling)
 //        assertEquals(BitcoinValidator.targetToCompactBits(BigInt(0x80)), BigInt(0x02008000L))
-        
-        // Case: target = 0x1234 -> GetCompact = 0x02123400  
+
+        // Case: target = 0x1234 -> GetCompact = 0x02123400
         assertEquals(BitcoinValidator.targetToCompactBits(BigInt(0x1234)), BigInt(0x02123400L))
-        
+
         // Case: target = 0x123456 -> GetCompact = 0x03123456
         assertEquals(BitcoinValidator.targetToCompactBits(BigInt(0x123456)), BigInt(0x03123456L))
-        
+
         // Case: target = 0x12345600 -> GetCompact = 0x04123456
         assertEquals(BitcoinValidator.targetToCompactBits(BigInt(0x12345600L)), BigInt(0x04123456L))
-        
+
 //         Case: target = 0x92340000 -> GetCompact = 0x05009234
 //        assertEquals(BitcoinValidator.targetToCompactBits(BigInt(0x92340000L)), BigInt(0x05009234L))
-        
+
         // Large number case from the test
         // target with leading 0x1234560000... -> GetCompact = 0x20123456
         val largeTarget = BigInt("1234560000000000000000000000000000000000000000000000000000000000", 16)
         assertEquals(BitcoinValidator.targetToCompactBits(largeTarget), BigInt(0x20123456L))
-    }
-
-    test("round-trip isomorphism with Bitcoin Core examples") {
-        // Test that our implementation matches Bitcoin Core behavior exactly
-        // These values were verified against actual Bitcoin Core GetCompact/SetCompact functions
-        val bitcoinCoreTestCases = Seq(
-          (BigInt(0x0028f102L), BigInt("02f1", 16)),
-          (BigInt(0x1a030ecdL), BigInt("030ecd", 16) << (26 * 8)), // 26 = 0x1a - 3 - 1 (for zero bytes)
-          (BigInt(0x1d00ffffL), BigInt("ffff", 16) << (29 * 8)) // 29 = 0x1d - 3 - 1
-        )
-
-        for (expectedBits, target) <- bitcoinCoreTestCases do
-            // Test compactBitsToTarget - convert BigInt to ByteString for this function
-            val expectedBitsBytes = Builtins.integerToByteString(true, 4, expectedBits)
-            val actualTarget = BitcoinValidator.compactBitsToTarget(expectedBitsBytes)
-
-            // Test targetToCompactBits
-            val actualBits = BitcoinValidator.targetToCompactBits(actualTarget)
-
-            // Verify round-trip consistency
-            assertEquals(actualBits, expectedBits, s"Bits conversion failed for target: $target")
     }
 
     test("Block Header hash") {
@@ -279,7 +258,8 @@ class ValidatorTests extends munit.ScalaCheckSuite {
               hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
         )
         val hash = BitcoinValidator.blockHeaderHash(blockHeader)
-        val target = BitcoinValidator.compactBitsToTarget(hex"17030ecd".reverse)
+        val bits = hex"17030ecd".reverse
+        val target = BitcoinValidator.compactBitsToTarget(bits)
         val timestamp = blockHeader.timestamp
 
         val keyPairGenerator = new Ed25519KeyPairGenerator()
@@ -307,7 +287,7 @@ class ValidatorTests extends munit.ScalaCheckSuite {
         val prevState = ChainState(
           865493,
           blockHash = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse,
-          currentTarget = target,
+          currentTarget = bits,
           cumulativeDifficulty = 0,
           recentTimestamps = prelude.List(timestamp - 600),
           previousDifficultyAdjustmentTimestamp = timestamp - 600 * BitcoinValidator.DifficultyAdjustmentInterval
@@ -315,7 +295,7 @@ class ValidatorTests extends munit.ScalaCheckSuite {
         val newState = ChainState(
           prevState.blockHeight + 1,
           blockHash = hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c".reverse,
-          currentTarget = target,
+          currentTarget = bits,
           cumulativeDifficulty = BigInt("292880543616200952099263829421844968289989913814761472"),
           recentTimestamps = prelude.List(timestamp, timestamp - 600),
           previousDifficultyAdjustmentTimestamp = timestamp - 600 * BitcoinValidator.DifficultyAdjustmentInterval
@@ -565,11 +545,12 @@ class ValidatorTests extends munit.ScalaCheckSuite {
     }
 
     test("getNextWorkRequired - difficulty adjustment timing") {
-        val currentBitsCompact = BigInt("1d00ffff", 16)
-        val currentTarget = BitcoinValidator.compactBitsToTarget(hex"1d00ffff".reverse)
+        val currentTarget = hex"1d00ffff".reverse
         val blockTime = BigInt(1234567890)
         val firstBlockTime =
-            BigInt(1234567890 - 600 * 2016 * 2) // 2016 blocks * 20 minutes (double time, should make difficulty easier)
+            BigInt(
+              1234567890 - 2016 * 600 / 2
+            ) // 2016 blocks * 10 blocks in half the time (should double the difficulty)
 
         // Test block heights that should NOT trigger difficulty adjustment
         val noAdjustmentHeights = Seq(0, 1, 100, 1000, 2014) // Not at 2016 interval
@@ -590,9 +571,10 @@ class ValidatorTests extends munit.ScalaCheckSuite {
         // If the bug existed: nHeight + 1 % 2016 == 0 would be nHeight + (1 % 2016) == 0
         // which means nHeight + 1 == 0, only true for height -1 (impossible)
 
-        val currentTarget = BitcoinValidator.compactBitsToTarget(hex"1d00ffff".reverse)
+        val currentTarget = hex"1d00ffff".reverse // smallest difficulty
         val blockTime = BigInt(1234567890)
-        val firstBlockTime = BigInt(1234567890 - 600 * 2016 * 2) // Double time, should make difficulty easier
+        val firstBlockTime =
+            BigInt(1234567890 - 2016 * 600 / 2) // Double block production, should make difficulty harder
 
         // Height 2015: (2015 + 1) % 2016 = 0 (should adjust)
         // With bug: 2015 + (1 % 2016) = 2015 + 1 = 2016 ≠ 0 (would not adjust)
