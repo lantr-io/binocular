@@ -28,8 +28,8 @@
             visualvm
             nixpkgs-fmt
             nodejs
+            texliveFull
             pandoc
-            texlive.combined.scheme-medium
           ];
         };
       })

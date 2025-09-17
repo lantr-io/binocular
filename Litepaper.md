@@ -161,6 +161,8 @@ Binocular presents a trust-minimized approach to cross-chain interoperability by
 Oracle for Cardano. Its optimistic design and robust economic incentives ensure accuracy while empowering developers to
 build innovative cross-chain DApps.
 
+\newpage
+
 ## References
 
 1. Satoshi Nakamoto, "Bitcoin: A Peer-to-Peer Electronic Cash System," https://bitcoin.org/bitcoin.pdf
