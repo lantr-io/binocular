@@ -438,26 +438,26 @@ class ValidatorTests extends munit.ScalaCheckSuite {
 
     test("merkleRootFromInclusionProof - single transaction") {
         val txHash = hex"abcd1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
-        val emptyProof = scalus.prelude.List.empty[Data].toData
-        val result = BitcoinValidator.merkleRootFromInclusionProof(emptyProof.toList, txHash, BigInt(0))
+        val emptyProof = scalus.prelude.List.empty[ByteString]
+        val result = BitcoinValidator.merkleRootFromInclusionProof(emptyProof, txHash, BigInt(0))
         assertEquals(result, txHash)
     }
 
     test("merkleRootFromInclusionProof - two transactions, left") {
         val leftTxHash = hex"abcd1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
         val rightTxHash = hex"1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd"
-        val proof = scalus.prelude.List.single(rightTxHash.toData).toData
+        val proof = scalus.prelude.List.single(rightTxHash)
         val expectedRoot = Builtins.sha2_256(Builtins.sha2_256(leftTxHash ++ rightTxHash))
-        val result = BitcoinValidator.merkleRootFromInclusionProof(proof.toList, leftTxHash, BigInt(0))
+        val result = BitcoinValidator.merkleRootFromInclusionProof(proof, leftTxHash, BigInt(0))
         assertEquals(result, expectedRoot)
     }
 
     test("merkleRootFromInclusionProof - two transactions, right") {
         val leftTxHash = hex"abcd1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
         val rightTxHash = hex"1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd"
-        val proof = scalus.prelude.List.single(leftTxHash.toData).toData
+        val proof = scalus.prelude.List.single(leftTxHash)
         val expectedRoot = Builtins.sha2_256(Builtins.sha2_256(leftTxHash ++ rightTxHash))
-        val result = BitcoinValidator.merkleRootFromInclusionProof(proof.toList, rightTxHash, BigInt(1))
+        val result = BitcoinValidator.merkleRootFromInclusionProof(proof, rightTxHash, BigInt(1))
         assertEquals(result, expectedRoot)
     }
 
@@ -473,23 +473,23 @@ class ValidatorTests extends munit.ScalaCheckSuite {
         val root = Builtins.sha2_256(Builtins.sha2_256(hash01 ++ hash23))
 
         // Test tx0 (index 0): proof should be [tx1, hash23]
-        val proof0 = scalus.prelude.List.from(Seq(tx1.toData, hash23.toData)).toData
-        val result0 = BitcoinValidator.merkleRootFromInclusionProof(proof0.toList, tx0, BigInt(0))
+        val proof0 = scalus.prelude.List.from(Seq(tx1, hash23))
+        val result0 = BitcoinValidator.merkleRootFromInclusionProof(proof0, tx0, BigInt(0))
         assertEquals(result0, root)
 
         // Test tx1 (index 1): proof should be [tx0, hash23]
-        val proof1 = scalus.prelude.List.from(Seq(tx0.toData, hash23.toData)).toData
-        val result1 = BitcoinValidator.merkleRootFromInclusionProof(proof1.toList, tx1, BigInt(1))
+        val proof1 = scalus.prelude.List.from(Seq(tx0, hash23))
+        val result1 = BitcoinValidator.merkleRootFromInclusionProof(proof1, tx1, BigInt(1))
         assertEquals(result1, root)
 
         // Test tx2 (index 2): proof should be [tx3, hash01]
-        val proof2 = scalus.prelude.List.from(Seq(tx3.toData, hash01.toData)).toData
-        val result2 = BitcoinValidator.merkleRootFromInclusionProof(proof2.toList, tx2, BigInt(2))
+        val proof2 = scalus.prelude.List.from(Seq(tx3, hash01))
+        val result2 = BitcoinValidator.merkleRootFromInclusionProof(proof2, tx2, BigInt(2))
         assertEquals(result2, root)
 
         // Test tx3 (index 3): proof should be [tx2, hash01]
-        val proof3 = scalus.prelude.List.from(Seq(tx2.toData, hash01.toData)).toData
-        val result3 = BitcoinValidator.merkleRootFromInclusionProof(proof3.toList, tx3, BigInt(3))
+        val proof3 = scalus.prelude.List.from(Seq(tx2, hash01))
+        val result3 = BitcoinValidator.merkleRootFromInclusionProof(proof3, tx3, BigInt(3))
         assertEquals(result3, root)
     }
 
@@ -508,10 +508,10 @@ class ValidatorTests extends munit.ScalaCheckSuite {
         // Test coinbase transaction (index 0)
         val coinbaseHash = txHashes.head
         val merkleProof = merkleTree.makeMerkleProof(0)
-        val proofData = scalus.prelude.List.from(merkleProof).toData
+        val proofData = scalus.prelude.List.from(merkleProof)
 
         val computedRoot = BitcoinValidator.merkleRootFromInclusionProof(
-          proofData.toList,
+          proofData,
           coinbaseHash,
           BigInt(0)
         )
@@ -523,10 +523,10 @@ class ValidatorTests extends munit.ScalaCheckSuite {
             val lastTxHash = txHashes.last
             val lastIndex = txHashes.length - 1
             val lastMerkleProof = merkleTree.makeMerkleProof(lastIndex)
-            val lastProofData = scalus.prelude.List.from(lastMerkleProof).toData
+            val lastProofData = scalus.prelude.List.from(lastMerkleProof)
 
             val lastComputedRoot = BitcoinValidator.merkleRootFromInclusionProof(
-              lastProofData.toList,
+              lastProofData,
               lastTxHash,
               BigInt(lastIndex)
             )
@@ -539,8 +539,8 @@ class ValidatorTests extends munit.ScalaCheckSuite {
         val txHash = hex"abcd1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
 
         // Empty proof with index 0 should return the hash itself
-        val emptyProof = scalus.prelude.List.empty[Data].toData
-        val result = BitcoinValidator.merkleRootFromInclusionProof(emptyProof.toList, txHash, BigInt(0))
+        val emptyProof = scalus.prelude.List.empty[ByteString]
+        val result = BitcoinValidator.merkleRootFromInclusionProof(emptyProof, txHash, BigInt(0))
         assertEquals(result, txHash)
     }
 

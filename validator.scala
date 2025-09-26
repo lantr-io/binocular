@@ -8,6 +8,7 @@ import scalus.builtin.{Builtins, ByteString, Data, FromData, ToData}
 import scalus.ledger.api.v2.OutputDatum
 import scalus.ledger.api.v3.*
 import scalus.prelude.*
+import scalus.sir.TargetLoweringBackend
 import scalus.uplc.Program
 
 import scala.annotation.tailrec
@@ -32,9 +33,10 @@ object BitcoinValidator extends Validator {
         version: ByteString,
         inputScriptSigAndSequence: ByteString,
         txOutsAndLockTime: ByteString
-    )
+    ) derives FromData,
+          ToData
 
-    case class BlockHeader(bytes: ByteString)
+    case class BlockHeader(bytes: ByteString) derives FromData, ToData
 
     extension (bh: BlockHeader)
         inline def version: BigInt =
@@ -55,26 +57,16 @@ object BitcoinValidator extends Validator {
         blockTimestamp: BigInt,
         recentTimestamps: List[BigInt], // Newest first
         previousDifficultyAdjustmentTimestamp: BigInt
-    )
+    ) derives FromData,
+          ToData
 
-    enum Action:
+    enum Action derives FromData, ToData:
         case NewTip(
             blockHeader: BlockHeader,
             ownerPubKey: ByteString,
             signature: ByteString
         )
-        case FraudProof(
-            blockHeader: BlockHeader
-        )
-
-    given FromData[CoinbaseTx] = FromData.derived
-    given ToData[CoinbaseTx] = ToData.derived
-    given FromData[BlockHeader] = FromData.derived
-    given ToData[BlockHeader] = ToData.derived
-    given FromData[ChainState] = FromData.derived
-    given ToData[ChainState] = ToData.derived
-    given FromData[Action] = FromData.derived
-    given ToData[Action] = ToData.derived
+        case FraudProof(blockHeader: BlockHeader)
 
     /// Bitcoin block header serialization
     //    def serializeBlockHeader(blockHeader: BlockHeader): ByteString =
@@ -206,14 +198,14 @@ object BitcoinValidator extends Validator {
                 timestamps !! index
 
     def merkleRootFromInclusionProof(
-        merkleProof: builtin.List[Data],
+        merkleProof: List[ByteString],
         hash: ByteString,
         index: BigInt
     ): ByteString =
-        def loop(index: BigInt, curHash: ByteString, siblings: builtin.List[Data]): ByteString =
+        def loop(index: BigInt, curHash: ByteString, siblings: List[ByteString]): ByteString =
             if siblings.isEmpty then curHash
             else
-                val sibling = siblings.head.toByteString
+                val sibling = siblings.head
                 val nextHash =
                     if index % 2 == BigInt(0)
                     then sha2_256(sha2_256(curHash ++ sibling))
@@ -467,11 +459,12 @@ object BitcoinValidator extends Validator {
 }
 
 val bitcoinProgram: Program =
+    given Compiler.Options = Compiler.Options(
+      optimizeUplc = true,
+      targetLoweringBackend = TargetLoweringBackend.SirToUplcV3Lowering
+    )
     val sir = Compiler.compile(BitcoinValidator.validate)
     //    println(sir.showHighlighted)
+//    sir.toUplcOptimized(generateErrorTraces = false).plutusV3
     sir.toUplcOptimized(generateErrorTraces = false).plutusV3
-//    sir.toUplcOptimized(using
-//      Compiler.defaultOptions.copy(targetLoweringBackend = TargetLoweringBackend.SirToUplcV3Lowering)
-//    )(generateErrorTraces = false)
-//        .plutusV3
 //    println(uplc.showHighlighted)
