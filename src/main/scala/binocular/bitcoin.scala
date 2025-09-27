@@ -1,5 +1,4 @@
 package binocular
-
 import binocular.BitcoinValidator.*
 import org.apache.pekko.actor.ActorSystem
 import org.bitcoins.core.config.MainNet
@@ -13,8 +12,7 @@ import scalus.prelude
 
 import java.net.URI
 import java.nio.file.Path
-import scala.concurrent.ExecutionContext
-import scala.concurrent.Future
+import scala.concurrent.{ExecutionContext, Future}
 
 object Bitcoin {
     def isWitnessTransaction(rawTx: ByteString): Boolean =
@@ -116,7 +114,9 @@ class HeaderSyncWithRpc(bitcoindUri: URI, bitcoindUser: String, bitcoindPassword
                 newState =
                     try
                         val newState = processHeader(currentState, header.blockHeader)
-                        print(s"\rValidated header at height $height: ${header.blockHeader.hashBE.hex}, bits: ${header.blockHeader.nBits.hex}")
+                        print(
+                          s"\rValidated header at height $height: ${header.blockHeader.hashBE.hex}, bits: ${header.blockHeader.nBits.hex}"
+                        )
 //                        println(s"new state: ${newState}")
                         newState
                     catch

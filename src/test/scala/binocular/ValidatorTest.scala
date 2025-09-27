@@ -1,48 +1,33 @@
 package binocular
-
-import BitcoinValidator.Action
-import BitcoinValidator.BlockHeader
-import BitcoinValidator.ChainState
+import binocular.BitcoinValidator.{Action, BlockHeader, ChainState}
 import com.bloxbean.cardano.client.account.Account
 import com.bloxbean.cardano.client.common.ADAConversionUtil
-import com.bloxbean.cardano.client.plutus.spec.ExUnits
-import com.bloxbean.cardano.client.plutus.spec.PlutusV3Script
-import com.bloxbean.cardano.client.plutus.spec.Redeemer
-import com.bloxbean.cardano.client.plutus.spec.RedeemerTag
+import com.bloxbean.cardano.client.plutus.spec.{ExUnits, PlutusV3Script, Redeemer, RedeemerTag}
 import com.bloxbean.cardano.client.transaction.spec
-import com.bloxbean.cardano.client.transaction.spec.Transaction
-import com.bloxbean.cardano.client.transaction.spec.TransactionBody
-import com.bloxbean.cardano.client.transaction.spec.TransactionInput
-import com.bloxbean.cardano.client.transaction.spec.TransactionOutput
-import com.bloxbean.cardano.client.transaction.spec.TransactionWitnessSet
+import com.bloxbean.cardano.client.transaction.spec.*
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil
 import org.bouncycastle.crypto.AsymmetricCipherKeyPair
 import org.bouncycastle.crypto.generators.Ed25519KeyPairGenerator
-import org.bouncycastle.crypto.params.Ed25519KeyGenerationParameters
-import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
-import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
+import org.bouncycastle.crypto.params.{
+    Ed25519KeyGenerationParameters,
+    Ed25519PrivateKeyParameters,
+    Ed25519PublicKeyParameters
+}
 import org.bouncycastle.crypto.signers.Ed25519Signer
 import org.scalacheck.Prop.forAll
 import scalus.*
-import scalus.bloxbean.Interop
-import scalus.bloxbean.Interop.getScriptInfoV3
-import scalus.bloxbean.Interop.getTxInfoV3
-import scalus.bloxbean.Interop.toScalusData
-import scalus.bloxbean.SlotConfig
-import scalus.builtin.Builtins
-import scalus.builtin.ByteString
+import scalus.bloxbean.Interop.{getScriptInfoV3, getTxInfoV3, toScalusData}
+import scalus.bloxbean.{Interop, SlotConfig}
 import scalus.builtin.ByteString.hex
-import scalus.builtin.Data
 import scalus.builtin.Data.toData
-import scalus.ledger.api.v3.PubKeyHash
-import scalus.ledger.api.v3.ScriptContext
+import scalus.builtin.{Builtins, ByteString, Data}
+import scalus.ledger.api.v3.{PubKeyHash, ScriptContext}
 import scalus.uplc.eval
 import scalus.uplc.eval.*
 import upickle.default.*
 
 import java.math.BigInteger
-import java.nio.file.Files
-import java.nio.file.Path
+import java.nio.file.{Files, Path}
 import java.security.SecureRandom
 import java.util
 import scala.jdk.CollectionConverters.*
@@ -72,7 +57,7 @@ case class BitcoinBlock(
 
 case class CekResult(budget: ExBudget, logs: Seq[String])
 
-class ValidatorTests extends munit.ScalaCheckSuite {
+class ValidatorTest extends munit.ScalaCheckSuite {
     private given PlutusVM = PlutusVM.makePlutusV3VM()
 
     // test(s"Bitcoin validator size is ${bitcoinProgram.doubleCborEncoded.length}") {
@@ -308,9 +293,9 @@ class ValidatorTests extends munit.ScalaCheckSuite {
           Seq.empty
         )
         println(s"Tx size: ${tx.serialize().length}")
-        import scalus.uplc.TermDSL.{*, given}
-        val applied = bitcoinProgram $ scriptContext.toData
-        println(s"Validator size: ${bitcoinProgram.flatEncoded.length}")
+        import scalus.uplc.TermDSL.given
+        val applied = BitcoinContract.bitcoinProgram $ scriptContext.toData
+        println(s"Validator size: ${BitcoinContract.bitcoinProgram.flatEncoded.length}")
         BitcoinValidator.validate(scriptContext.toData)
         applied.evaluateDebug match
             case r: Result.Success => println(r)
@@ -358,7 +343,7 @@ class ValidatorTests extends munit.ScalaCheckSuite {
         val script = PlutusV3Script
             .builder()
             .`type`("PlutusScriptV3")
-            .cborHex(bitcoinProgram.doubleCborHex)
+            .cborHex(BitcoinContract.bitcoinProgram.doubleCborHex)
             .build()
             .asInstanceOf[PlutusV3Script]
         val payeeAddress = sender.baseAddress()

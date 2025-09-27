@@ -4,10 +4,10 @@ import scalus.*
 import scalus.builtin.Builtins.*
 import scalus.builtin.ByteString.*
 import scalus.builtin.Data.{FromData, ToData, toData}
-import scalus.builtin.{Builtins, ByteString, Data, FromData, ToData}
+import scalus.builtin.*
 import scalus.ledger.api.v2.OutputDatum
 import scalus.ledger.api.v3.*
-import scalus.prelude.*
+import scalus.prelude.{List, *}
 import scalus.sir.TargetLoweringBackend
 import scalus.uplc.Program
 
@@ -458,13 +458,17 @@ object BitcoinValidator extends Validator {
         loop(0, ByteString.empty)
 }
 
-val bitcoinProgram: Program =
-    given Compiler.Options = Compiler.Options(
+object BitcoinContract {
+    inline given Compiler.Options = Compiler.Options(
       optimizeUplc = true,
       targetLoweringBackend = TargetLoweringBackend.SirToUplcV3Lowering
     )
-    val sir = Compiler.compile(BitcoinValidator.validate)
-    //    println(sir.showHighlighted)
-//    sir.toUplcOptimized(generateErrorTraces = false).plutusV3
-    sir.toUplcOptimized(generateErrorTraces = false).plutusV3
-//    println(uplc.showHighlighted)
+    def compileBitcoinProgram(): Program =
+        val sir = Compiler.compile(BitcoinValidator.validate)
+        //    println(sir.showHighlighted)
+        //    sir.toUplcOptimized(generateErrorTraces = false).plutusV3
+        sir.toUplcOptimized(generateErrorTraces = false).plutusV3
+    //    println(uplc.showHighlighted)
+
+    lazy val bitcoinProgram: Program = compileBitcoinProgram()
+}

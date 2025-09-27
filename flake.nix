@@ -15,6 +15,9 @@
     (flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
+        jdk = pkgs.openjdk23;
+        sbt = pkgs.sbt.override { jre = jdk; };
+        visualvm = pkgs.visualvm.override { jdk = jdk; };
       in
       rec {
         devShell = pkgs.mkShell {
@@ -22,9 +25,8 @@
           buildInputs = [ pkgs.bashInteractive ];
           packages = with pkgs; [
             git
-            openjdk23
-            scala-cli
-            scalafmt
+            jdk
+            sbt
             visualvm
             nixpkgs-fmt
             nodejs

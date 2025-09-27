@@ -1,5 +1,4 @@
 package binocular
-
 import com.monovore.decline.*
 import scalus.builtin.Builtins.*
 

@@ -1,12 +1,10 @@
 package binocular
 
 import scalus.builtin.Builtins.sha2_256
-import scalus.builtin.given
-import scalus.builtin.ByteString
+import scalus.builtin.{ByteString, given}
 
 import scala.collection.Seq
-import scala.collection.mutable.ArrayBuffer
-import scala.collection.mutable.ArraySeq
+import scala.collection.mutable.{ArrayBuffer, ArraySeq}
 
 /** Rolling Merkle tree implementation
   */
