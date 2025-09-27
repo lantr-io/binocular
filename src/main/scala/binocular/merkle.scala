@@ -1,7 +1,7 @@
 package binocular
 
 import scalus.builtin.Builtins.sha2_256
-import scalus.builtin.{ByteString, given}
+import scalus.builtin.ByteString
 
 import scala.collection.Seq
 import scala.collection.mutable.{ArrayBuffer, ArraySeq}
