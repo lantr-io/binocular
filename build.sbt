@@ -1,6 +1,6 @@
-scalaVersion := "3.3.6"
+scalaVersion := "3.3.7"
 
-val scalusVersion = "0.12.0"
+val scalusVersion = "0.13.0"
 
 scalacOptions ++= Seq("-deprecation", "-feature")
 
