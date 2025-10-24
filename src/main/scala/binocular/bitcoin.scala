@@ -8,6 +8,7 @@ import org.bitcoins.rpc.config.{BitcoindAuthCredentials, BitcoindInstanceRemote,
 import scalus.bloxbean.Interop.??
 import scalus.builtin.Builtins.*
 import scalus.builtin.ByteString
+import scalus.ledger.api.v2.TxOutRef
 import scalus.prelude
 
 import java.net.URI
@@ -178,4 +179,22 @@ object HeaderSyncWithRpc {
                 println("Terminating actor system...")
                 system.terminate()
                 sys.exit(0)
+}
+
+
+def useBinocular() = {
+    def getBinocularUtxo: TxOutRef = ???
+    def selectBitcoinBlock() = ??? // random previous block which exists in Binocular `blocks`
+    def selectBitcoinTxInThatBlock() = ??? // random previous block which exists in Binocular `blocks`
+    // separate DApp, like DEX or some other onchain application    
+    def makeProofTx = {
+        val bincocularRefInput = getBinocularUtxo
+        val binocularDatum: ChainState  = ???
+        // onchain validation of Bitcoin tx inclusion:
+        
+        // block header exists in binocularDatum.blocks
+        // merkle proof of block header hash inclusion in binocularDatum.blocksMerkleRoot
+        // tx hash exists in block's tx merkle root
+    }
+
 }
