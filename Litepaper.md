@@ -192,6 +192,7 @@ This is a minimal assumption - requires only that someone, somewhere, runs the f
 
 - Complete Bitcoin consensus validation in Plutus smart contract
 - Enforces proof-of-work, difficulty adjustment, timestamp rules
+- Efficient storage: only essential block data stored on-chain after validation
 - No trusted authorities or off-chain dependencies
 - Invalid blocks automatically rejected by validator
 

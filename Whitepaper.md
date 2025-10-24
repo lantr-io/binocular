@@ -155,7 +155,7 @@ case class ChainState(
 )
 
 case class BlockNode(
-    header: BlockHeader, // 80-byte Bitcoin block header
+    prevBlockHash: ByteString, // 32-byte hash of previous block (for chain walking)
     chainwork: BigInt, // Cumulative proof-of-work from genesis
     addedTimestamp: BigInt, // When this block was added on-chain (for 200-min rule)
     children: List[ByteString] // Hashes of child blocks (for tree navigation)
@@ -569,7 +569,7 @@ Function promoteConfirmedBlocks(
   forksTree: Map[ByteString, BlockNode],
   confirmedTip: ByteString,
   currentTime: BigInt
-) → List[BlockHeader]:
+) → List[ByteString]:
 
   // Find canonical chain
   canonicalTip ← selectCanonicalChain(forksTree)
@@ -578,22 +578,22 @@ Function promoteConfirmedBlocks(
   chain ← []
   currentHash ← canonicalTip
   while currentHash ≠ confirmedTip:
-    chain.prepend(forksTree[currentHash])
-    currentHash ← forksTree[currentHash].header.prevBlockHash
+    chain.prepend((currentHash, forksTree[currentHash]))
+    currentHash ← forksTree[currentHash].prevBlockHash
 
   // Identify promotable blocks (from oldest)
-  blocksToPromote ← []
+  blockHashesToPromote ← []
   for i ← 0 to chain.length - 1:
-    block ← chain[i]
+    (blockHash, blockNode) ← chain[i]
     depth ← chain.length - i
-    age ← currentTime - block.addedTimestamp
+    age ← currentTime - blockNode.addedTimestamp
 
     if depth ≥ 100 and age ≥ 200 × 60 then
-      blocksToPromote.append(block.header)
+      blockHashesToPromote.append(blockHash)
     else
       break  // Stop at first non-qualified block
 
-  return blocksToPromote
+  return blockHashesToPromote
 ```
 
 ### Validation Rules Summary
@@ -875,7 +875,9 @@ Guard:
   - Difficulty matches expected value
   - Timestamp > median-time-past, ≤ current time + 2 hours
 Actions:
-  - Create BlockNode with header, chainwork, addedTimestamp
+  - Validate full block header (PoW, difficulty, timestamps, version)
+  - Extract prevBlockHash from header
+  - Create BlockNode with prevBlockHash, chainwork, addedTimestamp
   - Insert into forksTree[blockHeaderHash(blockHeader)]
   - Update parent's children list
 Next State: UNCONFIRMED_RECENT
@@ -1326,6 +1328,63 @@ higher-than-required difficulty, forming a compressed chain representation.
 **Future Work**: NIPoPoW integration remains possible as an enhancement, particularly for
 applications requiring historical proof verification without Oracle state queries.
 
+### Header Storage Optimization
+
+**Decision**: Store only `prevBlockHash` from block headers in the forks tree, rather than full 80-byte Bitcoin block headers.
+
+**Rationale**:
+
+*Why Headers Were Considered*:
+
+- Convenient access to all block metadata (timestamps, merkle roots, nonces)
+- Simpler API for chain walking operations
+- Direct Bitcoin Core data structure analogy
+
+*Why Minimal Storage Was Chosen*:
+
+1. **Validation Timing**: Block headers are only needed during initial validation when adding blocks to the tree. After validation passes, the header data is never accessed again on-chain.
+
+2. **Datum Size Efficiency**: Removing 80-byte headers reduces per-block storage by ~48% (from 152 bytes to 88 bytes), effectively doubling forks tree capacity from ~105 blocks to ~184-224 blocks.
+
+3. **Chain Walking Requirements**: Walking the fork tree backwards only requires `prevBlockHash` (32 bytes), not the full header. The map key provides the current block hash.
+
+4. **Promotion Process**: Block promotion only requires:
+   - Block hash (already the map key)
+   - Chainwork comparison (stored separately)
+   - Depth and age checks (stored as `addedTimestamp`)
+   - The full header is not needed
+
+5. **Application Use**: Applications verifying Bitcoin transaction inclusion proofs provide their own block headers off-chain. They only need to verify:
+   - Block hash exists in Oracle's confirmed Merkle tree
+   - Transaction Merkle proof against header's merkle root
+   - Header validation happens client-side
+
+*Storage Comparison*:
+
+| Approach         | Per-Block Storage | Capacity (16 KB) | Use Case Coverage |
+|------------------|-------------------|------------------|-------------------|
+| Full headers     | ~152 bytes        | ~105 blocks      | All fields available |
+| **Optimized**    | **~88 bytes**     | **~184 blocks**  | **All operations supported** |
+
+*Operations Supported*:
+
+- Chain walking: ✓ (uses `prevBlockHash`)
+- Canonical selection: ✓ (uses `chainwork`)
+- Block promotion: ✓ (uses depth + `addedTimestamp`)
+- Fork competition: ✓ (uses `chainwork` + tree structure)
+- Tree navigation: ✓ (uses `children` list)
+
+**Implementation Notes**:
+
+The validation workflow becomes:
+1. Receive full block header in update transaction
+2. Validate header completely (PoW, difficulty, timestamps, version)
+3. Extract only essential data: `prevBlockHash`, compute `chainwork`
+4. Store minimal `BlockNode(prevBlockHash, chainwork, addedTimestamp, children)`
+5. Discard full header after validation
+
+This optimization maximizes forks tree capacity while maintaining all required protocol operations.
+
 ### Parameter Justification
 
 #### 100-Block Confirmation Requirement
@@ -1412,6 +1471,57 @@ guarantees.
 The forks tree is limited by Cardano's maximum datum size. While this naturally prevents spam and
 should accommodate typical Bitcoin fork scenarios (multiple competing forks of reasonable depth),
 extreme cases with many simultaneous deep forks could require pruning strategies.
+
+**Capacity Analysis:**
+
+Cardano imposes a maximum transaction/datum size of approximately 16,384 bytes (16 KB). The Oracle
+UTxO datum must fit within this limit.
+
+*Storage Breakdown:*
+
+Confirmed state (fixed overhead):
+- blockHeight, blockHash, currentTarget, blockTimestamp: ~72 bytes
+- recentTimestamps (11 × 8 bytes): ~88 bytes
+- previousDifficultyAdjustmentTimestamp: ~8 bytes
+- confirmedBlocksRoot (Merkle root): 32 bytes
+- Map overhead: ~8 bytes
+- **Total confirmed state**: ~208 bytes
+
+Forks tree (per-block storage):
+- Map key (block hash): 32 bytes
+- BlockNode.prevBlockHash: 32 bytes
+- BlockNode.chainwork: ~8 bytes (typical BigInt encoding)
+- BlockNode.addedTimestamp: ~8 bytes
+- BlockNode.children (list overhead + 32 bytes per child): ~8 bytes base
+- **Total per block**: ~88 bytes (base) + 32 bytes per child
+
+For blocks without children (leaf nodes) or with one child (typical case): ~88-120 bytes per block
+
+*Capacity Calculation:*
+
+Available for forks tree: 16,384 - 208 = 16,176 bytes
+
+Maximum blocks (worst case with minimal children): 16,176 / 88 ≈ **184 blocks**
+
+Maximum blocks (optimistic with no children lists): 16,176 / 72 ≈ **224 blocks**
+
+*Historical Analysis:*
+
+Bitcoin fork scenarios provide context for capacity requirements:
+
+- **Typical forks**: 1-6 blocks deep, resolve within ~1 hour
+- **Deep forks**: Rarely exceed 10 blocks (e.g., 2013 fork: 24 blocks, 2015 BIP66: 6 blocks)
+- **Multiple simultaneous forks**: Extremely rare; typically one active fork at a time
+- **100-block confirmation requirement**: Acts as natural pruning—blocks promote and free space
+
+With 184-224 block capacity, the Oracle can accommodate:
+- One deep fork of 100+ blocks (pending promotion)
+- Multiple smaller competing forks simultaneously
+- All historical Bitcoin fork scenarios with substantial margin
+
+**Conclusion**: The datum size naturally bounds the forks tree while providing adequate capacity for
+all realistic Bitcoin fork scenarios. The 100-block confirmation requirement ensures regular pruning
+as blocks promote to confirmed state, maintaining available capacity.
 
 **3. Historical Query Efficiency**
 
