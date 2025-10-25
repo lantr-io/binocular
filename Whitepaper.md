@@ -1344,7 +1344,7 @@ applications requiring historical proof verification without Oracle state querie
 
 1. **Validation Timing**: Block headers are only needed during initial validation when adding blocks to the tree. After validation passes, the header data is never accessed again on-chain.
 
-2. **Datum Size Efficiency**: Removing 80-byte headers reduces per-block storage by ~48% (from 152 bytes to 88 bytes), effectively doubling forks tree capacity from ~105 blocks to ~184-224 blocks.
+2. **Datum Size Efficiency**: Storing only `prevBlockHash` (32 bytes) instead of the full header (80 bytes) keeps per-block storage minimal at ~88 bytes versus ~152 bytes, enabling forks tree capacity of ~172-210 blocks instead of ~98 blocks.
 
 3. **Chain Walking Requirements**: Walking the fork tree backwards only requires `prevBlockHash` (32 bytes), not the full header. The map key provides the current block hash.
 
@@ -1361,10 +1361,10 @@ applications requiring historical proof verification without Oracle state querie
 
 *Storage Comparison*:
 
-| Approach         | Per-Block Storage | Capacity (16 KB) | Use Case Coverage |
-|------------------|-------------------|------------------|-------------------|
-| Full headers     | ~152 bytes        | ~105 blocks      | All fields available |
-| **Optimized**    | **~88 bytes**     | **~184 blocks**  | **All operations supported** |
+| Approach         | Per-Block Storage | Capacity (16 KB tx) | Use Case Coverage |
+|------------------|-------------------|---------------------|-------------------|
+| Full headers     | ~152 bytes        | ~98 blocks          | All fields available |
+| **Optimized**    | **~88 bytes**     | **~172 blocks**     | **All operations supported** |
 
 *Operations Supported*:
 
@@ -1474,10 +1474,30 @@ extreme cases with many simultaneous deep forks could require pruning strategies
 
 **Capacity Analysis:**
 
-Cardano imposes a maximum transaction/datum size of approximately 16,384 bytes (16 KB). The Oracle
-UTxO datum must fit within this limit.
+Cardano imposes a maximum transaction size of 16,384 bytes (16 KB) according to current protocol
+parameters. This limit applies to the **entire transaction**, not just the datum.
 
-*Storage Breakdown:*
+*Transaction Overhead:*
+
+An Oracle update transaction consists of:
+
+- **Transaction structure**: ~50-100 bytes (inputs count, outputs count, fee, validity interval)
+- **Input (Oracle UTxO)**: ~40 bytes (transaction hash + output index)
+- **Output (new Oracle UTxO)**: ~60-80 bytes (address + value + datum hash/inline marker)
+- **Redeemer**: Variable size, contains Bitcoin block headers being submitted
+  - Per block header: 80 bytes (raw Bitcoin header)
+  - Typical update (1-10 blocks): 80-800 bytes
+  - Large batch (20 blocks): ~1,600 bytes
+- **Script reference**: 0 bytes (using reference script stored elsewhere) or ~10-20 KB (inline script)
+- **Witnesses/signatures**: ~100-150 bytes
+
+**Assuming reference script usage** (best practice for large validators):
+
+Total transaction overhead (excluding datum): ~250-650 bytes (typical), up to ~2,700 bytes (large batch)
+
+Conservative estimate: **~500-1,000 bytes transaction overhead**
+
+*Datum Storage Breakdown:*
 
 Confirmed state (fixed overhead):
 - blockHeight, blockHash, currentTarget, blockTimestamp: ~72 bytes
@@ -1499,11 +1519,23 @@ For blocks without children (leaf nodes) or with one child (typical case): ~88-1
 
 *Capacity Calculation:*
 
-Available for forks tree: 16,384 - 208 = 16,176 bytes
+Total transaction size budget: 16,384 bytes
 
-Maximum blocks (worst case with minimal children): 16,176 / 88 ≈ **184 blocks**
+Transaction overhead (conservative): 1,000 bytes
 
-Maximum blocks (optimistic with no children lists): 16,176 / 72 ≈ **224 blocks**
+Available for datum: 16,384 - 1,000 = 15,384 bytes
+
+Datum overhead (confirmed state): 208 bytes
+
+Available for forks tree: 15,384 - 208 = 15,176 bytes
+
+Maximum blocks (worst case with minimal children): 15,176 / 88 ≈ **172 blocks**
+
+Maximum blocks (optimistic with no children lists): 15,176 / 72 ≈ **210 blocks**
+
+Note: Using reference scripts (storing validator script separately and referencing it) minimizes
+transaction overhead. Typical updates with 1-10 block headers use ~350-900 bytes of transaction
+overhead, leaving more space for the forks tree.
 
 *Historical Analysis:*
 
@@ -1514,7 +1546,7 @@ Bitcoin fork scenarios provide context for capacity requirements:
 - **Multiple simultaneous forks**: Extremely rare; typically one active fork at a time
 - **100-block confirmation requirement**: Acts as natural pruning—blocks promote and free space
 
-With 184-224 block capacity, the Oracle can accommodate:
+With 172-210 block capacity, the Oracle can accommodate:
 - One deep fork of 100+ blocks (pending promotion)
 - Multiple smaller competing forks simultaneously
 - All historical Bitcoin fork scenarios with substantial margin
