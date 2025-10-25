@@ -18,6 +18,15 @@ extension (a: ByteString) def reverse: ByteString = ByteString.fromArray(a.bytes
 @Compile
 object BitcoinValidator extends Validator {
 
+    // Type aliases for semantic clarity
+    type BlockHash = ByteString      // 32-byte SHA256d hash of block header
+    type TxHash = ByteString          // 32-byte SHA256d hash of transaction
+    type MerkleRoot = ByteString      // 32-byte Merkle tree root hash
+    type CompactBits = ByteString     // 4-byte compact difficulty target representation
+    type BlockHeaderBytes = ByteString // 80-byte raw Bitcoin block header
+    type PubKey = ByteString          // Ed25519 public key (32 bytes)
+    type Signature = ByteString       // Ed25519 signature (64 bytes)
+
     // Bitcoin consensus constants - matches Bitcoin Core chainparams.cpp
     val UnixEpoch: BigInt = 1231006505
     val TargetBlockTime: BigInt = 600 // 10 minutes - matches nPowTargetSpacing in chainparams.cpp
@@ -42,18 +51,18 @@ object BitcoinValidator extends Validator {
         inline def version: BigInt =
             byteStringToInteger(false, bh.bytes.slice(0, 4))
 
-        inline def prevBlockHash: ByteString = bh.bytes.slice(4, 32)
+        inline def prevBlockHash: BlockHash = bh.bytes.slice(4, 32)
 
-        inline def bits: ByteString = bh.bytes.slice(72, 4)
+        inline def bits: CompactBits = bh.bytes.slice(72, 4)
 
-        inline def merkleRoot: ByteString = bh.bytes.slice(36, 32)
+        inline def merkleRoot: MerkleRoot = bh.bytes.slice(36, 32)
 
         inline def timestamp: BigInt = byteStringToInteger(false, bh.bytes.slice(68, 4))
 
     case class ChainState(
         blockHeight: BigInt,
-        blockHash: ByteString,
-        currentTarget: ByteString,
+        blockHash: BlockHash,
+        currentTarget: CompactBits,
         blockTimestamp: BigInt,
         recentTimestamps: List[BigInt], // Newest first
         previousDifficultyAdjustmentTimestamp: BigInt
@@ -63,8 +72,8 @@ object BitcoinValidator extends Validator {
     enum Action derives FromData, ToData:
         case NewTip(
             blockHeader: BlockHeader,
-            ownerPubKey: ByteString,
-            signature: ByteString
+            ownerPubKey: PubKey,
+            signature: Signature
         )
         case FraudProof(blockHeader: BlockHeader)
 
@@ -86,13 +95,13 @@ object BitcoinValidator extends Validator {
     //        )
 
     // Double SHA256 hash - matches CBlockHeader::GetHash() in primitives/block.h
-    def blockHeaderHash(blockHeader: BlockHeader): ByteString =
+    def blockHeaderHash(blockHeader: BlockHeader): BlockHash =
         sha2_256(sha2_256(blockHeader.bytes))
 
     def checkSignature(
         blockHeader: BlockHeader,
-        ownerPubKey: ByteString,
-        signature: ByteString
+        ownerPubKey: PubKey,
+        signature: Signature
     ): Boolean =
         val hash = blockHeaderHash(blockHeader)
         verifyEd25519Signature(ownerPubKey, hash, signature)
@@ -117,7 +126,7 @@ object BitcoinValidator extends Validator {
       * @note
       *   only works for positive numbers. Here we use it only for `target` which is always positive, so it's fine.
       */
-    def compactBitsToTarget(compact: ByteString): BigInt = {
+    def compactBitsToTarget(compact: CompactBits): BigInt = {
         // int nSize = nCompact >> 24;
         val exponent = compact.at(3)
         // uint32_t nWord = nCompact & 0x007fffff;
@@ -180,7 +189,7 @@ object BitcoinValidator extends Validator {
       * @note
       *   only works for positive numbers. Here we use it only for `target` which is always positive, so it's fine.
       */
-    def targetToCompactByteString(target: BigInt): ByteString = {
+    def targetToCompactByteString(target: BigInt): CompactBits = {
         val compact = targetToCompactBits(target)
         integerToByteString(false, 4, compact)
     }
@@ -198,10 +207,10 @@ object BitcoinValidator extends Validator {
                 timestamps !! index
 
     def merkleRootFromInclusionProof(
-        merkleProof: List[ByteString],
-        hash: ByteString,
+        merkleProof: List[TxHash],
+        hash: TxHash,
         index: BigInt
-    ): ByteString =
+    ): MerkleRoot =
         def loop(index: BigInt, curHash: ByteString, siblings: List[ByteString]): ByteString =
             if siblings.isEmpty then curHash
             else
@@ -251,7 +260,7 @@ object BitcoinValidator extends Validator {
         val height = byteStringToInteger(false, scriptSigAndSequence.slice(newOffset + 1, len))
         height
 
-    def getTxHash(rawTx: ByteString): ByteString =
+    def getTxHash(rawTx: ByteString): TxHash =
         val serializedTx = stripWitnessData(rawTx)
         sha2_256(sha2_256(serializedTx))
 
@@ -272,7 +281,7 @@ object BitcoinValidator extends Validator {
             version ++ txIns ++ txOuts ++ lockTime
         else rawTx
 
-    def getCoinbaseTxHash(coinbaseTx: CoinbaseTx): ByteString =
+    def getCoinbaseTxHash(coinbaseTx: CoinbaseTx): TxHash =
         val serializedTx = coinbaseTx.version
             ++ hex"010000000000000000000000000000000000000000000000000000000000000000ffffffff"
             ++ coinbaseTx.inputScriptSigAndSequence
@@ -314,10 +323,10 @@ object BitcoinValidator extends Validator {
     // Difficulty adjustment - matches GetNextWorkRequired() in pow.cpp:14-48
     def getNextWorkRequired(
         nHeight: BigInt,
-        currentTarget: ByteString,
+        currentTarget: CompactBits,
         blockTime: BigInt,
         nFirstBlockTime: BigInt
-    ): ByteString = {
+    ): CompactBits = {
         // Only change once per difficulty adjustment interval
         if (nHeight + 1) % DifficultyAdjustmentInterval == BigInt(0) then
             val newTarget = calculateNextWorkRequired(currentTarget, blockTime, nFirstBlockTime)
@@ -327,7 +336,7 @@ object BitcoinValidator extends Validator {
     }
 
     // Calculate next work required - matches CalculateNextWorkRequired() in pow.cpp:50-84
-    def calculateNextWorkRequired(currentTarget: ByteString, blockTime: BigInt, nFirstBlockTime: BigInt): BigInt = {
+    def calculateNextWorkRequired(currentTarget: CompactBits, blockTime: BigInt, nFirstBlockTime: BigInt): BigInt = {
         val PowTargetTimespan = DifficultyAdjustmentInterval * TargetBlockTime
         val actualTimespan =
             val timespan = blockTime - nFirstBlockTime
@@ -409,8 +418,8 @@ object BitcoinValidator extends Validator {
         prevState: ChainState,
         newState: Data,
         blockHeader: BlockHeader,
-        ownerPubKey: ByteString,
-        signature: ByteString
+        ownerPubKey: PubKey,
+        signature: Signature
     ): Unit =
         val expectedNewState = updateTip(prevState, blockHeader, intervalStartInSeconds)
         val validNewState = newState == expectedNewState.toData

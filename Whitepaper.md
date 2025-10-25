@@ -137,42 +137,56 @@ implemented in the Binocular Oracle.
 
 ### Data Structures
 
+**Type Aliases:**
+
+For semantic clarity and type safety, the implementation uses the following type aliases:
+
+```scala
+type BlockHash = ByteString      // 32-byte SHA256d hash of block header
+type TxHash = ByteString          // 32-byte SHA256d hash of transaction
+type MerkleRoot = ByteString      // 32-byte Merkle tree root hash
+type CompactBits = ByteString     // 4-byte compact difficulty target representation
+type BlockHeaderBytes = ByteString // 80-byte raw Bitcoin block header
+type PubKey = ByteString          // Ed25519 public key (32 bytes)
+type Signature = ByteString       // Ed25519 signature (64 bytes)
+```
+
 The Oracle maintains a single UTxO with the following datum structure:
 
 ```scala
 case class ChainState(
    // Confirmed state
    blockHeight: BigInt, // Current confirmed block height
-   blockHash: ByteString, // Hash of current confirmed block
-   currentTarget: ByteString, // Difficulty target (compact bits format)
+   blockHash: BlockHash, // Hash of current confirmed block
+   currentTarget: CompactBits, // Difficulty target (compact bits format)
    blockTimestamp: BigInt, // Timestamp of current confirmed block
    recentTimestamps: List[BigInt], // Last 11 timestamps (newest first) for median time
    previousDifficultyAdjustmentTimestamp: BigInt, // For difficulty retarget calculations
-   confirmedBlocksRoot: ByteString, // Merkle tree root of confirmed block hashes
+   confirmedBlocksRoot: MerkleRoot, // Merkle tree root of confirmed block hashes
 
    // Forks tree
-   forksTree: Map[ByteString, BlockNode] // Block hash → BlockNode mapping
+   forksTree: Map[BlockHash, BlockNode] // Block hash → BlockNode mapping
 )
 
 case class BlockNode(
-    prevBlockHash: ByteString, // 32-byte hash of previous block (for chain walking)
+    prevBlockHash: BlockHash, // 32-byte hash of previous block (for chain walking)
     chainwork: BigInt, // Cumulative proof-of-work from genesis
     addedTimestamp: BigInt, // When this block was added on-chain (for 200-min rule)
-    children: List[ByteString] // Hashes of child blocks (for tree navigation)
+    children: List[BlockHash] // Hashes of child blocks (for tree navigation)
 )
 
 case class BlockHeader(
-    bytes: ByteString // Raw 80-byte header
+    bytes: BlockHeaderBytes // Raw 80-byte header
 )
 ```
 
 **BlockHeader Fields** (extracted from `bytes`):
 
 - `version` (bytes 0-3): Block version
-- `prevBlockHash` (bytes 4-35): Hash of previous block
-- `merkleRoot` (bytes 36-67): Merkle root of transactions
+- `prevBlockHash` (bytes 4-35): BlockHash - Hash of previous block
+- `merkleRoot` (bytes 36-67): MerkleRoot - Merkle root of transactions
 - `timestamp` (bytes 68-71): Block timestamp (Unix epoch seconds)
-- `bits` (bytes 72-75): Difficulty target (compact format)
+- `bits` (bytes 72-75): CompactBits - Difficulty target (compact format)
 - `nonce` (bytes 76-79): Proof-of-work nonce
 
 ### Bitcoin Consensus Constants
@@ -220,7 +234,7 @@ With overflow checks: $m \leq 0x007fffff$ and $T \leq \text{PowLimit}$.
 **Pseudocode:**
 
 ```
-Function compactBitsToTarget(compact: ByteString) → BigInt:
+Function compactBitsToTarget(compact: CompactBits) → BigInt:
   Input: 4-byte compact bits (little-endian)
   Output: 256-bit target value
 
@@ -265,7 +279,7 @@ where $m$ fits in 3 bytes and the most significant bit of $m$ is 0 (positive num
 **Pseudocode:**
 
 ```
-Function targetToCompactBits(target: BigInt) → ByteString:
+Function targetToCompactBits(target: BigInt) → CompactBits:
   Input: 256-bit target value
   Output: 4-byte compact bits
 
@@ -308,7 +322,7 @@ $$
 **Pseudocode:**
 
 ```
-Function blockHeaderHash(header: BlockHeader) → ByteString:
+Function blockHeaderHash(header: BlockHeader) → BlockHash:
   return SHA256(SHA256(header.bytes))
 ```
 
@@ -331,7 +345,7 @@ where hash is interpreted as a little-endian 256-bit integer.
 **Pseudocode:**
 
 ```
-Function validateProofOfWork(header: BlockHeader, targetBits: ByteString) → Bool:
+Function validateProofOfWork(header: BlockHeader, targetBits: CompactBits) → Bool:
   hash ← blockHeaderHash(header)
   hashInt ← LE_to_BigInt(hash)
   target ← compactBitsToTarget(targetBits)
@@ -403,10 +417,10 @@ $$
 ```
 Function getNextWorkRequired(
   height: BigInt,
-  currentTarget: ByteString,
+  currentTarget: CompactBits,
   blockTime: BigInt,
   firstBlockTime: BigInt
-) → ByteString:
+) → CompactBits:
 
   // Only adjust every 2016 blocks
   if (height + 1) mod 2016 ≠ 0 then
@@ -536,7 +550,7 @@ where $\text{Tips}(F)$ are all blocks with no children (leaf nodes).
 **Pseudocode:**
 
 ```
-Function selectCanonicalChain(forksTree: Map[ByteString, BlockNode]) → ByteString:
+Function selectCanonicalChain(forksTree: Map[BlockHash, BlockNode]) → BlockHash:
   Input: Tree of competing forks
   Output: Hash of canonical tip (highest chainwork)
 
@@ -566,10 +580,10 @@ t_{\text{current}} - t_{\text{added}}(b) &\geq 200 \times 60
 
 ```
 Function promoteConfirmedBlocks(
-  forksTree: Map[ByteString, BlockNode],
-  confirmedTip: ByteString,
+  forksTree: Map[BlockHash, BlockNode],
+  confirmedTip: BlockHash,
   currentTime: BigInt
-) → List[ByteString]:
+) → List[BlockHash]:
 
   // Find canonical chain
   canonicalTip ← selectCanonicalChain(forksTree)
