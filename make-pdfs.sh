@@ -6,6 +6,7 @@ pandoc Whitepaper.md \
   --from=markdown+tex_math_single_backslash \
   --highlight-style=tango \
   --filter "mm.sh" \
+  --include-in-header=latex-header.tex \
   -V geometry:margin=1in \
   -V colorlinks=true \
   -V linkcolor=blue \
@@ -21,6 +22,7 @@ pandoc Litepaper.md \
   --from=markdown+tex_math_single_backslash \
   --highlight-style=tango \
   --filter "mm.sh" \
+  --include-in-header=latex-header.tex \
   -V geometry:margin=1in \
   -V colorlinks=true \
   -V linkcolor=blue \

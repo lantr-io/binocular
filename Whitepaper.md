@@ -1390,6 +1390,7 @@ final approach.
 **Implementation Notes**:
 
 The validation workflow becomes:
+
 1. Receive full block header in update transaction
 2. Validate header completely (PoW, difficulty, timestamps, version)
 3. Extract only essential data: `prevBlockHash`, compute `chainwork`
@@ -1513,6 +1514,7 @@ Conservative estimate: **~500-1,000 bytes transaction overhead**
 *Datum Storage Breakdown:*
 
 Confirmed state (fixed overhead):
+
 - blockHeight, blockHash, currentTarget, blockTimestamp: ~72 bytes
 - recentTimestamps (11 × 8 bytes): ~88 bytes
 - previousDifficultyAdjustmentTimestamp: ~8 bytes
@@ -1521,6 +1523,7 @@ Confirmed state (fixed overhead):
 - **Total confirmed state**: ~208 bytes
 
 Forks tree (per-block storage):
+
 - Map key (block hash): 32 bytes
 - BlockNode.prevBlockHash: 32 bytes
 - BlockNode.chainwork: ~8 bytes (typical BigInt encoding)
@@ -1560,6 +1563,7 @@ Bitcoin fork scenarios provide context for capacity requirements:
 - **100-block confirmation requirement**: Acts as natural pruning—blocks promote and free space
 
 With 172-210 block capacity, the Oracle can accommodate:
+
 - One deep fork of 100+ blocks (pending promotion)
 - Multiple smaller competing forks simultaneously
 - All historical Bitcoin fork scenarios with substantial margin
