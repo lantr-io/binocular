@@ -264,14 +264,20 @@ Bitcoin-backed stablecoins, and other interoperability applications.
 **Participation Incentives**: Design explicit economic rewards for Oracle observers to strengthen
 liveness guarantees beyond the minimal 1-honest-party assumption.
 
-**NIPoPoW Integration**: Integrate Non-Interactive Proofs of Proof-of-Work for more efficient light
-client support and historical proof verification.
-
-**Dynamic Parameters**: Implement on-chain governance for adjusting protocol parameters (
-confirmation depth, challenge period) based on observed performance.
-
 **Enhanced Tooling**: Build open-source observer infrastructure, monitoring dashboards, and
 multi-platform support for running Oracle observers.
+
+### Design Decisions
+
+**Direct Block Validation vs NIPoPoWs**: Non-Interactive Proofs of Proof-of-Work (NIPoPoWs) were
+considered for efficient light client support but rejected after research. Direct block validation
+provides stronger security guarantees and simpler implementation, while NIPoPoW verification adds
+significant on-chain complexity without clear benefits for the primary use case of transaction
+inclusion proofs.
+
+**No On-Chain Governance**: Protocol parameters (100 confirmations, 200-minute challenge period) are
+fixed by design. Anyone can deploy an independent Oracle UTxO with different parameters if needed,
+enabling experimentation without governance complexity.
 
 ## Conclusion
 

@@ -1337,12 +1337,13 @@ higher-than-required difficulty, forming a compressed chain representation.
 | Light client support | Requires confirmed list query | Native                          |
 | Current tool support | Excellent (Plutus, Scalus)    | Limited                         |
 
-**Future Work**: NIPoPoW integration remains possible as an enhancement, particularly for
-applications requiring historical proof verification without Oracle state queries.
+**Decision**: NIPoPoWs are not planned for integration. Direct block validation was chosen as the
+final approach.
 
 ### Header Storage Optimization
 
-**Decision**: Store only `prevBlockHash` from block headers in the forks tree, rather than full 80-byte Bitcoin block headers.
+**Decision**: Store only `prevBlockHash` from block headers in the forks tree, rather than full
+80-byte Bitcoin block headers.
 
 **Rationale**:
 
@@ -1571,8 +1572,7 @@ as blocks promote to confirmed state, maintaining available capacity.
 
 Applications needing to verify historical Bitcoin transactions must query the confirmed blocks
 Merkle tree. While the tree structure enables efficient inclusion proofs, applications without
-Oracle state access need additional infrastructure. NIPoPoW integration would address this
-limitation.
+Oracle state access need additional infrastructure.
 
 ### Future Enhancements
 
@@ -1585,23 +1585,6 @@ Design explicit economic incentives for Oracle maintenance:
   consistent updates
 - **Treasury Funding**: Potential integration with Cardano Treasury for sustainable funding
 - **Application Fees**: DApps using the Oracle could contribute to maintenance fund
-
-**NIPoPoW Integration**
-
-Integrate Non-Interactive Proofs of Proof-of-Work (NIPoPoWs) to enable:
-
-- Light client support without full Oracle state access
-- More efficient historical proof verification
-- Compressed representation of confirmed blockchain history
-- Enhanced cross-chain bridge capabilities
-
-**Dynamic Parameters**
-
-Implement on-chain governance for adjusting protocol parameters:
-
-- Confirmation depth requirement (currently 100 blocks)
-- Challenge period duration (currently 200 minutes)
-- Allow community-driven optimization based on observed security/latency trade-offs
 
 **Tree Pruning Strategies**
 
@@ -1663,8 +1646,8 @@ cases including cross-chain bridges, Bitcoin-backed stablecoins, and decentraliz
 inheriting Bitcoin's proof-of-work security and operating within Cardano's smart contract
 environment, Binocular provides a foundation for secure cross-chain interoperability.
 
-Future development will focus on explicit participation incentives, NIPoPoW integration for light
-clients, and integration into the BiFROST cross-chain bridge protocol.
+Future development will focus on explicit participation incentives, enhanced tooling, and
+integration into the BiFROST cross-chain bridge protocol.
 
 \newpage
 
@@ -1692,7 +1675,7 @@ clients, and integration into the BiFROST cross-chain bridge protocol.
 
 6. Scalus: Scala to Plutus Compiler. https://scalus.org
 
-7. Plutus: Cardano Smart Contract Platform. https://plutus.cardano.org/
+7. Plutus: Cardano Smart Contract Platform. https://plutus.cardano.intersectmbo.org/
 
 ### Cross-Chain Security & Oracles
 

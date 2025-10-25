@@ -14,7 +14,7 @@ pandoc Whitepaper.md \
   -V mainfont="DejaVu Serif" \
   -V monofont="DejaVu Sans Mono" \
   -V fontsize=11pt \
-  -o Whitepaper.pdf
+  -o pdfs/Whitepaper.pdf
 
 pandoc Litepaper.md \
   --pdf-engine=xelatex \
@@ -29,4 +29,4 @@ pandoc Litepaper.md \
   -V mainfont="DejaVu Serif" \
   -V monofont="DejaVu Sans Mono" \
   -V fontsize=11pt \
-  -o Litepaper.pdf
+  -o pdfs/Litepaper.pdf
