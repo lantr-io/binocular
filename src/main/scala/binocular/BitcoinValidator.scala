@@ -24,8 +24,6 @@ object BitcoinValidator extends Validator {
     type MerkleRoot = ByteString      // 32-byte Merkle tree root hash
     type CompactBits = ByteString     // 4-byte compact difficulty target representation
     type BlockHeaderBytes = ByteString // 80-byte raw Bitcoin block header
-    type PubKey = ByteString          // Ed25519 public key (32 bytes)
-    type Signature = ByteString       // Ed25519 signature (64 bytes)
 
     // Bitcoin consensus constants - matches Bitcoin Core chainparams.cpp
     val UnixEpoch: BigInt = 1231006505
@@ -70,12 +68,7 @@ object BitcoinValidator extends Validator {
           ToData
 
     enum Action derives FromData, ToData:
-        case NewTip(
-            blockHeader: BlockHeader,
-            ownerPubKey: PubKey,
-            signature: Signature
-        )
-        case FraudProof(blockHeader: BlockHeader)
+        case NewTip(blockHeader: BlockHeader)
 
     /// Bitcoin block header serialization
     //    def serializeBlockHeader(blockHeader: BlockHeader): ByteString =
@@ -97,14 +90,6 @@ object BitcoinValidator extends Validator {
     // Double SHA256 hash - matches CBlockHeader::GetHash() in primitives/block.h
     def blockHeaderHash(blockHeader: BlockHeader): BlockHash =
         sha2_256(sha2_256(blockHeader.bytes))
-
-    def checkSignature(
-        blockHeader: BlockHeader,
-        ownerPubKey: PubKey,
-        signature: Signature
-    ): Boolean =
-        val hash = blockHeaderHash(blockHeader)
-        verifyEd25519Signature(ownerPubKey, hash, signature)
 
     def min(a: BigInt, b: BigInt): BigInt =
         if a < b then a else b
@@ -417,22 +402,12 @@ object BitcoinValidator extends Validator {
         intervalStartInSeconds: BigInt,
         prevState: ChainState,
         newState: Data,
-        blockHeader: BlockHeader,
-        ownerPubKey: PubKey,
-        signature: Signature
+        blockHeader: BlockHeader
     ): Unit =
         val expectedNewState = updateTip(prevState, blockHeader, intervalStartInSeconds)
         val validNewState = newState == expectedNewState.toData
 
         require(validNewState, "New state does not match expected state")
-
-        val validSignature =
-            verifyEd25519Signature(ownerPubKey, expectedNewState.blockHash, signature)
-
-        require(validSignature, "Signature is not valid")
-
-    def verifyFraudProof(state: ChainState, blockHeader: BlockHeader): Unit =
-        ()
 
     override def spend(datum: Option[Datum], redeemer: Datum, tx: TxInfo, outRef: TxOutRef): Unit = {
         val action = redeemer.to[Action]
@@ -446,17 +421,14 @@ object BitcoinValidator extends Validator {
                 case OutputDatum.OutputDatum(datum) => datum.to[ChainState]
                 case _                              => fail("No datum")
         action match
-            case Action.NewTip(blockHeader, ownerPubKey, signature) =>
+            case Action.NewTip(blockHeader) =>
                 val state = datum.getOrFail("No datum")
                 verifyNewTip(
                   intervalStartInSeconds,
                   prevState,
                   state,
-                  blockHeader,
-                  ownerPubKey,
-                  signature
+                  blockHeader
                 )
-            case Action.FraudProof(blockHeader) => verifyFraudProof(prevState, blockHeader)
     }
 
     def reverse(bs: ByteString): ByteString =

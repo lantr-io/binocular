@@ -140,8 +140,6 @@ type TxHash = ByteString // 32-byte transaction hash
 type MerkleRoot = ByteString // 32-byte Merkle root
 type CompactBits = ByteString // 4-byte difficulty target
 type BlockHeaderBytes = ByteString // 80-byte raw header
-type PubKey = ByteString // Ed25519 public key
-type Signature = ByteString // Ed25519 signature
 ```
 
 ### Validation Pipeline

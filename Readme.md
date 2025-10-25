@@ -1,4 +1,4 @@
-# Binocular – a decentralized optimistic Bitcoin Oracle on Cardano.
+# Binocular – a decentralized Bitcoin Oracle on Cardano.
 
 ## How to build
 

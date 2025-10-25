@@ -1,4 +1,4 @@
-# Binocular: A Decentralized Optimistic Bitcoin Oracle on Cardano
+# Binocular: A Decentralized Bitcoin Oracle on Cardano
 
 Alexander Nemish @ Lantr (<alex@lantr.io>)
 
@@ -147,8 +147,6 @@ type TxHash = ByteString          // 32-byte SHA256d hash of transaction
 type MerkleRoot = ByteString      // 32-byte Merkle tree root hash
 type CompactBits = ByteString     // 4-byte compact difficulty target representation
 type BlockHeaderBytes = ByteString // 80-byte raw Bitcoin block header
-type PubKey = ByteString          // Ed25519 public key (32 bytes)
-type Signature = ByteString       // Ed25519 signature (64 bytes)
 ```
 
 The Oracle maintains a single UTxO with the following datum structure:

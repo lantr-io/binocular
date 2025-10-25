@@ -6,13 +6,7 @@ import com.bloxbean.cardano.client.plutus.spec.{ExUnits, PlutusV3Script, Redeeme
 import com.bloxbean.cardano.client.transaction.spec
 import com.bloxbean.cardano.client.transaction.spec.*
 import com.bloxbean.cardano.client.transaction.util.TransactionUtil
-import org.bouncycastle.crypto.AsymmetricCipherKeyPair
-import org.bouncycastle.crypto.generators.Ed25519KeyPairGenerator
-import org.bouncycastle.crypto.params.{
-    Ed25519KeyGenerationParameters,
-    Ed25519PrivateKeyParameters,
-    Ed25519PublicKeyParameters
-}
+import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
 import org.bouncycastle.crypto.signers.Ed25519Signer
 import org.scalacheck.Prop.forAll
 import scalus.*
@@ -28,7 +22,6 @@ import upickle.default.*
 
 import java.math.BigInteger
 import java.nio.file.{Files, Path}
-import java.security.SecureRandom
 import java.util
 import scala.jdk.CollectionConverters.*
 import scala.language.implicitConversions
@@ -247,24 +240,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         val target = BitcoinValidator.compactBitsToTarget(bits)
         val timestamp = blockHeader.timestamp
 
-        val keyPairGenerator = new Ed25519KeyPairGenerator()
-        val RANDOM = new SecureRandom()
-        keyPairGenerator.init(new Ed25519KeyGenerationParameters(RANDOM))
-        val asymmetricCipherKeyPair: AsymmetricCipherKeyPair = keyPairGenerator.generateKeyPair()
-        val privateKey: Ed25519PrivateKeyParameters =
-            asymmetricCipherKeyPair.getPrivate.asInstanceOf[Ed25519PrivateKeyParameters];
-        val publicKeyParams: Ed25519PublicKeyParameters =
-            asymmetricCipherKeyPair.getPublic.asInstanceOf[Ed25519PublicKeyParameters];
-        val publicKey: ByteString = ByteString.fromArray(publicKeyParams.getEncoded)
-
-        val signature = signMessage(hash, privateKey)
-
         val redeemer = Action
-            .NewTip(
-              blockHeader,
-              publicKey,
-              signature
-            )
+            .NewTip(blockHeader)
             .toData
 
         println(s"Redeemer size: ${redeemer.toCbor.length}")
@@ -293,7 +270,6 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           Seq.empty
         )
         println(s"Tx size: ${tx.serialize().length}")
-        import scalus.uplc.TermDSL.given
         val applied = BitcoinContract.bitcoinProgram $ scriptContext.toData
         println(s"Validator size: ${BitcoinContract.bitcoinProgram.flatEncoded.length}")
         BitcoinValidator.validate(scriptContext.toData)
