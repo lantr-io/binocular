@@ -36,6 +36,10 @@ object BitcoinValidator extends Validator {
     val PowLimit: BigInt =
         byteStringToInteger(true, hex"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
 
+    // Binocular protocol parameters
+    val MaturationConfirmations: BigInt = 100 // Blocks needed for promotion to confirmed state
+    val ChallengeAging: BigInt = 200 * 60 // 200 minutes in seconds (challenge period)
+
     case class CoinbaseTx(
         version: ByteString,
         inputScriptSigAndSequence: ByteString,
@@ -57,18 +61,31 @@ object BitcoinValidator extends Validator {
 
         inline def timestamp: BigInt = byteStringToInteger(false, bh.bytes.slice(68, 4))
 
+    case class BlockNode(
+        prevBlockHash: BlockHash,  // 32-byte hash of previous block (for chain walking)
+        chainwork: BigInt,          // Cumulative proof-of-work from genesis
+        addedTimestamp: BigInt,     // When this block was added on-chain (for 200-min rule)
+        children: List[BlockHash]   // Hashes of child blocks (for tree navigation)
+    ) derives FromData,
+          ToData
+
     case class ChainState(
+        // Confirmed state
         blockHeight: BigInt,
         blockHash: BlockHash,
         currentTarget: CompactBits,
         blockTimestamp: BigInt,
         recentTimestamps: List[BigInt], // Newest first
-        previousDifficultyAdjustmentTimestamp: BigInt
+        previousDifficultyAdjustmentTimestamp: BigInt,
+        confirmedBlocksRoot: MerkleRoot, // Merkle tree root of confirmed block hashes
+
+        // Forks tree
+        forksTree: scalus.prelude.AssocMap[BlockHash, BlockNode] // Block hash → BlockNode mapping
     ) derives FromData,
           ToData
 
     enum Action derives FromData, ToData:
-        case NewTip(blockHeader: BlockHeader)
+        case UpdateOracle(blockHeaders: List[BlockHeader])
 
     /// Bitcoin block header serialization
     //    def serializeBlockHeader(blockHeader: BlockHeader): ByteString =
@@ -305,6 +322,154 @@ object BitcoinValidator extends Validator {
                 if value >= head then List.Cons(value, sortedValues)
                 else List.Cons(head, insertReverseSorted(value, tail))
 
+    // Helper: Lookup block in forks tree by hash
+    def lookupBlock(forksTree: scalus.prelude.AssocMap[BlockHash, BlockNode], key: BlockHash): Option[BlockNode] =
+        forksTree.find((k, _) => k == key) match
+            case scalus.prelude.Option.Some((_, value)) => scalus.prelude.Option.Some(value)
+            case scalus.prelude.Option.None => scalus.prelude.Option.None
+
+    // Canonical chain selection - matches Algorithm 9 in Whitepaper
+    // Selects the fork with highest cumulative chainwork
+    def selectCanonicalChain(forksTree: scalus.prelude.AssocMap[BlockHash, BlockNode]): Option[BlockHash] =
+        // Find all tips (blocks with no children) and select one with max chainwork
+        def findMaxChainworkTip(
+            entries: List[(BlockHash, BlockNode)],
+            currentBest: Option[(BlockHash, BigInt)]
+        ): Option[BlockHash] =
+            entries match
+                case List.Nil =>
+                    currentBest.map(_._1)
+                case List.Cons((hash, node), tail) =>
+                    // A tip has no children
+                    if node.children.isEmpty then
+                        val newBest = currentBest match
+                            case scalus.prelude.Option.None =>
+                                scalus.prelude.Option.Some((hash, node.chainwork))
+                            case scalus.prelude.Option.Some((_, maxChainwork)) =>
+                                if node.chainwork > maxChainwork then
+                                    scalus.prelude.Option.Some((hash, node.chainwork))
+                                else
+                                    currentBest
+                        findMaxChainworkTip(tail, newBest)
+                    else
+                        findMaxChainworkTip(tail, currentBest)
+
+        findMaxChainworkTip(forksTree.toList, scalus.prelude.Option.None)
+
+    // Add block to forks tree - matches Transition 1 in Whitepaper
+    def addBlockToForksTree(
+        forksTree: scalus.prelude.AssocMap[BlockHash, BlockNode],
+        blockHeader: BlockHeader,
+        confirmedTip: BlockHash,
+        confirmedChainwork: BigInt,
+        currentTime: BigInt
+    ): scalus.prelude.AssocMap[BlockHash, BlockNode] =
+        val hash = blockHeaderHash(blockHeader)
+        val prevHash = blockHeader.prevBlockHash
+
+        // Check parent exists (in forksTree OR is confirmed tip)
+        val parentExists = lookupBlock(forksTree, prevHash).isDefined || prevHash == confirmedTip
+        require(parentExists, "Parent block not found")
+
+        // Calculate chainwork: parent chainwork + work from this block
+        val parentChainwork = if prevHash == confirmedTip then
+            confirmedChainwork
+        else
+            lookupBlock(forksTree, prevHash).getOrFail("Parent not in forks tree").chainwork
+
+        val target = compactBitsToTarget(blockHeader.bits)
+        val blockWork = PowLimit / target
+        val newChainwork = parentChainwork + blockWork
+
+        // Create BlockNode
+        val node = BlockNode(
+            prevBlockHash = prevHash,
+            chainwork = newChainwork,
+            addedTimestamp = currentTime,
+            children = List.Nil
+        )
+
+        // Insert into forksTree
+        val treeWithNewNode = forksTree.insert(hash, node)
+
+        // Update parent's children list (if parent is in forks tree)
+        lookupBlock(forksTree, prevHash) match
+            case scalus.prelude.Option.Some(parentNode) =>
+                val updatedParent = BlockNode(
+                    prevBlockHash = parentNode.prevBlockHash,
+                    chainwork = parentNode.chainwork,
+                    addedTimestamp = parentNode.addedTimestamp,
+                    children = List.Cons(hash, parentNode.children)
+                )
+                treeWithNewNode.insert(prevHash, updatedParent)
+            case scalus.prelude.Option.None =>
+                // Parent is confirmed tip, no update needed
+                treeWithNewNode
+
+    // Block promotion (maturation) - matches Algorithm 10 in Whitepaper
+    // Returns (list of promoted block hashes, updated forks tree with promoted blocks removed)
+    def promoteQualifiedBlocks(
+        forksTree: scalus.prelude.AssocMap[BlockHash, BlockNode],
+        confirmedTip: BlockHash,
+        currentTime: BigInt
+    ): (List[BlockHash], scalus.prelude.AssocMap[BlockHash, BlockNode]) =
+        // Find canonical chain
+        selectCanonicalChain(forksTree) match
+            case scalus.prelude.Option.None =>
+                // No blocks in forks tree
+                (List.Nil, forksTree)
+            case scalus.prelude.Option.Some(canonicalTip) =>
+                // Walk back from canonical tip to confirmed tip
+                def walkChain(
+                    currentHash: BlockHash,
+                    acc: List[(BlockHash, BlockNode)]
+                ): List[(BlockHash, BlockNode)] =
+                    if currentHash == confirmedTip then acc
+                    else
+                        lookupBlock(forksTree, currentHash) match
+                            case scalus.prelude.Option.Some(blockNode) =>
+                                walkChain(blockNode.prevBlockHash, List.Cons((currentHash, blockNode), acc))
+                            case scalus.prelude.Option.None =>
+                                fail("Canonical chain broken")
+
+                val chain = walkChain(canonicalTip, List.Nil)
+
+                // Identify promotable blocks (from oldest to newest)
+                def identifyPromotable(
+                    blocks: List[(BlockHash, BlockNode)],
+                    totalDepth: BigInt,
+                    accumulated: List[BlockHash]
+                ): List[BlockHash] =
+                    blocks match
+                        case List.Nil => accumulated
+                        case List.Cons((hash, node), tail) =>
+                            val depth = totalDepth
+                            val age = currentTime - node.addedTimestamp
+
+                            if depth >= MaturationConfirmations && age >= ChallengeAging then
+                                // This block qualifies for promotion
+                                identifyPromotable(tail, totalDepth - 1, List.Cons(hash, accumulated))
+                            else
+                                // Stop at first non-qualified block
+                                accumulated
+
+                val chainLength = chain.size
+                val promotableBlocks = identifyPromotable(chain, chainLength, List.Nil)
+
+                // Remove promoted blocks from forks tree
+                def removeBlocks(
+                    tree: scalus.prelude.AssocMap[BlockHash, BlockNode],
+                    blocksToRemove: List[BlockHash]
+                ): scalus.prelude.AssocMap[BlockHash, BlockNode] =
+                    blocksToRemove match
+                        case List.Nil => tree
+                        case List.Cons(hash, tail) =>
+                            removeBlocks(tree.delete(hash), tail)
+
+                val updatedTree = removeBlocks(forksTree, promotableBlocks)
+
+                (promotableBlocks, updatedTree)
+
     // Difficulty adjustment - matches GetNextWorkRequired() in pow.cpp:14-48
     def getNextWorkRequired(
         nHeight: BigInt,
@@ -395,7 +560,9 @@ object BitcoinValidator extends Validator {
           currentTarget = nextDifficulty,
           blockTimestamp = blockTime,
           recentTimestamps = newTimestamps,
-          previousDifficultyAdjustmentTimestamp = newDifficultyAdjustmentTimestamp
+          previousDifficultyAdjustmentTimestamp = newDifficultyAdjustmentTimestamp,
+          confirmedBlocksRoot = prevState.confirmedBlocksRoot, // Preserve confirmed blocks root (updated separately)
+          forksTree = prevState.forksTree // Preserve forks tree (will be updated separately)
         )
 
     def verifyNewTip(
@@ -409,7 +576,7 @@ object BitcoinValidator extends Validator {
 
         require(validNewState, "New state does not match expected state")
 
-    override def spend(datum: Option[Datum], redeemer: Datum, tx: TxInfo, outRef: TxOutRef): Unit = {
+    inline override def spend(datum: Option[Datum], redeemer: Datum, tx: TxInfo, outRef: TxOutRef): Unit = {
         val action = redeemer.to[Action]
         val intervalStartInSeconds = tx.validRange.from.boundType match
             case IntervalBoundType.Finite(time) => time / 1000
@@ -421,14 +588,21 @@ object BitcoinValidator extends Validator {
                 case OutputDatum.OutputDatum(datum) => datum.to[ChainState]
                 case _                              => fail("No datum")
         action match
-            case Action.NewTip(blockHeader) =>
+            case Action.UpdateOracle(blockHeaders) =>
+                // TODO: Implement full UpdateOracle logic
+                // For now, just validate the new state matches expected
                 val state = datum.getOrFail("No datum")
-                verifyNewTip(
-                  intervalStartInSeconds,
-                  prevState,
-                  state,
-                  blockHeader
-                )
+                // Simplified: just validate first header for now
+                blockHeaders match
+                    case List.Cons(header, _) =>
+                        verifyNewTip(
+                          intervalStartInSeconds,
+                          prevState,
+                          state,
+                          header
+                        )
+                    case List.Nil =>
+                        fail("Empty block headers list")
     }
 
     def reverse(bs: ByteString): ByteString =

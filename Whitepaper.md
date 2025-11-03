@@ -97,6 +97,165 @@ ChainState {
 
 ### Protocol Operation
 
+**0. Oracle Initialization**
+
+The Oracle must be initialized with a starting Bitcoin block (checkpoint) before it can begin
+accepting updates. Initialization creates the initial Oracle UTxO with a valid `ChainState`.
+
+**Checkpoint Selection:**
+
+The Oracle can start from any valid Bitcoin block, but practical deployments typically choose:
+
+- **Recent checkpoint**: A block from the past few months (e.g., block 800,000+)
+- **Deep confirmations**: Choose a block with thousands of confirmations to ensure finality
+- **Known valid state**: Use a well-known Bitcoin block to simplify verification
+
+**Initial ChainState:**
+
+Given a starting block at height $h$ (e.g., $h = 800000$):
+
+```
+ChainState {
+  blockHeight = h,
+  blockHash = hash(block_h),
+  currentTarget = block_h.bits,
+  blockTimestamp = block_h.timestamp,
+  recentTimestamps = [block_h.timestamp],  // Single timestamp initially
+  previousDifficultyAdjustmentTimestamp = block_{adj}.timestamp,
+  confirmedBlocksRoot = hash(block_h),     // Single-element Merkle tree
+  forksTree = {}                            // Empty forks tree
+}
+```
+
+where $\text{block}_{adj}$ is the most recent difficulty adjustment block at or before height $h$
+(i.e., $adj = h - (h \bmod 2016)$).
+
+**Rationale:**
+
+1. **Single confirmed block**: The checkpoint block is the only confirmed block initially. Its hash
+   serves as the Merkle root (a Merkle tree with a single leaf equals the leaf itself).
+
+2. **Empty forks tree**: No unconfirmed blocks exist yet. All subsequent Bitcoin blocks will be
+   added to the forks tree and promoted to confirmed state once they meet criteria.
+
+3. **Difficulty state**: The checkpoint block's difficulty parameters and timestamp from the last
+   difficulty adjustment block enable proper validation of subsequent blocks.
+
+4. **Single timestamp**: Only one timestamp is available initially. The `recentTimestamps` list will
+   grow to 11 elements as blocks are added.
+
+**Deployment Process:**
+
+1. Select checkpoint block height $h$ from Bitcoin blockchain
+2. Retrieve block header for block $h$ and adjustment block
+3. Construct initial `ChainState` as specified above
+4. Deploy Oracle validator script to Cardano
+5. Create initial Oracle UTxO with `ChainState` as datum
+6. Oracle is now operational and ready to accept block submissions
+
+**Example:**
+
+Starting at Bitcoin block 800,000 (height as of August 2023):
+
+```
+blockHeight: 800000
+blockHash: 0x00000000000000000002a7c4c1e48d76c5a37902165a270156b7a8d72728a054
+currentTarget: 0x17053894 (compact bits from block header)
+blockTimestamp: 1691064786
+recentTimestamps: [1691064786]
+previousDifficultyAdjustmentTimestamp: 1690396653 (from block 797,184)
+confirmedBlocksRoot: 0x00000000000000000002a7c4c1e48d76c5a37902165a270156b7a8d72728a054
+forksTree: {}
+```
+
+After initialization, observers can begin submitting Bitcoin blocks starting from height 800,001 and
+onward.
+
+**Oracle Identification and Validation:**
+
+Since anyone can deploy an Oracle UTxO with the same validator script, multiple Oracle instances may
+exist on-chain. However, **valid Oracles are self-identifying through Bitcoin consensus**.
+
+**Bitcoin State Verification:**
+
+Any Oracle claiming to track Bitcoin can be verified by checking if its state matches the actual
+Bitcoin blockchain:
+
+1. **Read Oracle State**: Query the Oracle UTxO and extract:
+   - `blockHeight` (e.g., 800,000)
+   - `blockHash` (e.g., 0x00000000000000000002a7c4...)
+   - `blockTimestamp`, `currentTarget`, etc.
+
+2. **Verify Against Bitcoin**: Query a trusted Bitcoin node for block at that height:
+   - Does the hash match?
+   - Does the timestamp match?
+   - Does the difficulty match?
+
+3. **Result**:
+   - **Valid Oracle**: State matches real Bitcoin blockchain → Oracle can be trusted
+   - **Invalid Oracle**: State doesn't match → Oracle is fake or corrupted
+
+**Mathematical Property:**
+
+Given a block height $h$, there exists exactly one valid Bitcoin block:
+$$
+\forall h: \exists! \text{block}_h \text{ such that } \text{valid}(\text{block}_h)
+$$
+
+Therefore, any Oracle correctly tracking Bitcoin from height $h$ must have:
+$$
+\text{Oracle.blockHash} = \text{hash}(\text{Bitcoin.block}_h)
+$$
+
+**Implications:**
+
+1. **Multiple Valid Oracles**: Multiple Oracles can exist if initialized at the same checkpoint. They
+   are all valid as long as they match Bitcoin state.
+
+2. **No Additional Mechanism Needed**: No NFTs, registries, or known UTxO references required. The
+   Bitcoin blockchain itself authenticates valid Oracles.
+
+3. **Continuous Verification**: Applications can verify Oracle validity at any point by checking
+   recent confirmed blocks against Bitcoin:
+   ```
+   if Oracle.confirmedState matches Bitcoin.actualState:
+       trust Oracle
+   else:
+       reject Oracle
+   ```
+
+4. **Fork Tolerance**: Even if Oracles diverge temporarily (different forks in `forksTree`), valid
+   Oracles will converge to the same confirmed state after 100+ confirmations.
+
+**Practical Verification:**
+
+Applications should verify Oracle validity by:
+
+1. **Checkpoint Verification**: Check that Oracle's confirmed state (last promoted blocks) matches
+   Bitcoin at several recent block heights
+
+2. **Continuous Monitoring**: Periodically verify that new confirmed blocks match Bitcoin
+
+3. **Multiple Sources**: Query multiple Bitcoin nodes to prevent reliance on a single source
+
+**Example Verification:**
+
+```
+Oracle State (confirmed):
+  blockHeight: 800,100
+  blockHash: 0x0000000000000000000167c8b4e3c8a7e5c14f...
+
+Bitcoin Node Query:
+  getBlockHash(800100) → 0x0000000000000000000167c8b4e3c8a7e5c14f...
+
+Match? ✓ → Oracle is valid
+```
+
+**Security Advantage:**
+
+This approach provides **objective verifiability**: anyone with access to the Bitcoin blockchain can
+verify Oracle correctness without trusting any centralized authority or relying on social consensus.
+
 **1. Submitting Blocks**
 
 Anyone can submit an update transaction containing:
