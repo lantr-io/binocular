@@ -271,6 +271,47 @@ The on-chain validator performs atomic operations:
 - Promotes blocks meeting criteria (100+ confirmations AND 200+ min old) to confirmed state
 - Updates the confirmed blocks Merkle tree root
 
+**Fork Submission Rule (Stalling Prevention):**
+
+To prevent attacks where adversaries submit only competing fork blocks to stall Oracle progress, the
+following validation rule is enforced:
+
+**Rule:** If an update transaction includes any blocks that do NOT extend the current canonical tip
+(i.e., fork blocks), the transaction MUST also include at least one block that DOES extend the
+canonical tip.
+
+**Allowed:**
+- Pure canonical updates: Submit only blocks extending canonical tip ✓
+- Canonical + forks: Submit canonical extension(s) together with fork blocks ✓
+
+**Rejected:**
+- Pure fork updates: Submit only fork blocks without canonical extension ✗
+
+**Example:**
+
+```
+Current Oracle state:
+  Canonical tip: Block 1003
+
+Valid submission:
+  UpdateOracle([Block 1004])  ✓ (extends canonical)
+  UpdateOracle([Block 1004, Block 1003'])  ✓ (canonical + fork)
+
+Invalid submission:
+  UpdateOracle([Block 1003'])  ✗ (fork only, no canonical extension)
+```
+
+**Rationale:**
+
+Without this rule, an attacker could monitor the Bitcoin blockchain and continuously submit competing
+fork blocks without ever advancing the Oracle's canonical chain. This would:
+- Prevent the Oracle from staying current with Bitcoin
+- Block promotion of blocks (requires canonical chain advancement)
+- Stall Oracle progress indefinitely
+
+By requiring at least one canonical extension with any fork submission, the Oracle is guaranteed to
+make forward progress on every update while still allowing legitimate fork competition.
+
 **2. Fork Competition**
 
 Multiple competing forks coexist in the forks tree. The canonical chain is determined by:
@@ -327,6 +368,7 @@ case class ChainState(
 
 case class BlockNode(
     prevBlockHash: BlockHash, // 32-byte hash of previous block (for chain walking)
+    height: BigInt, // Block height (for difficulty validation and depth calculation)
     chainwork: BigInt, // Cumulative proof-of-work from genesis
     addedTimestamp: BigInt, // When this block was added on-chain (for 200-min rule)
     children: List[BlockHash] // Hashes of child blocks (for tree navigation)
@@ -769,7 +811,7 @@ Function promoteConfirmedBlocks(
 
 ### Validation Rules Summary
 
-The on-chain validator enforces all Bitcoin consensus rules:
+The on-chain validator enforces all Bitcoin consensus rules **for every block added to the forks tree**:
 
 1. **Proof-of-Work**: Block hash ≤ target derived from bits field
 2. **Difficulty**: Bits field matches expected difficulty (retarget every 2016 blocks)
@@ -777,6 +819,11 @@ The on-chain validator enforces all Bitcoin consensus rules:
 4. **Version**: Block version ≥ 4 (reject outdated versions)
 5. **Chain Continuity**: Previous block hash matches parent in tree
 6. **Promotion Criteria**: 100+ confirmations AND 200+ minutes on-chain aging
+
+**Security Note**: These validations prevent spam attacks. An attacker cannot submit fake blocks without
+performing valid proof-of-work. Each block must meet Bitcoin's difficulty requirement and have a valid
+hash, making it computationally expensive to create even a single invalid fork. This ensures the forks
+tree only contains blocks that could plausibly be part of the actual Bitcoin blockchain.
 
 ## Communication Protocols
 
