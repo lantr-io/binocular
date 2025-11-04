@@ -530,12 +530,37 @@ object BitcoinValidator extends Validator {
         forksTree: scalus.prelude.AssocMap[BlockHash, BlockNode],
         confirmedTip: BlockHash
     ): Unit = {
+        // RULE 1: Check for duplicate blocks in submission
+        def checkDuplicates(
+            headers: List[BlockHeader],
+            seen: List[BlockHash]
+        ): Unit = {
+            headers match
+                case List.Nil => ()
+                case List.Cons(header, tail) =>
+                    val hash = blockHeaderHash(header)
+                    // Check if hash already in seen list
+                    def contains(list: List[BlockHash], target: BlockHash): Boolean = {
+                        list match
+                            case List.Nil => false
+                            case List.Cons(h, t) =>
+                                if h == target then true
+                                else contains(t, target)
+                    }
+                    if contains(seen, hash) then
+                        fail("Duplicate block in submission")
+                    else
+                        checkDuplicates(tail, List.Cons(hash, seen))
+        }
+
+        checkDuplicates(blockHeaders, List.Nil)
+
         // Find current canonical tip
         val canonicalTip = selectCanonicalChain(forksTree) match
             case scalus.prelude.Option.Some(tip) => tip
             case scalus.prelude.Option.None => confirmedTip
 
-        // Classify blocks: canonical extensions vs others (forks)
+        // RULE 2: Classify blocks: canonical extensions vs others (forks)
         def classifyBlocks(
             headers: List[BlockHeader],
             canonicalExts: BigInt,
@@ -555,7 +580,7 @@ object BitcoinValidator extends Validator {
 
         val (canonicalCount, forkCount) = classifyBlocks(blockHeaders, BigInt(0), BigInt(0))
 
-        // RULE: If submitting any forks, must include at least one canonical extension
+        // RULE 3: If submitting any forks, must include at least one canonical extension
         if forkCount > BigInt(0) && canonicalCount == BigInt(0) then
             fail("Fork submission must include canonical tip extension")
     }
