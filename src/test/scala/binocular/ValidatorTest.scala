@@ -241,7 +241,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         val timestamp = blockHeader.timestamp
 
         val redeemer = Action
-            .NewTip(blockHeader)
+            .UpdateOracle(scalus.prelude.List.single(blockHeader))
             .toData
 
         println(s"Redeemer size: ${redeemer.toCbor.length}")
@@ -252,7 +252,9 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           currentTarget = bits,
           blockTimestamp = timestamp - 600,
           recentTimestamps = prelude.List(timestamp - 600),
-          previousDifficultyAdjustmentTimestamp = timestamp - 600 * BitcoinValidator.DifficultyAdjustmentInterval
+          previousDifficultyAdjustmentTimestamp = timestamp - 600 * BitcoinValidator.DifficultyAdjustmentInterval,
+          confirmedBlocksRoot = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse,
+          forksTree = scalus.prelude.AssocMap.empty
         )
         val newState = ChainState(
           prevState.blockHeight + 1,
@@ -260,7 +262,9 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           currentTarget = bits,
           blockTimestamp = timestamp,
           recentTimestamps = prelude.List(timestamp, timestamp - 600),
-          previousDifficultyAdjustmentTimestamp = timestamp - 600 * BitcoinValidator.DifficultyAdjustmentInterval
+          previousDifficultyAdjustmentTimestamp = timestamp - 600 * BitcoinValidator.DifficultyAdjustmentInterval,
+          confirmedBlocksRoot = hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c".reverse,
+          forksTree = scalus.prelude.AssocMap.empty
         )
         val (scriptContext, tx) = makeScriptContextAndTransaction(
           timestamp.toLong,
@@ -549,5 +553,254 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         // Height 1000: (1000 + 1) % 2016 = 1001 ≠ 0 (should not adjust)
         val result1000 = BitcoinValidator.getNextWorkRequired(1000, currentTarget, blockTime, firstBlockTime)
         assertEquals(result1000, currentTarget, "Height 1000 should not trigger difficulty adjustment")
+    }
+
+    // ===== FORK HANDLING TESTS =====
+
+    test("validateForkSubmission - reject duplicate blocks") {
+        // Create a block header
+        val blockHeader = BlockHeader(
+          hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
+        )
+
+        val confirmedTip = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
+        val forksTree: scalus.prelude.AssocMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] =
+            scalus.prelude.AssocMap.empty
+
+        // Submit same block twice - should fail
+        val duplicateHeaders = scalus.prelude.List.from(Seq(blockHeader, blockHeader))
+
+        intercept[RuntimeException] {
+            BitcoinValidator.validateForkSubmission(duplicateHeaders, forksTree, confirmedTip)
+        }
+    }
+
+    test("validateForkSubmission - accept pure canonical extension") {
+        val confirmedTip = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
+
+        // Block extending confirmed tip
+        val blockExtendingTip = BlockHeader(
+          hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
+        )
+
+        val forksTree: scalus.prelude.AssocMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] =
+            scalus.prelude.AssocMap.empty
+        val headers = scalus.prelude.List.single(blockExtendingTip)
+
+        // Should NOT throw - pure canonical extension is valid
+        BitcoinValidator.validateForkSubmission(headers, forksTree, confirmedTip)
+    }
+
+    test("validateForkSubmission - reject pure fork submission") {
+        val confirmedTip = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
+
+        // Block NOT extending confirmed tip (fork)
+        val forkBlock = BlockHeader(
+          hex"00000020ffffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
+        )
+
+        val forksTree: scalus.prelude.AssocMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] =
+            scalus.prelude.AssocMap.empty
+        val headers = scalus.prelude.List.single(forkBlock)
+
+        // Should throw - fork without canonical extension
+        intercept[RuntimeException] {
+            BitcoinValidator.validateForkSubmission(headers, forksTree, confirmedTip)
+        }
+    }
+
+    test("validateForkSubmission - accept canonical + fork") {
+        val confirmedTip = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
+
+        // Block extending confirmed tip (canonical)
+        val canonicalBlock = BlockHeader(
+          hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
+        )
+
+        // Block NOT extending confirmed tip (fork)
+        val forkBlock = BlockHeader(
+          hex"00000020ffffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
+        )
+
+        val forksTree: scalus.prelude.AssocMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] =
+            scalus.prelude.AssocMap.empty
+        val headers = scalus.prelude.List.from(Seq(canonicalBlock, forkBlock))
+
+        // Should NOT throw - canonical + fork is valid
+        BitcoinValidator.validateForkSubmission(headers, forksTree, confirmedTip)
+    }
+
+    test("addBlockToForksTree - block extending confirmed tip") {
+        val confirmedTip = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
+        val bits = hex"17030ecd".reverse
+
+        // Use current time for realistic validation
+        val currentTime = BigInt(System.currentTimeMillis() / 1000)
+        val blockTimestamp = currentTime - 100  // Block is 100 seconds in the past
+
+        val confirmedState = ChainState(
+          blockHeight = 1000,
+          blockHash = confirmedTip,
+          currentTarget = bits,
+          blockTimestamp = blockTimestamp - 600,
+          recentTimestamps = scalus.prelude.List(blockTimestamp - 600),
+          previousDifficultyAdjustmentTimestamp = blockTimestamp - 600 * 2016,
+          confirmedBlocksRoot = confirmedTip,
+          forksTree = scalus.prelude.AssocMap.empty
+        )
+
+        // Create a block extending the confirmed tip with valid timestamp
+        val newBlockHeader = BlockHeader(
+          hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
+        )
+
+        // Add block to empty forksTree - should succeed
+        val updatedForksTree = BitcoinValidator.addBlockToForksTree(
+          confirmedState.forksTree,
+          newBlockHeader,
+          confirmedState,
+          currentTime
+        )
+
+        val newBlockHash = BitcoinValidator.blockHeaderHash(newBlockHeader)
+
+        // Verify block was added
+        assert(BitcoinValidator.lookupBlock(updatedForksTree, newBlockHash).isDefined)
+
+        // Verify block extends confirmed tip
+        val blockNode = BitcoinValidator.lookupBlock(updatedForksTree, newBlockHash).getOrFail("Block not found")
+        assertEquals(blockNode.prevBlockHash, confirmedTip)
+        assertEquals(blockNode.height, BigInt(1001))
+    }
+
+    test("forksTree structure - block extending another block in tree") {
+        // Test the fork tree structure logic by manually creating nodes
+        val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
+        val firstBlockHash = hex"1001000000000000000000000000000000000000000000000000000000000000"
+        val secondBlockHash = hex"1002000000000000000000000000000000000000000000000000000000000000"
+
+        // Create first block node extending confirmed tip
+        val firstNode = BitcoinValidator.BlockNode(
+          prevBlockHash = confirmedTip,
+          height = 1001,
+          chainwork = BigInt(1000000),
+          addedTimestamp = BigInt(1234567890),
+          children = scalus.prelude.List.empty
+        )
+
+        // Create second block node extending first block
+        val secondNode = BitcoinValidator.BlockNode(
+          prevBlockHash = firstBlockHash,
+          height = 1002,
+          chainwork = BigInt(2000000),
+          addedTimestamp = BigInt(1234567900),
+          children = scalus.prelude.List.empty
+        )
+
+        // Build fork tree with both blocks
+        val forksTree = scalus.prelude.AssocMap.empty
+          .insert(firstBlockHash, firstNode)
+          .insert(secondBlockHash, secondNode)
+
+        // Verify both blocks are in tree
+        assert(BitcoinValidator.lookupBlock(forksTree, firstBlockHash).isDefined)
+        assert(BitcoinValidator.lookupBlock(forksTree, secondBlockHash).isDefined)
+
+        // Verify second block extends first
+        val retrievedSecondNode = BitcoinValidator.lookupBlock(forksTree, secondBlockHash).getOrFail("Second block not found")
+        assertEquals(retrievedSecondNode.prevBlockHash, firstBlockHash)
+        assertEquals(retrievedSecondNode.height, BigInt(1002))
+
+        // Verify canonical chain selection picks highest chainwork
+        val canonicalTip = BitcoinValidator.selectCanonicalChain(forksTree)
+        assertEquals(canonicalTip, scalus.prelude.Option.Some(secondBlockHash))
+    }
+
+    test("selectCanonicalChain - empty forksTree returns None") {
+        val emptyForksTree: scalus.prelude.AssocMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] =
+            scalus.prelude.AssocMap.empty
+        val result = BitcoinValidator.selectCanonicalChain(emptyForksTree)
+
+        assert(result.isEmpty)
+    }
+
+    test("selectCanonicalChain - single block returns that block") {
+        val confirmedTip = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
+        val blockHash = hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c".reverse
+
+        val blockNode = BitcoinValidator.BlockNode(
+          prevBlockHash = confirmedTip,
+          height = 1001,
+          chainwork = BigInt(1000000),
+          addedTimestamp = BigInt(1234567890),
+          children = scalus.prelude.List.empty
+        )
+
+        val forksTree = scalus.prelude.AssocMap.empty.insert(blockHash, blockNode)
+        val result = BitcoinValidator.selectCanonicalChain(forksTree)
+
+        assertEquals(result, scalus.prelude.Option.Some(blockHash))
+    }
+
+    test("selectCanonicalChain - selects highest chainwork") {
+        val confirmedTip = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
+
+        // Block with lower chainwork
+        val lowChainworkHash = hex"1111111111111111111111111111111111111111111111111111111111111111"
+        val lowChainworkNode = BitcoinValidator.BlockNode(
+          prevBlockHash = confirmedTip,
+          height = 1001,
+          chainwork = BigInt(1000000),
+          addedTimestamp = BigInt(1234567890),
+          children = scalus.prelude.List.empty
+        )
+
+        // Block with higher chainwork
+        val highChainworkHash = hex"2222222222222222222222222222222222222222222222222222222222222222"
+        val highChainworkNode = BitcoinValidator.BlockNode(
+          prevBlockHash = confirmedTip,
+          height = 1001,
+          chainwork = BigInt(2000000),
+          addedTimestamp = BigInt(1234567890),
+          children = scalus.prelude.List.empty
+        )
+
+        val forksTree = scalus.prelude.AssocMap.empty
+          .insert(lowChainworkHash, lowChainworkNode)
+          .insert(highChainworkHash, highChainworkNode)
+
+        val result = BitcoinValidator.selectCanonicalChain(forksTree)
+
+        // Should select block with highest chainwork
+        assertEquals(result, scalus.prelude.Option.Some(highChainworkHash))
+    }
+
+    test("forksTree after promotion - disconnected forks are valid") {
+        // Scenario: After promoting blocks 1001-1003, old fork 1001' remains
+        // This fork extends old confirmed tip 1000, not new tip 1003
+        // This is a VALID state - garbage collection will clean it up
+
+        val oldConfirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
+        val newConfirmedTip = hex"1003000000000000000000000000000000000000000000000000000000000000"
+
+        // Old fork block extending block 1000 (no longer confirmed tip)
+        val oldForkHash = hex"1001111111111111111111111111111111111111111111111111111111111111"
+        val oldForkNode = BitcoinValidator.BlockNode(
+          prevBlockHash = oldConfirmedTip,
+          height = 1001,
+          chainwork = BigInt(500000),
+          addedTimestamp = BigInt(1234567890),
+          children = scalus.prelude.List.empty
+        )
+
+        val forksTree = scalus.prelude.AssocMap.empty.insert(oldForkHash, oldForkNode)
+
+        // This state is valid even though oldFork doesn't extend newConfirmedTip
+        // The fork is "disconnected" but will be removed by garbage collection
+        assert(forksTree.toList.size == 1)
+
+        val node = BitcoinValidator.lookupBlock(forksTree, oldForkHash).getOrFail("Fork not found")
+        // Fork still points to old tip
+        assertEquals(node.prevBlockHash, oldConfirmedTip)
     }
 }
