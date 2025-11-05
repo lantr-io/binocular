@@ -256,16 +256,38 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           confirmedBlocksRoot = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse,
           forksTree = scalus.prelude.AssocMap.empty
         )
-        val newState = ChainState(
-          prevState.blockHeight + 1,
-          blockHash = hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c".reverse,
-          currentTarget = bits,
-          blockTimestamp = timestamp,
-          recentTimestamps = prelude.List(timestamp, timestamp - 600),
-          previousDifficultyAdjustmentTimestamp = timestamp - 600 * BitcoinValidator.DifficultyAdjustmentInterval,
-          confirmedBlocksRoot = hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c".reverse,
-          forksTree = scalus.prelude.AssocMap.empty
+
+        // Calculate chainwork for the new block (matching BitcoinValidator logic)
+        // When parent is confirmed tip, parent chainwork = compactBitsToTarget(confirmedState.currentTarget)
+        val parentChainwork = BitcoinValidator.compactBitsToTarget(prevState.currentTarget)
+        val blockWork = BitcoinValidator.PowLimit / target
+        val newBlockChainwork = parentChainwork + blockWork
+        val newBlockHeight = prevState.blockHeight + 1
+
+        // Expected state: block added to forks tree, but NOT promoted (doesn't meet 100 confirmations + 200 min criteria)
+        val newBlockNode = BitcoinValidator.BlockNode(
+          prevBlockHash = prevState.blockHash,
+          height = newBlockHeight,
+          chainwork = newBlockChainwork,
+          addedTimestamp = timestamp, // Uses blockHeader.timestamp, which is the block's timestamp
+          children = prelude.List.empty
         )
+        val newForksTree = scalus.prelude.AssocMap.singleton(hash, newBlockNode)
+
+        val newState = ChainState(
+          prevState.blockHeight, // Height unchanged - no promotion
+          blockHash = prevState.blockHash, // Hash unchanged - no promotion
+          currentTarget = prevState.currentTarget, // Target unchanged - no promotion
+          blockTimestamp = prevState.blockTimestamp, // Timestamp unchanged - no promotion
+          recentTimestamps = prevState.recentTimestamps, // Timestamps unchanged - no promotion
+          previousDifficultyAdjustmentTimestamp = prevState.previousDifficultyAdjustmentTimestamp, // Unchanged - no promotion
+          confirmedBlocksRoot = prevState.confirmedBlocksRoot, // Root unchanged - no promotion
+          forksTree = newForksTree // Block added to forks tree
+        )
+        println(s"Block prevHash: ${blockHeader.prevBlockHash.toHex}")
+        println(s"Expected forksTree size: ${newForksTree.toList.size}")
+        println(s"Expected newState.forksTree size: ${newState.forksTree.toList.size}")
+
         val (scriptContext, tx) = makeScriptContextAndTransaction(
           timestamp.toLong,
           prevState.toData,
@@ -276,7 +298,15 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         println(s"Tx size: ${tx.serialize().length}")
         val applied = BitcoinContract.bitcoinProgram $ scriptContext.toData
         println(s"Validator size: ${BitcoinContract.bitcoinProgram.flatEncoded.length}")
-        BitcoinValidator.validate(scriptContext.toData)
+
+        // Try to extract computed state for debugging
+        try {
+            BitcoinValidator.validate(scriptContext.toData)
+        } catch {
+            case e: Exception =>
+                println(s"Validation error: ${e.getMessage}")
+                throw e
+        }
         applied.evaluateDebug match
             case r: Result.Success => println(r)
             case r: Result.Failure => fail(r.toString)
@@ -400,6 +430,106 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           protocolVersion = 9
         )
         (scriptContext, tx)
+
+    // ===== TEST INFRASTRUCTURE HELPERS =====
+
+    /** Generate a sequence of valid timestamps for testing */
+    def makeTimestampSequence(baseTime: BigInt, count: Int, spacing: BigInt = 600): scalus.prelude.List[BigInt] = {
+        def buildSeq(remaining: Int, currentTime: BigInt, acc: List[BigInt]): List[BigInt] = {
+            if remaining == 0 then acc.reverse
+            else buildSeq(remaining - 1, currentTime - spacing, currentTime :: acc)
+        }
+        scalus.prelude.List.from(buildSeq(count, baseTime, Nil))
+    }
+
+    /** Calculate accumulated chainwork for a block */
+    def computeChainwork(parentChainwork: BigInt, target: BigInt): BigInt = {
+        // Chainwork formula: parent_chainwork + 2^256 / (target + 1)
+        // Simplified for testing: just add work based on target
+        val work = (BigInt(2).pow(256) / (target + 1))
+        parentChainwork + work
+    }
+
+    /** Build a simple forks tree with linear chain of blocks */
+    def buildSimpleForksTree(
+        confirmedTip: BitcoinValidator.BlockHash,
+        confirmedHeight: BigInt,
+        confirmedChainwork: BigInt,
+        blockCount: Int,
+        baseTimestamp: BigInt,
+        bits: BitcoinValidator.CompactBits
+    ): scalus.prelude.AssocMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] = {
+        val target = BitcoinValidator.compactBitsToTarget(bits)
+
+        def buildChain(
+            remaining: Int,
+            prevHash: BitcoinValidator.BlockHash,
+            height: BigInt,
+            chainwork: BigInt,
+            timestamp: BigInt,
+            tree: scalus.prelude.AssocMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode]
+        ): scalus.prelude.AssocMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] = {
+            if remaining == 0 then tree
+            else
+                // Create synthetic block hash (for testing only)
+                val blockHash = ByteString.fromArray(
+                  Array.fill(32)(((height % 256).toByte))
+                )
+                val newChainwork = computeChainwork(chainwork, target)
+                val node = BitcoinValidator.BlockNode(
+                  prevBlockHash = prevHash,
+                  height = height,
+                  chainwork = newChainwork,
+                  addedTimestamp = timestamp,
+                  children = scalus.prelude.List.empty
+                )
+                val updatedTree = tree.insert(blockHash, node)
+                buildChain(remaining - 1, blockHash, height + 1, newChainwork, timestamp + 600, updatedTree)
+        }
+
+        buildChain(
+          blockCount,
+          confirmedTip,
+          confirmedHeight + 1,
+          confirmedChainwork,
+          baseTimestamp,
+          scalus.prelude.AssocMap.empty
+        )
+    }
+
+    /** Build a test ChainState with populated forks tree */
+    def buildTestChainState(
+        blockHeight: BigInt,
+        blockHash: BitcoinValidator.BlockHash,
+        bits: BitcoinValidator.CompactBits,
+        baseTimestamp: BigInt,
+        forksTreeSize: Int = 0
+    ): BitcoinValidator.ChainState = {
+        val forksTree = if forksTreeSize > 0 then
+            buildSimpleForksTree(
+              blockHash,
+              blockHeight,
+              blockHeight * BigInt(1000000), // Simple chainwork approximation
+              forksTreeSize,
+              baseTimestamp + 600,
+              bits
+            )
+        else
+            scalus.prelude.AssocMap.empty
+
+        BitcoinValidator.ChainState(
+          blockHeight = blockHeight,
+          blockHash = blockHash,
+          currentTarget = bits,
+          blockTimestamp = baseTimestamp,
+          recentTimestamps = scalus.prelude.List(baseTimestamp),
+          previousDifficultyAdjustmentTimestamp = baseTimestamp - 600 * 2016,
+          confirmedBlocksRoot = blockHash,
+          forksTree = forksTree
+        )
+    }
+
+    // ===== EXISTING TESTS =====
 
     test("merkleRootFromInclusionProof - single transaction") {
         val txHash = hex"abcd1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
@@ -802,5 +932,108 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         val node = BitcoinValidator.lookupBlock(forksTree, oldForkHash).getOrFail("Fork not found")
         // Fork still points to old tip
         assertEquals(node.prevBlockHash, oldConfirmedTip)
+    }
+
+    // ===== UPDATE ORACLE UNIT TESTS =====
+
+    test("UpdateOracle - add single block to forks tree") {
+        // This tests adding a block to forks tree and verifying state changes
+        val baseTime = BigInt(System.currentTimeMillis() / 1000)
+        val bits = hex"17030ecd".reverse
+        val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
+
+        // Create initial state with empty forks tree
+        val prevState = buildTestChainState(
+          blockHeight = 1000,
+          blockHash = confirmedTip,
+          bits = bits,
+          baseTimestamp = baseTime - 1000,
+          forksTreeSize = 0
+        )
+
+        // Use real Bitcoin block header for valid PoW
+        val blockHeader = BlockHeader(
+          hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
+        )
+
+        // Manually compute expected new state
+        // After processing, the block should be in forks tree
+        val newBlockHash = BitcoinValidator.blockHeaderHash(blockHeader)
+        val target = BitcoinValidator.compactBitsToTarget(bits)
+        val newChainwork = computeChainwork(prevState.blockHeight * BigInt(1000000), target)
+
+        val expectedNode = BitcoinValidator.BlockNode(
+          prevBlockHash = prevState.blockHash,
+          height = prevState.blockHeight + 1,
+          chainwork = newChainwork,
+          addedTimestamp = baseTime,
+          children = scalus.prelude.List.empty
+        )
+
+        val expectedForksTree = prevState.forksTree.insert(newBlockHash, expectedNode)
+
+        val expectedState = BitcoinValidator.ChainState(
+          blockHeight = prevState.blockHeight,
+          blockHash = prevState.blockHash,
+          currentTarget = prevState.currentTarget,
+          blockTimestamp = prevState.blockTimestamp,
+          recentTimestamps = prevState.recentTimestamps,
+          previousDifficultyAdjustmentTimestamp = prevState.previousDifficultyAdjustmentTimestamp,
+          confirmedBlocksRoot = prevState.confirmedBlocksRoot,
+          forksTree = expectedForksTree
+        )
+
+        // Create redeemer
+        val redeemer = Action.UpdateOracle(scalus.prelude.List.single(blockHeader)).toData
+
+        // Create script context and transaction
+        val (scriptContext, tx) = makeScriptContextAndTransaction(
+          baseTime.toLong * 1000,
+          prevState.toData,
+          expectedState.toData,
+          redeemer,
+          Seq.empty
+        )
+
+        // Validate - should succeed
+        BitcoinValidator.validate(scriptContext.toData)
+
+        // Verify the computation internally matches
+        val result = BitcoinContract.bitcoinProgram $ scriptContext.toData
+        result.evaluateDebug match
+            case r: Result.Success =>
+                println("✓ UpdateOracle single block validation succeeded")
+            case r: Result.Failure =>
+                fail(s"Validation failed: $r")
+    }
+
+    test("UpdateOracle - reject empty block headers list") {
+        val baseTime = BigInt(System.currentTimeMillis() / 1000)
+        val bits = hex"17030ecd".reverse
+        val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
+
+        val prevState = buildTestChainState(
+          blockHeight = 1000,
+          blockHash = confirmedTip,
+          bits = bits,
+          baseTimestamp = baseTime - 1000,
+          forksTreeSize = 0
+        )
+
+        // Create redeemer with empty list
+        val redeemer = Action.UpdateOracle(scalus.prelude.List.empty).toData
+
+        val (scriptContext, tx) = makeScriptContextAndTransaction(
+          baseTime.toLong * 1000,
+          prevState.toData,
+          prevState.toData, // Expected state same as previous (no change)
+          redeemer,
+          Seq.empty
+        )
+
+        // Should fail with "Empty block headers list"
+        intercept[RuntimeException] {
+            BitcoinValidator.validate(scriptContext.toData)
+        }
     }
 }
