@@ -33,5 +33,10 @@ libraryDependencies ++= Seq(
   "com.monovore" %% "decline" % "2.5.0",
   "org.scalameta" %% "munit" % "1.2.0" % Test,
   "org.scalameta" %% "munit-scalacheck" % "1.2.0" % Test,
-  "org.scalacheck" %% "scalacheck" % "1.19.0" % Test
+  "org.scalacheck" %% "scalacheck" % "1.19.0" % Test,
+  // Testcontainers for integration testing
+  "com.dimafeng" %% "testcontainers-scala-core" % "0.41.5" % Test,
+  "com.dimafeng" %% "testcontainers-scala-munit" % "0.41.5" % Test,
+  // Yaci DevKit for Cardano local devnet
+  "com.bloxbean.cardano" % "yaci-cardano-test" % "0.1.0" % Test
 )
