@@ -25,6 +25,22 @@ import scala.jdk.CollectionConverters.*
   */
 object TransactionBuilders {
 
+    /** Compile BitcoinValidator to PlutusV3Script
+      *
+      * Uses the pre-compiled bitcoinProgram from BitcoinContract and converts
+      * it to a PlutusV3Script that can be used with cardano-client-lib.
+      *
+      * @return PlutusV3Script compiled from BitcoinValidator
+      */
+    def compiledBitcoinScript(): PlutusV3Script = {
+        PlutusV3Script
+          .builder()
+          .`type`("PlutusScriptV3")
+          .cborHex(BitcoinContract.bitcoinProgram.doubleCborHex)
+          .build()
+          .asInstanceOf[PlutusV3Script]
+    }
+
     /** Convert Scalus Data to Cardano PlutusData */
     def scalusDataToPlutusData(data: Data): PlutusData = {
         val cborBytes = data.toCbor // Array[Byte]

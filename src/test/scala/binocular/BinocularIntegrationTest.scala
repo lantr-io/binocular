@@ -18,12 +18,20 @@ import scala.jdk.CollectionConverters.*
   */
 class BinocularIntegrationTest extends YaciDevKitSpec {
 
-    // Get script address for testing (without full PlutusV3Script for now)
-    // We'll use a placeholder testnet script address
-    lazy val testScriptAddress: Address = {
-        // This is a valid testnet script address format (starts with addr_test1w)
-        // In production, this would be derived from the actual compiled PlutusV3 script
-        new Address("addr_test1wqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq8wwwj")
+    // Get the actual script address from compiled BitcoinValidator
+    lazy val bitcoinScript: PlutusV3Script = TransactionBuilders.compiledBitcoinScript()
+
+    lazy val scriptAddress: Address = TransactionBuilders.getScriptAddress(bitcoinScript)
+
+    test("Bitcoin script compiles and has valid address") {
+        // Verify script compiles
+        assert(bitcoinScript != null, "Script should compile")
+
+        // Verify address is valid testnet script address
+        val addr = scriptAddress.getAddress
+        assert(addr.startsWith("addr_test1"), s"Should be testnet address, got: $addr")
+        println(s"✓ Compiled Bitcoin validator script address: $addr")
+        println(s"✓ Script size: ${BitcoinContract.bitcoinProgram.flatEncoded.length} bytes")
     }
 
     test("Yaci DevKit container starts and has funded account".ignore) {
@@ -42,14 +50,14 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
             // Create genesis ChainState
             val genesisState = createGenesisState()
 
-            // Use test script address
-            println(s"Script address: ${testScriptAddress.getAddress}")
+            // Use actual compiled script address
+            println(s"Script address: ${scriptAddress.getAddress}")
 
             // Create initial UTXO at script address
             val result = TransactionBuilders.createInitialScriptUtxo(
               devKit.account,
               devKit.getBackendService,
-              testScriptAddress,
+              scriptAddress,
               genesisState,
               lovelaceAmount = 5_000_000L
             )
@@ -64,7 +72,7 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
 
                     // Verify UTXO exists at script address
                     Thread.sleep(2000) // Give indexer time to catch up
-                    val scriptUtxos = devKit.getUtxos(testScriptAddress.getAddress)
+                    val scriptUtxos = devKit.getUtxos(scriptAddress.getAddress)
                     assert(scriptUtxos.nonEmpty, "Script should have at least one UTXO")
 
                     val scriptUtxo = scriptUtxos.head
