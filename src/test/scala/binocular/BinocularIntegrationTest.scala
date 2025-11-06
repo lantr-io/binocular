@@ -1,5 +1,6 @@
 package binocular
 
+import com.bloxbean.cardano.client.address.Address
 import com.bloxbean.cardano.client.plutus.spec.PlutusV3Script
 import com.bloxbean.cardano.client.util.HexUtil
 import scalus.builtin.ByteString
@@ -17,11 +18,13 @@ import scala.jdk.CollectionConverters.*
   */
 class BinocularIntegrationTest extends YaciDevKitSpec {
 
-    // NOTE: Script compilation commented out for now - requires understanding cardano-client-lib PlutusV3Script API
-    // To implement: compile BitcoinContract.bitcoinProgram to PlutusV3Script
-    // val program = BitcoinContract.bitcoinProgram
-    // val uplc = program.flatEncoded
-    // Create PlutusV3Script from UPLC bytes
+    // Get script address for testing (without full PlutusV3Script for now)
+    // We'll use a placeholder testnet script address
+    lazy val testScriptAddress: Address = {
+        // This is a valid testnet script address format (starts with addr_test1w)
+        // In production, this would be derived from the actual compiled PlutusV3 script
+        new Address("addr_test1wqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq8wwwj")
+    }
 
     test("Yaci DevKit container starts and has funded account".ignore) {
         withYaciDevKit(YaciDevKitConfig(enableLogs = true)) { devKit =>
@@ -34,8 +37,44 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
         }
     }
 
-    // NOTE: Commented out - requires implementing PlutusV3Script creation
-    // test("Can create initial script UTXO with genesis state".ignore) { ... }
+    test("Can create initial script UTXO with genesis state".ignore) {
+        withYaciDevKit(YaciDevKitConfig(enableLogs = false)) { devKit =>
+            // Create genesis ChainState
+            val genesisState = createGenesisState()
+
+            // Use test script address
+            println(s"Script address: ${testScriptAddress.getAddress}")
+
+            // Create initial UTXO at script address
+            val result = TransactionBuilders.createInitialScriptUtxo(
+              devKit.account,
+              devKit.getBackendService,
+              testScriptAddress,
+              genesisState,
+              lovelaceAmount = 5_000_000L
+            )
+
+            result match {
+                case Right(txHash) =>
+                    println(s"Created initial UTXO, tx: $txHash")
+
+                    // Wait for confirmation
+                    val confirmed = devKit.waitForTransaction(txHash, maxAttempts = 30, delayMs = 2000)
+                    assert(confirmed, s"Transaction $txHash should confirm")
+
+                    // Verify UTXO exists at script address
+                    Thread.sleep(2000) // Give indexer time to catch up
+                    val scriptUtxos = devKit.getUtxos(testScriptAddress.getAddress)
+                    assert(scriptUtxos.nonEmpty, "Script should have at least one UTXO")
+
+                    val scriptUtxo = scriptUtxos.head
+                    assert(scriptUtxo.getAmount.asScala.head.getQuantity.longValue() == 5_000_000L, "Script UTXO should have correct amount")
+
+                case Left(error) =>
+                    fail(s"Failed to create initial UTXO: $error")
+            }
+        }
+    }
 
     test("Can query protocol parameters".ignore) {
         withYaciDevKit() { devKit =>

@@ -30,6 +30,7 @@ libraryDependencies ++= Seq(
   "net.i2p.crypto" % "eddsa" % "0.3.0",
   "com.bloxbean.cardano" % "cardano-client-lib" % "0.7.0",
   "com.bloxbean.cardano" % "cardano-client-backend-blockfrost" % "0.7.0",
+  "com.bloxbean.cardano" % "cardano-client-quicktx" % "0.7.0" % Test,
   "com.monovore" %% "decline" % "2.5.0",
   "org.scalameta" %% "munit" % "1.2.0" % Test,
   "org.scalameta" %% "munit-scalacheck" % "1.2.0" % Test,

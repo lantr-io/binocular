@@ -2,9 +2,13 @@ package binocular
 
 import com.bloxbean.cardano.client.account.Account
 import com.bloxbean.cardano.client.address.{Address, AddressProvider}
+import com.bloxbean.cardano.client.api.model.Amount
 import com.bloxbean.cardano.client.backend.api.BackendService
+import com.bloxbean.cardano.client.common.ADAConversionUtil
 import com.bloxbean.cardano.client.common.model.Networks
+import com.bloxbean.cardano.client.function.helper.SignerProviders
 import com.bloxbean.cardano.client.plutus.spec.{PlutusData, PlutusV3Script, Redeemer}
+import com.bloxbean.cardano.client.quicktx.{QuickTxBuilder, Tx}
 import com.bloxbean.cardano.client.transaction.spec.{Transaction, TransactionOutput}
 import com.bloxbean.cardano.client.util.HexUtil
 import scalus.builtin.{ByteString, Data, ToData}
@@ -123,20 +127,14 @@ object TransactionBuilders {
 
     /** Create initial script UTXO with genesis ChainState
       *
-      * NOTE: This is a simplified stub. Full implementation requires understanding
-      * the cardano-client-lib TxBuilder API which varies by version.
-      *
-      * For actual usage, construct the transaction manually using:
-      * 1. buildScriptOutput() to create the output
-      * 2. QuickTxBuilder or similar from cardano-client-lib
-      * 3. account.sign() to sign the transaction
-      * 4. backendService.getTransactionService.submitTransaction() to submit
+      * Uses QuickTx API to create a transaction that locks funds at the script address
+      * with the genesis ChainState as an inline datum.
       *
       * @param account the account to send funds from
       * @param backendService backend service for submitting transaction
       * @param scriptAddress the Binocular script address
       * @param genesisState the initial ChainState
-      * @param lovelaceAmount amount to lock at script
+      * @param lovelaceAmount amount to lock at script (default: 5 ADA)
       * @return Either error message or transaction hash
       */
     def createInitialScriptUtxo(
@@ -146,7 +144,34 @@ object TransactionBuilders {
         genesisState: BitcoinValidator.ChainState,
         lovelaceAmount: Long = 5_000_000L
     ): Either[String, String] = {
-        Left("Not implemented - requires cardano-client-lib TxBuilder integration. See docstring for manual approach.")
+        try {
+            // Convert ChainState to PlutusData for inline datum
+            val stateData = ToData.toData(genesisState)(using BitcoinValidator.ChainState.derived$ToData)
+            val plutusDatum = scalusDataToPlutusData(stateData)
+
+            // Create amount
+            val amount = Amount.lovelace(java.math.BigInteger.valueOf(lovelaceAmount))
+
+            // Build transaction using QuickTx API
+            val quickTxBuilder = new QuickTxBuilder(backendService)
+
+            val tx = new Tx()
+              .payToContract(scriptAddress.getAddress, amount, plutusDatum)
+              .from(account.baseAddress())
+
+            val result = quickTxBuilder.compose(tx)
+              .withSigner(SignerProviders.signerFrom(account))
+              .completeAndWait((msg: String) => println(s"[QuickTx] $msg"))
+
+            if (result.isSuccessful) {
+                Right(result.getValue)
+            } else {
+                Left(s"Transaction failed: ${result.getResponse}")
+            }
+        } catch {
+            case e: Exception =>
+                Left(s"Failed to create initial UTXO: ${e.getMessage}\n${e.getStackTrace.mkString("\n")}")
+        }
     }
 
     /** Helper to get protocol parameters as Scalus values for testing */
