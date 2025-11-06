@@ -1,6 +1,7 @@
 scalaVersion := "3.3.7"
 
-val scalusVersion = "0.13.0"
+//val scalusVersion = "0.13.0"
+val scalusVersion = "0.13.0+130-29efe4b8-SNAPSHOT"
 
 scalacOptions ++= Seq("-deprecation", "-feature")
 
@@ -29,8 +30,14 @@ libraryDependencies ++= Seq(
   "net.i2p.crypto" % "eddsa" % "0.3.0",
   "com.bloxbean.cardano" % "cardano-client-lib" % "0.7.0",
   "com.bloxbean.cardano" % "cardano-client-backend-blockfrost" % "0.7.0",
+  "com.bloxbean.cardano" % "cardano-client-quicktx" % "0.7.0" % Test,
   "com.monovore" %% "decline" % "2.5.0",
   "org.scalameta" %% "munit" % "1.2.0" % Test,
   "org.scalameta" %% "munit-scalacheck" % "1.2.0" % Test,
-  "org.scalacheck" %% "scalacheck" % "1.19.0" % Test
+  "org.scalacheck" %% "scalacheck" % "1.19.0" % Test,
+  // Testcontainers for integration testing
+  "com.dimafeng" %% "testcontainers-scala-core" % "0.41.5" % Test,
+  "com.dimafeng" %% "testcontainers-scala-munit" % "0.41.5" % Test,
+  // Yaci DevKit for Cardano local devnet
+  "com.bloxbean.cardano" % "yaci-cardano-test" % "0.1.0" % Test
 )

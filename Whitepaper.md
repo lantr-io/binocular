@@ -97,6 +97,165 @@ ChainState {
 
 ### Protocol Operation
 
+**0. Oracle Initialization**
+
+The Oracle must be initialized with a starting Bitcoin block (checkpoint) before it can begin
+accepting updates. Initialization creates the initial Oracle UTxO with a valid `ChainState`.
+
+**Checkpoint Selection:**
+
+The Oracle can start from any valid Bitcoin block, but practical deployments typically choose:
+
+- **Recent checkpoint**: A block from the past few months (e.g., block 800,000+)
+- **Deep confirmations**: Choose a block with thousands of confirmations to ensure finality
+- **Known valid state**: Use a well-known Bitcoin block to simplify verification
+
+**Initial ChainState:**
+
+Given a starting block at height $h$ (e.g., $h = 800000$):
+
+```
+ChainState {
+  blockHeight = h,
+  blockHash = hash(block_h),
+  currentTarget = block_h.bits,
+  blockTimestamp = block_h.timestamp,
+  recentTimestamps = [block_h.timestamp],  // Single timestamp initially
+  previousDifficultyAdjustmentTimestamp = block_{adj}.timestamp,
+  confirmedBlocksRoot = hash(block_h),     // Single-element Merkle tree
+  forksTree = {}                            // Empty forks tree
+}
+```
+
+where $\text{block}_{adj}$ is the most recent difficulty adjustment block at or before height $h$
+(i.e., $adj = h - (h \bmod 2016)$).
+
+**Rationale:**
+
+1. **Single confirmed block**: The checkpoint block is the only confirmed block initially. Its hash
+   serves as the Merkle root (a Merkle tree with a single leaf equals the leaf itself).
+
+2. **Empty forks tree**: No unconfirmed blocks exist yet. All subsequent Bitcoin blocks will be
+   added to the forks tree and promoted to confirmed state once they meet criteria.
+
+3. **Difficulty state**: The checkpoint block's difficulty parameters and timestamp from the last
+   difficulty adjustment block enable proper validation of subsequent blocks.
+
+4. **Single timestamp**: Only one timestamp is available initially. The `recentTimestamps` list will
+   grow to 11 elements as blocks are added.
+
+**Deployment Process:**
+
+1. Select checkpoint block height $h$ from Bitcoin blockchain
+2. Retrieve block header for block $h$ and adjustment block
+3. Construct initial `ChainState` as specified above
+4. Deploy Oracle validator script to Cardano
+5. Create initial Oracle UTxO with `ChainState` as datum
+6. Oracle is now operational and ready to accept block submissions
+
+**Example:**
+
+Starting at Bitcoin block 800,000 (height as of August 2023):
+
+```
+blockHeight: 800000
+blockHash: 0x00000000000000000002a7c4c1e48d76c5a37902165a270156b7a8d72728a054
+currentTarget: 0x17053894 (compact bits from block header)
+blockTimestamp: 1691064786
+recentTimestamps: [1691064786]
+previousDifficultyAdjustmentTimestamp: 1690396653 (from block 797,184)
+confirmedBlocksRoot: 0x00000000000000000002a7c4c1e48d76c5a37902165a270156b7a8d72728a054
+forksTree: {}
+```
+
+After initialization, observers can begin submitting Bitcoin blocks starting from height 800,001 and
+onward.
+
+**Oracle Identification and Validation:**
+
+Since anyone can deploy an Oracle UTxO with the same validator script, multiple Oracle instances may
+exist on-chain. However, **valid Oracles are self-identifying through Bitcoin consensus**.
+
+**Bitcoin State Verification:**
+
+Any Oracle claiming to track Bitcoin can be verified by checking if its state matches the actual
+Bitcoin blockchain:
+
+1. **Read Oracle State**: Query the Oracle UTxO and extract:
+   - `blockHeight` (e.g., 800,000)
+   - `blockHash` (e.g., 0x00000000000000000002a7c4...)
+   - `blockTimestamp`, `currentTarget`, etc.
+
+2. **Verify Against Bitcoin**: Query a trusted Bitcoin node for block at that height:
+   - Does the hash match?
+   - Does the timestamp match?
+   - Does the difficulty match?
+
+3. **Result**:
+   - **Valid Oracle**: State matches real Bitcoin blockchain → Oracle can be trusted
+   - **Invalid Oracle**: State doesn't match → Oracle is fake or corrupted
+
+**Mathematical Property:**
+
+Given a block height $h$, there exists exactly one valid Bitcoin block:
+$$
+\forall h: \exists! \text{block}_h \text{ such that } \text{valid}(\text{block}_h)
+$$
+
+Therefore, any Oracle correctly tracking Bitcoin from height $h$ must have:
+$$
+\text{Oracle.blockHash} = \text{hash}(\text{Bitcoin.block}_h)
+$$
+
+**Implications:**
+
+1. **Multiple Valid Oracles**: Multiple Oracles can exist if initialized at the same checkpoint. They
+   are all valid as long as they match Bitcoin state.
+
+2. **No Additional Mechanism Needed**: No NFTs, registries, or known UTxO references required. The
+   Bitcoin blockchain itself authenticates valid Oracles.
+
+3. **Continuous Verification**: Applications can verify Oracle validity at any point by checking
+   recent confirmed blocks against Bitcoin:
+   ```
+   if Oracle.confirmedState matches Bitcoin.actualState:
+       trust Oracle
+   else:
+       reject Oracle
+   ```
+
+4. **Fork Tolerance**: Even if Oracles diverge temporarily (different forks in `forksTree`), valid
+   Oracles will converge to the same confirmed state after 100+ confirmations.
+
+**Practical Verification:**
+
+Applications should verify Oracle validity by:
+
+1. **Checkpoint Verification**: Check that Oracle's confirmed state (last promoted blocks) matches
+   Bitcoin at several recent block heights
+
+2. **Continuous Monitoring**: Periodically verify that new confirmed blocks match Bitcoin
+
+3. **Multiple Sources**: Query multiple Bitcoin nodes to prevent reliance on a single source
+
+**Example Verification:**
+
+```
+Oracle State (confirmed):
+  blockHeight: 800,100
+  blockHash: 0x0000000000000000000167c8b4e3c8a7e5c14f...
+
+Bitcoin Node Query:
+  getBlockHash(800100) → 0x0000000000000000000167c8b4e3c8a7e5c14f...
+
+Match? ✓ → Oracle is valid
+```
+
+**Security Advantage:**
+
+This approach provides **objective verifiability**: anyone with access to the Bitcoin blockchain can
+verify Oracle correctness without trusting any centralized authority or relying on social consensus.
+
 **1. Submitting Blocks**
 
 Anyone can submit an update transaction containing:
@@ -111,6 +270,71 @@ The on-chain validator performs atomic operations:
 - Selects the canonical chain (highest chainwork)
 - Promotes blocks meeting criteria (100+ confirmations AND 200+ min old) to confirmed state
 - Updates the confirmed blocks Merkle tree root
+
+**Duplicate Block Prevention:**
+
+To prevent attacks or bugs where the same block is submitted multiple times in a single transaction,
+duplicate detection is enforced:
+
+**Rule 1:** No duplicate block hashes are allowed within a single `UpdateOracle` submission.
+
+**Rationale:**
+
+Submitting the same block header multiple times (e.g., `UpdateOracle([Block X, Block X])`) could cause:
+- Confusion in fork tree structure (same block added twice)
+- Incorrect chainwork calculations
+- Potential DoS via unnecessary validation work
+
+Since block hashes uniquely identify headers, any duplicate represents either:
+- A malicious attempt to manipulate fork tree state
+- A buggy off-chain client
+
+Both cases should be rejected.
+
+**Fork Submission Rule (Stalling Prevention):**
+
+To prevent attacks where adversaries submit only competing fork blocks to stall Oracle progress, the
+following validation rule is enforced:
+
+**Rule 2:** If an update transaction includes any blocks that do NOT extend the current canonical tip
+(i.e., fork blocks), the transaction MUST also include at least one block that DOES extend the
+canonical tip.
+
+**Allowed:**
+- Pure canonical updates: Submit only blocks extending canonical tip ✓
+- Canonical + forks: Submit canonical extension(s) together with fork blocks ✓
+
+**Rejected:**
+- Pure fork updates: Submit only fork blocks without canonical extension ✗
+- Duplicate blocks: Submit same block multiple times ✗
+
+**Examples:**
+
+```
+Current Oracle state:
+  Canonical tip: Block 1003
+
+Valid submissions:
+  UpdateOracle([Block 1004])  ✓ (extends canonical)
+  UpdateOracle([Block 1004, Block 1003'])  ✓ (canonical + fork)
+  UpdateOracle([Block 1004, Block 1005])  ✓ (multiple canonical extensions)
+
+Invalid submissions:
+  UpdateOracle([Block 1003'])  ✗ (Rule 2: fork only, no canonical extension)
+  UpdateOracle([Block 1004, Block 1004])  ✗ (Rule 1: duplicate block)
+  UpdateOracle([Block 1003', Block 1002'])  ✗ (Rule 2: only forks)
+```
+
+**Rationale:**
+
+Without Rule 2, an attacker could monitor the Bitcoin blockchain and continuously submit competing
+fork blocks without ever advancing the Oracle's canonical chain. This would:
+- Prevent the Oracle from staying current with Bitcoin
+- Block promotion of blocks (requires canonical chain advancement)
+- Stall Oracle progress indefinitely
+
+By requiring at least one canonical extension with any fork submission, the Oracle is guaranteed to
+make forward progress on every update while still allowing legitimate fork competition.
 
 **2. Fork Competition**
 
@@ -168,6 +392,7 @@ case class ChainState(
 
 case class BlockNode(
     prevBlockHash: BlockHash, // 32-byte hash of previous block (for chain walking)
+    height: BigInt, // Block height (for difficulty validation and depth calculation)
     chainwork: BigInt, // Cumulative proof-of-work from genesis
     addedTimestamp: BigInt, // When this block was added on-chain (for 200-min rule)
     children: List[BlockHash] // Hashes of child blocks (for tree navigation)
@@ -610,14 +835,31 @@ Function promoteConfirmedBlocks(
 
 ### Validation Rules Summary
 
-The on-chain validator enforces all Bitcoin consensus rules:
+The on-chain validator enforces the following rules:
 
-1. **Proof-of-Work**: Block hash ≤ target derived from bits field
-2. **Difficulty**: Bits field matches expected difficulty (retarget every 2016 blocks)
-3. **Timestamps**: Block time > median of last 11 blocks, < current time + 2 hours
-4. **Version**: Block version ≥ 4 (reject outdated versions)
-5. **Chain Continuity**: Previous block hash matches parent in tree
-6. **Promotion Criteria**: 100+ confirmations AND 200+ minutes on-chain aging
+**Submission Validation** (enforced on the entire `UpdateOracle` transaction):
+
+1. **No Duplicates**: No duplicate block hashes allowed in single submission
+2. **Fork Submission Rule**: If submitting any forks, must include ≥1 canonical extension
+
+**Per-Block Validation** (enforced for every block added to the forks tree):
+
+3. **Proof-of-Work**: Block hash ≤ target derived from bits field
+4. **Difficulty**: Bits field matches expected difficulty (retarget every 2016 blocks)
+5. **Timestamps**: Block time > median of last 11 blocks, < current time + 2 hours
+6. **Version**: Block version ≥ 4 (reject outdated versions)
+7. **Chain Continuity**: Previous block hash matches parent in tree
+
+**Promotion Criteria**:
+
+8. **Maturation**: 100+ confirmations AND 200+ minutes on-chain aging
+
+**Security Note**: These validations prevent spam attacks. An attacker cannot submit fake blocks without
+performing valid proof-of-work. Each block must meet Bitcoin's difficulty requirement and have a valid
+hash, making it computationally expensive to create even a single invalid fork. This ensures the forks
+tree only contains blocks that could plausibly be part of the actual Bitcoin blockchain. The submission
+rules (1-2) prevent griefing attacks where malicious actors submit duplicates or only forks to stall
+Oracle progress.
 
 ## Communication Protocols
 

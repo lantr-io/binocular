@@ -97,7 +97,9 @@ class HeaderSyncWithRpc(bitcoindUri: URI, bitcoindUser: String, bitcoindPassword
           currentTarget = bits,
           blockTimestamp = header.blockHeader.time.toBigInt,
           recentTimestamps = prelude.List(header.blockHeader.time.toBigInt),
-          previousDifficultyAdjustmentTimestamp = adjustmentBlockHeader.blockHeader.time.toBigInt
+          previousDifficultyAdjustmentTimestamp = adjustmentBlockHeader.blockHeader.time.toBigInt,
+          confirmedBlocksRoot = ByteString.fromArray(header.blockHeader.hash.bytes.toArray), // Single-element Merkle tree
+          forksTree = prelude.AssocMap.empty // Initialize with empty forks tree
         )
     }
 
