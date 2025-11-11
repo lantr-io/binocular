@@ -81,7 +81,7 @@ object BitcoinValidator extends Validator {
         blockTimestamp: BigInt,
         recentTimestamps: List[BigInt], // Newest first
         previousDifficultyAdjustmentTimestamp: BigInt,
-        confirmedBlocksRoot: MerkleRoot, // Merkle tree root of confirmed block hashes
+        confirmedBlocksTree: List[ByteString], // Rolling Merkle tree state (levels array)
 
         // Forks tree
         forksTree: scalus.prelude.AssocMap[BlockHash, BlockNode] // Block hash → BlockNode mapping
@@ -107,6 +107,86 @@ object BitcoinValidator extends Validator {
     //            )
     //          )
     //        )
+
+    // === Rolling Merkle Tree Implementation ===
+    // Matches the rolling tree algorithm from MerkleTreeRootBuilder in merkle.scala
+    // The tree state is stored as a list of hashes, one per level
+    // Empty slots are represented as 32 zero bytes
+
+    val emptyHash: ByteString = hex"0000000000000000000000000000000000000000000000000000000000000000"
+
+    /** Check if a ByteString is the empty hash (all zeros) */
+    def isEmptyHash(bs: ByteString): Boolean =
+        lengthOfByteString(bs) == BigInt(32) && bs == emptyHash
+
+    /** Get value at index in list, or return default if index out of bounds */
+    def getAtIndex(levels: List[ByteString], idx: BigInt, default: ByteString): ByteString =
+        if idx < BigInt(0) then default
+        else
+            levels match
+                case List.Nil => default
+                case List.Cons(head, tail) =>
+                    if idx == BigInt(0) then head
+                    else getAtIndex(tail, idx - 1, default)
+
+    /** Set value at index in list, extending list if necessary */
+    def setAtIndex(levels: List[ByteString], idx: BigInt, value: ByteString): List[ByteString] =
+        if idx < BigInt(0) then fail("Negative index")
+        else if idx == BigInt(0) then
+            levels match
+                case List.Nil => List.Cons(value, List.Nil)
+                case List.Cons(_, tail) => List.Cons(value, tail)
+        else
+            levels match
+                case List.Nil =>
+                    // Extend list with empty hashes
+                    List.Cons(emptyHash, setAtIndex(List.Nil, idx - 1, value))
+                case List.Cons(head, tail) =>
+                    List.Cons(head, setAtIndex(tail, idx - 1, value))
+
+    /** Get length of list */
+    def listLength(list: List[ByteString]): BigInt =
+        list match
+            case List.Nil => 0
+            case List.Cons(_, tail) => 1 + listLength(tail)
+
+    /** Add a hash to the rolling Merkle tree at a specific level */
+    def addHashAtLevel(levels: List[ByteString], hash: ByteString, startingLevel: BigInt): List[ByteString] =
+        val currentHash = getAtIndex(levels, startingLevel, emptyHash)
+        if isEmptyHash(currentHash) then
+            // Empty slot - just store the hash here
+            setAtIndex(levels, startingLevel, hash)
+        else
+            // Occupied slot - combine hashes and move to next level
+            val combined = sha2_256(sha2_256(currentHash ++ hash))
+            val clearedLevel = setAtIndex(levels, startingLevel, emptyHash)
+            addHashAtLevel(clearedLevel, combined, startingLevel + 1)
+
+    /** Add a block hash to the rolling Merkle tree */
+    def addToMerkleTree(tree: List[ByteString], blockHash: BlockHash): List[ByteString] =
+        addHashAtLevel(tree, blockHash, 0)
+
+    /** Get Merkle root from the rolling tree state */
+    def getMerkleRoot(levels: List[ByteString]): MerkleRoot =
+        // Finalize tree by combining all remaining levels
+        def finalize(levels: List[ByteString], idx: BigInt): MerkleRoot =
+            val len = listLength(levels)
+            if idx >= len then
+                // Return last non-empty hash
+                val lastHash = getAtIndex(levels, len - 1, emptyHash)
+                if isEmptyHash(lastHash) then emptyHash else lastHash
+            else
+                val currentHash = getAtIndex(levels, idx, emptyHash)
+                if !isEmptyHash(currentHash) && idx < len - 1 then
+                    // Propagate this hash up
+                    val updated = addHashAtLevel(levels, currentHash, idx)
+                    finalize(updated, idx + 1)
+                else
+                    finalize(levels, idx + 1)
+
+        levels match
+            case List.Nil => emptyHash
+            case _ => finalize(levels, 0)
 
     // Double SHA256 hash - matches CBlockHeader::GetHash() in primitives/block.h
     def blockHeaderHash(blockHeader: BlockHeader): BlockHash =
@@ -779,7 +859,7 @@ object BitcoinValidator extends Validator {
           blockTimestamp = blockTime,
           recentTimestamps = newTimestamps,
           previousDifficultyAdjustmentTimestamp = newDifficultyAdjustmentTimestamp,
-          confirmedBlocksRoot = prevState.confirmedBlocksRoot, // Preserve confirmed blocks root (updated separately)
+          confirmedBlocksTree = prevState.confirmedBlocksTree, // Preserve confirmed blocks tree (updated separately)
           forksTree = prevState.forksTree // Preserve forks tree (will be updated separately)
         )
 
@@ -867,7 +947,7 @@ object BitcoinValidator extends Validator {
                       blockTimestamp = prevState.blockTimestamp,
                       recentTimestamps = prevState.recentTimestamps,
                       previousDifficultyAdjustmentTimestamp = prevState.previousDifficultyAdjustmentTimestamp,
-                      confirmedBlocksRoot = prevState.confirmedBlocksRoot,
+                      confirmedBlocksTree = prevState.confirmedBlocksTree,
                       forksTree = finalForksTree
                     )
                 else
@@ -877,8 +957,18 @@ object BitcoinValidator extends Validator {
                     val latestPromotedNode = lookupBlock(forksTreeAfterAddition, latestPromotedHash)
                       .getOrFail("Promoted block not found in tree")
 
+                    // Add promoted blocks to Merkle tree (in order from oldest to newest)
+                    // promotedBlocks is already sorted from oldest to newest
+                    def addPromotedBlocks(tree: List[ByteString], blocks: List[BlockHash]): List[ByteString] =
+                        blocks match
+                            case List.Nil => tree
+                            case List.Cons(blockHash, tail) =>
+                                addPromotedBlocks(addToMerkleTree(tree, blockHash), tail)
+
+                    val updatedMerkleTree = addPromotedBlocks(prevState.confirmedBlocksTree, promotedBlocks)
+
                     // Update confirmed state with promoted block
-                    // TODO: Update recentTimestamps, difficulty adjustment, confirmedBlocksRoot
+                    // TODO: Update recentTimestamps, difficulty adjustment
                     // For now, preserve these fields - full implementation requires walking promoted chain
                     ChainState(
                       blockHeight = latestPromotedNode.height,
@@ -887,7 +977,7 @@ object BitcoinValidator extends Validator {
                       blockTimestamp = latestPromotedNode.addedTimestamp,
                       recentTimestamps = prevState.recentTimestamps,
                       previousDifficultyAdjustmentTimestamp = prevState.previousDifficultyAdjustmentTimestamp,
-                      confirmedBlocksRoot = prevState.confirmedBlocksRoot,
+                      confirmedBlocksTree = updatedMerkleTree,
                       forksTree = finalForksTree
                     )
 

@@ -17,6 +17,8 @@ libraryDependencies ++= Seq(
   "org.scalus" %% "scalus" % scalusVersion,
   "org.scalus" %% "scalus-bloxbean-cardano-client-lib" % scalusVersion,
   "com.lihaoyi" %% "upickle" % "4.3.2",
+  "com.lihaoyi" %% "os-lib" % "0.11.3" % Test,
+  "com.typesafe" % "config" % "1.4.3",  // Configuration library
   "org.slf4j" % "slf4j-simple" % "2.0.17",
   "org.bouncycastle" % "bcprov-jdk18on" % "1.82",
   ("org.bitcoin-s" % "bitcoin-s-bitcoind-rpc_2.13" % "1.9.11").excludeAll(
@@ -30,6 +32,8 @@ libraryDependencies ++= Seq(
   "net.i2p.crypto" % "eddsa" % "0.3.0",
   "com.bloxbean.cardano" % "cardano-client-lib" % "0.7.0",
   "com.bloxbean.cardano" % "cardano-client-backend-blockfrost" % "0.7.0",
+  "com.bloxbean.cardano" % "cardano-client-backend-koios" % "0.7.0",
+  "com.bloxbean.cardano" % "cardano-client-backend-ogmios" % "0.7.0",
   "com.bloxbean.cardano" % "cardano-client-quicktx" % "0.7.0" % Test,
   "com.monovore" %% "decline" % "2.5.0",
   "org.scalameta" %% "munit" % "1.2.0" % Test,
