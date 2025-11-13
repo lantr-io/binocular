@@ -210,7 +210,7 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
           recentTimestamps = genesisRecentTimestamps,
           previousDifficultyAdjustmentTimestamp = genesisTimestamp - 600 * BitcoinValidator.DifficultyAdjustmentInterval,
           confirmedBlocksTree = prelude.List(genesisHash),
-          forksTree = scalus.prelude.AssocMap.empty
+          forksTree = scalus.prelude.SortedMap.empty
         )
     }
 }

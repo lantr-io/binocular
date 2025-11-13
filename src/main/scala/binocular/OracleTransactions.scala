@@ -191,16 +191,17 @@ object OracleTransactions {
                   throw new RuntimeException(s"UTxO not found: $oracleTxHash:$oracleOutputIndex")
               }
 
-            // Get the time that was used to compute newChainState
-            // This must be passed in the redeemer for offline/online consistency
-            val computationTime = validityIntervalTimeSeconds.getOrElse {
-                // If not provided, compute it now
-                val slotConfigEarly = SlotConfigHelper.retrieveSlotConfig(backendService)
-                val currentMs = System.currentTimeMillis()
-                val slot = slotConfigEarly.timeToSlot(currentMs)
-                val intervalMs = slotConfigEarly.zeroTime + (slot - slotConfigEarly.zeroSlot) * slotConfigEarly.slotLength
-                BigInt(intervalMs / 1000)
-            }
+            // Get the time that will be seen by the validator
+            // Use the current blockchain slot to compute the time
+            val currentBlockchainSlot = backendService.getBlockService.getLatestBlock.getValue.getSlot
+            val slotConfigEarly = SlotConfigHelper.retrieveSlotConfig(backendService)
+            val intervalMs = slotConfigEarly.zeroTime + (currentBlockchainSlot - slotConfigEarly.zeroSlot) * slotConfigEarly.slotLength
+            val computationTime = BigInt(intervalMs / 1000)
+            
+            println(s"[DEBUG] Computing redeemer time from blockchain slot:")
+            println(s"  currentBlockchainSlot: $currentBlockchainSlot")
+            println(s"  intervalMs: $intervalMs")
+            println(s"  computationTime (seconds): $computationTime")
 
             // Create UpdateOracle redeemer with the time used for state computation
             val redeemer = createUpdateOracleRedeemer(blockHeaders, computationTime)
@@ -274,11 +275,16 @@ object OracleTransactions {
             println(s"  MATCH: ${validityIntervalTimeSeconds.map(_ == validatorWillSeeSeconds).getOrElse(false)}")
 
             // Build, sign, and submit
+            // Get current slot from the blockchain (not from time calculation)
+            val latestBlock = backendService.getBlockService.getLatestBlock.getValue
+            val currentSlot = latestBlock.getSlot
+            println(s"[DEBUG] Current slot from blockchain: $currentSlot")
+            
             val result = quickTxBuilder.compose(scriptTx)
               .feePayer(account.baseAddress())
               .withSigner(com.bloxbean.cardano.client.function.helper.SignerProviders.signerFrom(account))
               .withTxEvaluator(scalusEvaluator)
-              .validFrom(currentSlotFromTime)
+              .validFrom(currentSlot)
               .completeAndWait()
 
             if (result.isSuccessful) {

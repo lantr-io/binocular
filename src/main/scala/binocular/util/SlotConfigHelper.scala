@@ -12,11 +12,16 @@ object SlotConfigHelper {
 
 
     def retrieveSlotConfig(backendService: BackendService): SlotConfig = {
-        val ec = backendService.getEpochService.getLatestEpoch.getValue
-        // ec.getStartTime() is in seconds, convert to milliseconds
-        val epochStartTimeMs = ec.getStartTime() * 1000L
-        // Calculate zero time by going back from epoch start
-        val zeroTime = epochStartTimeMs - (ec.getEpoch() * SLOTS_PER_EPOCH * SLOT_LENGTH_MS)
+        // Get current block to compute slot configuration
+        val latestBlock = backendService.getBlockService.getLatestBlock.getValue
+        val currentSlot = latestBlock.getSlot
+        val currentTimeMs = System.currentTimeMillis()
+        
+        // Calculate zeroTime from current slot and time
+        // zeroTime = currentTime - (currentSlot * slotLength)
+        val zeroTime = currentTimeMs - (currentSlot * SLOT_LENGTH_MS)
+        
+
         val slotConfig = SlotConfig(zeroTime = zeroTime, zeroSlot = zeroSlot, slotLength = SLOT_LENGTH_MS)
         slotConfig
     }
