@@ -39,6 +39,7 @@ object BitcoinValidator extends Validator {
 
     // Binocular protocol parameters
     val MaturationConfirmations: BigInt = 100 // Blocks needed for promotion to confirmed state
+    val TimeToleranceSeconds: BigInt = 36*60*60 // Maximum difference between redeemer time and validity interval time (shoukd be the time of cardano consesnus)
     val ChallengeAging: BigInt = 200 * 60 // 200 minutes in seconds (challenge period)
     val StaleCompetingForkAge: BigInt = 400 * 60 // 400 minutes (2× challenge period)
     val ChainworkGapThreshold: BigInt = 10 // Blocks worth of work for stale fork detection
@@ -90,7 +91,13 @@ object BitcoinValidator extends Validator {
           ToData
 
     enum Action derives FromData, ToData:
-        case UpdateOracle(blockHeaders: List[BlockHeader])
+      /**
+       * Update the oracle with new block headers
+       * @param blockHeaders - new block headers to process
+       *                     (ordered from oldest to newest)
+       * @param currentTime - current on-chain time for validation in seconds since Unix epoch
+       */
+      case UpdateOracle(blockHeaders: List[BlockHeader], currentTime: BigInt)
 
     /// Bitcoin block header serialization
     //    def serializeBlockHeader(blockHeader: BlockHeader): ByteString =
@@ -493,6 +500,10 @@ object BitcoinValidator extends Validator {
         // 3. VALIDATE TIMESTAMP
         val blockTime = blockHeader.timestamp
         val medianTimePast = getMedianTimePast(confirmedState.recentTimestamps, confirmedState.recentTimestamps.size)
+        log("Timestamp validation:")
+        log(blockTime.show)
+        log(currentTime.show)
+        log((currentTime + MaxFutureBlockTime).show)
         require(blockTime > medianTimePast, "Block timestamp not greater than median time past")
         require(blockTime <= currentTime + MaxFutureBlockTime, "Block timestamp too far in future")
 
@@ -902,6 +913,123 @@ object BitcoinValidator extends Validator {
 
         require(validNewState, "New state does not match expected state")
 
+    /**
+     * Compute the new ChainState after applying block headers.
+     * This function contains the core UpdateOracle logic and can be called
+     * both on-chain (from validator) and off-chain (for pre-computation).
+     *
+     * @param prevState Current ChainState
+     * @param blockHeaders Block headers to apply
+     * @param currentTime Current time in seconds (POSIX time)
+     * @return New ChainState after applying headers
+     */
+    def computeUpdateOracleState(
+        prevState: ChainState,
+        blockHeaders: List[BlockHeader],
+        currentTime: BigInt
+    ): ChainState = {
+        // Validate fork submission rule (prevents stalling attack and duplicates)
+        validateForkSubmission(blockHeaders, prevState.forksTree, prevState.blockHash)
+
+        // Validate non-empty block headers
+        require(!blockHeaders.isEmpty, "Empty block headers list")
+
+        // Process all block headers: add each to forks tree
+        def processHeaders(
+            headers: List[BlockHeader],
+            currentForksTree: scalus.prelude.AssocMap[BlockHash, BlockNode]
+        ): scalus.prelude.AssocMap[BlockHash, BlockNode] = {
+            headers match
+                case List.Nil =>
+                    log("processHeaders: no more headers")
+                    currentForksTree
+                case List.Cons(header, tail) =>
+                    log("processHeaders: processing header")
+                    val updatedTree = addBlockToForksTree(
+                      currentForksTree,
+                      header,
+                      prevState,
+                      currentTime
+                    )
+                    log("processHeaders: header added to tree")
+                    processHeaders(tail, updatedTree)
+        }
+
+        val forksTreeAfterAddition = processHeaders(blockHeaders, prevState.forksTree)
+        log("After processHeaders")
+
+        // Select canonical chain (highest chainwork)
+        val canonicalTip = selectCanonicalChain(forksTreeAfterAddition) match
+            case scalus.prelude.Option.Some(tip) => tip
+            case scalus.prelude.Option.None => prevState.blockHash
+        log("After selectCanonicalChain")
+
+        // Promote qualified blocks (100+ confirmations AND 200+ min old)
+        val (promotedBlocks, forksTreeAfterPromotion) = promoteQualifiedBlocks(
+          forksTreeAfterAddition,
+          canonicalTip,
+          prevState.blockHeight,
+          currentTime
+        )
+        log("After promoteQualifiedBlocks")
+
+        // Run garbage collection if forks tree exceeds size limit
+        val finalForksTree = if forksTreeAfterPromotion.toList.size > MaxForksTreeSize then
+            garbageCollect(
+              forksTreeAfterPromotion,
+              canonicalTip,
+              prevState.blockHeight,
+              currentTime
+            )
+        else
+            forksTreeAfterPromotion
+
+        // Compute new state
+        // If blocks were promoted, update confirmed state
+        if promotedBlocks.isEmpty then
+            // No promotion: only forks tree changed
+            ChainState(
+              blockHeight = prevState.blockHeight,
+              blockHash = prevState.blockHash,
+              currentTarget = prevState.currentTarget,
+              blockTimestamp = prevState.blockTimestamp,
+              recentTimestamps = prevState.recentTimestamps,
+              previousDifficultyAdjustmentTimestamp = prevState.previousDifficultyAdjustmentTimestamp,
+              confirmedBlocksTree = prevState.confirmedBlocksTree,
+              forksTree = finalForksTree
+            )
+        else
+            // Promotion occurred: update confirmed state
+            // Get the highest promoted block info
+            val latestPromotedHash = promotedBlocks.head // List is sorted, first is highest
+            val latestPromotedNode = lookupBlock(forksTreeAfterAddition, latestPromotedHash)
+              .getOrFail("Promoted block not found in tree")
+
+            // Add promoted blocks to Merkle tree (in order from oldest to newest)
+            // promotedBlocks is already sorted from oldest to newest
+            def addPromotedBlocks(tree: List[ByteString], blocks: List[BlockHash]): List[ByteString] =
+                blocks match
+                    case List.Nil => tree
+                    case List.Cons(blockHash, tail) =>
+                        addPromotedBlocks(addToMerkleTree(tree, blockHash), tail)
+
+            val updatedMerkleTree = addPromotedBlocks(prevState.confirmedBlocksTree, promotedBlocks)
+
+            // Update confirmed state with promoted block
+            // TODO: Update recentTimestamps, difficulty adjustment
+            // For now, preserve these fields - full implementation requires walking promoted chain
+            ChainState(
+              blockHeight = latestPromotedNode.height,
+              blockHash = latestPromotedHash,
+              currentTarget = prevState.currentTarget,
+              blockTimestamp = latestPromotedNode.addedTimestamp,
+              recentTimestamps = prevState.recentTimestamps,
+              previousDifficultyAdjustmentTimestamp = prevState.previousDifficultyAdjustmentTimestamp,
+              confirmedBlocksTree = updatedMerkleTree,
+              forksTree = finalForksTree
+            )
+    }
+
     inline override def spend(datum: Option[Datum], redeemer: Datum, tx: TxInfo, outRef: TxOutRef): Unit = {
         log("BitcoinValidator.spend called")
 
@@ -931,117 +1059,27 @@ object BitcoinValidator extends Validator {
         log("prevState deserialized")
         log(prevState.blockHeight.show)
         action match
-            case Action.UpdateOracle(blockHeaders) =>
-                // Validate fork submission rule (prevents stalling attack and duplicates)
+            case Action.UpdateOracle(blockHeaders, redeemerTime) =>
                 log("Action.UpdateOracle")
-                log("About to call validateForkSubmission")
-                val forksTree = prevState.forksTree
-                log("forksTree accessed")
-                val blockHash = prevState.blockHash
-                log("blockHash accessed")
-                validateForkSubmission(blockHeaders, forksTree, blockHash)
 
-                // Validate non-empty block headers
-                require(!blockHeaders.isEmpty, "Empty block headers list")
-
-                // Process all block headers: add each to forks tree
-                def processHeaders(
-                    headers: List[BlockHeader],
-                    currentForksTree: scalus.prelude.AssocMap[BlockHash, BlockNode]
-                ): scalus.prelude.AssocMap[BlockHash, BlockNode] = {
-                    headers match
-                        case List.Nil =>
-                            log("processHeaders: no more headers")
-                            currentForksTree
-                        case List.Cons(header, tail) =>
-                            log("processHeaders: processing header")
-                            val updatedTree = addBlockToForksTree(
-                              currentForksTree,
-                              header,
-                              prevState,
-                              intervalStartInSeconds
-                            )
-                            log("processHeaders: header added to tree")
-                            processHeaders(tail, updatedTree)
-                }
-
-                val forksTreeAfterAddition = processHeaders(blockHeaders, prevState.forksTree)
-                log("After processHeaders")
-
-                // Select canonical chain (highest chainwork)
-                val canonicalTip = selectCanonicalChain(forksTreeAfterAddition) match
-                    case scalus.prelude.Option.Some(tip) => tip
-                    case scalus.prelude.Option.None => prevState.blockHash
-                log("After selectCanonicalChain")
-
-                // Promote qualified blocks (100+ confirmations AND 200+ min old)
-                val (promotedBlocks, forksTreeAfterPromotion) = promoteQualifiedBlocks(
-                  forksTreeAfterAddition,
-                  canonicalTip,
-                  prevState.blockHeight,
-                  intervalStartInSeconds
-                )
-                log("After promoteQualifiedBlocks")
-
-                // Run garbage collection if forks tree exceeds size limit
-                val finalForksTree = if forksTreeAfterPromotion.toList.size > MaxForksTreeSize then
-                    garbageCollect(
-                      forksTreeAfterPromotion,
-                      canonicalTip,
-                      prevState.blockHeight,
-                      intervalStartInSeconds
-                    )
+                // Verify redeemer time is within tolerance of actual validity interval time
+                val timeDiff = if redeemerTime > intervalStartInSeconds then
+                    redeemerTime - intervalStartInSeconds
                 else
-                    forksTreeAfterPromotion
+                    intervalStartInSeconds - redeemerTime
 
-                // Compute expected new state
-                // If blocks were promoted, update confirmed state
-                val expectedState = if promotedBlocks.isEmpty then
-                    // No promotion: only forks tree changed
-                    ChainState(
-                      blockHeight = prevState.blockHeight,
-                      blockHash = prevState.blockHash,
-                      currentTarget = prevState.currentTarget,
-                      blockTimestamp = prevState.blockTimestamp,
-                      recentTimestamps = prevState.recentTimestamps,
-                      previousDifficultyAdjustmentTimestamp = prevState.previousDifficultyAdjustmentTimestamp,
-                      confirmedBlocksTree = prevState.confirmedBlocksTree,
-                      forksTree = finalForksTree
-                    )
-                else
-                    // Promotion occurred: update confirmed state
-                    // Get the highest promoted block info
-                    val latestPromotedHash = promotedBlocks.head // List is sorted, first is highest
-                    val latestPromotedNode = lookupBlock(forksTreeAfterAddition, latestPromotedHash)
-                      .getOrFail("Promoted block not found in tree")
+                require(timeDiff <= TimeToleranceSeconds, "Redeemer time too far from validity interval")
 
-                    // Add promoted blocks to Merkle tree (in order from oldest to newest)
-                    // promotedBlocks is already sorted from oldest to newest
-                    def addPromotedBlocks(tree: List[ByteString], blocks: List[BlockHash]): List[ByteString] =
-                        blocks match
-                            case List.Nil => tree
-                            case List.Cons(blockHash, tail) =>
-                                addPromotedBlocks(addToMerkleTree(tree, blockHash), tail)
-
-                    val updatedMerkleTree = addPromotedBlocks(prevState.confirmedBlocksTree, promotedBlocks)
-
-                    // Update confirmed state with promoted block
-                    // TODO: Update recentTimestamps, difficulty adjustment
-                    // For now, preserve these fields - full implementation requires walking promoted chain
-                    ChainState(
-                      blockHeight = latestPromotedNode.height,
-                      blockHash = latestPromotedHash,
-                      currentTarget = prevState.currentTarget,
-                      blockTimestamp = latestPromotedNode.addedTimestamp,
-                      recentTimestamps = prevState.recentTimestamps,
-                      previousDifficultyAdjustmentTimestamp = prevState.previousDifficultyAdjustmentTimestamp,
-                      confirmedBlocksTree = updatedMerkleTree,
-                      forksTree = finalForksTree
-                    )
+                // Compute the new state using time from redeemer (ensures offline/online consistency)
+                val expectedState = computeUpdateOracleState(prevState, blockHeaders, redeemerTime)
 
                 // Verify computed state matches expected datum
                 val expectedDatum = datum.getOrFail("No datum")
                 val computedDatum = expectedState.toData
+                log("Computed datum:")
+                log(computedDatum.show)
+                log("Expected datum:")
+                log(expectedDatum.show)
 
                 require(computedDatum == expectedDatum, "Computed state does not match expected state")
     }

@@ -241,7 +241,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         val timestamp = blockHeader.timestamp
 
         val redeemer = Action
-            .UpdateOracle(scalus.prelude.List.single(blockHeader))
+            .UpdateOracle(scalus.prelude.List.single(blockHeader), BigInt(System.currentTimeMillis()/1000))
             .toData
 
         println(s"Redeemer size: ${redeemer.toCbor.length}")
@@ -984,7 +984,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         )
 
         // Create redeemer
-        val redeemer = Action.UpdateOracle(scalus.prelude.List.single(blockHeader)).toData
+        val redeemer = Action.UpdateOracle(scalus.prelude.List.single(blockHeader),BigInt(System.currentTimeMillis()/1000)).toData
 
         // Create script context and transaction
         val (scriptContext, tx) = makeScriptContextAndTransaction(
@@ -1021,7 +1021,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         )
 
         // Create redeemer with empty list
-        val redeemer = Action.UpdateOracle(scalus.prelude.List.empty).toData
+        val redeemer = Action.UpdateOracle(scalus.prelude.List.empty, BigInt(System.currentTimeMillis()/1000)).toData
 
         val (scriptContext, tx) = makeScriptContextAndTransaction(
           baseTime.toLong * 1000,
