@@ -15,8 +15,24 @@ This will install all the dependencies and set up the environment.
     scala-cli setup-ide .
     scala-cli test .
 
-Setup `bitcoind_rpc_url`, `bitcoind_rpc_user`, `bitcoind_rpc_password` environment variables to
-download the Bitcoin headers.
+## Bitcoin Core Setup
+
+To test with real Bitcoin data, you need Bitcoin Core running locally or access to a remote node.
+
+**Quick setup:**
+```bash
+export bitcoind_rpc_url="http://localhost:8332"
+export bitcoind_rpc_user="bitcoin"
+export bitcoind_rpc_password="your_password"
+```
+
+**For detailed setup instructions, see [docs/BITCOIN_SETUP.md](docs/BITCOIN_SETUP.md)**
+
+This includes:
+- Installing Bitcoin Core
+- Configuration (`bitcoin.conf`)
+- Running mainnet, testnet, or regtest
+- Troubleshooting common issues
 
 ## Documentation
 

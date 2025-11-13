@@ -1,6 +1,6 @@
 package binocular
 
-import scalus.*
+import scalus.{show as _, *}
 import scalus.builtin.Builtins.*
 import scalus.builtin.ByteString.*
 import scalus.builtin.Data.{FromData, ToData, toData}
@@ -10,6 +10,7 @@ import scalus.ledger.api.v3.*
 import scalus.prelude.{List, *}
 import scalus.sir.TargetLoweringBackend
 import scalus.uplc.Program
+import scalus.prelude.Show.given
 
 import scala.annotation.tailrec
 
@@ -81,7 +82,7 @@ object BitcoinValidator extends Validator {
         blockTimestamp: BigInt,
         recentTimestamps: List[BigInt], // Newest first
         previousDifficultyAdjustmentTimestamp: BigInt,
-        confirmedBlocksRoot: MerkleRoot, // Merkle tree root of confirmed block hashes
+        confirmedBlocksTree: List[ByteString], // Rolling Merkle tree state (levels array)
 
         // Forks tree
         forksTree: scalus.prelude.AssocMap[BlockHash, BlockNode] // Block hash → BlockNode mapping
@@ -107,6 +108,86 @@ object BitcoinValidator extends Validator {
     //            )
     //          )
     //        )
+
+    // === Rolling Merkle Tree Implementation ===
+    // Matches the rolling tree algorithm from MerkleTreeRootBuilder in merkle.scala
+    // The tree state is stored as a list of hashes, one per level
+    // Empty slots are represented as 32 zero bytes
+
+    val emptyHash: ByteString = hex"0000000000000000000000000000000000000000000000000000000000000000"
+
+    /** Check if a ByteString is the empty hash (all zeros) */
+    def isEmptyHash(bs: ByteString): Boolean =
+        lengthOfByteString(bs) == BigInt(32) && bs == emptyHash
+
+    /** Get value at index in list, or return default if index out of bounds */
+    def getAtIndex(levels: List[ByteString], idx: BigInt, default: ByteString): ByteString =
+        if idx < BigInt(0) then default
+        else
+            levels match
+                case List.Nil => default
+                case List.Cons(head, tail) =>
+                    if idx == BigInt(0) then head
+                    else getAtIndex(tail, idx - 1, default)
+
+    /** Set value at index in list, extending list if necessary */
+    def setAtIndex(levels: List[ByteString], idx: BigInt, value: ByteString): List[ByteString] =
+        if idx < BigInt(0) then fail("Negative index")
+        else if idx == BigInt(0) then
+            levels match
+                case List.Nil => List.Cons(value, List.Nil)
+                case List.Cons(_, tail) => List.Cons(value, tail)
+        else
+            levels match
+                case List.Nil =>
+                    // Extend list with empty hashes
+                    List.Cons(emptyHash, setAtIndex(List.Nil, idx - 1, value))
+                case List.Cons(head, tail) =>
+                    List.Cons(head, setAtIndex(tail, idx - 1, value))
+
+    /** Get length of list */
+    def listLength(list: List[ByteString]): BigInt =
+        list match
+            case List.Nil => 0
+            case List.Cons(_, tail) => 1 + listLength(tail)
+
+    /** Add a hash to the rolling Merkle tree at a specific level */
+    def addHashAtLevel(levels: List[ByteString], hash: ByteString, startingLevel: BigInt): List[ByteString] =
+        val currentHash = getAtIndex(levels, startingLevel, emptyHash)
+        if isEmptyHash(currentHash) then
+            // Empty slot - just store the hash here
+            setAtIndex(levels, startingLevel, hash)
+        else
+            // Occupied slot - combine hashes and move to next level
+            val combined = sha2_256(sha2_256(currentHash ++ hash))
+            val clearedLevel = setAtIndex(levels, startingLevel, emptyHash)
+            addHashAtLevel(clearedLevel, combined, startingLevel + 1)
+
+    /** Add a block hash to the rolling Merkle tree */
+    def addToMerkleTree(tree: List[ByteString], blockHash: BlockHash): List[ByteString] =
+        addHashAtLevel(tree, blockHash, 0)
+
+    /** Get Merkle root from the rolling tree state */
+    def getMerkleRoot(levels: List[ByteString]): MerkleRoot =
+        // Finalize tree by combining all remaining levels
+        def finalize(levels: List[ByteString], idx: BigInt): MerkleRoot =
+            val len = listLength(levels)
+            if idx >= len then
+                // Return last non-empty hash
+                val lastHash = getAtIndex(levels, len - 1, emptyHash)
+                if isEmptyHash(lastHash) then emptyHash else lastHash
+            else
+                val currentHash = getAtIndex(levels, idx, emptyHash)
+                if !isEmptyHash(currentHash) && idx < len - 1 then
+                    // Propagate this hash up
+                    val updated = addHashAtLevel(levels, currentHash, idx)
+                    finalize(updated, idx + 1)
+                else
+                    finalize(levels, idx + 1)
+
+        levels match
+            case List.Nil => emptyHash
+            case _ => finalize(levels, 0)
 
     // Double SHA256 hash - matches CBlockHeader::GetHash() in primitives/block.h
     def blockHeaderHash(blockHeader: BlockHeader): BlockHash =
@@ -367,6 +448,7 @@ object BitcoinValidator extends Validator {
         confirmedState: ChainState,
         currentTime: BigInt
     ): scalus.prelude.AssocMap[BlockHash, BlockNode] =
+        log("addBlockToForksTree: start")
         val hash = blockHeaderHash(blockHeader)
         val hashInt = byteStringToInteger(false, hash)
         val prevHash = blockHeader.prevBlockHash
@@ -530,6 +612,7 @@ object BitcoinValidator extends Validator {
         forksTree: scalus.prelude.AssocMap[BlockHash, BlockNode],
         confirmedTip: BlockHash
     ): Unit = {
+        log("validateForkSubmission: start")
         // RULE 1: Check for duplicate blocks in submission
         def checkDuplicates(
             headers: List[BlockHeader],
@@ -553,7 +636,9 @@ object BitcoinValidator extends Validator {
                         checkDuplicates(tail, List.Cons(hash, seen))
         }
 
+        log("validateForkSubmission: checking duplicates")
         checkDuplicates(blockHeaders, List.Nil)
+        log("validateForkSubmission: duplicates checked")
 
         // Find current canonical tip
         val canonicalTip = selectCanonicalChain(forksTree) match
@@ -724,18 +809,21 @@ object BitcoinValidator extends Validator {
         blockHeader: BlockHeader,
         currentTime: BigInt
     ): ChainState =
+        log("updateTip called")
         val hash = blockHeaderHash(blockHeader)
         val hashBigInt = byteStringToInteger(false, hash)
         val blockTime = blockHeader.timestamp
 
         // check previous block hash
         val validPrevBlockHash = blockHeader.prevBlockHash == prevState.blockHash
+        //log(validPrevBlockHash.show)
 
         // check proof of work - matches CheckProofOfWork() in pow.cpp:140-163
         // FIXME: check if bits are valid
         val compactTarget = blockHeader.bits
         val target = compactBitsToTarget(compactTarget)
         val validProofOfWork = hashBigInt <= target
+        //log(validProofOfWork.show)
 
         // Difficulty validation - matches ContextualCheckBlockHeader() in validation.cpp:4165
         val nextDifficulty = getNextWorkRequired(
@@ -745,6 +833,10 @@ object BitcoinValidator extends Validator {
           prevState.previousDifficultyAdjustmentTimestamp
         )
         val validDifficulty = compactTarget == nextDifficulty
+        //log(validDifficulty.show)
+        //log(compactTarget.toHex)
+        //log(nextDifficulty.toHex)
+        //log(prevState.currentTarget.toHex)
 
         // Check blockTime against median of last 11 blocks
         // Matches ContextualCheckBlockHeader() in validation.cpp:4180-4182
@@ -765,6 +857,9 @@ object BitcoinValidator extends Validator {
         // Reject blocks with outdated version
         // Matches ContextualCheckBlockHeader() in validation.cpp:4201-4206
         val validVersion = blockHeader.version >= 4
+        require(validVersion , "Block version is outdated")
+        log("validVersion")
+
 
         val validBlockHeader = validPrevBlockHash.?
             && validProofOfWork.?
@@ -772,6 +867,19 @@ object BitcoinValidator extends Validator {
             && validVersion.?
 
         require(validBlockHeader, "Block header is not valid")
+        log("updateTip.ChainState:")
+        log((prevState.blockHeight + 1).show)
+        log(hash.toHex)
+        log(nextDifficulty.toHex)
+        log(blockTime.show)
+        val newTimestampsData = newTimestamps.toData
+        log(newTimestampsData.show)
+        log(newDifficultyAdjustmentTimestamp.show)
+        val confirmedBlocksTreeData = prevState.confirmedBlocksTree.toData
+        log(confirmedBlocksTreeData.show)
+        val forksTreeData = prevState.forksTree.toData
+        log(forksTreeData.show)
+        log("End updateTip.ChainState")
         ChainState(
           blockHeight = prevState.blockHeight + 1,
           blockHash = hash,
@@ -779,7 +887,7 @@ object BitcoinValidator extends Validator {
           blockTimestamp = blockTime,
           recentTimestamps = newTimestamps,
           previousDifficultyAdjustmentTimestamp = newDifficultyAdjustmentTimestamp,
-          confirmedBlocksRoot = prevState.confirmedBlocksRoot, // Preserve confirmed blocks root (updated separately)
+          confirmedBlocksTree = prevState.confirmedBlocksTree, // Preserve confirmed blocks tree (updated separately)
           forksTree = prevState.forksTree // Preserve forks tree (will be updated separately)
         )
 
@@ -795,7 +903,19 @@ object BitcoinValidator extends Validator {
         require(validNewState, "New state does not match expected state")
 
     inline override def spend(datum: Option[Datum], redeemer: Datum, tx: TxInfo, outRef: TxOutRef): Unit = {
+        log("BitcoinValidator.spend called")
+
+        // Log the raw datum Data for debugging
+        datum match
+            case scalus.prelude.Option.Some(d) =>
+                log("Datum received (from param)")
+                log(d.show)
+            case scalus.prelude.Option.None =>
+                log("No datum in param")
+
         val action = redeemer.to[Action]
+        log("Redeemer deserialized")
+
         val intervalStartInSeconds = tx.validRange.from.boundType match
             case IntervalBoundType.Finite(time) => time / 1000
             case _                              => fail("Must have finite interval start")
@@ -803,12 +923,23 @@ object BitcoinValidator extends Validator {
             val input = tx.inputs.find { _.outRef === outRef }.getOrFail("Input not found")
 
             input.resolved.datum match
-                case OutputDatum.OutputDatum(datum) => datum.to[ChainState]
+                case OutputDatum.OutputDatum(datum) =>
+                    log("Datum from input")
+                    log(datum.show)
+                    datum.to[ChainState]
                 case _                              => fail("No datum")
+        log("prevState deserialized")
+        log(prevState.blockHeight.show)
         action match
             case Action.UpdateOracle(blockHeaders) =>
                 // Validate fork submission rule (prevents stalling attack and duplicates)
-                validateForkSubmission(blockHeaders, prevState.forksTree, prevState.blockHash)
+                log("Action.UpdateOracle")
+                log("About to call validateForkSubmission")
+                val forksTree = prevState.forksTree
+                log("forksTree accessed")
+                val blockHash = prevState.blockHash
+                log("blockHash accessed")
+                validateForkSubmission(blockHeaders, forksTree, blockHash)
 
                 // Validate non-empty block headers
                 require(!blockHeaders.isEmpty, "Empty block headers list")
@@ -819,23 +950,29 @@ object BitcoinValidator extends Validator {
                     currentForksTree: scalus.prelude.AssocMap[BlockHash, BlockNode]
                 ): scalus.prelude.AssocMap[BlockHash, BlockNode] = {
                     headers match
-                        case List.Nil => currentForksTree
+                        case List.Nil =>
+                            log("processHeaders: no more headers")
+                            currentForksTree
                         case List.Cons(header, tail) =>
+                            log("processHeaders: processing header")
                             val updatedTree = addBlockToForksTree(
                               currentForksTree,
                               header,
                               prevState,
                               intervalStartInSeconds
                             )
+                            log("processHeaders: header added to tree")
                             processHeaders(tail, updatedTree)
                 }
 
                 val forksTreeAfterAddition = processHeaders(blockHeaders, prevState.forksTree)
+                log("After processHeaders")
 
                 // Select canonical chain (highest chainwork)
                 val canonicalTip = selectCanonicalChain(forksTreeAfterAddition) match
                     case scalus.prelude.Option.Some(tip) => tip
                     case scalus.prelude.Option.None => prevState.blockHash
+                log("After selectCanonicalChain")
 
                 // Promote qualified blocks (100+ confirmations AND 200+ min old)
                 val (promotedBlocks, forksTreeAfterPromotion) = promoteQualifiedBlocks(
@@ -844,6 +981,7 @@ object BitcoinValidator extends Validator {
                   prevState.blockHeight,
                   intervalStartInSeconds
                 )
+                log("After promoteQualifiedBlocks")
 
                 // Run garbage collection if forks tree exceeds size limit
                 val finalForksTree = if forksTreeAfterPromotion.toList.size > MaxForksTreeSize then
@@ -867,7 +1005,7 @@ object BitcoinValidator extends Validator {
                       blockTimestamp = prevState.blockTimestamp,
                       recentTimestamps = prevState.recentTimestamps,
                       previousDifficultyAdjustmentTimestamp = prevState.previousDifficultyAdjustmentTimestamp,
-                      confirmedBlocksRoot = prevState.confirmedBlocksRoot,
+                      confirmedBlocksTree = prevState.confirmedBlocksTree,
                       forksTree = finalForksTree
                     )
                 else
@@ -877,8 +1015,18 @@ object BitcoinValidator extends Validator {
                     val latestPromotedNode = lookupBlock(forksTreeAfterAddition, latestPromotedHash)
                       .getOrFail("Promoted block not found in tree")
 
+                    // Add promoted blocks to Merkle tree (in order from oldest to newest)
+                    // promotedBlocks is already sorted from oldest to newest
+                    def addPromotedBlocks(tree: List[ByteString], blocks: List[BlockHash]): List[ByteString] =
+                        blocks match
+                            case List.Nil => tree
+                            case List.Cons(blockHash, tail) =>
+                                addPromotedBlocks(addToMerkleTree(tree, blockHash), tail)
+
+                    val updatedMerkleTree = addPromotedBlocks(prevState.confirmedBlocksTree, promotedBlocks)
+
                     // Update confirmed state with promoted block
-                    // TODO: Update recentTimestamps, difficulty adjustment, confirmedBlocksRoot
+                    // TODO: Update recentTimestamps, difficulty adjustment
                     // For now, preserve these fields - full implementation requires walking promoted chain
                     ChainState(
                       blockHeight = latestPromotedNode.height,
@@ -887,7 +1035,7 @@ object BitcoinValidator extends Validator {
                       blockTimestamp = latestPromotedNode.addedTimestamp,
                       recentTimestamps = prevState.recentTimestamps,
                       previousDifficultyAdjustmentTimestamp = prevState.previousDifficultyAdjustmentTimestamp,
-                      confirmedBlocksRoot = prevState.confirmedBlocksRoot,
+                      confirmedBlocksTree = updatedMerkleTree,
                       forksTree = finalForksTree
                     )
 
@@ -909,13 +1057,14 @@ object BitcoinValidator extends Validator {
 object BitcoinContract {
     inline given Compiler.Options = Compiler.Options(
       optimizeUplc = true,
+      generateErrorTraces = true,
       targetLoweringBackend = TargetLoweringBackend.SirToUplcV3Lowering
     )
     def compileBitcoinProgram(): Program =
         val sir = Compiler.compile(BitcoinValidator.validate)
         //    println(sir.showHighlighted)
         //    sir.toUplcOptimized(generateErrorTraces = false).plutusV3
-        sir.toUplcOptimized(generateErrorTraces = false).plutusV3
+        sir.toUplcOptimized(generateErrorTraces = true).plutusV3
     //    println(uplc.showHighlighted)
 
     lazy val bitcoinProgram: Program = compileBitcoinProgram()

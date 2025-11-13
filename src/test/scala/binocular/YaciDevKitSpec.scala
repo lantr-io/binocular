@@ -132,12 +132,13 @@ trait YaciDevKitSpec extends FunSuite {
       * @return YaciDevKit instance with running container
       */
     def createYaciDevKit(config: YaciDevKitConfig = YaciDevKitConfig()): YaciDevKit = {
-        // Create a test account with mnemonic
-        val account = new Account(Networks.testnet())
+        // Use Yaci DevKit's default mnemonic for pre-funded accounts
+        // This matches the mnemonic used by Yaci CLI for generating default accounts
+        val mnemonic = "test test test test test test test test test test test test test test test test test test test test test test test sauce"
+        val account = new Account(Networks.testnet(), mnemonic)
 
-        // Create container with initial funding
+        // Create container (account will be automatically funded by Yaci DevKit)
         val container = new YaciCardanoContainer()
-          .withInitialFunding(new Funding(account.baseAddress(), config.initialFundingLovelace))
 
         // Add log consumer if enabled
         if (config.enableLogs) {
