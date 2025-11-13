@@ -41,6 +41,35 @@ object OracleTransactions {
         Data.fromCbor(ByteString.fromHex(hexString))
     }
 
+    /**
+     * Compute the validity interval start time that will be used on-chain.
+     * This matches the computation in buildAndSubmitUpdateTransaction.
+     *
+     * The on-chain validator reads time from tx.validRange.from, which is set
+     * using .validFrom(slot). The slot is computed from System.currentTimeMillis().
+     * To ensure offline computation matches on-chain validation, we must use
+     * the same time derivation.
+     *
+     * @param backendService Backend service to retrieve slot configuration
+     * @return The validity interval start time in seconds (POSIX time)
+     */
+    def computeValidityIntervalTime(backendService: BackendService): BigInt = {
+        val slotConfig = SlotConfigHelper.retrieveSlotConfig(backendService)
+        val currentPosixTimeMs = System.currentTimeMillis()
+        val currentSlot = slotConfig.timeToSlot(currentPosixTimeMs)
+        // Manually compute the slot start time: zeroTime + (slot - zeroSlot) * slotLength
+        val intervalStartMs = slotConfig.zeroTime + (currentSlot - slotConfig.zeroSlot) * slotConfig.slotLength
+        val intervalStartSeconds = BigInt(intervalStartMs / 1000)
+
+        println(s"[DEBUG computeValidityIntervalTime]")
+        println(s"  currentPosixTimeMs: $currentPosixTimeMs")
+        println(s"  currentSlot: $currentSlot")
+        println(s"  intervalStartMs: $intervalStartMs")
+        println(s"  intervalStartSeconds: $intervalStartSeconds")
+
+        intervalStartSeconds
+    }
+
     /** Apply Bitcoin headers to ChainState to calculate new state */
     def applyHeaders(
         currentState: BitcoinValidator.ChainState,
@@ -54,9 +83,10 @@ object OracleTransactions {
 
     /** Create UpdateOracle redeemer */
     def createUpdateOracleRedeemer(
-        blockHeaders: scalus.prelude.List[BitcoinValidator.BlockHeader]
+        blockHeaders: scalus.prelude.List[BitcoinValidator.BlockHeader],
+        currentTime: BigInt
     ): Redeemer = {
-        val action = BitcoinValidator.Action.UpdateOracle(blockHeaders)
+        val action = BitcoinValidator.Action.UpdateOracle(blockHeaders, currentTime)
         val actionData = ToData.toData(action)(using BitcoinValidator.Action.derived$ToData)
         val redeemerData = scalusDataToPlutusData(actionData)
 
@@ -127,8 +157,9 @@ object OracleTransactions {
       * @param oracleTxHash Transaction hash of the current oracle UTxO
       * @param oracleOutputIndex Output index of the current oracle UTxO
       * @param currentChainState Current ChainState datum
-      * @param newChainState New ChainState datum after applying headers
+      * @param newChainState New ChainState datum (pre-computed using computeUpdateOracleState)
       * @param blockHeaders Bitcoin block headers to submit
+      * @param validityIntervalTimeSeconds Optional validity interval time. If not provided, current time is used.
       * @return Either error message or transaction hash
       */
     def buildAndSubmitUpdateTransaction(
@@ -140,6 +171,7 @@ object OracleTransactions {
         currentChainState: BitcoinValidator.ChainState,
         newChainState: BitcoinValidator.ChainState,
         blockHeaders: scalus.prelude.List[BitcoinValidator.BlockHeader],
+        validityIntervalTimeSeconds: Option[BigInt] = None
     ): Either[String, String] = {
         Try {
             // Get the script
@@ -159,19 +191,22 @@ object OracleTransactions {
                   throw new RuntimeException(s"UTxO not found: $oracleTxHash:$oracleOutputIndex")
               }
 
-            // Convert current ChainState to PlutusData
-            val currentStateData = ToData.toData(currentChainState)(using BitcoinValidator.ChainState.derived$ToData)
-            val currentDatum = scalusDataToPlutusData(currentStateData)
+            // Get the time that will be seen by the validator
+            // Use the current blockchain slot to compute the time
+            val currentBlockchainSlot = backendService.getBlockService.getLatestBlock.getValue.getSlot
+            val slotConfigEarly = SlotConfigHelper.retrieveSlotConfig(backendService)
+            val intervalMs = slotConfigEarly.zeroTime + (currentBlockchainSlot - slotConfigEarly.zeroSlot) * slotConfigEarly.slotLength
+            val computationTime = BigInt(intervalMs / 1000)
+            
+            println(s"[DEBUG] Computing redeemer time from blockchain slot:")
+            println(s"  currentBlockchainSlot: $currentBlockchainSlot")
+            println(s"  intervalMs: $intervalMs")
+            println(s"  computationTime (seconds): $computationTime")
 
-            // DEBUG: Print the datum structure
-            println(s"[DEBUG] Current datum CBOR: ${com.bloxbean.cardano.client.util.HexUtil.encodeHexString(currentDatum.serializeToBytes())}")
-            println(s"[DEBUG] Current ChainState: blockHeight=${currentChainState.blockHeight}, recentTimestamps.size=${currentChainState.recentTimestamps.size}")
+            // Create UpdateOracle redeemer with the time used for state computation
+            val redeemer = createUpdateOracleRedeemer(blockHeaders, computationTime)
 
-            // Create UpdateOracle redeemer
-            val redeemer = createUpdateOracleRedeemer(blockHeaders)
-            println(s"[DEBUG] Redeemer CBOR: ${com.bloxbean.cardano.client.util.HexUtil.encodeHexString(redeemer.getData.serializeToBytes())}")
-
-            // Convert new ChainState to PlutusData
+            // Convert new ChainState to PlutusData for output
             val newStateData = ToData.toData(newChainState)(using BitcoinValidator.ChainState.derived$ToData)
             val newDatum = scalusDataToPlutusData(newStateData)
 
@@ -200,6 +235,7 @@ object OracleTransactions {
             }
 
             val slotConfig = SlotConfigHelper.retrieveSlotConfig(backendService)
+            println(s"[DEBUG] SlotConfig: zeroTime=${slotConfig.zeroTime}, zeroSlot=${slotConfig.zeroSlot}, slotLength=${slotConfig.slotLength}")
 
             val scalusEvaluator = new scalus.bloxbean.ScalusTransactionEvaluator(slotConfig, protocolParams, utxoSupplier)
             println("[DEBUG] Using ScalusEvaluator (PlutusVM) for script cost evaluation")
@@ -207,21 +243,43 @@ object OracleTransactions {
             val quickTxBuilder = new QuickTxBuilder(backendService)
 
             val scriptTx = new ScriptTx()
-              .collectFrom(targetUtxo, currentDatum, redeemer.getData)
+              .collectFrom(targetUtxo, redeemer.getData)
               .payToContract(scriptAddress.getAddress, amount, newDatum)
               .attachSpendingValidator(script)
 
-            // Get current slot for validity interval
+            // Get current time and convert to slot for validity interval
             // The validator requires a finite validity start interval to access tx.validRange
-            val blockResult = backendService.getBlockService.getLatestBlock()
-            if (!blockResult.isSuccessful) {
-                throw new RuntimeException(s"Failed to get current slot: ${blockResult.getResponse}")
+            // If validityIntervalTimeSeconds is provided, use it to compute the slot
+            // Otherwise, use current time
+            val currentPosixTimeMs = validityIntervalTimeSeconds match {
+                case Some(timeSeconds) =>
+                    println(s"[DEBUG buildAndSubmitUpdateTransaction] Using provided validityIntervalTimeSeconds: $timeSeconds")
+                    timeSeconds.toLong * 1000
+                case None =>
+                    val freshTime = System.currentTimeMillis()
+                    println(s"[DEBUG buildAndSubmitUpdateTransaction] No validityIntervalTimeSeconds provided, using fresh time: $freshTime")
+                    freshTime
             }
-            val currentSlot = blockResult.getValue.getSlot
+            val currentSlotFromTime = slotConfig.timeToSlot(currentPosixTimeMs)
 
+            // Compute what the validator will see (slot -> POSIX ms / 1000)
+            val validatorWillSeeMs = slotConfig.zeroTime + (currentSlotFromTime - slotConfig.zeroSlot) * slotConfig.slotLength
+            val validatorWillSeeSeconds = validatorWillSeeMs / 1000
 
+            println(s"[DEBUG buildAndSubmitUpdateTransaction]")
+            println(s"  Input validityIntervalTimeSeconds: $validityIntervalTimeSeconds")
+            println(s"  Computed currentPosixTimeMs: $currentPosixTimeMs")
+            println(s"  Computed currentSlot: $currentSlotFromTime")
+            println(s"  Validator will see (ms): $validatorWillSeeMs")
+            println(s"  Validator will see (seconds): $validatorWillSeeSeconds")
+            println(s"  MATCH: ${validityIntervalTimeSeconds.map(_ == validatorWillSeeSeconds).getOrElse(false)}")
 
             // Build, sign, and submit
+            // Get current slot from the blockchain (not from time calculation)
+            val latestBlock = backendService.getBlockService.getLatestBlock.getValue
+            val currentSlot = latestBlock.getSlot
+            println(s"[DEBUG] Current slot from blockchain: $currentSlot")
+            
             val result = quickTxBuilder.compose(scriptTx)
               .feePayer(account.baseAddress())
               .withSigner(com.bloxbean.cardano.client.function.helper.SignerProviders.signerFrom(account))

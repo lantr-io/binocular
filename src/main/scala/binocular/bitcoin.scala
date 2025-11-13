@@ -137,7 +137,7 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
           recentTimestamps = prelude.List(BigInt(header.time)),
           previousDifficultyAdjustmentTimestamp = BigInt(adjustmentHeader.time),
           confirmedBlocksTree = prelude.List(blockHash), // Single-element Merkle tree
-          forksTree = prelude.AssocMap.empty // Initialize with empty forks tree
+          forksTree = prelude.SortedMap.empty // Initialize with empty forks tree
         )
     }
 

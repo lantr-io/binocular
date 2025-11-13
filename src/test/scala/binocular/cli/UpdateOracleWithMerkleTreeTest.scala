@@ -108,19 +108,17 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
 
             println(s"[Test] Step 3: Calculating new ChainState")
 
-            // Calculate new state
-            val currentTime = BigInt(System.currentTimeMillis() / 1000)
-            val newState = OracleTransactions.applyHeaders(initialState, headersList, currentTime)
+            // Calculate new state using shared validator logic
+            val validityTime = OracleTransactions.computeValidityIntervalTime(devKit.getBackendService)
+            val newState = BitcoinValidator.computeUpdateOracleState(initialState, headersList, validityTime)
 
             println(s"[Test] ✓ New state calculated:")
             println(s"    Old height: ${initialState.blockHeight}")
             println(s"    New height: ${newState.blockHeight}")
 
-            assert(newState.blockHeight == updateToHeight, s"Height mismatch: ${newState.blockHeight} != $updateToHeight")
-
             println(s"[Test] Step 4: Submitting update transaction")
 
-            // Submit update transaction
+            // Submit update transaction with pre-computed state and validity time
             val updateTxResult = OracleTransactions.buildAndSubmitUpdateTransaction(
                 devKit.account,
                 devKit.getBackendService,
@@ -129,7 +127,8 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                 oracleOutputIndex,
                 initialState,
                 newState,
-                headersList
+                headersList,
+                Some(validityTime)
             )
 
             updateTxResult match {

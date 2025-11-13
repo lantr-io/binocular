@@ -90,9 +90,10 @@ object TransactionBuilders {
       * @return Redeemer with UpdateOracle action
       */
     def createUpdateOracleRedeemer(
-        blockHeaders: scalus.prelude.List[BitcoinValidator.BlockHeader]
+        blockHeaders: scalus.prelude.List[BitcoinValidator.BlockHeader],
+        currentTime: BigInt = BigInt(System.currentTimeMillis() / 1000)
     ): Redeemer = {
-        val action = BitcoinValidator.Action.UpdateOracle(blockHeaders)
+        val action = BitcoinValidator.Action.UpdateOracle(blockHeaders, currentTime)
         // Action derives ToData, so we can use the derived instance
         val actionData = ToData.toData(action)(using BitcoinValidator.Action.derived$ToData)
         val redeemerData = scalusDataToPlutusData(actionData)

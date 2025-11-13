@@ -196,13 +196,14 @@ case class UpdateOracleCommand(
                         println()
                         println("Step 5: Calculating new ChainState after update...")
 
-                        // Calculate new ChainState
-                        val currentTime = BigInt(System.currentTimeMillis() / 1000)
+                        // Calculate new ChainState using shared validator logic
+                        val validityTime = OracleTransactions.computeValidityIntervalTime(backendService)
+                        println(s"  Using validity interval time: $validityTime")
                         val newChainState = try {
-                            OracleTransactions.applyHeaders(currentChainState, headersList, currentTime)
+                            BitcoinValidator.computeUpdateOracleState(currentChainState, headersList, validityTime)
                         } catch {
                             case e: Exception =>
-                                System.err.println(s"✗ Error applying headers to ChainState: ${e.getMessage}")
+                                System.err.println(s"✗ Error computing new state: ${e.getMessage}")
                                 e.printStackTrace()
                                 return 1
                         }
@@ -213,9 +214,9 @@ case class UpdateOracleCommand(
 
                         println()
                         println("Step 6: Building and submitting UpdateOracle transaction...")
-                        
-                        
-                        // Build and submit transaction
+
+
+                        // Build and submit transaction with pre-computed state and validity time
                         val txResult = OracleTransactions.buildAndSubmitUpdateTransaction(
                             account,
                             backendService,
@@ -224,7 +225,8 @@ case class UpdateOracleCommand(
                             outputIndex,
                             currentChainState,
                             newChainState,
-                            headersList
+                            headersList,
+                            Some(validityTime)
                         )
 
                         txResult match {
