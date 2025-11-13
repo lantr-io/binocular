@@ -84,6 +84,7 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
             val headersList = scalus.prelude.List.from(headers.toList)
 
             println(s"[Test] ✓ Fetched ${headers.length} headers")
+            println(s"[test]  headers: ${headers.map(h => h.bytes.toHex).mkString(", ")}")
 
             println(s"[Test] Step 3: Calculating new ChainState")
 
@@ -98,6 +99,8 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
             assert(newState.blockHeight == updateToHeight, s"Height mismatch: ${newState.blockHeight} != $updateToHeight")
 
             println(s"[Test] Step 4: Submitting update transaction")
+            println(s" Initial state = ${initialState}")
+            println(s" New state     = ${newState}")
 
             // Submit update transaction
             val updateTxResult = OracleTransactions.buildAndSubmitUpdateTransaction(

@@ -1,16 +1,17 @@
 package binocular
 
+import binocular.util.SlotConfigHelper
 import com.bloxbean.cardano.client.account.Account
 import com.bloxbean.cardano.client.address.Address
 import com.bloxbean.cardano.client.api.model.Amount
 import com.bloxbean.cardano.client.backend.api.BackendService
-import com.bloxbean.cardano.client.plutus.spec.{PlutusV3Script, Redeemer, PlutusData}
+import com.bloxbean.cardano.client.plutus.spec.{PlutusData, PlutusV3Script, Redeemer}
 import com.bloxbean.cardano.client.quicktx.{QuickTxBuilder, ScriptTx, Tx}
 import com.bloxbean.cardano.client.util.HexUtil
-import scalus.builtin.{Data, ToData, FromData, ByteString}
+import scalus.builtin.{ByteString, Data, FromData, ToData}
 
 import scala.jdk.CollectionConverters.*
-import scala.util.{Try, Success, Failure}
+import scala.util.{Failure, Success, Try}
 
 /** Helper functions for building oracle transactions */
 object OracleTransactions {
@@ -98,6 +99,7 @@ object OracleTransactions {
             val tx = new Tx()
               .payToContract(scriptAddress.getAddress, amount, plutusDatum)
               .from(account.baseAddress())
+                
 
             val result = quickTxBuilder
               .compose(tx)
@@ -137,7 +139,7 @@ object OracleTransactions {
         oracleOutputIndex: Int,
         currentChainState: BitcoinValidator.ChainState,
         newChainState: BitcoinValidator.ChainState,
-        blockHeaders: scalus.prelude.List[BitcoinValidator.BlockHeader]
+        blockHeaders: scalus.prelude.List[BitcoinValidator.BlockHeader],
     ): Either[String, String] = {
         Try {
             // Get the script
@@ -161,8 +163,13 @@ object OracleTransactions {
             val currentStateData = ToData.toData(currentChainState)(using BitcoinValidator.ChainState.derived$ToData)
             val currentDatum = scalusDataToPlutusData(currentStateData)
 
+            // DEBUG: Print the datum structure
+            println(s"[DEBUG] Current datum CBOR: ${com.bloxbean.cardano.client.util.HexUtil.encodeHexString(currentDatum.serializeToBytes())}")
+            println(s"[DEBUG] Current ChainState: blockHeight=${currentChainState.blockHeight}, recentTimestamps.size=${currentChainState.recentTimestamps.size}")
+
             // Create UpdateOracle redeemer
             val redeemer = createUpdateOracleRedeemer(blockHeaders)
+            println(s"[DEBUG] Redeemer CBOR: ${com.bloxbean.cardano.client.util.HexUtil.encodeHexString(redeemer.getData.serializeToBytes())}")
 
             // Convert new ChainState to PlutusData
             val newStateData = ToData.toData(newChainState)(using BitcoinValidator.ChainState.derived$ToData)
@@ -173,6 +180,30 @@ object OracleTransactions {
             val amount = Amount.lovelace(lovelaceAmount)
 
             // Build transaction using ScriptTx
+            // Configure ScalusEvaluator for this transaction to use PlutusVM instead of default Rust evaluator
+            val protocolParams = backendService.getEpochService.getProtocolParameters.getValue
+
+            // Wrap UtxoService as UtxoSupplier
+            val utxoSupplier = new com.bloxbean.cardano.client.api.UtxoSupplier {
+                override def getPage(address: String, nrOfItems: Integer, page: Integer, order: com.bloxbean.cardano.client.api.common.OrderEnum): java.util.List[com.bloxbean.cardano.client.api.model.Utxo] = {
+                    utxoService.getUtxos(address, nrOfItems, page, order).getValue
+                }
+
+                override def getTxOutput(txHash: String, outputIndex: Int): java.util.Optional[com.bloxbean.cardano.client.api.model.Utxo] = {
+                    val result = utxoService.getTxOutput(txHash, outputIndex)
+                    if (result.isSuccessful && result.getValue != null) {
+                        java.util.Optional.of(result.getValue)
+                    } else {
+                        java.util.Optional.empty()
+                    }
+                }
+            }
+
+            val slotConfig = SlotConfigHelper.retrieveSlotConfig(backendService)
+
+            val scalusEvaluator = new scalus.bloxbean.ScalusTransactionEvaluator(slotConfig, protocolParams, utxoSupplier)
+            println("[DEBUG] Using ScalusEvaluator (PlutusVM) for script cost evaluation")
+
             val quickTxBuilder = new QuickTxBuilder(backendService)
 
             val scriptTx = new ScriptTx()
@@ -180,10 +211,22 @@ object OracleTransactions {
               .payToContract(scriptAddress.getAddress, amount, newDatum)
               .attachSpendingValidator(script)
 
+            // Get current slot for validity interval
+            // The validator requires a finite validity start interval to access tx.validRange
+            val blockResult = backendService.getBlockService.getLatestBlock()
+            if (!blockResult.isSuccessful) {
+                throw new RuntimeException(s"Failed to get current slot: ${blockResult.getResponse}")
+            }
+            val currentSlot = blockResult.getValue.getSlot
+
+
+
             // Build, sign, and submit
             val result = quickTxBuilder.compose(scriptTx)
               .feePayer(account.baseAddress())
               .withSigner(com.bloxbean.cardano.client.function.helper.SignerProviders.signerFrom(account))
+              .withTxEvaluator(scalusEvaluator)
+              .validFrom(currentSlot)
               .completeAndWait()
 
             if (result.isSuccessful) {

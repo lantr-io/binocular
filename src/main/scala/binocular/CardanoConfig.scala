@@ -36,7 +36,8 @@ case class CardanoConfig(
     network: CardanoNetwork,
     blockfrost: BlockfrostConfig,
     koios: KoiosConfig,
-    ogmios: OgmiosConfig
+    ogmios: OgmiosConfig,
+    yaci: Option[YaciConfig] = None
 ) {
 
   /** Create BackendService based on configured backend type */
@@ -116,6 +117,9 @@ case class CardanoConfig(
 
     s"CardanoConfig(backend=$backend, network=$network, blockfrost=BlockfrostConfig(${blockfrost.apiUrl}, $maskedBlockfrostId))"
   }
+  
+  
+  
 }
 
 /** Cardano backend types */
@@ -167,6 +171,11 @@ case class KoiosConfig(
 case class OgmiosConfig(
     url: String
 )
+
+case class YaciConfig(
+    apiUrl: String,
+    fetchSlotConfig: Boolean = true
+                     )
 
 object CardanoConfig {
 

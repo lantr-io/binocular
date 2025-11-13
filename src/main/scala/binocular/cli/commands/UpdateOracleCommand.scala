@@ -1,9 +1,11 @@
 package binocular.cli.commands
 
-import binocular.{BitcoinNodeConfig, CardanoConfig, OracleConfig, WalletConfig, SimpleBitcoinRpc, BitcoinChainState, OracleTransactions, BitcoinValidator}
+import binocular.{BitcoinChainState, BitcoinNodeConfig, BitcoinValidator, CardanoConfig, OracleConfig, OracleTransactions, SimpleBitcoinRpc, WalletConfig}
 import binocular.cli.{Command, CommandHelpers}
 import com.bloxbean.cardano.client.address.Address
+import scalus.builtin.ByteString
 import scalus.builtin.Data.fromData
+
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration.*
 import scala.jdk.CollectionConverters.*
@@ -186,6 +188,7 @@ case class UpdateOracleCommand(
                         }
 
                         println(s"✓ Fetched $numBlocks Bitcoin headers")
+                        println(s" headers: ${headers.map(h => h.bytes.toHex).mkString(", ")}")
 
                         // Convert to Scalus list
                         val headersList = scalus.prelude.List.from(headers.toList)
@@ -210,7 +213,8 @@ case class UpdateOracleCommand(
 
                         println()
                         println("Step 6: Building and submitting UpdateOracle transaction...")
-
+                        
+                        
                         // Build and submit transaction
                         val txResult = OracleTransactions.buildAndSubmitUpdateTransaction(
                             account,

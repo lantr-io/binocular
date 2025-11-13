@@ -60,10 +60,10 @@ trait CliIntegrationTestBase extends YaciDevKitSpec {
                 BlockHeaderInfo(
                     hash = fixture.hash,
                     height = fixture.height,
-                    version = 4, // Assume modern version
+                    version = fixture.version.toInt,
                     merkleroot = fixture.merkleroot,
                     time = fixture.timestamp,
-                    nonce = 0, // Not used in our tests
+                    nonce = fixture.nonce,
                     bits = fixture.bits,
                     difficulty = 0.0, // Not used in our tests
                     previousblockhash = fixture.previousblockhash
@@ -85,10 +85,10 @@ trait CliIntegrationTestBase extends YaciDevKitSpec {
                 BlockInfo(
                     hash = fixture.hash,
                     height = fixture.height,
-                    version = 4,
+                    version = fixture.version.toInt,
                     merkleroot = fixture.merkleroot,
                     time = fixture.timestamp,
-                    nonce = 0,
+                    nonce = fixture.nonce,
                     bits = fixture.bits,
                     difficulty = 0.0,
                     previousblockhash = fixture.previousblockhash,
@@ -164,6 +164,8 @@ trait CliIntegrationTestBase extends YaciDevKitSpec {
         previousblockhash: Option[String], // Required for all blocks except genesis
         timestamp: Long, // Required for validation
         bits: String, // Required for difficulty validation
+        nonce: Long, // Required for proof-of-work validation
+        version: Long, // Required for header hash calculation
         difficulty: Option[Double] = None, // Optional - not used in validation
         description: Option[String] = None // Optional - for documentation
     ) derives ReadWriter

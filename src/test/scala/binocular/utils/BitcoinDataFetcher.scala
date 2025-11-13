@@ -42,6 +42,8 @@ object BitcoinDataFetcher {
       previousblockhash: Option[String],
       timestamp: Long,
       bits: String,
+      nonce: Long,
+      version: Long,
       difficulty: Double,
       description: String
   ) derives ReadWriter
@@ -222,6 +224,8 @@ object BitcoinDataFetcher {
         previousblockhash = block.previousblockhash,
         timestamp = block.time,
         bits = block.bits,
+        nonce = block.nonce,
+        version = block.version,
         difficulty = block.difficulty,
         description = getBlockDescription(blockHeight)
       )

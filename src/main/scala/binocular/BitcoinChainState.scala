@@ -15,14 +15,23 @@ object BitcoinChainState {
 
     /** Build 80-byte raw header from block header info */
     private def buildRawHeader(header: BlockHeaderInfo): Array[Byte] = {
+        println(s"[DEBUG buildRawHeader] Building header for block ${header.height}")
+        println(s"  Version: ${header.version} (0x${header.version.toHexString})")
+        println(s"  Prev hash: ${header.previousblockhash.getOrElse("GENESIS")}")
+        println(s"  Merkle root: ${header.merkleroot}")
+        println(s"  Timestamp: ${header.time}")
+        println(s"  Bits: ${header.bits}")
+        println(s"  Nonce: ${header.nonce}")
+
         val buffer = new Array[Byte](80)
         var offset = 0
 
-        // Version (4 bytes, little-endian)
-        buffer(offset) = (header.version & 0xFF).toByte
-        buffer(offset + 1) = ((header.version >> 8) & 0xFF).toByte
-        buffer(offset + 2) = ((header.version >> 16) & 0xFF).toByte
-        buffer(offset + 3) = ((header.version >> 24) & 0xFF).toByte
+        // Version (4 bytes, little-endian) - Use actual version from RPC
+        val version = header.version.toInt
+        buffer(offset) = (version & 0xFF).toByte
+        buffer(offset + 1) = ((version >> 8) & 0xFF).toByte
+        buffer(offset + 2) = ((version >> 16) & 0xFF).toByte
+        buffer(offset + 3) = ((version >> 24) & 0xFF).toByte
         offset += 4
 
         // Previous block hash (32 bytes, reversed from hex)
@@ -45,7 +54,7 @@ object BitcoinChainState {
         buffer(offset + 3) = ((time >> 24) & 0xFF).toByte
         offset += 4
 
-        // Bits (4 bytes, reversed from hex)
+        // Bits (4 bytes, little-endian - must reverse from display hex to internal byte order)
         val bits = hexToByteString(header.bits).bytes.reverse.toArray
         System.arraycopy(bits, 0, buffer, offset, 4)
         offset += 4
@@ -56,6 +65,9 @@ object BitcoinChainState {
         buffer(offset + 1) = ((nonce >> 8) & 0xFF).toByte
         buffer(offset + 2) = ((nonce >> 16) & 0xFF).toByte
         buffer(offset + 3) = ((nonce >> 24) & 0xFF).toByte
+
+        val headerHex = buffer.map(b => f"${b & 0xFF}%02x").mkString
+        println(s"  Built header (80 bytes): $headerHex")
 
         buffer
     }
@@ -87,8 +99,11 @@ object BitcoinChainState {
             header <- rpc.getBlockHeader(blockHashHex)
             adjustmentBlockHashHex <- rpc.getBlockHash(adjustmentBlockHeight)
             adjustmentHeader <- rpc.getBlockHeader(adjustmentBlockHashHex)
-            bits = hexToByteString(header.bits)
-            blockHash = hexToByteString(header.hash)
+            // Bits from RPC is in big-endian (display order), but Bitcoin headers use little-endian
+            // Reverse the bytes to match the format in the block header
+            bits = ByteString.fromArray(hexToByteString(header.bits).bytes.reverse.toArray)
+            // Block hash from RPC is in display order (big-endian), but we store it in internal order (little-endian)
+            blockHash = ByteString.fromArray(hexToByteString(header.hash).bytes.reverse.toArray)
         } yield ChainState(
           blockHeight = blockHeight,
           blockHash = blockHash,

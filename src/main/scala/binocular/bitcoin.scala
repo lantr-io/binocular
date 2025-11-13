@@ -73,12 +73,13 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
     private def buildRawHeader(header: BlockHeaderInfo): Array[Byte] = {
         val buffer = new Array[Byte](80)
         var offset = 0
-        
-        // Version (4 bytes, little-endian)
-        buffer(offset) = (header.version & 0xFF).toByte
-        buffer(offset + 1) = ((header.version >> 8) & 0xFF).toByte
-        buffer(offset + 2) = ((header.version >> 16) & 0xFF).toByte
-        buffer(offset + 3) = ((header.version >> 24) & 0xFF).toByte
+
+        // Version (4 bytes, little-endian) - Use actual version from RPC
+        val version = header.version.toInt
+        buffer(offset) = (version & 0xFF).toByte
+        buffer(offset + 1) = ((version >> 8) & 0xFF).toByte
+        buffer(offset + 2) = ((version >> 16) & 0xFF).toByte
+        buffer(offset + 3) = ((version >> 24) & 0xFF).toByte
         offset += 4
         
         // Previous block hash (32 bytes, reversed from hex)
@@ -99,7 +100,7 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
         buffer(offset + 3) = ((time >> 24) & 0xFF).toByte
         offset += 4
         
-        // Bits (4 bytes, reversed from hex)
+        // Bits (4 bytes, little-endian - must reverse from display hex to internal byte order)
         val bits = hexToByteString(header.bits).bytes.reverse.toArray
         System.arraycopy(bits, 0, buffer, offset, 4)
         offset += 4
@@ -126,7 +127,8 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
             adjustmentBlockHashHex <- rpc.getBlockHash(adjustmentBlockHeight)
             adjustmentHeader <- rpc.getBlockHeader(adjustmentBlockHashHex)
             bits = hexToByteString(header.bits)
-            blockHash = hexToByteString(header.hash)
+            // Block hash from RPC is in display order (big-endian), but we store it in internal order (little-endian)
+            blockHash = ByteString.fromArray(hexToByteString(header.hash).bytes.reverse.toArray)
         yield ChainState(
           blockHeight = blockHeight,
           blockHash = blockHash,
