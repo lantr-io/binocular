@@ -1,18 +1,19 @@
 package binocular.cli
 
-import binocular.{BitcoinChainState, OracleTransactions, BitcoinValidator}
 import binocular.cli.commands.InitOracleCommand
+import binocular.{BitcoinChainState, BitcoinValidator, OracleTransactions}
 import com.bloxbean.cardano.client.address.Address
-import scala.concurrent.{Await, ExecutionContext}
+import scalus.builtin.Data
+import scalus.utils.Hex.hexToBytes
+
 import scala.concurrent.duration.*
+import scala.concurrent.{Await, ExecutionContext}
 
 /** Integration test for InitOracleCommand
   *
   * Tests the complete flow of initializing an oracle:
-  * 1. Fetches Bitcoin block header from mock RPC (using fixtures)
-  * 2. Creates initial ChainState
-  * 3. Submits transaction to Yaci DevKit
-  * 4. Verifies oracle UTxO exists with correct datum
+  *   1. Fetches Bitcoin block header from mock RPC (using fixtures) 2. Creates initial ChainState 3. Submits
+  *      transaction to Yaci DevKit 4. Verifies oracle UTxO exists with correct datum
   */
 class InitOracleCommandIntegrationTest extends CliIntegrationTestBase {
 
@@ -31,19 +32,19 @@ class InitOracleCommandIntegrationTest extends CliIntegrationTestBase {
 
             // Fetch initial chain state using mock RPC
             val initialStateFuture = BitcoinChainState.getInitialChainState(
-                new binocular.SimpleBitcoinRpc(
-                    binocular.BitcoinNodeConfig(
-                        url = "mock://rpc",
-                        username = "test",
-                        password = "test",
-                        network = binocular.BitcoinNetwork.Testnet
-                    )
-                ) {
-                    // Override methods to use mock RPC
-                    override def getBlockHash(height: Int) = mockRpc.getBlockHash(height)
-                    override def getBlockHeader(hash: String) = mockRpc.getBlockHeader(hash)
-                },
-                startHeight.toInt
+              new binocular.SimpleBitcoinRpc(
+                binocular.BitcoinNodeConfig(
+                  url = "mock://rpc",
+                  username = "test",
+                  password = "test",
+                  network = binocular.BitcoinNetwork.Testnet
+                )
+              ) {
+                  // Override methods to use mock RPC
+                  override def getBlockHash(height: Int) = mockRpc.getBlockHash(height)
+                  override def getBlockHeader(hash: String) = mockRpc.getBlockHeader(hash)
+              },
+              startHeight.toInt
             )
 
             val initialState = Await.result(initialStateFuture, 30.seconds)
@@ -54,15 +55,15 @@ class InitOracleCommandIntegrationTest extends CliIntegrationTestBase {
 
             // Build and submit init transaction
             val scriptAddress = new Address(
-                binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
+              binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
             )
 
             val txResult = OracleTransactions.buildAndSubmitInitTransaction(
-                devKit.account,
-                devKit.getBackendService,
-                scriptAddress,
-                initialState,
-                5_000_000L
+              devKit.account,
+              devKit.getBackendService,
+              scriptAddress,
+              initialState,
+              5_000_000L
             )
 
             txResult match {
@@ -84,15 +85,13 @@ class InitOracleCommandIntegrationTest extends CliIntegrationTestBase {
                     val oracleUtxo = utxos.head
                     val inlineDatum = oracleUtxo.getInlineDatum
                     assert(inlineDatum != null && inlineDatum.nonEmpty, "Oracle UTxO has no datum")
-
-                    // Parse and verify ChainState
-                    val plutusData = com.bloxbean.cardano.client.plutus.spec.PlutusData.deserialize(
-                        com.bloxbean.cardano.client.util.HexUtil.decodeHexString(inlineDatum)
-                    )
-                    val data = OracleTransactions.plutusDataToScalusData(plutusData)
+                    val data = Data.fromCbor(inlineDatum.hexToBytes)
                     val chainState = data.to[BitcoinValidator.ChainState]
 
-                    assert(chainState.blockHeight == startHeight, s"Block height mismatch: ${chainState.blockHeight} != $startHeight")
+                    assert(
+                      chainState.blockHeight == startHeight,
+                      s"Block height mismatch: ${chainState.blockHeight} != $startHeight"
+                    )
                     println(s"[Test] ✓ ChainState verified:")
                     println(s"    Height: ${chainState.blockHeight}")
                     println(s"    Hash: ${chainState.blockHash.toHex}")
@@ -113,28 +112,32 @@ class InitOracleCommandIntegrationTest extends CliIntegrationTestBase {
 
             println(s"[Test] Attempting to initialize with invalid height $invalidHeight")
 
-            val result = try {
-                val initialStateFuture = BitcoinChainState.getInitialChainState(
-                    new binocular.SimpleBitcoinRpc(
+            val result =
+                try {
+                    val initialStateFuture = BitcoinChainState.getInitialChainState(
+                      new binocular.SimpleBitcoinRpc(
                         binocular.BitcoinNodeConfig(
-                            url = "mock://rpc",
-                            username = "test",
-                            password = "test",
-                            network = binocular.BitcoinNetwork.Testnet
+                          url = "mock://rpc",
+                          username = "test",
+                          password = "test",
+                          network = binocular.BitcoinNetwork.Testnet
                         )
-                    ) {
-                        override def getBlockHash(height: Int) = mockRpc.getBlockHash(height)
-                        override def getBlockHeader(hash: String) = mockRpc.getBlockHeader(hash)
-                    },
-                    invalidHeight
-                )
-                Await.result(initialStateFuture, 10.seconds)
-                fail("Should have thrown exception for invalid height")
-            } catch {
-                case e: Exception =>
-                    println(s"[Test] ✓ Correctly failed with: ${e.getMessage}")
-                    assert(e.getMessage.contains("No such file") || e.getMessage.contains("not found") || e.getMessage.contains("FileNotFoundException"))
-            }
+                      ) {
+                          override def getBlockHash(height: Int) = mockRpc.getBlockHash(height)
+                          override def getBlockHeader(hash: String) = mockRpc.getBlockHeader(hash)
+                      },
+                      invalidHeight
+                    )
+                    Await.result(initialStateFuture, 10.seconds)
+                    fail("Should have thrown exception for invalid height")
+                } catch {
+                    case e: Exception =>
+                        println(s"[Test] ✓ Correctly failed with: ${e.getMessage}")
+                        assert(
+                          e.getMessage.contains("No such file") || e.getMessage.contains("not found") || e.getMessage
+                              .contains("FileNotFoundException")
+                        )
+                }
         }
     }
 }

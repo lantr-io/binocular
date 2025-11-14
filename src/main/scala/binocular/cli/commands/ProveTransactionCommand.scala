@@ -1,10 +1,12 @@
 package binocular.cli.commands
 
-import binocular.{BitcoinNodeConfig, CardanoConfig, OracleConfig, SimpleBitcoinRpc, OracleTransactions, BitcoinValidator, MerkleTree, reverse}
+import binocular.{BitcoinNodeConfig, BitcoinValidator, CardanoConfig, MerkleTree, OracleConfig, OracleTransactions, SimpleBitcoinRpc, reverse}
 import binocular.cli.{Command, CommandHelpers}
 import com.bloxbean.cardano.client.address.Address
+import scalus.bloxbean.Interop.toScalusData
 import scalus.builtin.Data.fromData
 import scalus.builtin.ByteString
+
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration.*
 import scala.jdk.CollectionConverters.*
@@ -99,7 +101,7 @@ case class ProveTransactionCommand(
                             val plutusData = com.bloxbean.cardano.client.plutus.spec.PlutusData.deserialize(
                                 com.bloxbean.cardano.client.util.HexUtil.decodeHexString(inlineDatumHex)
                             )
-                            val data = OracleTransactions.plutusDataToScalusData(plutusData)
+                            val data = plutusData.toScalusData
                             data.to[BitcoinValidator.ChainState]
                         } catch {
                             case e: Exception =>

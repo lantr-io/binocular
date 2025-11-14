@@ -1,18 +1,19 @@
 package binocular.cli
 
-import binocular.{BitcoinChainState, OracleTransactions, BitcoinValidator}
+import binocular.{BitcoinChainState, BitcoinValidator, OracleTransactions}
 import com.bloxbean.cardano.client.address.Address
+import scalus.builtin.Data
 import scalus.builtin.Data.fromData
-import scala.concurrent.{Await, ExecutionContext, Future}
+import scalus.utils.Hex.hexToBytes
+
 import scala.concurrent.duration.*
+import scala.concurrent.{Await, ExecutionContext, Future}
 
 /** Integration test for UpdateOracleCommand
   *
   * Tests the complete flow of updating an oracle:
-  * 1. Creates initial oracle at block N
-  * 2. Fetches headers for blocks N+1 to N+M from mock RPC
-  * 3. Updates oracle with new headers
-  * 4. Verifies oracle state is updated correctly
+  *   1. Creates initial oracle at block N 2. Fetches headers for blocks N+1 to N+M from mock RPC 3. Updates oracle with
+  *      new headers 4. Verifies oracle state is updated correctly
   */
 class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
 
@@ -30,32 +31,32 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
 
             // Create initial oracle
             val initialStateFuture = BitcoinChainState.getInitialChainState(
-                new binocular.SimpleBitcoinRpc(
-                    binocular.BitcoinNodeConfig(
-                        url = "mock://rpc",
-                        username = "test",
-                        password = "test",
-                        network = binocular.BitcoinNetwork.Testnet
-                    )
-                ) {
-                    override def getBlockHash(height: Int) = mockRpc.getBlockHash(height)
-                    override def getBlockHeader(hash: String) = mockRpc.getBlockHeader(hash)
-                },
-                startHeight
+              new binocular.SimpleBitcoinRpc(
+                binocular.BitcoinNodeConfig(
+                  url = "mock://rpc",
+                  username = "test",
+                  password = "test",
+                  network = binocular.BitcoinNetwork.Testnet
+                )
+              ) {
+                  override def getBlockHash(height: Int) = mockRpc.getBlockHash(height)
+                  override def getBlockHeader(hash: String) = mockRpc.getBlockHeader(hash)
+              },
+              startHeight
             )
 
             val initialState = Await.result(initialStateFuture, 30.seconds)
 
             val scriptAddress = new Address(
-                binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
+              binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
             )
 
             // Submit init transaction
             val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
-                devKit.account,
-                devKit.getBackendService,
-                scriptAddress,
-                initialState
+              devKit.account,
+              devKit.getBackendService,
+              scriptAddress,
+              initialState
             )
 
             val (oracleTxHash, oracleOutputIndex) = initTxResult match {
@@ -72,12 +73,12 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
 
             // Fetch headers for update
             val headersFuture = Future.sequence(
-                (startHeight + 1 to updateToHeight).map { height =>
-                    for {
-                        hashHex <- mockRpc.getBlockHash(height)
-                        headerInfo <- mockRpc.getBlockHeader(hashHex)
-                    } yield BitcoinChainState.convertHeader(headerInfo)
-                }
+              (startHeight + 1 to updateToHeight).map { height =>
+                  for {
+                      hashHex <- mockRpc.getBlockHash(height)
+                      headerInfo <- mockRpc.getBlockHeader(hashHex)
+                  } yield BitcoinChainState.convertHeader(headerInfo)
+              }
             )
 
             val headers = Await.result(headersFuture, 30.seconds)
@@ -103,15 +104,15 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
 
             // Submit update transaction with pre-computed state and validity time
             val updateTxResult = OracleTransactions.buildAndSubmitUpdateTransaction(
-                devKit.account,
-                devKit.getBackendService,
-                scriptAddress,
-                oracleTxHash,
-                oracleOutputIndex,
-                initialState,
-                newState,
-                headersList,
-                Some(validityTime)
+              devKit.account,
+              devKit.getBackendService,
+              scriptAddress,
+              oracleTxHash,
+              oracleOutputIndex,
+              initialState,
+              newState,
+              headersList,
+              Some(validityTime)
             )
 
             updateTxResult match {
@@ -134,10 +135,7 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                     val latestUtxo = utxos.head
                     val inlineDatum = latestUtxo.getInlineDatum
 
-                    val plutusData = com.bloxbean.cardano.client.plutus.spec.PlutusData.deserialize(
-                        com.bloxbean.cardano.client.util.HexUtil.decodeHexString(inlineDatum)
-                    )
-                    val data = OracleTransactions.plutusDataToScalusData(plutusData)
+                    val data = Data.fromCbor(inlineDatum.hexToBytes)
                     val actualState = data.to[BitcoinValidator.ChainState]
 
                     println(s"[Test] ✓ Updated ChainState verified:")
@@ -146,10 +144,14 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                     println(s"    Forks tree size: ${actualState.forksTree.toList.size}")
 
                     // Verify the on-chain state matches our computed state
-                    assert(actualState.blockHeight == newState.blockHeight,
-                           s"Height mismatch: actual=${actualState.blockHeight} expected=${newState.blockHeight}")
-                    assert(actualState.blockHash == newState.blockHash,
-                           s"Hash mismatch: actual=${actualState.blockHash.toHex} expected=${newState.blockHash.toHex}")
+                    assert(
+                      actualState.blockHeight == newState.blockHeight,
+                      s"Height mismatch: actual=${actualState.blockHeight} expected=${newState.blockHeight}"
+                    )
+                    assert(
+                      actualState.blockHash == newState.blockHash,
+                      s"Hash mismatch: actual=${actualState.blockHash.toHex} expected=${newState.blockHash.toHex}"
+                    )
 
                 case Left(err) =>
                     fail(s"Failed to update oracle: $err")
@@ -168,31 +170,31 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
 
             // Create initial oracle
             val initialStateFuture = BitcoinChainState.getInitialChainState(
-                new binocular.SimpleBitcoinRpc(
-                    binocular.BitcoinNodeConfig(
-                        url = "mock://rpc",
-                        username = "test",
-                        password = "test",
-                        network = binocular.BitcoinNetwork.Testnet
-                    )
-                ) {
-                    override def getBlockHash(height: Int) = mockRpc.getBlockHash(height)
-                    override def getBlockHeader(hash: String) = mockRpc.getBlockHeader(hash)
-                },
-                startHeight
+              new binocular.SimpleBitcoinRpc(
+                binocular.BitcoinNodeConfig(
+                  url = "mock://rpc",
+                  username = "test",
+                  password = "test",
+                  network = binocular.BitcoinNetwork.Testnet
+                )
+              ) {
+                  override def getBlockHash(height: Int) = mockRpc.getBlockHash(height)
+                  override def getBlockHeader(hash: String) = mockRpc.getBlockHeader(hash)
+              },
+              startHeight
             )
 
             val initialState = Await.result(initialStateFuture, 30.seconds)
 
             val scriptAddress = new Address(
-                binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
+              binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
             )
 
             val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
-                devKit.account,
-                devKit.getBackendService,
-                scriptAddress,
-                initialState
+              devKit.account,
+              devKit.getBackendService,
+              scriptAddress,
+              initialState
             )
 
             val (oracleTxHash, oracleOutputIndex) = initTxResult match {
