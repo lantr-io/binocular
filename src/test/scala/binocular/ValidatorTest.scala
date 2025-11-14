@@ -399,8 +399,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         val utxo = Map(
           input -> TransactionOutput
               .builder()
-              .value(spec.Value.builder().coin(BigInteger.valueOf(20)).build())
-              .address(payeeAddress)
+              .value(spec.Value.builder().coin(outputAmount).build())
+              .address(scriptAddress.getAddress)
               .inlineDatum(Interop.toPlutusData(prevState))
               .build(),
           scriptRefInput -> TransactionOutput
@@ -964,30 +964,66 @@ class ValidatorTest extends munit.ScalaCheckSuite {
     // ===== UPDATE ORACLE UNIT TESTS =====
 
     test("UpdateOracle - add single block to forks tree") {
-        // This tests adding a block to forks tree and verifying state changes
-        val baseTime = BigInt(System.currentTimeMillis() / 1000)
-        val bits = hex"17030ecd".reverse
-        val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
-
-        // Create initial state with empty forks tree
+        // Use real Bitcoin blocks 864800 -> 864801
+        // Block 864800: hash=0000000000000000000202c4f7f242ab864a6162b8d1e745de6a86ae979e130b
+        val block864800Hash = "0000000000000000000202c4f7f242ab864a6162b8d1e745de6a86ae979e130b"
+        val block864800Height = 864800
+        val block864800Timestamp = 1728414569L
+        
+        // Block 864801: extends 864800
+        val block864801Hash = "00000000000000000002935605126a1c5587bf4b642fffe943595e6d669c817d"
+        val block864801PrevHash = "0000000000000000000202c4f7f242ab864a6162b8d1e745de6a86ae979e130b"
+        val block864801Bits = "17032f14"
+        val block864801Timestamp = 1728414644L
+        val block864801Nonce = 4254568467L
+        val block864801Version = 666378240L
+        val block864801Merkleroot = "dc2ad1c7a27d394d45961c13a9c36e1d5e6cdbea928c47cb06263bb049a9cd0f"
+        
+        val confirmedTip = ByteString.fromHex(block864800Hash).reverse
+        val bits = ByteString.fromHex(block864801Bits).reverse
+        val baseTime = BigInt(block864801Timestamp)
+        
+        // Construct the block header for 864801
+        def longToLE4Bytes(n: Long): ByteString = {
+            ByteString.fromArray(Array(
+                (n & 0xff).toByte,
+                ((n >> 8) & 0xff).toByte,
+                ((n >> 16) & 0xff).toByte,
+                ((n >> 24) & 0xff).toByte
+            ))
+        }
+        
+        val blockHeader = BlockHeader(
+          longToLE4Bytes(block864801Version) ++
+          ByteString.fromHex(block864801PrevHash).reverse ++
+          ByteString.fromHex(block864801Merkleroot).reverse ++
+          longToLE4Bytes(block864801Timestamp) ++
+          ByteString.fromHex(block864801Bits).reverse ++
+          longToLE4Bytes(block864801Nonce)
+        )
+        
+        // Verify the header hash matches the expected block hash
+        val computedHash = BitcoinValidator.blockHeaderHash(blockHeader)
+        assertEquals(computedHash.reverse.toHex, block864801Hash, "Block header hash mismatch")
+        
+        // Create initial state with block 864800 as confirmed tip
         val prevState = buildTestChainState(
-          blockHeight = 1000,
+          blockHeight = block864800Height,
           blockHash = confirmedTip,
           bits = bits,
-          baseTimestamp = baseTime - 1000,
+          baseTimestamp = BigInt(block864800Timestamp),
           forksTreeSize = 0
         )
 
-        // Use real Bitcoin block header for valid PoW
-        val blockHeader = BlockHeader(
-          hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
-        )
-
-        // Manually compute expected new state
-        // After processing, the block should be in forks tree
+        // Manually compute expected new state matching BitcoinValidator logic
+        // After processing, the block should be in forks tree (not promoted - no 100 confirmations yet)
         val newBlockHash = BitcoinValidator.blockHeaderHash(blockHeader)
         val target = BitcoinValidator.compactBitsToTarget(bits)
-        val newChainwork = computeChainwork(prevState.blockHeight * BigInt(1000000), target)
+        
+        // Parent chainwork: when parent is confirmed tip, use compactBitsToTarget(confirmedState.currentTarget)
+        val parentChainwork = BitcoinValidator.compactBitsToTarget(prevState.currentTarget)
+        val blockWork = BitcoinValidator.PowLimit / target
+        val newChainwork = parentChainwork + blockWork
 
         val expectedNode = BitcoinValidator.BlockNode(
           prevBlockHash = prevState.blockHash,
@@ -1020,7 +1056,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         val outputAmount = BigInteger.valueOf(5000000) // 5 ADA
 
         val (scriptContext, tx) = makeScriptContextAndTransaction(
-          baseTime.toLong * 1000,
+          baseTime.toLong,
           prevState.toData,
           expectedState.toData,
           redeemer,
