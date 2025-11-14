@@ -4,14 +4,12 @@ import binocular.util.SlotConfigHelper
 import com.bloxbean.cardano.client.account.Account
 import com.bloxbean.cardano.client.address.Address
 import com.bloxbean.cardano.client.api.model.Amount
-import com.bloxbean.cardano.client.backend.api.BackendService
-import com.bloxbean.cardano.client.plutus.spec.{PlutusData, PlutusV3Script, Redeemer}
+import com.bloxbean.cardano.client.backend.api.{BackendService, DefaultUtxoSupplier}
+import com.bloxbean.cardano.client.function.helper.SignerProviders
+import com.bloxbean.cardano.client.plutus.spec.{PlutusV3Script, Redeemer}
 import com.bloxbean.cardano.client.quicktx.{QuickTxBuilder, ScriptTx, Tx}
-import com.bloxbean.cardano.client.util.HexUtil
-import scalus.bloxbean.Interop
 import scalus.bloxbean.Interop.toPlutusData
 import scalus.builtin.Data.toData
-import scalus.builtin.{ByteString, Data, FromData, ToData}
 
 import scala.jdk.CollectionConverters.*
 import scala.util.{Failure, Success, Try}
@@ -130,7 +128,7 @@ object OracleTransactions {
 
             val result = quickTxBuilder
                 .compose(tx)
-                .withSigner(com.bloxbean.cardano.client.function.helper.SignerProviders.signerFrom(account))
+                .withSigner(SignerProviders.signerFrom(account))
                 .completeAndWait()
 
             if (result.isSuccessful) {
@@ -228,29 +226,7 @@ object OracleTransactions {
             val protocolParams = backendService.getEpochService.getProtocolParameters.getValue
 
             // Wrap UtxoService as UtxoSupplier
-            val utxoSupplier = new com.bloxbean.cardano.client.api.UtxoSupplier {
-                override def getPage(
-                    address: String,
-                    nrOfItems: Integer,
-                    page: Integer,
-                    order: com.bloxbean.cardano.client.api.common.OrderEnum
-                ): java.util.List[com.bloxbean.cardano.client.api.model.Utxo] = {
-                    utxoService.getUtxos(address, nrOfItems, page, order).getValue
-                }
-
-                override def getTxOutput(
-                    txHash: String,
-                    outputIndex: Int
-                ): java.util.Optional[com.bloxbean.cardano.client.api.model.Utxo] = {
-                    val result = utxoService.getTxOutput(txHash, outputIndex)
-                    if (result.isSuccessful && result.getValue != null) {
-                        java.util.Optional.of(result.getValue)
-                    } else {
-                        java.util.Optional.empty()
-                    }
-                }
-            }
-
+            val utxoSupplier = new DefaultUtxoSupplier(backendService.getUtxoService)
             val slotConfig = SlotConfigHelper.retrieveSlotConfig(backendService)
             println(
               s"[DEBUG] SlotConfig: zeroTime=${slotConfig.zeroTime}, zeroSlot=${slotConfig.zeroSlot}, slotLength=${slotConfig.slotLength}"
@@ -308,7 +284,7 @@ object OracleTransactions {
             val result = quickTxBuilder
                 .compose(scriptTx)
                 .feePayer(account.baseAddress())
-                .withSigner(com.bloxbean.cardano.client.function.helper.SignerProviders.signerFrom(account))
+                .withSigner(SignerProviders.signerFrom(account))
                 .withTxEvaluator(scalusEvaluator)
                 .validFrom(currentSlot)
                 .completeAndWait()
