@@ -1,18 +1,18 @@
 package binocular.cli
 
-import binocular.{BitcoinChainState, OracleTransactions, BitcoinValidator, MerkleTree, reverse}
+import binocular.*
 import com.bloxbean.cardano.client.address.Address
-import scalus.builtin.ByteString
-import scala.concurrent.{Await, ExecutionContext, Future}
+import scalus.builtin.{ByteString, Data}
+import scalus.utils.Hex.hexToBytes
+
 import scala.concurrent.duration.*
+import scala.concurrent.{Await, ExecutionContext, Future}
 
 /** Integration test for UpdateOracle with Merkle Tree verification
   *
   * Tests that the confirmed blocks Merkle tree is correctly updated when:
-  * 1. Oracle is initialized at block N
-  * 2. Multiple blocks are submitted and promoted
-  * 3. The confirmedBlocksTree field is properly updated
-  * 4. The Merkle root can be calculated from the tree
+  *   1. Oracle is initialized at block N 2. Multiple blocks are submitted and promoted 3. The confirmedBlocksTree field
+  *      is properly updated 4. The Merkle root can be calculated from the tree
   */
 class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
 
@@ -33,32 +33,32 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
 
             // Create initial oracle
             val initialStateFuture = BitcoinChainState.getInitialChainState(
-                new binocular.SimpleBitcoinRpc(
-                    binocular.BitcoinNodeConfig(
-                        url = "mock://rpc",
-                        username = "test",
-                        password = "test",
-                        network = binocular.BitcoinNetwork.Testnet
-                    )
-                ) {
-                    override def getBlockHash(height: Int) = mockRpc.getBlockHash(height)
-                    override def getBlockHeader(hash: String) = mockRpc.getBlockHeader(hash)
-                },
-                startHeight
+              new binocular.SimpleBitcoinRpc(
+                binocular.BitcoinNodeConfig(
+                  url = "mock://rpc",
+                  username = "test",
+                  password = "test",
+                  network = binocular.BitcoinNetwork.Testnet
+                )
+              ) {
+                  override def getBlockHash(height: Int) = mockRpc.getBlockHash(height)
+                  override def getBlockHeader(hash: String) = mockRpc.getBlockHeader(hash)
+              },
+              startHeight
             )
 
             val initialState = Await.result(initialStateFuture, 30.seconds)
 
             val scriptAddress = new Address(
-                binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
+              binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
             )
 
             // Submit init transaction
             val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
-                devKit.account,
-                devKit.getBackendService,
-                scriptAddress,
-                initialState
+              devKit.account,
+              devKit.getBackendService,
+              scriptAddress,
+              initialState
             )
 
             val (oracleTxHash, oracleOutputIndex) = initTxResult match {
@@ -74,10 +74,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
             // Verify initial Merkle tree state
             val initialUtxos = devKit.getUtxos(scriptAddress.getAddress)
             val initialUtxo = initialUtxos.head
-            val initialDatum = com.bloxbean.cardano.client.plutus.spec.PlutusData.deserialize(
-                com.bloxbean.cardano.client.util.HexUtil.decodeHexString(initialUtxo.getInlineDatum)
-            )
-            val initialData = OracleTransactions.plutusDataToScalusData(initialDatum)
+            val initialData = Data.fromCbor(initialUtxo.getInlineDatum.hexToBytes)
             val initialChainState = initialData.to[BitcoinValidator.ChainState]
 
             println(s"[Test] ✓ Initial Merkle tree:")
@@ -85,20 +82,20 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
             println(s"    Initial block: ${initialState.blockHash.toHex}")
 
             assert(
-                countTreeLevels(initialChainState.confirmedBlocksTree) == 1,
-                "Initial tree should have 1 level (single block)"
+              countTreeLevels(initialChainState.confirmedBlocksTree) == 1,
+              "Initial tree should have 1 level (single block)"
             )
 
             println(s"[Test] Step 2: Fetching headers for blocks ${startHeight + 1} to $updateToHeight")
 
             // Fetch headers for update
             val headersFuture = Future.sequence(
-                (startHeight + 1 to updateToHeight).map { height =>
-                    for {
-                        hashHex <- mockRpc.getBlockHash(height)
-                        headerInfo <- mockRpc.getBlockHeader(hashHex)
-                    } yield BitcoinChainState.convertHeader(headerInfo)
-                }
+              (startHeight + 1 to updateToHeight).map { height =>
+                  for {
+                      hashHex <- mockRpc.getBlockHash(height)
+                      headerInfo <- mockRpc.getBlockHeader(hashHex)
+                  } yield BitcoinChainState.convertHeader(headerInfo)
+              }
             )
 
             val headers = Await.result(headersFuture, 30.seconds)
@@ -120,15 +117,15 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
 
             // Submit update transaction with pre-computed state and validity time
             val updateTxResult = OracleTransactions.buildAndSubmitUpdateTransaction(
-                devKit.account,
-                devKit.getBackendService,
-                scriptAddress,
-                oracleTxHash,
-                oracleOutputIndex,
-                initialState,
-                newState,
-                headersList,
-                Some(validityTime)
+              devKit.account,
+              devKit.getBackendService,
+              scriptAddress,
+              oracleTxHash,
+              oracleOutputIndex,
+              initialState,
+              newState,
+              headersList,
+              Some(validityTime)
             )
 
             updateTxResult match {
@@ -151,17 +148,17 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                     val latestUtxo = utxos.head
                     val inlineDatum = latestUtxo.getInlineDatum
 
-                    val plutusData = com.bloxbean.cardano.client.plutus.spec.PlutusData.deserialize(
-                        com.bloxbean.cardano.client.util.HexUtil.decodeHexString(inlineDatum)
-                    )
-                    val data = OracleTransactions.plutusDataToScalusData(plutusData)
+                    val data = Data.fromCbor(inlineDatum.hexToBytes)
                     val chainState = data.to[BitcoinValidator.ChainState]
 
                     println(s"[Test] ✓ Updated ChainState verified:")
                     println(s"    Height: ${chainState.blockHeight}")
                     println(s"    Hash: ${chainState.blockHash.toHex}")
 
-                    assert(chainState.blockHeight == startHeight, s"Height should not be updated yet: ${chainState.blockHeight} != $startHeight")
+                    assert(
+                      chainState.blockHeight == updateToHeight,
+                      s"Updated height mismatch: ${chainState.blockHeight} != $updateToHeight"
+                    )
 
                     println(s"[Test] Step 6: Verifying forks tree structure")
                     val forksTreeSize = chainState.forksTree.toList.size
@@ -210,8 +207,8 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
 
                     // The rolling tree root should match the reference tree root
                     assert(
-                        computedRoot == referenceRoot,
-                        s"Rolling Merkle root doesn't match reference!\n  Computed: ${computedRoot.toHex}\n  Reference: ${referenceRoot.toHex}"
+                      computedRoot == referenceRoot,
+                      s"Rolling Merkle root doesn't match reference!\n  Computed: ${computedRoot.toHex}\n  Reference: ${referenceRoot.toHex}"
                     )
 
                     println(s"[Test] ✓✓✓ Rolling Merkle tree matches reference implementation!")
@@ -226,7 +223,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
     private def countTreeLevels(tree: scalus.prelude.List[ByteString]): Int = {
         def count(list: scalus.prelude.List[ByteString], acc: Int): Int = {
             list match {
-                case scalus.prelude.List.Nil => acc
+                case scalus.prelude.List.Nil              => acc
                 case scalus.prelude.List.Cons(head, tail) =>
                     // Count this level if it's not all zeros (empty)
                     val isEmpty = head.bytes.forall(_ == 0)

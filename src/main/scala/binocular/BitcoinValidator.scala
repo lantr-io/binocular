@@ -1,16 +1,16 @@
 package binocular
 
-import scalus.{show as _, *}
+import scalus.builtin.*
 import scalus.builtin.Builtins.*
 import scalus.builtin.ByteString.*
 import scalus.builtin.Data.{FromData, ToData, toData}
-import scalus.builtin.*
+import scalus.compiler.sir.TargetLoweringBackend
 import scalus.ledger.api.v2.OutputDatum
 import scalus.ledger.api.v3.*
-import scalus.prelude.{List, *}
-import scalus.sir.TargetLoweringBackend
-import scalus.uplc.Program
 import scalus.prelude.Show.given
+import scalus.prelude.{List, *}
+import scalus.uplc.Program
+import scalus.{show as _, *}
 
 import scala.annotation.tailrec
 
@@ -20,10 +20,10 @@ extension (a: ByteString) def reverse: ByteString = ByteString.fromArray(a.bytes
 object BitcoinValidator extends Validator {
 
     // Type aliases for semantic clarity
-    type BlockHash = ByteString      // 32-byte SHA256d hash of block header
-    type TxHash = ByteString          // 32-byte SHA256d hash of transaction
-    type MerkleRoot = ByteString      // 32-byte Merkle tree root hash
-    type CompactBits = ByteString     // 4-byte compact difficulty target representation
+    type BlockHash = ByteString // 32-byte SHA256d hash of block header
+    type TxHash = ByteString // 32-byte SHA256d hash of transaction
+    type MerkleRoot = ByteString // 32-byte Merkle tree root hash
+    type CompactBits = ByteString // 4-byte compact difficulty target representation
     type BlockHeaderBytes = ByteString // 80-byte raw Bitcoin block header
 
     // Bitcoin consensus constants - matches Bitcoin Core chainparams.cpp
@@ -39,7 +39,8 @@ object BitcoinValidator extends Validator {
 
     // Binocular protocol parameters
     val MaturationConfirmations: BigInt = 100 // Blocks needed for promotion to confirmed state
-    val TimeToleranceSeconds: BigInt = 36*60*60 // Maximum difference between redeemer time and validity interval time (shoukd be the time of cardano consesnus)
+    val TimeToleranceSeconds: BigInt =
+        36 * 60 * 60 // Maximum difference between redeemer time and validity interval time (shoukd be the time of cardano consesnus)
     val ChallengeAging: BigInt = 200 * 60 // 200 minutes in seconds (challenge period)
     val StaleCompetingForkAge: BigInt = 400 * 60 // 400 minutes (2× challenge period)
     val ChainworkGapThreshold: BigInt = 10 // Blocks worth of work for stale fork detection
@@ -67,11 +68,11 @@ object BitcoinValidator extends Validator {
         inline def timestamp: BigInt = byteStringToInteger(false, bh.bytes.slice(68, 4))
 
     case class BlockNode(
-        prevBlockHash: BlockHash,  // 32-byte hash of previous block (for chain walking)
-        height: BigInt,             // Block height (for difficulty validation and depth calculation)
-        chainwork: BigInt,          // Cumulative proof-of-work from genesis
-        addedTimestamp: BigInt,     // When this block was added on-chain (for 200-min rule)
-        children: List[BlockHash]   // Hashes of child blocks (for tree navigation)
+        prevBlockHash: BlockHash, // 32-byte hash of previous block (for chain walking)
+        height: BigInt, // Block height (for difficulty validation and depth calculation)
+        chainwork: BigInt, // Cumulative proof-of-work from genesis
+        addedTimestamp: BigInt, // When this block was added on-chain (for 200-min rule)
+        children: List[BlockHash] // Hashes of child blocks (for tree navigation)
     ) derives FromData,
           ToData
 
@@ -142,7 +143,7 @@ object BitcoinValidator extends Validator {
         if idx < BigInt(0) then fail("Negative index")
         else if idx == BigInt(0) then
             levels match
-                case List.Nil => List.Cons(value, List.Nil)
+                case List.Nil           => List.Cons(value, List.Nil)
                 case List.Cons(_, tail) => List.Cons(value, tail)
         else
             levels match
@@ -155,7 +156,7 @@ object BitcoinValidator extends Validator {
     /** Get length of list */
     def listLength(list: List[ByteString]): BigInt =
         list match
-            case List.Nil => 0
+            case List.Nil           => 0
             case List.Cons(_, tail) => 1 + listLength(tail)
 
     /** Add a hash to the rolling Merkle tree at a specific level */
@@ -189,12 +190,11 @@ object BitcoinValidator extends Validator {
                     // Propagate this hash up
                     val updated = addHashAtLevel(levels, currentHash, idx)
                     finalize(updated, idx + 1)
-                else
-                    finalize(levels, idx + 1)
+                else finalize(levels, idx + 1)
 
         levels match
             case List.Nil => emptyHash
-            case _ => finalize(levels, 0)
+            case _        => finalize(levels, 0)
 
     // Double SHA256 hash - matches CBlockHeader::GetHash() in primitives/block.h
     def blockHeaderHash(blockHeader: BlockHeader): BlockHash =
@@ -418,7 +418,7 @@ object BitcoinValidator extends Validator {
     def lookupBlock(forksTree: scalus.prelude.SortedMap[BlockHash, BlockNode], key: BlockHash): Option[BlockNode] =
         forksTree.find((k, _) => k == key) match
             case scalus.prelude.Option.Some((_, value)) => scalus.prelude.Option.Some(value)
-            case scalus.prelude.Option.None => scalus.prelude.Option.None
+            case scalus.prelude.Option.None             => scalus.prelude.Option.None
 
     // Canonical chain selection - matches Algorithm 9 in Whitepaper
     // Selects the fork with highest cumulative chainwork
@@ -438,13 +438,10 @@ object BitcoinValidator extends Validator {
                             case scalus.prelude.Option.None =>
                                 scalus.prelude.Option.Some((hash, node.chainwork))
                             case scalus.prelude.Option.Some((_, maxChainwork)) =>
-                                if node.chainwork > maxChainwork then
-                                    scalus.prelude.Option.Some((hash, node.chainwork))
-                                else
-                                    currentBest
+                                if node.chainwork > maxChainwork then scalus.prelude.Option.Some((hash, node.chainwork))
+                                else currentBest
                         findMaxChainworkTip(tail, newBest)
-                    else
-                        findMaxChainworkTip(tail, currentBest)
+                    else findMaxChainworkTip(tail, currentBest)
 
         findMaxChainworkTip(forksTree.toList, scalus.prelude.Option.None)
 
@@ -466,10 +463,9 @@ object BitcoinValidator extends Validator {
         // === SECURITY: Full block validation ===
 
         // Calculate parent height
-        val parentHeight = if prevHash == confirmedState.blockHash then
-            confirmedState.blockHeight
-        else
-            lookupBlock(forksTree, prevHash).getOrFail("Parent not in forks tree").height
+        val parentHeight =
+            if prevHash == confirmedState.blockHash then confirmedState.blockHeight
+            else lookupBlock(forksTree, prevHash).getOrFail("Parent not in forks tree").height
 
         val blockHeight = parentHeight + 1
 
@@ -481,18 +477,19 @@ object BitcoinValidator extends Validator {
         // 2. VALIDATE DIFFICULTY
         // For fork blocks, we need parent's difficulty adjustment info
         // This is simplified - full validation would need to track difficulty state in BlockNode
-        val expectedBits = if prevHash == confirmedState.blockHash then
-            getNextWorkRequired(
-                parentHeight,
-                confirmedState.currentTarget,
-                confirmedState.blockTimestamp,
-                confirmedState.previousDifficultyAdjustmentTimestamp
-            )
-        else
-            // For deep forks, difficulty validation is more complex
-            // We'd need to track full difficulty state in BlockNode
-            // For now, accept the claimed difficulty if PoW is valid
-            blockHeader.bits
+        val expectedBits =
+            if prevHash == confirmedState.blockHash then
+                getNextWorkRequired(
+                  parentHeight,
+                  confirmedState.currentTarget,
+                  confirmedState.blockTimestamp,
+                  confirmedState.previousDifficultyAdjustmentTimestamp
+                )
+            else
+                // For deep forks, difficulty validation is more complex
+                // We'd need to track full difficulty state in BlockNode
+                // For now, accept the claimed difficulty if PoW is valid
+                blockHeader.bits
 
         require(blockHeader.bits == expectedBits, "Invalid difficulty")
 
@@ -508,22 +505,22 @@ object BitcoinValidator extends Validator {
         // === End validation ===
 
         // Calculate chainwork: parent chainwork + work from this block
-        val parentChainwork = if prevHash == confirmedState.blockHash then
-            // Calculate confirmed chainwork (simplified - should be stored)
-            compactBitsToTarget(confirmedState.currentTarget)
-        else
-            lookupBlock(forksTree, prevHash).getOrFail("Parent not in forks tree").chainwork
+        val parentChainwork =
+            if prevHash == confirmedState.blockHash then
+                // Calculate confirmed chainwork (simplified - should be stored)
+                compactBitsToTarget(confirmedState.currentTarget)
+            else lookupBlock(forksTree, prevHash).getOrFail("Parent not in forks tree").chainwork
 
         val blockWork = PowLimit / target
         val newChainwork = parentChainwork + blockWork
 
         // Create BlockNode
         val node = BlockNode(
-            prevBlockHash = prevHash,
-            height = blockHeight,
-            chainwork = newChainwork,
-            addedTimestamp = currentTime,
-            children = List.Nil
+          prevBlockHash = prevHash,
+          height = blockHeight,
+          chainwork = newChainwork,
+          addedTimestamp = currentTime,
+          children = List.Nil
         )
 
         // Insert into forksTree
@@ -533,11 +530,11 @@ object BitcoinValidator extends Validator {
         lookupBlock(forksTree, prevHash) match
             case scalus.prelude.Option.Some(parentNode) =>
                 val updatedParent = BlockNode(
-                    prevBlockHash = parentNode.prevBlockHash,
-                    height = parentNode.height,
-                    chainwork = parentNode.chainwork,
-                    addedTimestamp = parentNode.addedTimestamp,
-                    children = List.Cons(hash, parentNode.children)
+                  prevBlockHash = parentNode.prevBlockHash,
+                  height = parentNode.height,
+                  chainwork = parentNode.chainwork,
+                  addedTimestamp = parentNode.addedTimestamp,
+                  children = List.Cons(hash, parentNode.children)
                 )
                 treeWithNewNode.insert(prevHash, updatedParent)
             case scalus.prelude.Option.None =>
@@ -635,10 +632,8 @@ object BitcoinValidator extends Validator {
                                 if h == target then true
                                 else contains(t, target)
                     }
-                    if contains(seen, hash) then
-                        fail("Duplicate block in submission")
-                    else
-                        checkDuplicates(tail, List.Cons(hash, seen))
+                    if contains(seen, hash) then fail("Duplicate block in submission")
+                    else checkDuplicates(tail, List.Cons(hash, seen))
         }
 
         checkDuplicates(blockHeaders, List.Nil)
@@ -646,7 +641,7 @@ object BitcoinValidator extends Validator {
         // Find current canonical tip
         val canonicalTip = selectCanonicalChain(forksTree) match
             case scalus.prelude.Option.Some(tip) => tip
-            case scalus.prelude.Option.None => confirmedTip
+            case scalus.prelude.Option.None      => confirmedTip
 
         // RULE 2: Classify blocks: canonical extensions vs others (forks)
         def classifyBlocks(
@@ -684,8 +679,7 @@ object BitcoinValidator extends Validator {
             currentHash: BlockHash,
             acc: scalus.prelude.SortedMap[BlockHash, Boolean]
         ): scalus.prelude.SortedMap[BlockHash, Boolean] = {
-            if currentHash == confirmedTip then
-                acc
+            if currentHash == confirmedTip then acc
             else
                 lookupBlock(forksTree, currentHash) match
                     case scalus.prelude.Option.Some(node) =>
@@ -729,8 +723,7 @@ object BitcoinValidator extends Validator {
                         // Check if on canonical chain
                         val onCanonical = canonicalChain.find((k, _) => k == hash).isDefined
 
-                        if onCanonical then
-                            false  // Cannot remove canonical chain blocks
+                        if onCanonical then false // Cannot remove canonical chain blocks
                         else
                             val heightGap = canonicalTipHeight - node.height
                             val age = currentTime - node.addedTimestamp
@@ -740,14 +733,16 @@ object BitcoinValidator extends Validator {
                             // Criteria Set A: Old dead forks
                             val isOldDeadFork =
                                 heightGap >= MaturationConfirmations &&
-                                age >= ChallengeAging &&
-                                isTip
+                                    age >= ChallengeAging &&
+                                    isTip
 
                             // Criteria Set B: Stale competing forks
                             val isStaleCompetingFork =
                                 age >= StaleCompetingForkAge &&
-                                chainworkGap >= (ChainworkGapThreshold * (PowLimit / compactBitsToTarget(hex"1d00ffff"))) &&
-                                isTip
+                                    chainworkGap >= (ChainworkGapThreshold * (PowLimit / compactBitsToTarget(
+                                      hex"1d00ffff"
+                                    ))) &&
+                                    isTip
 
                             isOldDeadFork || isStaleCompetingFork
                     }
@@ -759,8 +754,7 @@ object BitcoinValidator extends Validator {
                         targetSize: BigInt,
                         currentSz: BigInt
                     ): scalus.prelude.SortedMap[BlockHash, BlockNode] = {
-                        if currentSz <= targetSize then
-                            tree
+                        if currentSz <= targetSize then tree
                         else
                             allBlocks match
                                 case List.Nil => tree
@@ -853,7 +847,7 @@ object BitcoinValidator extends Validator {
         // Reject blocks with outdated version
         // Matches ContextualCheckBlockHeader() in validation.cpp:4201-4206
         val validVersion = blockHeader.version >= 4
-        require(validVersion , "Block version is outdated")
+        require(validVersion, "Block version is outdated")
 
         val validBlockHeader = validPrevBlockHash.?
             && validProofOfWork.?
@@ -883,16 +877,18 @@ object BitcoinValidator extends Validator {
 
         require(validNewState, "New state does not match expected state")
 
-    /**
-     * Compute the new ChainState after applying block headers.
-     * This function contains the core UpdateOracle logic and can be called
-     * both on-chain (from validator) and off-chain (for pre-computation).
-     *
-     * @param prevState Current ChainState
-     * @param blockHeaders Block headers to apply
-     * @param currentTime Current time in seconds (POSIX time)
-     * @return New ChainState after applying headers
-     */
+    /** Compute the new ChainState after applying block headers. This function contains the core UpdateOracle logic and
+      * can be called both on-chain (from validator) and off-chain (for pre-computation).
+      *
+      * @param prevState
+      *   Current ChainState
+      * @param blockHeaders
+      *   Block headers to apply
+      * @param currentTime
+      *   Current time in seconds (POSIX time)
+      * @return
+      *   New ChainState after applying headers
+      */
     def computeUpdateOracleState(
         prevState: ChainState,
         blockHeaders: List[BlockHeader],
@@ -927,7 +923,7 @@ object BitcoinValidator extends Validator {
         // Select canonical chain (highest chainwork)
         val canonicalTip = selectCanonicalChain(forksTreeAfterAddition) match
             case scalus.prelude.Option.Some(tip) => tip
-            case scalus.prelude.Option.None => prevState.blockHash
+            case scalus.prelude.Option.None      => prevState.blockHash
 
         // Promote qualified blocks (100+ confirmations AND 200+ min old)
         val (promotedBlocks, forksTreeAfterPromotion) = promoteQualifiedBlocks(
@@ -938,15 +934,15 @@ object BitcoinValidator extends Validator {
         )
 
         // Run garbage collection if forks tree exceeds size limit
-        val finalForksTree = if forksTreeAfterPromotion.toList.size > MaxForksTreeSize then
-            garbageCollect(
-              forksTreeAfterPromotion,
-              canonicalTip,
-              prevState.blockHeight,
-              currentTime
-            )
-        else
-            forksTreeAfterPromotion
+        val finalForksTree =
+            if forksTreeAfterPromotion.toList.size > MaxForksTreeSize then
+                garbageCollect(
+                  forksTreeAfterPromotion,
+                  canonicalTip,
+                  prevState.blockHeight,
+                  currentTime
+                )
+            else forksTreeAfterPromotion
 
         // Compute new state
         // If blocks were promoted, update confirmed state
@@ -967,7 +963,7 @@ object BitcoinValidator extends Validator {
             // Get the highest promoted block info
             val latestPromotedHash = promotedBlocks.head // List is sorted, first is highest
             val latestPromotedNode = lookupBlock(forksTreeAfterAddition, latestPromotedHash)
-              .getOrFail("Promoted block not found in tree")
+                .getOrFail("Promoted block not found in tree")
 
             // Add promoted blocks to Merkle tree (in order from oldest to newest)
             // promotedBlocks is already sorted from oldest to newest
@@ -1013,15 +1009,13 @@ object BitcoinValidator extends Validator {
             input.resolved.datum match
                 case OutputDatum.OutputDatum(datum) =>
                     datum.to[ChainState]
-                case _                              => fail("No datum")
+                case _ => fail("No datum")
         action match
             case Action.UpdateOracle(blockHeaders, redeemerTime) =>
-
                 // Verify redeemer time is within tolerance of actual validity interval time
-                val timeDiff = if redeemerTime > intervalStartInSeconds then
-                    redeemerTime - intervalStartInSeconds
-                else
-                    intervalStartInSeconds - redeemerTime
+                val timeDiff =
+                    if redeemerTime > intervalStartInSeconds then redeemerTime - intervalStartInSeconds
+                    else intervalStartInSeconds - redeemerTime
 
                 require(timeDiff <= TimeToleranceSeconds, "Redeemer time too far from validity interval")
 
@@ -1037,11 +1031,14 @@ object BitcoinValidator extends Validator {
                 // Extract the datum from the continuing output (provided by transaction builder)
                 val providedOutputDatum = continuingOutput.datum match
                     case OutputDatum.OutputDatum(datum) => datum
-                    case _ => fail("Continuing output must have inline datum")
-                
+                    case _                              => fail("Continuing output must have inline datum")
+
                 val computedStateDatum = computedState.toData
 
-                require(computedStateDatum == providedOutputDatum, "Computed state does not match provided output datum")
+                require(
+                  computedStateDatum == providedOutputDatum,
+                  "Computed state does not match provided output datum"
+                )
     }
 
     def reverse(bs: ByteString): ByteString =
