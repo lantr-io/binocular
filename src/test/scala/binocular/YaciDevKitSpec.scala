@@ -137,8 +137,10 @@ trait YaciDevKitSpec extends FunSuite {
         val mnemonic = "test test test test test test test test test test test test test test test test test test test test test test test sauce"
         val account = new Account(Networks.testnet(), mnemonic)
 
-        // Create container (account will be automatically funded by Yaci DevKit)
+        // Create container and give it a fixed name for reuse
         val container = new YaciCardanoContainer()
+        container.withCreateContainerCmdModifier(cmd => cmd.withName("binocular-yaci-devkit"))
+        container.withReuse(true)
 
         // Add log consumer if enabled
         if (config.enableLogs) {

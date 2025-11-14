@@ -161,23 +161,14 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                     println(s"    Height: ${chainState.blockHeight}")
                     println(s"    Hash: ${chainState.blockHash.toHex}")
 
-                    assert(chainState.blockHeight == updateToHeight, s"Updated height mismatch: ${chainState.blockHeight} != $updateToHeight")
+                    assert(chainState.blockHeight == startHeight, s"Height should not be updated yet: ${chainState.blockHeight} != $startHeight")
 
-                    println(s"[Test] Step 6: Verifying Merkle tree structure")
+                    println(s"[Test] Step 6: Verifying forks tree structure")
+                    val forksTreeSize = chainState.forksTree.toList.size
+                    println(s"    Forks tree size: $forksTreeSize")
+                    assert(forksTreeSize == headers.size, s"Forks tree should contain ${headers.size} new blocks, but has $forksTreeSize")
 
-                    // Verify Merkle tree was updated
-                    val treeSize = countTreeLevels(chainState.confirmedBlocksTree)
-                    println(s"    Merkle tree size: $treeSize levels")
-
-                    // For 4 blocks (866970-866973), we expect:
-                    // Level 0: [empty, hash3] (after combining first 2 and rolling up)
-                    // Level 1: [empty, combined01_23] (after combining pairs)
-                    // Level 2: [root] (final root)
-                    // But the exact structure depends on the rolling algorithm
-                    // At minimum, we should have more than 1 level
-                    assert(treeSize > 1, s"Tree should have grown beyond 1 level, got $treeSize")
-
-                    println(s"[Test] ✓ Merkle tree has grown correctly")
+                    println(s"[Test] ✓ Forks tree has grown correctly")
 
                     println(s"[Test] Step 7: Verifying we can compute Merkle root")
 

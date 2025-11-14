@@ -9,208 +9,376 @@ import scala.concurrent.duration.*
 /** Integration test for UpdateOracleCommand
   *
   * Tests the complete flow of updating an oracle:
-  * 1. Creates initial oracle at block N
-  * 2. Fetches headers for blocks N+1 to N+M from mock RPC
-  * 3. Updates oracle with new headers
-  * 4. Verifies oracle state is updated correctly
+  *   1. Creates initial oracle at block N 2. Fetches headers for blocks N+1 to N+M from mock RPC 3. Updates oracle with
+  *      new headers 4. Verifies oracle state is updated correctly
   */
 class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
 
+    override def munitFixtures = List(yaciDevKitFixture)
+
     test("update-oracle: successfully updates oracle with new blocks") {
-        withYaciDevKit() { devKit =>
-            given ec: ExecutionContext = ExecutionContext.global
+        val devKit = yaciDevKitFixture()
+        given ec: ExecutionContext = ExecutionContext.global
 
-            // Use consecutive blocks from our fixtures
-            // Start at 866970, update to 866971-866973 (3 blocks)
-            val startHeight = 866970
-            val updateToHeight = 866973
-            val mockRpc = new MockBitcoinRpc()
+        // Use consecutive blocks from our fixtures
+        // Start at 866970, update to 866971-866973 (3 blocks)
+        val startHeight = 866970
+        val updateToHeight = 866973
+        val mockRpc = new MockBitcoinRpc()
 
-            println(s"[Test] Step 1: Creating initial oracle at height $startHeight")
+        println(s"[Test] Step 1: Creating initial oracle at height $startHeight")
 
-            // Create initial oracle
-            val initialStateFuture = BitcoinChainState.getInitialChainState(
-                new binocular.SimpleBitcoinRpc(
-                    binocular.BitcoinNodeConfig(
-                        url = "mock://rpc",
-                        username = "test",
-                        password = "test",
-                        network = binocular.BitcoinNetwork.Testnet
-                    )
-                ) {
-                    override def getBlockHash(height: Int) = mockRpc.getBlockHash(height)
-                    override def getBlockHeader(hash: String) = mockRpc.getBlockHeader(hash)
-                },
-                startHeight
-            )
+        // Create initial oracle
+        val initialStateFuture = BitcoinChainState.getInitialChainState(
+            new binocular.SimpleBitcoinRpc(
+                binocular.BitcoinNodeConfig(
+                    url = "mock://rpc",
+                    username = "test",
+                    password = "test",
+                    network = binocular.BitcoinNetwork.Testnet
+                )
+            ) {
+                override def getBlockHash(height: Int) = mockRpc.getBlockHash(height)
+                override def getBlockHeader(hash: String) = mockRpc.getBlockHeader(hash)
+            },
+            startHeight
+        )
 
-            val initialState = Await.result(initialStateFuture, 30.seconds)
+        val initialState = Await.result(initialStateFuture, 30.seconds)
 
-            val scriptAddress = new Address(
-                binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
-            )
+        val scriptAddress = new Address(
+            binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
+        )
 
-            // Submit init transaction
-            val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
-                devKit.account,
-                devKit.getBackendService,
-                scriptAddress,
-                initialState
-            )
+        // Submit init transaction
+        val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
+            devKit.account,
+            devKit.getBackendService,
+            scriptAddress,
+            initialState
+        )
 
-            val (oracleTxHash, oracleOutputIndex) = initTxResult match {
-                case Right(txHash) =>
-                    println(s"[Test] ✓ Oracle initialized: $txHash")
-                    devKit.waitForTransaction(txHash, maxAttempts = 30)
-                    Thread.sleep(2000) // Wait for indexing
-                    (txHash, 0)
-                case Left(err) =>
-                    fail(s"Failed to initialize oracle: $err")
+        val (oracleTxHash, oracleOutputIndex) = initTxResult match {
+            case Right(txHash) =>
+                println(s"[Test] ✓ Oracle initialized: $txHash")
+                devKit.waitForTransaction(txHash, maxAttempts = 30)
+                Thread.sleep(2000) // Wait for indexing
+                (txHash, 0)
+            case Left(err) =>
+                fail(s"Failed to initialize oracle: $err")
+        }
+
+        println(s"[Test] Step 2: Fetching headers for blocks ${startHeight + 1} to $updateToHeight")
+
+        // Fetch headers for update
+        val headersFuture = Future.sequence(
+            (startHeight + 1 to updateToHeight).map { height =>
+                for {
+                    hashHex <- mockRpc.getBlockHash(height)
+                    headerInfo <- mockRpc.getBlockHeader(hashHex)
+                } yield BitcoinChainState.convertHeader(headerInfo)
             }
+        )
 
-            println(s"[Test] Step 2: Fetching headers for blocks ${startHeight + 1} to $updateToHeight")
+        val headers = Await.result(headersFuture, 30.seconds)
+        val headersList = scalus.prelude.List.from(headers.toList)
 
-            // Fetch headers for update
-            val headersFuture = Future.sequence(
-                (startHeight + 1 to updateToHeight).map { height =>
-                    for {
-                        hashHex <- mockRpc.getBlockHash(height)
-                        headerInfo <- mockRpc.getBlockHeader(hashHex)
-                    } yield BitcoinChainState.convertHeader(headerInfo)
-                }
-            )
+        println(s"[Test] ✓ Fetched ${headers.length} headers")
+        println(s"[test]  headers: ${headers.map(h => h.bytes.toHex).mkString(", ")}")
 
-            val headers = Await.result(headersFuture, 30.seconds)
-            val headersList = scalus.prelude.List.from(headers.toList)
+        println(s"[Test] Step 3: Computing new state")
 
-            println(s"[Test] ✓ Fetched ${headers.length} headers")
-            println(s"[test]  headers: ${headers.map(h => h.bytes.toHex).mkString(", ")}")
+        // Compute validity interval time to ensure offline and on-chain use the same value
+        val validityTime = OracleTransactions.computeValidityIntervalTime(devKit.getBackendService)
+        println(s"  Using validity interval time: $validityTime")
 
-            println(s"[Test] Step 3: Computing new state")
+        // Compute new state using the shared validator logic
+        val newState = BitcoinValidator.computeUpdateOracleState(initialState, headersList, validityTime)
+        println(s"  Computed new state:")
+        println(s"    Height: ${newState.blockHeight}")
+        println(s"    Hash: ${newState.blockHash.toHex}")
+        println(s"    Forks tree size: ${newState.forksTree.toList.size}")
 
-            // Compute validity interval time to ensure offline and on-chain use the same value
-            val validityTime = OracleTransactions.computeValidityIntervalTime(devKit.getBackendService)
-            println(s"  Using validity interval time: $validityTime")
+        println(s"[Test] Step 4: Submitting update transaction")
 
-            // Compute new state using the shared validator logic
-            val newState = BitcoinValidator.computeUpdateOracleState(initialState, headersList, validityTime)
-            println(s"  Computed new state:")
-            println(s"    Height: ${newState.blockHeight}")
-            println(s"    Hash: ${newState.blockHash.toHex}")
-            println(s"    Forks tree size: ${newState.forksTree.toList.size}")
+        // Submit update transaction with pre-computed state and validity time
+        val updateTxResult = OracleTransactions.buildAndSubmitUpdateTransaction(
+            devKit.account,
+            devKit.getBackendService,
+            scriptAddress,
+            oracleTxHash,
+            oracleOutputIndex,
+            initialState,
+            newState,
+            headersList,
+            Some(validityTime)
+        )
 
-            println(s"[Test] Step 4: Submitting update transaction")
+        updateTxResult match {
+            case Right(txHash) =>
+                println(s"[Test] ✓ Oracle updated: $txHash")
 
-            // Submit update transaction with pre-computed state and validity time
-            val updateTxResult = OracleTransactions.buildAndSubmitUpdateTransaction(
-                devKit.account,
-                devKit.getBackendService,
-                scriptAddress,
-                oracleTxHash,
-                oracleOutputIndex,
-                initialState,
-                newState,
-                headersList,
-                Some(validityTime)
-            )
+                // Wait for confirmation
+                val confirmed = devKit.waitForTransaction(txHash, maxAttempts = 30)
+                assert(confirmed, s"Update transaction did not confirm")
 
-            updateTxResult match {
-                case Right(txHash) =>
-                    println(s"[Test] ✓ Oracle updated: $txHash")
+                Thread.sleep(2000) // Wait for indexing
 
-                    // Wait for confirmation
-                    val confirmed = devKit.waitForTransaction(txHash, maxAttempts = 30)
-                    assert(confirmed, s"Update transaction did not confirm")
+                println(s"[Test] Step 5: Verifying updated oracle state")
 
-                    Thread.sleep(2000) // Wait for indexing
+                // Verify new oracle state
+                val utxos = devKit.getUtxos(scriptAddress.getAddress)
+                assert(utxos.nonEmpty, "No UTxOs found at oracle address after update")
 
-                    println(s"[Test] Step 5: Verifying updated oracle state")
+                // Find the latest UTxO (should be from update tx)
+                val latestUtxo = utxos.head
+                val inlineDatum = latestUtxo.getInlineDatum
 
-                    // Verify new oracle state
-                    val utxos = devKit.getUtxos(scriptAddress.getAddress)
-                    assert(utxos.nonEmpty, "No UTxOs found at oracle address after update")
+                val plutusData = com.bloxbean.cardano.client.plutus.spec.PlutusData.deserialize(
+                    com.bloxbean.cardano.client.util.HexUtil.decodeHexString(inlineDatum)
+                )
+                val data = OracleTransactions.plutusDataToScalusData(plutusData)
+                val actualState = data.to[BitcoinValidator.ChainState]
 
-                    // Find the latest UTxO (should be from update tx)
-                    val latestUtxo = utxos.head
-                    val inlineDatum = latestUtxo.getInlineDatum
+                println(s"[Test] ✓ Updated ChainState verified:")
+                println(s"    Height: ${actualState.blockHeight}")
+                println(s"    Hash: ${actualState.blockHash.toHex}")
+                println(s"    Forks tree size: ${actualState.forksTree.toList.size}")
 
-                    val plutusData = com.bloxbean.cardano.client.plutus.spec.PlutusData.deserialize(
-                        com.bloxbean.cardano.client.util.HexUtil.decodeHexString(inlineDatum)
-                    )
-                    val data = OracleTransactions.plutusDataToScalusData(plutusData)
-                    val actualState = data.to[BitcoinValidator.ChainState]
+                // Verify the on-chain state matches our computed state
+                assert(actualState.blockHeight == newState.blockHeight,
+                       s"Height mismatch: actual=${actualState.blockHeight} expected=${newState.blockHeight}")
+                assert(actualState.blockHash == newState.blockHash,
+                       s"Hash mismatch: actual=${actualState.blockHash.toHex} expected=${newState.blockHash.toHex}")
 
-                    println(s"[Test] ✓ Updated ChainState verified:")
-                    println(s"    Height: ${actualState.blockHeight}")
-                    println(s"    Hash: ${actualState.blockHash.toHex}")
-                    println(s"    Forks tree size: ${actualState.forksTree.toList.size}")
-
-                    // Verify the on-chain state matches our computed state
-                    assert(actualState.blockHeight == newState.blockHeight,
-                           s"Height mismatch: actual=${actualState.blockHeight} expected=${newState.blockHeight}")
-                    assert(actualState.blockHash == newState.blockHash,
-                           s"Hash mismatch: actual=${actualState.blockHash.toHex} expected=${newState.blockHash.toHex}")
-
-                case Left(err) =>
-                    fail(s"Failed to update oracle: $err")
-            }
+            case Left(err) =>
+                fail(s"Failed to update oracle: $err")
         }
     }
 
     test("update-oracle: handles empty header list") {
-        withYaciDevKit() { devKit =>
-            given ec: ExecutionContext = ExecutionContext.global
+        val devKit = yaciDevKitFixture()
+        given ec: ExecutionContext = ExecutionContext.global
 
-            val startHeight = 866970
-            val mockRpc = new MockBitcoinRpc()
+        val startHeight = 866970
+        val mockRpc = new MockBitcoinRpc()
 
-            println(s"[Test] Creating oracle at height $startHeight")
+        println(s"[Test] Creating oracle at height $startHeight")
 
-            // Create initial oracle
-            val initialStateFuture = BitcoinChainState.getInitialChainState(
+        // Create initial oracle
+        val initialStateFuture = BitcoinChainState.getInitialChainState(
+            new binocular.SimpleBitcoinRpc(
+                binocular.BitcoinNodeConfig(
+                    url = "mock://rpc",
+                    username = "test",
+                    password = "test",
+                    network = binocular.BitcoinNetwork.Testnet
+                )
+            ) {
+                override def getBlockHash(height: Int) = mockRpc.getBlockHash(height)
+                override def getBlockHeader(hash: String) = mockRpc.getBlockHeader(hash)
+            },
+            startHeight
+        )
+
+        val initialState = Await.result(initialStateFuture, 30.seconds)
+
+        val scriptAddress = new Address(
+            binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
+        )
+
+        val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
+            devKit.account,
+            devKit.getBackendService,
+            scriptAddress,
+            initialState
+        )
+
+        val (oracleTxHash, oracleOutputIndex) = initTxResult match {
+            case Right(txHash) =>
+                devKit.waitForTransaction(txHash, maxAttempts = 30)
+                Thread.sleep(2000)
+                (txHash, 0)
+            case Left(err) =>
+                fail(s"Failed to initialize oracle: $err")
+        }
+
+        println(s"[Test] Attempting update with empty header list")
+
+        // Try to update with empty list - should fail validation
+        val emptyHeaders = scalus.prelude.List.empty[BitcoinValidator.BlockHeader]
+
+        // This should fail because validator requires non-empty headers
+        println(s"[Test] ✓ Test with empty headers skipped (validator rejects empty list)")
+    }
+
+    test("update-oracle: forces promotion of a block after 110 confirmations and 200 minutes aging") {
+        val devKit = yaciDevKitFixture()
+        given ec: ExecutionContext = ExecutionContext.global
+
+        val startHeight = 866880
+        val promotionCandidateHeight = startHeight + 1
+        val headersToSubmitCounts = List.fill(11)(10)
+        val totalHeadersToSubmit = headersToSubmitCounts.sum
+        val endHeight = startHeight + totalHeadersToSubmit
+        val finalHeight = endHeight + 1
+        val mockRpc = new MockBitcoinRpc()
+
+        println(s"=== Block Promotion Test ===")
+        println(s"Start: $startHeight, End: $finalHeight, Total blocks: ${finalHeight - startHeight}")
+
+        // 1. Create initial oracle
+        val initialOracleState = Await.result(
+            BitcoinChainState.getInitialChainState(
                 new binocular.SimpleBitcoinRpc(
-                    binocular.BitcoinNodeConfig(
-                        url = "mock://rpc",
-                        username = "test",
-                        password = "test",
-                        network = binocular.BitcoinNetwork.Testnet
-                    )
+                    binocular.BitcoinNodeConfig("mock://rpc", "test", "test", binocular.BitcoinNetwork.Testnet)
                 ) {
                     override def getBlockHash(height: Int) = mockRpc.getBlockHash(height)
                     override def getBlockHeader(hash: String) = mockRpc.getBlockHeader(hash)
                 },
                 startHeight
+            ),
+            30.seconds
+        )
+
+        val scriptAddress =
+            new Address(binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress)
+
+        var (currentTxHash, currentOutputIndex, currentState) = OracleTransactions.buildAndSubmitInitTransaction(
+            devKit.account,
+            devKit.getBackendService,
+            scriptAddress,
+            initialOracleState
+        ) match {
+            case Right(txHash) =>
+                println(s"✓ Oracle initialized at height ${initialOracleState.blockHeight}")
+                devKit.waitForTransaction(txHash, maxAttempts = 30)
+                Thread.sleep(2000)
+                (txHash, 0, initialOracleState)
+            case Left(err) => fail(s"Failed to initialize oracle: $err")
+        }
+        println(s"Initial state: $currentState")
+
+        var lastUpdateTime: BigInt = 0
+
+        // 2. Submit headers in batches
+        var currentBlockHeight = startHeight
+        for ((count, i) <- headersToSubmitCounts.zipWithIndex) {
+            println(s"State before batch ${i + 1}: $currentState")
+            val batchStartHeight = currentBlockHeight + 1
+            val batchEndHeight = currentBlockHeight + count
+            println(s"✓ Submitting $count headers (batch ${i + 1}/${headersToSubmitCounts.size}) to populate forks tree...")
+
+            val headers = scalus.prelude.List.from(
+                Await
+                    .result(
+                        Future.sequence(
+                            (batchStartHeight to batchEndHeight).map { height =>
+                                mockRpc
+                                    .getBlockHash(height)
+                                    .flatMap(mockRpc.getBlockHeader)
+                                    .map(BitcoinChainState.convertHeader)
+                            }
+                        ),
+                        60.seconds
+                    )
+                    .toList
             )
 
-            val initialState = Await.result(initialStateFuture, 30.seconds)
+            lastUpdateTime = OracleTransactions.computeValidityIntervalTime(devKit.getBackendService)
+            val newState = BitcoinValidator.computeUpdateOracleState(currentState, headers, lastUpdateTime)
 
-            val scriptAddress = new Address(
-                binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
-            )
-
-            val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
+            val updateResult = OracleTransactions.buildAndSubmitUpdateTransaction(
                 devKit.account,
                 devKit.getBackendService,
                 scriptAddress,
-                initialState
+                currentTxHash,
+                currentOutputIndex,
+                currentState,
+                newState,
+                headers,
+                Some(lastUpdateTime)
             )
 
-            val (oracleTxHash, oracleOutputIndex) = initTxResult match {
+            val (nextTxHash, nextOutputIndex) = updateResult match {
                 case Right(txHash) =>
+                    println(s"✓ Submitted $count headers in tx: $txHash")
                     devKit.waitForTransaction(txHash, maxAttempts = 30)
                     Thread.sleep(2000)
                     (txHash, 0)
-                case Left(err) =>
-                    fail(s"Failed to initialize oracle: $err")
+                case Left(error) => fail(s"Failed to submit headers batch ${i + 1}: $error")
             }
-
-            println(s"[Test] Attempting update with empty header list")
-
-            // Try to update with empty list - should fail validation
-            val emptyHeaders = scalus.prelude.List.empty[BitcoinValidator.BlockHeader]
-
-            // This should fail because validator requires non-empty headers
-            println(s"[Test] ✓ Test with empty headers skipped (validator rejects empty list)")
+            currentTxHash = nextTxHash
+            currentOutputIndex = nextOutputIndex
+            currentState = newState
+            currentBlockHeight = batchEndHeight
         }
+
+
+        // 3. Simulate time passing and submit one more header to trigger promotion
+        val simulatedTime = lastUpdateTime + BitcoinValidator.ChallengeAging + 60 // 200 minutes + buffer
+        val finalHeader = Await.result(
+            mockRpc.getBlockHash(finalHeight).flatMap(mockRpc.getBlockHeader).map(BitcoinChainState.convertHeader),
+            30.seconds
+        )
+        val finalHeaderList = scalus.prelude.List.from(scala.List(finalHeader))
+
+        println(s"✓ Submitting final header for height $finalHeight to trigger promotion...")
+        println(s"  Simulated current time: $simulatedTime")
+
+        val expectedFinalState =
+            BitcoinValidator.computeUpdateOracleState(currentState, finalHeaderList, simulatedTime)
+        println(s"  Expected final height (after promotion): ${expectedFinalState.blockHeight}")
+
+        val updateResult3 = OracleTransactions.buildAndSubmitUpdateTransaction(
+            devKit.account,
+            devKit.getBackendService,
+            scriptAddress,
+            currentTxHash,
+            currentOutputIndex,
+            currentState,
+            expectedFinalState,
+            finalHeaderList,
+            Some(lastUpdateTime)
+        )
+
+        updateResult3 match {
+            case Right(txHash) =>
+                println(s"✓ Final UpdateOracle tx: $txHash")
+                devKit.waitForTransaction(txHash, maxAttempts = 30)
+                Thread.sleep(2000)
+
+                // 4. Verify promotion
+                val utxos = devKit.getUtxos(scriptAddress.getAddress)
+                val latestUtxo = utxos.head
+                val latestDatum = latestUtxo.getInlineDatum
+                val plutusData = com.bloxbean.cardano.client.plutus.spec.PlutusData
+                    .deserialize(com.bloxbean.cardano.client.util.HexUtil.decodeHexString(latestDatum))
+                val onChainState =
+                    OracleTransactions.plutusDataToScalusData(plutusData).to[BitcoinValidator.ChainState]
+
+                println(s"✓ Verifying on-chain state...")
+                println(s"  On-chain height: ${onChainState.blockHeight}")
+                println(
+                    s"  On-chain confirmed root: ${BitcoinValidator.getMerkleRoot(onChainState.confirmedBlocksTree).toHex}"
+                )
+
+                assert(
+                    onChainState.blockHeight == promotionCandidateHeight,
+                    s"Block height should be promoted to $promotionCandidateHeight, but was ${onChainState.blockHeight}"
+                )
+                assert(onChainState.blockHash != initialOracleState.blockHash, "Block hash should be promoted")
+                assert(
+                    BitcoinValidator.getMerkleRoot(onChainState.confirmedBlocksTree) != BitcoinValidator
+                        .getMerkleRoot(initialOracleState.confirmedBlocksTree),
+                    "Confirmed blocks tree should have changed"
+                )
+                println("✓ Block promotion successful!")
+
+            case Left(error) => fail(s"Failed to submit final header: $error")
+
+        }
+
     }
+
 }
