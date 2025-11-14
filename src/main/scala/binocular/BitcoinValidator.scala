@@ -989,6 +989,13 @@ object BitcoinValidator extends Validator {
               forksTree = finalForksTree
             )
     }
+    
+    def findUniqueOutputFrom(outputs: List[TxOut], scriptAddress: Address): TxOut = {
+        val matchingOutputs = outputs.filter(out => out.address === scriptAddress)
+        require(matchingOutputs.nonEmpty, "No continuing output found")
+        require(matchingOutputs.size == BigInt(1), "There must be exactly one continuing output")
+        matchingOutputs.head
+    }
 
     inline override def spend(datum: Option[Datum], redeemer: Datum, tx: TxInfo, outRef: TxOutRef): Unit = {
         val action = redeemer.to[Action]
@@ -1018,11 +1025,9 @@ object BitcoinValidator extends Validator {
                 // Find the continuing output (output to the same script address)
                 val input = tx.inputs.find { _.outRef === outRef }.getOrFail("Input not found")
                 val scriptAddress = input.resolved.address
-
-                val continuingOutput = tx.outputs
-                    .find { out => out.address === scriptAddress }
-                    .getOrFail("No continuing output found")
-
+                
+                val continuingOutput = findUniqueOutputFrom(tx.outputs, scriptAddress)
+                
                 // Extract the datum from the continuing output (provided by transaction builder)
                 val providedOutputDatum = continuingOutput.datum match
                     case OutputDatum.OutputDatum(datum) => datum

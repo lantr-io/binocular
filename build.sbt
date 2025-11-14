@@ -8,6 +8,11 @@ scalacOptions ++= Seq("-deprecation", "-feature")
 
 testFrameworks += new TestFramework("munit.Framework")
 
+Test / parallelExecution := false
+
+Test / javaOptions ++= Seq("-Xmx2g")
+
+
 Global / onChangedBuildSource := ReloadOnSourceChanges
 
 resolvers += Resolver.sonatypeCentralSnapshots

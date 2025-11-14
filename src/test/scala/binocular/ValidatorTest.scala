@@ -1,6 +1,7 @@
 package binocular
 import binocular.BitcoinValidator.{Action, BlockHeader, ChainState}
 import com.bloxbean.cardano.client.account.Account
+import com.bloxbean.cardano.client.address.Address
 import com.bloxbean.cardano.client.common.ADAConversionUtil
 import com.bloxbean.cardano.client.plutus.spec.{ExUnits, PlutusV3Script, Redeemer, RedeemerTag}
 import com.bloxbean.cardano.client.transaction.spec
@@ -57,6 +58,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
     // println(compiledBitcoinValidator.showHighlighted)
     // assertEquals(bitcoinProgram.doubleCborEncoded.length, 900)
     // }
+
 
     test("reverse") {
         forAll { (a: Array[Byte]) =>
@@ -241,7 +243,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         val timestamp = blockHeader.timestamp
 
         val redeemer = Action
-            .UpdateOracle(scalus.prelude.List.single(blockHeader), BigInt(System.currentTimeMillis()/1000))
+            .UpdateOracle(scalus.prelude.List.single(blockHeader), timestamp)
             .toData
 
         println(s"Redeemer size: ${redeemer.toCbor.length}")
@@ -288,12 +290,19 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         println(s"Expected forksTree size: ${newForksTree.toList.size}")
         println(s"Expected newState.forksTree size: ${newState.forksTree.toList.size}")
 
+        val scriptAddress = new Address(
+            binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
+        )
+        val outputAmount = BigInteger.valueOf(5000000) // 5 ADA
+
         val (scriptContext, tx) = makeScriptContextAndTransaction(
           timestamp.toLong,
           prevState.toData,
           newState.toData,
           redeemer,
-          Seq.empty
+          Seq.empty,
+          scriptAddress,
+          outputAmount
         )
         println(s"Tx size: ${tx.serialize().length}")
         val applied = BitcoinContract.bitcoinProgram $ scriptContext.toData
@@ -348,7 +357,9 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         prevState: Data,
         datum: Data,
         redeemer: Data,
-        signatories: Seq[PubKeyHash]
+        signatories: Seq[PubKeyHash],
+        scriptAddress: Address,
+        outputAmount: BigInteger
     ): (ScriptContext, Transaction) =
         val script = PlutusV3Script
             .builder()
@@ -366,8 +377,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
                 .exUnits(
                   ExUnits
                       .builder()
-                      .steps(BigInteger.valueOf(1000))
-                      .mem(BigInteger.valueOf(1000))
+                      .steps(BigInteger.valueOf(10000000000L))
+                      .mem(BigInteger.valueOf(20000000))
                       .build()
                 )
                 .build()
@@ -388,8 +399,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         val utxo = Map(
           input -> TransactionOutput
               .builder()
-              .value(spec.Value.builder().coin(BigInteger.valueOf(20)).build())
-              .address(payeeAddress)
+              .value(spec.Value.builder().coin(outputAmount).build())
+              .address(scriptAddress.getAddress)
               .inlineDatum(Interop.toPlutusData(prevState))
               .build(),
           scriptRefInput -> TransactionOutput
@@ -408,6 +419,13 @@ class ValidatorTest extends munit.ScalaCheckSuite {
                   .validityStartInterval(slot)
                   .fee(ADAConversionUtil.adaToLovelace(0.2))
                   .inputs(inputs)
+                  .outputs(util.List.of(
+                      TransactionOutput.builder()
+                          .address(scriptAddress.getAddress)
+                          .value(Value.builder().coin(outputAmount).build())
+                          .inlineDatum(Interop.toPlutusData(datum))
+                          .build()
+                  ))
                   .referenceInputs(util.List.of(scriptRefInput))
                   .requiredSigners(signatories.map(_.hash.bytes).asJava)
                   .build()
@@ -760,13 +778,21 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         BitcoinValidator.validateForkSubmission(headers, forksTree, confirmedTip)
     }
 
+
+
     test("addBlockToForksTree - block extending confirmed tip") {
         val confirmedTip = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
         val bits = hex"17030ecd".reverse
 
+        // Create a block extending the confirmed tip with valid timestamp
+        val newBlockHeader = BlockHeader(
+            hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
+        )
+        val blockTimestamp = newBlockHeader.timestamp
+
         // Use current time for realistic validation
         val currentTime = BigInt(System.currentTimeMillis() / 1000)
-        val blockTimestamp = currentTime - 100  // Block is 100 seconds in the past
+        //val blockTimestamp = currentTime - 100  // Block is 100 seconds in the past
 
         val confirmedState = ChainState(
           blockHeight = 1000,
@@ -779,10 +805,10 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           forksTree = scalus.prelude.SortedMap.empty
         )
 
-        // Create a block extending the confirmed tip with valid timestamp
-        val newBlockHeader = BlockHeader(
-          hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
-        )
+
+
+        //println(s"[DEBUG] Adding block to forks tree...,  confiremrdState.medianTimestamp = ${BitcoinValidator.getMedianTimePast(confirmedState.recentTimestamps, confirmedState.recentTimestamps.size)}"))
+        //println(s"[DEBUG] newBlockHeader.timestamp = ${newBlockHeader.timestamp}, currentTime = $currentTime")
 
         // Add block to empty forksTree - should succeed
         val updatedForksTree = BitcoinValidator.addBlockToForksTree(
@@ -802,6 +828,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         assertEquals(blockNode.prevBlockHash, confirmedTip)
         assertEquals(blockNode.height, BigInt(1001))
     }
+
 
     test("forksTree structure - block extending another block in tree") {
         // Test the fork tree structure logic by manually creating nodes
@@ -937,30 +964,66 @@ class ValidatorTest extends munit.ScalaCheckSuite {
     // ===== UPDATE ORACLE UNIT TESTS =====
 
     test("UpdateOracle - add single block to forks tree") {
-        // This tests adding a block to forks tree and verifying state changes
-        val baseTime = BigInt(System.currentTimeMillis() / 1000)
-        val bits = hex"17030ecd".reverse
-        val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
-
-        // Create initial state with empty forks tree
+        // Use real Bitcoin blocks 864800 -> 864801
+        // Block 864800: hash=0000000000000000000202c4f7f242ab864a6162b8d1e745de6a86ae979e130b
+        val block864800Hash = "0000000000000000000202c4f7f242ab864a6162b8d1e745de6a86ae979e130b"
+        val block864800Height = 864800
+        val block864800Timestamp = 1728414569L
+        
+        // Block 864801: extends 864800
+        val block864801Hash = "00000000000000000002935605126a1c5587bf4b642fffe943595e6d669c817d"
+        val block864801PrevHash = "0000000000000000000202c4f7f242ab864a6162b8d1e745de6a86ae979e130b"
+        val block864801Bits = "17032f14"
+        val block864801Timestamp = 1728414644L
+        val block864801Nonce = 4254568467L
+        val block864801Version = 666378240L
+        val block864801Merkleroot = "dc2ad1c7a27d394d45961c13a9c36e1d5e6cdbea928c47cb06263bb049a9cd0f"
+        
+        val confirmedTip = ByteString.fromHex(block864800Hash).reverse
+        val bits = ByteString.fromHex(block864801Bits).reverse
+        val baseTime = BigInt(block864801Timestamp)
+        
+        // Construct the block header for 864801
+        def longToLE4Bytes(n: Long): ByteString = {
+            ByteString.fromArray(Array(
+                (n & 0xff).toByte,
+                ((n >> 8) & 0xff).toByte,
+                ((n >> 16) & 0xff).toByte,
+                ((n >> 24) & 0xff).toByte
+            ))
+        }
+        
+        val blockHeader = BlockHeader(
+          longToLE4Bytes(block864801Version) ++
+          ByteString.fromHex(block864801PrevHash).reverse ++
+          ByteString.fromHex(block864801Merkleroot).reverse ++
+          longToLE4Bytes(block864801Timestamp) ++
+          ByteString.fromHex(block864801Bits).reverse ++
+          longToLE4Bytes(block864801Nonce)
+        )
+        
+        // Verify the header hash matches the expected block hash
+        val computedHash = BitcoinValidator.blockHeaderHash(blockHeader)
+        assertEquals(computedHash.reverse.toHex, block864801Hash, "Block header hash mismatch")
+        
+        // Create initial state with block 864800 as confirmed tip
         val prevState = buildTestChainState(
-          blockHeight = 1000,
+          blockHeight = block864800Height,
           blockHash = confirmedTip,
           bits = bits,
-          baseTimestamp = baseTime - 1000,
+          baseTimestamp = BigInt(block864800Timestamp),
           forksTreeSize = 0
         )
 
-        // Use real Bitcoin block header for valid PoW
-        val blockHeader = BlockHeader(
-          hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
-        )
-
-        // Manually compute expected new state
-        // After processing, the block should be in forks tree
+        // Manually compute expected new state matching BitcoinValidator logic
+        // After processing, the block should be in forks tree (not promoted - no 100 confirmations yet)
         val newBlockHash = BitcoinValidator.blockHeaderHash(blockHeader)
         val target = BitcoinValidator.compactBitsToTarget(bits)
-        val newChainwork = computeChainwork(prevState.blockHeight * BigInt(1000000), target)
+        
+        // Parent chainwork: when parent is confirmed tip, use compactBitsToTarget(confirmedState.currentTarget)
+        val parentChainwork = BitcoinValidator.compactBitsToTarget(prevState.currentTarget)
+        val blockWork = BitcoinValidator.PowLimit / target
+        val newChainwork = parentChainwork + blockWork
 
         val expectedNode = BitcoinValidator.BlockNode(
           prevBlockHash = prevState.blockHash,
@@ -984,15 +1047,22 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         )
 
         // Create redeemer
-        val redeemer = Action.UpdateOracle(scalus.prelude.List.single(blockHeader),BigInt(System.currentTimeMillis()/1000)).toData
+        val redeemer = Action.UpdateOracle(scalus.prelude.List.single(blockHeader), baseTime).toData
 
         // Create script context and transaction
+        val scriptAddress = new Address(
+            binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
+        )
+        val outputAmount = BigInteger.valueOf(5000000) // 5 ADA
+
         val (scriptContext, tx) = makeScriptContextAndTransaction(
-          baseTime.toLong * 1000,
+          baseTime.toLong,
           prevState.toData,
           expectedState.toData,
           redeemer,
-          Seq.empty
+          Seq.empty,
+          scriptAddress,
+          outputAmount
         )
 
         // Validate - should succeed
@@ -1023,12 +1093,19 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         // Create redeemer with empty list
         val redeemer = Action.UpdateOracle(scalus.prelude.List.empty, BigInt(System.currentTimeMillis()/1000)).toData
 
+        val scriptAddress = new Address(
+            binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
+        )
+        val outputAmount = BigInteger.valueOf(5000000) // 5 ADA
+
         val (scriptContext, tx) = makeScriptContextAndTransaction(
           baseTime.toLong * 1000,
           prevState.toData,
           prevState.toData, // Expected state same as previous (no change)
           redeemer,
-          Seq.empty
+          Seq.empty,
+          scriptAddress,
+          outputAmount
         )
 
         // Should fail with "Empty block headers list"
@@ -1463,4 +1540,6 @@ class ValidatorTest extends munit.ScalaCheckSuite {
             assert(BitcoinValidator.lookupBlock(updatedTree, hash).isEmpty, s"Block should be removed from tree")
         }
     }
+
+
 }
