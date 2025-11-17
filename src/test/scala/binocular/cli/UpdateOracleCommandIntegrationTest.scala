@@ -16,6 +16,8 @@ import scala.concurrent.{Await, ExecutionContext, Future}
   *      new headers 4. Verifies oracle state is updated correctly
   */
 class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
+    // Extended timeout for multi-batch promotion test
+    override val munitTimeout = scala.concurrent.duration.Duration(240, "s")
 
     test("update-oracle: successfully updates oracle with new blocks") {
         withYaciDevKit() { devKit =>
@@ -213,6 +215,185 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
 
             // This should fail because validator requires non-empty headers
             println(s"[Test] ✓ Test with empty headers skipped (validator rejects empty list)")
+        }
+    }
+
+    test("update-oracle: triggers forced promotion after 100 confirmations and 200 minutes") {
+        withYaciDevKit() { devKit =>
+            given ec: ExecutionContext = ExecutionContext.global
+
+            // Use a sufficient range of blocks to trigger promotion
+            // Start at 866970, add blocks up to 866970 + 105 to ensure 100+ confirmations
+            val startHeight = 866970
+            val totalBlocks = 105 // More than MaturationConfirmations (100)
+            val batchSize = 10 // Process 10 headers per transaction
+            val finalHeight = startHeight + totalBlocks
+            val mockRpc = new MockBitcoinRpc()
+
+            println(s"[Test] Step 1: Creating initial oracle at height $startHeight")
+
+            // Create initial oracle
+            val initialStateFuture = BitcoinChainState.getInitialChainState(
+              new binocular.SimpleBitcoinRpc(
+                binocular.BitcoinNodeConfig(
+                  url = "mock://rpc",
+                  username = "test",
+                  password = "test",
+                  network = binocular.BitcoinNetwork.Testnet
+                )
+              ) {
+                  override def getBlockHash(height: Int) = mockRpc.getBlockHash(height)
+                  override def getBlockHeader(hash: String) = mockRpc.getBlockHeader(hash)
+              },
+              startHeight
+            )
+
+            val initialState = Await.result(initialStateFuture, 30.seconds)
+
+            val scriptAddress = new Address(
+              binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
+            )
+
+            // Submit init transaction
+            val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
+              devKit.account,
+              devKit.getBackendService,
+              scriptAddress,
+              initialState
+            )
+
+            val (initialTxHash, initialOutputIndex) = initTxResult match {
+                case Right(txHash) =>
+                    println(s"[Test] ✓ Oracle initialized: $txHash")
+                    devKit.waitForTransaction(txHash, maxAttempts = 30)
+                    Thread.sleep(2000)
+                    (txHash, 0)
+                case Left(err) =>
+                    fail(s"Failed to initialize oracle: $err")
+            }
+
+            println(s"[Test] Step 2: Adding ${totalBlocks} blocks in batches of $batchSize")
+
+            // Fetch all headers
+            val allHeadersFuture = Future.sequence(
+              (startHeight + 1 to finalHeight).map { height =>
+                  for {
+                      hashHex <- mockRpc.getBlockHash(height)
+                      headerInfo <- mockRpc.getBlockHeader(hashHex)
+                  } yield BitcoinChainState.convertHeader(headerInfo)
+              }
+            )
+
+            val allHeaders = Await.result(allHeadersFuture, 60.seconds)
+            println(s"[Test] ✓ Fetched ${allHeaders.length} headers total")
+
+            // Process in batches
+            val batches = allHeaders.grouped(batchSize).toSeq
+            var currentState = initialState
+            var currentTxHash = initialTxHash
+            var currentOutputIndex = initialOutputIndex
+
+            batches.zipWithIndex.foreach { case (batch, batchIndex) =>
+                println(s"[Test] Processing batch ${batchIndex + 1}/${batches.size} (${batch.size} headers)")
+
+                val headersList = scalus.prelude.List.from(batch.toList)
+                
+                // Use current time for all batches except the last one
+                // For the last batch, use time + 210 minutes to trigger promotion
+                val validityTime: BigInt = if (batchIndex == batches.size - 1) {
+                    val currentTime = System.currentTimeMillis() / 1000
+                    val advancedTime = BigInt(currentTime) + BigInt(210 * 60) // 210 minutes ahead
+                    println(s"  Final batch: using advanced time to trigger promotion (+210 min)")
+                    advancedTime
+                } else {
+                    OracleTransactions.computeValidityIntervalTime(devKit.getBackendService)
+                }
+
+                // Compute new state
+                val newState = BitcoinValidator.computeUpdateOracleState(currentState, headersList, validityTime)
+
+                // Submit update transaction
+                val updateTxResult = OracleTransactions.buildAndSubmitUpdateTransaction(
+                  devKit.account,
+                  devKit.getBackendService,
+                  scriptAddress,
+                  currentTxHash,
+                  currentOutputIndex,
+                  currentState,
+                  newState,
+                  headersList,
+                  Some(validityTime)
+                )
+
+                updateTxResult match {
+                    case Right(resultTxHash) =>
+                        println(s"  ✓ Batch ${batchIndex + 1} submitted: $resultTxHash")
+                        devKit.waitForTransaction(resultTxHash, maxAttempts = 30)
+                        Thread.sleep(2000)
+
+                        // Update for next iteration
+                        currentState = newState
+                        currentTxHash = resultTxHash
+                        currentOutputIndex = 0
+
+                    case Left(errorMsg) =>
+                        fail(s"Failed to update oracle with batch ${batchIndex + 1}: $errorMsg")
+                }
+            }
+
+            println(s"[Test] Step 3: Verifying promotion occurred")
+            println(s"  Initial confirmed height: ${initialState.blockHeight}")
+            println(s"  Final confirmed height: ${currentState.blockHeight}")
+            println(s"  Initial forks tree size: ${initialState.forksTree.toList.size}")
+            println(s"  Final forks tree size: ${currentState.forksTree.toList.size}")
+
+            // Verify that promotion occurred
+            val heightIncrease = currentState.blockHeight - initialState.blockHeight
+            assert(
+              heightIncrease > 0,
+              s"Expected promotion to increase confirmed height, but got: initial=${initialState.blockHeight}, final=${currentState.blockHeight}"
+            )
+
+            println(s"  ✓ Promotion detected: height increased by $heightIncrease blocks")
+
+            // Verify confirmed blocks tree was updated
+            assert(
+              currentState.confirmedBlocksTree.size >= initialState.confirmedBlocksTree.size,
+              "Confirmed blocks tree should grow after promotion"
+            )
+
+            println(s"[Test] Step 4: Verifying on-chain state after promotion")
+
+            // Verify final on-chain state
+            val utxos = devKit.getUtxos(scriptAddress.getAddress)
+            assert(utxos.nonEmpty, "No UTxOs found at oracle address after promotion")
+
+            val latestUtxo = utxos.head
+            val inlineDatum = latestUtxo.getInlineDatum
+
+            val data = Data.fromCbor(inlineDatum.hexToBytes)
+            val actualState = data.to[BitcoinValidator.ChainState]
+
+            println(s"[Test] ✓ On-chain state after forced promotion:")
+            println(s"    Height: ${actualState.blockHeight}")
+            println(s"    Hash: ${actualState.blockHash.toHex}")
+            println(s"    Forks tree size: ${actualState.forksTree.toList.size}")
+            println(s"    Confirmed blocks tree size: ${actualState.confirmedBlocksTree.size}")
+
+            // Verify state matches expectations
+            assert(
+              actualState.blockHeight == currentState.blockHeight,
+              s"Height mismatch: actual=${actualState.blockHeight} expected=${currentState.blockHeight}"
+            )
+            assert(
+              actualState.blockHash == currentState.blockHash,
+              s"Hash mismatch"
+            )
+
+            println(s"[Test] ✓ Forced promotion test completed successfully")
+            println(s"  Total blocks added: $totalBlocks")
+            println(s"  Blocks promoted: $heightIncrease")
+            println(s"  Batches processed: ${batches.size}")
         }
     }
 }

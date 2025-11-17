@@ -1,0 +1,15 @@
+{
+  "height": 864948,
+  "hash": "000000000000000000025be0c4d7af89a86ad5d77f91f7256e2e42753d717b15",
+  "merkleroot": "974dc3bf90ee8506649caca7fa836445a2024e9cdfb16a51c5fac4db1bb01ca5",
+  "transactions": [
+    "974dc3bf90ee8506649caca7fa836445a2024e9cdfb16a51c5fac4db1bb01ca5"
+  ],
+  "previousblockhash": "0000000000000000000054506a9672afbc021c5bd856afc26b884c8e85d18d3c",
+  "timestamp": 1728511223,
+  "bits": "17030ecd",
+  "nonce": 3912387940,
+  "version": 882122752,
+  "difficulty": 9.204959454848547E13,
+  "description": "Recent Bitcoin block"
+}
