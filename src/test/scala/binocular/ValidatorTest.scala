@@ -1079,8 +1079,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
             case r: Result.Success =>
                 println(s"✓ UpdateOracle single block validation succeeded, budget used: ${r.budget.showJson}")
                 println(r)
-                assertEquals(r.budget, ledger.ExUnits(557896, 172_133254), "Unexpected resource usage")
-                assertEquals(r.budget.fee(prices), Coin(44585), "Unexpected fee cost")
+                assertEquals(r.budget, ledger.ExUnits(555162, 171_416162), "Unexpected resource usage")
+                assertEquals(r.budget.fee(prices), Coin(44375), "Unexpected fee cost")
             case r: Result.Failure =>
                 fail(s"Validation failed: $r")
     }

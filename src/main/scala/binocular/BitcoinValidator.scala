@@ -992,7 +992,6 @@ object BitcoinValidator extends Validator {
 
     def findUniqueOutputFrom(outputs: List[TxOut], scriptAddress: Address): TxOut = {
         val matchingOutputs = outputs.filter(out => out.address === scriptAddress)
-        require(matchingOutputs.nonEmpty, "No continuing output found")
         require(matchingOutputs.size == BigInt(1), "There must be exactly one continuing output")
         matchingOutputs.head
     }
