@@ -9,6 +9,7 @@ import com.bloxbean.cardano.client.function.helper.SignerProviders
 import com.bloxbean.cardano.client.plutus.spec.{PlutusV3Script, Redeemer}
 import com.bloxbean.cardano.client.quicktx.{QuickTxBuilder, ScriptTx, Tx}
 import scalus.bloxbean.Interop.toPlutusData
+import scalus.builtin.Data
 import scalus.builtin.Data.toData
 
 import scala.jdk.CollectionConverters.*
@@ -159,11 +160,11 @@ object OracleTransactions {
       * @param currentChainState
       *   Current ChainState datum
       * @param newChainState
-      *   New ChainState datum (pre-computed using computeUpdateOracleState)
+      *   New ChainState datum (pre-computed using computeUpdateOracleState with validityIntervalTimeSeconds)
       * @param blockHeaders
       *   Bitcoin block headers to submit
       * @param validityIntervalTimeSeconds
-      *   Optional validity interval time. If not provided, current time is used.
+      *   The time (in seconds) that was used to compute newChainState. Must be obtained from computeValidityIntervalTime()
       * @return
       *   Either error message or transaction hash
       */
@@ -176,7 +177,7 @@ object OracleTransactions {
         currentChainState: BitcoinValidator.ChainState,
         newChainState: BitcoinValidator.ChainState,
         blockHeaders: scalus.prelude.List[BitcoinValidator.BlockHeader],
-        validityIntervalTimeSeconds: Option[BigInt] = None
+        validityIntervalTimeSeconds: BigInt
     ): Either[String, String] = {
         Try {
             // Get the script
@@ -196,26 +197,82 @@ object OracleTransactions {
                 .getOrElse {
                     throw new RuntimeException(s"UTxO not found: $oracleTxHash:$oracleOutputIndex")
                 }
+            
+            // CRITICAL: Verify that the input UTXO's datum matches currentChainState
+            // This ensures we're computing the new state from the correct starting point
+            val inputDatum = targetUtxo.getInlineDatum
+            if (inputDatum == null || inputDatum.isEmpty) {
+                throw new RuntimeException(s"Input UTxO has no inline datum: $oracleTxHash:$oracleOutputIndex")
+            }
+            val inputState = Data.fromCbor(scalus.utils.Hex.hexToBytes(inputDatum)).to[BitcoinValidator.ChainState]
+            
+            if (inputState.blockHeight != currentChainState.blockHeight ||
+                inputState.blockHash != currentChainState.blockHash) {
+                throw new RuntimeException(
+                    s"Input UTxO state does not match provided currentChainState!\n" +
+                    s"  This means currentChainState is stale or wrong UTXO was selected.\n" +
+                    s"  Provided currentChainState: height=${currentChainState.blockHeight}, hash=${currentChainState.blockHash.toHex}\n" +
+                    s"  Input UTxO state: height=${inputState.blockHeight}, hash=${inputState.blockHash.toHex}\n" +
+                    s"  Input UTxO: $oracleTxHash:$oracleOutputIndex"
+                )
+            }
+            
+            println(s"[DEBUG] Verified input UTXO datum matches currentChainState")
 
-            // Get the time that will be seen by the validator
-            // Use the current blockchain slot to compute the time
+            // Retrieve slot config that will be used for all time conversions
+            val slotConfig = SlotConfigHelper.retrieveSlotConfig(backendService)
+            println(
+              s"[DEBUG] SlotConfig: zeroTime=${slotConfig.zeroTime}, zeroSlot=${slotConfig.zeroSlot}, slotLength=${slotConfig.slotLength}"
+            )
+
+            // Get the current blockchain slot that will be used for validFrom
             val currentBlockchainSlot = backendService.getBlockService.getLatestBlock.getValue.getSlot
-            val slotConfigEarly = SlotConfigHelper.retrieveSlotConfig(backendService)
+            
+            // Compute what time the validator will see based on validFrom slot
+            // This is: slotToTime(validFrom) which equals zeroTime + (slot - zeroSlot) * slotLength
             val intervalMs =
-                slotConfigEarly.zeroTime + (currentBlockchainSlot - slotConfigEarly.zeroSlot) * slotConfigEarly.slotLength
-            val computationTime = BigInt(intervalMs / 1000)
+                slotConfig.zeroTime + (currentBlockchainSlot - slotConfig.zeroSlot) * slotConfig.slotLength
+            val validatorWillSeeTime = BigInt(intervalMs / 1000)
 
-            println(s"[DEBUG] Computing redeemer time from blockchain slot:")
-            println(s"  currentBlockchainSlot: $currentBlockchainSlot")
+            println(s"[DEBUG] Computing time that validator will see:")
+            println(s"  currentBlockchainSlot (for validFrom): $currentBlockchainSlot")
             println(s"  intervalMs: $intervalMs")
-            println(s"  computationTime (seconds): $computationTime")
+            println(s"  validatorWillSeeTime (seconds): $validatorWillSeeTime")
 
-            // Create UpdateOracle redeemer with the time used for state computation
-            val redeemer = createUpdateOracleRedeemer(blockHeaders, computationTime)
+            // The redeemer time must be the SAME time used to compute the provided newChainState
+            // The validator will compute state using redeemerTime and compare with the datum
+            // So we must use validityIntervalTimeSeconds in the redeemer to ensure consistency
+            
+            // Verify that provided time is within tolerance of what validator will see from tx.validRange
+            // This ensures the on-chain time tolerance check passes
+            val TimeToleranceSeconds = 5 // Must match validator's tolerance
+            val timeDiff = if validityIntervalTimeSeconds > validatorWillSeeTime then 
+                validityIntervalTimeSeconds - validatorWillSeeTime 
+            else 
+                validatorWillSeeTime - validityIntervalTimeSeconds
+            
+            println(s"[DEBUG] Provided time: $validityIntervalTimeSeconds, Validator will see from tx.validRange: $validatorWillSeeTime")
+            println(s"  Time difference: $timeDiff seconds")
+            
+            if (timeDiff > TimeToleranceSeconds) {
+                throw new RuntimeException(
+                    s"Time mismatch: provided time ($validityIntervalTimeSeconds) differs from tx.validRange time ($validatorWillSeeTime) by $timeDiff seconds (tolerance: $TimeToleranceSeconds s). " +
+                    s"This will cause on-chain validation failure. " +
+                    s"The on-chain time tolerance check will fail."
+                )
+            }
+            println(s"  Time difference within tolerance - using provided time for redeemer")
+            
+            val redeemerTime = validityIntervalTimeSeconds // Use the time that was used to compute the state
+
+            // Create UpdateOracle redeemer with the time that was used to compute the state
+            val redeemer = createUpdateOracleRedeemer(blockHeaders, redeemerTime)
 
             // Convert new ChainState to PlutusData for output
             val newStateData = newChainState.toData
             val newDatum = toPlutusData(newStateData)
+            
+            println(s"[DEBUG] New state forksTree size: ${newChainState.forksTree.toList.size}")
 
             // Calculate amount (same as input)
             val lovelaceAmount = targetUtxo.getAmount.asScala.head.getQuantity
@@ -227,10 +284,6 @@ object OracleTransactions {
 
             // Wrap UtxoService as UtxoSupplier
             val utxoSupplier = new DefaultUtxoSupplier(backendService.getUtxoService)
-            val slotConfig = SlotConfigHelper.retrieveSlotConfig(backendService)
-            println(
-              s"[DEBUG] SlotConfig: zeroTime=${slotConfig.zeroTime}, zeroSlot=${slotConfig.zeroSlot}, slotLength=${slotConfig.slotLength}"
-            )
 
             val scalusEvaluator =
                 new scalus.bloxbean.ScalusTransactionEvaluator(slotConfig, protocolParams, utxoSupplier)
@@ -243,50 +296,16 @@ object OracleTransactions {
                 .payToContract(scriptAddress.getAddress, amount, newDatum)
                 .attachSpendingValidator(script)
 
-            // Get current time and convert to slot for validity interval
-            // The validator requires a finite validity start interval to access tx.validRange
-            // If validityIntervalTimeSeconds is provided, use it to compute the slot
-            // Otherwise, use current time
-            val currentPosixTimeMs = validityIntervalTimeSeconds match {
-                case Some(timeSeconds) =>
-                    println(
-                      s"[DEBUG buildAndSubmitUpdateTransaction] Using provided validityIntervalTimeSeconds: $timeSeconds"
-                    )
-                    timeSeconds.toLong * 1000
-                case None =>
-                    val freshTime = System.currentTimeMillis()
-                    println(
-                      s"[DEBUG buildAndSubmitUpdateTransaction] No validityIntervalTimeSeconds provided, using fresh time: $freshTime"
-                    )
-                    freshTime
-            }
-            val currentSlotFromTime = slotConfig.timeToSlot(currentPosixTimeMs)
-
-            // Compute what the validator will see (slot -> POSIX ms / 1000)
-            val validatorWillSeeMs =
-                slotConfig.zeroTime + (currentSlotFromTime - slotConfig.zeroSlot) * slotConfig.slotLength
-            val validatorWillSeeSeconds = validatorWillSeeMs / 1000
-
-            println(s"[DEBUG buildAndSubmitUpdateTransaction]")
-            println(s"  Input validityIntervalTimeSeconds: $validityIntervalTimeSeconds")
-            println(s"  Computed currentPosixTimeMs: $currentPosixTimeMs")
-            println(s"  Computed currentSlot: $currentSlotFromTime")
-            println(s"  Validator will see (ms): $validatorWillSeeMs")
-            println(s"  Validator will see (seconds): $validatorWillSeeSeconds")
-            println(s"  MATCH: ${validityIntervalTimeSeconds.map(_ == validatorWillSeeSeconds).getOrElse(false)}")
-
-            // Build, sign, and submit
-            // Get current slot from the blockchain (not from time calculation)
-            val latestBlock = backendService.getBlockService.getLatestBlock.getValue
-            val currentSlot = latestBlock.getSlot
-            println(s"[DEBUG] Current slot from blockchain: $currentSlot")
+            // Build, sign, and submit using the current blockchain slot for validFrom
+            // This ensures tx.validRange.from corresponds to the time we used in the redeemer
+            println(s"[DEBUG] Using validFrom slot: $currentBlockchainSlot")
 
             val result = quickTxBuilder
                 .compose(scriptTx)
                 .feePayer(account.baseAddress())
                 .withSigner(SignerProviders.signerFrom(account))
                 .withTxEvaluator(scalusEvaluator)
-                .validFrom(currentSlot)
+                .validFrom(currentBlockchainSlot)
                 .completeAndWait()
 
             if (result.isSuccessful) {
