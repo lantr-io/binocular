@@ -764,8 +764,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
 
         val confirmedTip =
             hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
-        val forksTree
-            : scalus.prelude.SortedMap[BlockHash, BlockNode] =
+        val forksTree: scalus.prelude.SortedMap[BlockHash, BlockNode] =
             scalus.prelude.SortedMap.empty
 
         // Submit same block twice - should fail
@@ -785,8 +784,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
         )
 
-        val forksTree
-            : scalus.prelude.SortedMap[BlockHash, BlockNode] =
+        val forksTree: scalus.prelude.SortedMap[BlockHash, BlockNode] =
             scalus.prelude.SortedMap.empty
         val headers = scalus.prelude.List.single(blockExtendingTip)
 
@@ -803,8 +801,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           hex"00000020ffffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
         )
 
-        val forksTree
-            : scalus.prelude.SortedMap[BlockHash, BlockNode] =
+        val forksTree: scalus.prelude.SortedMap[BlockHash, BlockNode] =
             scalus.prelude.SortedMap.empty
         val headers = scalus.prelude.List.single(forkBlock)
 
@@ -828,8 +825,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           hex"00000020ffffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
         )
 
-        val forksTree
-            : scalus.prelude.SortedMap[BlockHash, BlockNode] =
+        val forksTree: scalus.prelude.SortedMap[BlockHash, BlockNode] =
             scalus.prelude.SortedMap.empty
         val headers = scalus.prelude.List.from(Seq(canonicalBlock, forkBlock))
 
@@ -934,8 +930,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
     }
 
     test("selectCanonicalChain - empty forksTree returns None") {
-        val emptyForksTree
-            : scalus.prelude.SortedMap[BlockHash, BlockNode] =
+        val emptyForksTree: scalus.prelude.SortedMap[BlockHash, BlockNode] =
             scalus.prelude.SortedMap.empty
         val result = BitcoinValidator.selectCanonicalChain(emptyForksTree)
 
@@ -1198,8 +1193,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
 
     test("promoteQualifiedBlocks - empty forks tree returns empty list") {
         val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
-        val emptyForksTree
-            : scalus.prelude.SortedMap[BlockHash, BlockNode] =
+        val emptyForksTree: scalus.prelude.SortedMap[BlockHash, BlockNode] =
             scalus.prelude.SortedMap.empty
         val currentTime = BigInt(System.currentTimeMillis() / 1000)
 
@@ -1596,8 +1590,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         val blockHashes =
             (1001 to 1005).map(h => ByteString.fromArray(Array.fill(32)((h % 256).toByte)))
 
-        var forksTree
-            : scalus.prelude.SortedMap[BlockHash, BlockNode] =
+        var forksTree: scalus.prelude.SortedMap[BlockHash, BlockNode] =
             scalus.prelude.SortedMap.empty
         var prevHash = confirmedTip
         var prevChainwork = BigInt(1000000)

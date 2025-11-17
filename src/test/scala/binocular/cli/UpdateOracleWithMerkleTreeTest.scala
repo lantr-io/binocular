@@ -207,27 +207,23 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                     println(s"    Block 0: ${allBlockHashes(0).toHex}")
                     println(s"    Block 1: ${allBlockHashes(1).toHex}")
                     println(s"    Block 2: ${allBlockHashes(2).toHex}")
-                    // println(s"    Block 3: ${allBlockHashes(3).toHex}")
+                // println(s"    Block 3: ${allBlockHashes(3).toHex}")
 
-                    /**
-                     *
-                     * Here nothing hase changed because blocks are not yet confirmed,
-                     * so we cannot verify the confirmedBlocksTree against allBlockHashes.
-                     *
-                    // Build reference tree using MerkleTree (non-rolling)
-                    val referenceMerkleTree = MerkleTree.fromHashes(allBlockHashes.toSeq)
-                    val referenceRoot = referenceMerkleTree.getMerkleRoot
-
-                    println(s"    Reference Merkle root: ${referenceRoot.toHex}")
-
-                    // The rolling tree root should match the reference tree root
-                    assert(
-                      computedRoot == referenceRoot,
-                      s"Rolling Merkle root doesn't match reference!\n  Computed: ${computedRoot.toHex}\n  Reference: ${referenceRoot.toHex}"
-                    )
-
-                    println(s"[Test] ✓✓✓ Rolling Merkle tree matches reference implementation!")
-                    **/
+                /** Here nothing hase changed because blocks are not yet confirmed, so we cannot
+                  * verify the confirmedBlocksTree against allBlockHashes.
+                  *
+                  * // Build reference tree using MerkleTree (non-rolling) val referenceMerkleTree =
+                  * MerkleTree.fromHashes(allBlockHashes.toSeq) val referenceRoot =
+                  * referenceMerkleTree.getMerkleRoot
+                  *
+                  * println(s" Reference Merkle root: ${referenceRoot.toHex}")
+                  *
+                  * // The rolling tree root should match the reference tree root assert(
+                  * computedRoot == referenceRoot, s"Rolling Merkle root doesn't match reference!\n
+                  * Computed: ${computedRoot.toHex}\n Reference: ${referenceRoot.toHex}" )
+                  *
+                  * println(s"[Test] ✓✓✓ Rolling Merkle tree matches reference implementation!")
+                  */
                 case Left(err) =>
                     fail(s"Failed to update oracle: $err")
             }

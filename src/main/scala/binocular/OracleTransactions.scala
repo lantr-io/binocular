@@ -161,11 +161,13 @@ object OracleTransactions {
       * @param currentChainState
       *   Current ChainState datum
       * @param newChainState
-      *   New ChainState datum (pre-computed using computeUpdateOracleState with validityIntervalTimeSeconds)
+      *   New ChainState datum (pre-computed using computeUpdateOracleState with
+      *   validityIntervalTimeSeconds)
       * @param blockHeaders
       *   Bitcoin block headers to submit
       * @param validityIntervalTimeSeconds
-      *   The time (in seconds) that was used to compute newChainState. Must be obtained from computeValidityIntervalTime()
+      *   The time (in seconds) that was used to compute newChainState. Must be obtained from
+      *   computeValidityIntervalTime()
       * @return
       *   Either error message or transaction hash
       */
@@ -198,26 +200,29 @@ object OracleTransactions {
                 .getOrElse {
                     throw new RuntimeException(s"UTxO not found: $oracleTxHash:$oracleOutputIndex")
                 }
-            
+
             // CRITICAL: Verify that the input UTXO's datum matches currentChainState
             // This ensures we're computing the new state from the correct starting point
             val inputDatum = targetUtxo.getInlineDatum
-            if (inputDatum == null || inputDatum.isEmpty) {
-                throw new RuntimeException(s"Input UTxO has no inline datum: $oracleTxHash:$oracleOutputIndex")
-            }
-            val inputState = Data.fromCbor(scalus.utils.Hex.hexToBytes(inputDatum)).to[ChainState]
-            
-            if (inputState.blockHeight != currentChainState.blockHeight ||
-                inputState.blockHash != currentChainState.blockHash) {
+            if inputDatum == null || inputDatum.isEmpty then {
                 throw new RuntimeException(
-                    s"Input UTxO state does not match provided currentChainState!\n" +
-                    s"  This means currentChainState is stale or wrong UTXO was selected.\n" +
-                    s"  Provided currentChainState: height=${currentChainState.blockHeight}, hash=${currentChainState.blockHash.toHex}\n" +
-                    s"  Input UTxO state: height=${inputState.blockHeight}, hash=${inputState.blockHash.toHex}\n" +
-                    s"  Input UTxO: $oracleTxHash:$oracleOutputIndex"
+                  s"Input UTxO has no inline datum: $oracleTxHash:$oracleOutputIndex"
                 )
             }
-            
+            val inputState = Data.fromCbor(scalus.utils.Hex.hexToBytes(inputDatum)).to[ChainState]
+
+            if inputState.blockHeight != currentChainState.blockHeight ||
+                inputState.blockHash != currentChainState.blockHash
+            then {
+                throw new RuntimeException(
+                  s"Input UTxO state does not match provided currentChainState!\n" +
+                      s"  This means currentChainState is stale or wrong UTXO was selected.\n" +
+                      s"  Provided currentChainState: height=${currentChainState.blockHeight}, hash=${currentChainState.blockHash.toHex}\n" +
+                      s"  Input UTxO state: height=${inputState.blockHeight}, hash=${inputState.blockHash.toHex}\n" +
+                      s"  Input UTxO: $oracleTxHash:$oracleOutputIndex"
+                )
+            }
+
             println(s"[DEBUG] Verified input UTXO datum matches currentChainState")
 
             // Retrieve slot config that will be used for all time conversions
@@ -227,8 +232,9 @@ object OracleTransactions {
             )
 
             // Get the current blockchain slot that will be used for validFrom
-            val currentBlockchainSlot = backendService.getBlockService.getLatestBlock.getValue.getSlot
-            
+            val currentBlockchainSlot =
+                backendService.getBlockService.getLatestBlock.getValue.getSlot
+
             // Compute what time the validator will see based on validFrom slot
             // This is: slotToTime(validFrom) which equals zeroTime + (slot - zeroSlot) * slotLength
             val intervalMs =
@@ -243,28 +249,31 @@ object OracleTransactions {
             // The redeemer time must be the SAME time used to compute the provided newChainState
             // The validator will compute state using redeemerTime and compare with the datum
             // So we must use validityIntervalTimeSeconds in the redeemer to ensure consistency
-            
+
             // Verify that provided time is within tolerance of what validator will see from tx.validRange
             // This ensures the on-chain time tolerance check passes
             val TimeToleranceSeconds = 5 // Must match validator's tolerance
-            val timeDiff = if validityIntervalTimeSeconds > validatorWillSeeTime then 
-                validityIntervalTimeSeconds - validatorWillSeeTime 
-            else 
-                validatorWillSeeTime - validityIntervalTimeSeconds
-            
-            println(s"[DEBUG] Provided time: $validityIntervalTimeSeconds, Validator will see from tx.validRange: $validatorWillSeeTime")
+            val timeDiff =
+                if validityIntervalTimeSeconds > validatorWillSeeTime then
+                    validityIntervalTimeSeconds - validatorWillSeeTime
+                else validatorWillSeeTime - validityIntervalTimeSeconds
+
+            println(
+              s"[DEBUG] Provided time: $validityIntervalTimeSeconds, Validator will see from tx.validRange: $validatorWillSeeTime"
+            )
             println(s"  Time difference: $timeDiff seconds")
-            
-            if (timeDiff > TimeToleranceSeconds) {
+
+            if timeDiff > TimeToleranceSeconds then {
                 throw new RuntimeException(
-                    s"Time mismatch: provided time ($validityIntervalTimeSeconds) differs from tx.validRange time ($validatorWillSeeTime) by $timeDiff seconds (tolerance: $TimeToleranceSeconds s). " +
-                    s"This will cause on-chain validation failure. " +
-                    s"The on-chain time tolerance check will fail."
+                  s"Time mismatch: provided time ($validityIntervalTimeSeconds) differs from tx.validRange time ($validatorWillSeeTime) by $timeDiff seconds (tolerance: $TimeToleranceSeconds s). " +
+                      s"This will cause on-chain validation failure. " +
+                      s"The on-chain time tolerance check will fail."
                 )
             }
             println(s"  Time difference within tolerance - using provided time for redeemer")
-            
-            val redeemerTime = validityIntervalTimeSeconds // Use the time that was used to compute the state
+
+            val redeemerTime =
+                validityIntervalTimeSeconds // Use the time that was used to compute the state
 
             // Create UpdateOracle redeemer with the time that was used to compute the state
             val redeemer = createUpdateOracleRedeemer(blockHeaders, redeemerTime)
@@ -272,7 +281,7 @@ object OracleTransactions {
             // Convert new ChainState to PlutusData for output
             val newStateData = newChainState.toData
             val newDatum = toPlutusData(newStateData)
-            
+
             println(s"[DEBUG] New state forksTree size: ${newChainState.forksTree.toList.size}")
 
             // Calculate amount (same as input)

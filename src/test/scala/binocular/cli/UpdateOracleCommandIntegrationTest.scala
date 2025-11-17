@@ -299,7 +299,9 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
             var currentOutputIndex = initialOutputIndex
 
             batches.zipWithIndex.foreach { case (batch, batchIndex) =>
-                println(s"[Test] Processing batch ${batchIndex + 1}/${batches.size} (${batch.size} headers)")
+                println(
+                  s"[Test] Processing batch ${batchIndex + 1}/${batches.size} (${batch.size} headers)"
+                )
                 println(s"  Current state before batch:")
                 println(s"    blockHeight: ${currentState.blockHeight}")
                 println(s"    blockHash: ${currentState.blockHash.toHex}")
@@ -320,14 +322,18 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                 }
 
                 // Compute new state
-                val newState = BitcoinValidator.computeUpdateOracleState(currentState, headersList, validityTime)
-                
+                val newState = BitcoinValidator.computeUpdateOracleState(
+                  currentState,
+                  headersList,
+                  validityTime
+                )
+
                 println(s"  [Batch ${batchIndex + 1}] Off-chain computed state:")
                 println(s"    blockHeight: ${newState.blockHeight}")
                 println(s"    blockHash: ${newState.blockHash.toHex}")
                 println(s"    forksTree size: ${newState.forksTree.toList.size}")
                 println(s"    confirmedBlocksTree size: ${newState.confirmedBlocksTree.size}")
-                
+
                 // Log forksTree keys for debugging (full hex)
                 println(s"  [Batch ${batchIndex + 1}] OFF-CHAIN forksTree keys (full hex):")
                 newState.forksTree.toList.foreach { case (k, _) =>
@@ -358,23 +364,29 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                         val utxos = devKit.getUtxos(scriptAddress.getAddress)
                         require(utxos.nonEmpty, "No UTxOs found after batch update")
                         val latestUtxo = utxos.head
-                        val actualOnChainState = Data.fromCbor(latestUtxo.getInlineDatum.hexToBytes).to[ChainState]
-                        
+                        val actualOnChainState =
+                            Data.fromCbor(latestUtxo.getInlineDatum.hexToBytes).to[ChainState]
+
                         println(s"  On-chain state after batch ${batchIndex + 1}:")
                         println(s"    blockHeight: ${actualOnChainState.blockHeight}")
                         println(s"    blockHash: ${actualOnChainState.blockHash.toHex}")
                         println(s"    forksTree size: ${actualOnChainState.forksTree.toList.size}")
-                        println(s"    confirmedBlocksTree size: ${actualOnChainState.confirmedBlocksTree.size}")
+                        println(
+                          s"    confirmedBlocksTree size: ${actualOnChainState.confirmedBlocksTree.size}"
+                        )
 
                         // Verify on-chain state matches what we computed off-chain
-                        if (actualOnChainState.blockHeight != newState.blockHeight ||
+                        if actualOnChainState.blockHeight != newState.blockHeight ||
                             actualOnChainState.blockHash != newState.blockHash ||
-                            actualOnChainState.forksTree.toList.size != newState.forksTree.toList.size) {
-                            
-                            fail(s"ERROR: On-chain state does not match off-chain computed state!\n" +
-                                 s"  This should be impossible - validator can only validate, not modify.\n" +
-                                 s"  Off-chain: height=${newState.blockHeight}, hash=${newState.blockHash.toHex}, forksTree=${newState.forksTree.toList.size}\n" +
-                                 s"  On-chain:  height=${actualOnChainState.blockHeight}, hash=${actualOnChainState.blockHash.toHex}, forksTree=${actualOnChainState.forksTree.toList.size}")
+                            actualOnChainState.forksTree.toList.size != newState.forksTree.toList.size
+                        then {
+
+                            fail(
+                              s"ERROR: On-chain state does not match off-chain computed state!\n" +
+                                  s"  This should be impossible - validator can only validate, not modify.\n" +
+                                  s"  Off-chain: height=${newState.blockHeight}, hash=${newState.blockHash.toHex}, forksTree=${newState.forksTree.toList.size}\n" +
+                                  s"  On-chain:  height=${actualOnChainState.blockHeight}, hash=${actualOnChainState.blockHash.toHex}, forksTree=${actualOnChainState.forksTree.toList.size}"
+                            )
                         }
 
                         // Update for next iteration

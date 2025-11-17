@@ -937,7 +937,7 @@ object BitcoinValidator extends Validator {
         currentTime: BigInt
     ): ChainState = {
         log("computeUpdateOracleState START")
-        
+
         // Validate fork submission rule (prevents stalling attack and duplicates)
         validateForkSubmission(blockHeaders, prevState.forksTree, prevState.blockHash)
 
@@ -971,10 +971,10 @@ object BitcoinValidator extends Validator {
         // Select canonical chain (highest chainwork)
         log("selecting canonical chain")
         val canonicalTip = selectCanonicalChain(forksTreeAfterAddition) match
-            case scalus.prelude.Option.Some(tip) => 
+            case scalus.prelude.Option.Some(tip) =>
                 log("canonical tip found")
                 tip
-            case scalus.prelude.Option.None => 
+            case scalus.prelude.Option.None =>
                 log("canonical tip is prev hash")
                 prevState.blockHash
 
@@ -986,11 +986,9 @@ object BitcoinValidator extends Validator {
           prevState.blockHeight,
           currentTime
         )
-        
-        if promotedBlocks.isEmpty then
-            log("no blocks promoted")
-        else
-            log("blocks promoted")
+
+        if promotedBlocks.isEmpty then log("no blocks promoted")
+        else log("blocks promoted")
 
         // Run garbage collection if forks tree exceeds size limit
         val finalForksTree =
@@ -1002,14 +1000,14 @@ object BitcoinValidator extends Validator {
                   prevState.blockHeight,
                   currentTime
                 )
-            else 
+            else
                 log("skipping GC")
                 forksTreeAfterPromotion
 
         // Compute new state
         // If blocks were promoted, update confirmed state
         log("computing final state")
-        
+
         // Log final forksTree size
         val finalTreeSize = finalForksTree.toList.size
         log("ON-CHAIN final forksTree size:")

@@ -1,6 +1,6 @@
 package binocular.cli.commands
 
-import binocular.{BitcoinNodeConfig, BitcoinValidator, CardanoConfig, ChainState, MerkleTree, OracleConfig, OracleTransactions, SimpleBitcoinRpc, reverse}
+import binocular.{reverse, BitcoinNodeConfig, BitcoinValidator, CardanoConfig, ChainState, MerkleTree, OracleConfig, OracleTransactions, SimpleBitcoinRpc}
 import binocular.cli.{Command, CommandHelpers}
 import com.bloxbean.cardano.client.address.Address
 import scalus.bloxbean.Interop.toScalusData
