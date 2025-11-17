@@ -122,7 +122,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
     test("pow") {
         forAll { (a: Int, b: Byte) =>
             val positiveExponent = b & 0x7f
-            val result = BitcoinValidator.pow(a, BigInt(positiveExponent))
+            val result = scalus.prelude.Math.pow(a, BigInt(positiveExponent))
             assertEquals(result, BigInt(a).pow(positiveExponent))
         }
     }
@@ -1079,8 +1079,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
             case r: Result.Success =>
                 println(s"✓ UpdateOracle single block validation succeeded, budget used: ${r.budget.showJson}")
                 println(r)
-                assertEquals(r.budget, ledger.ExUnits(554562, 171_320162), "Unexpected resource usage")
-                assertEquals(r.budget.fee(prices), Coin(44334), "Unexpected fee cost")
+                assertEquals(r.budget, ledger.ExUnits(550362, 170_322768), "Unexpected resource usage")
+                assertEquals(r.budget.fee(prices), Coin(44020), "Unexpected fee cost")
             case r: Result.Failure =>
                 fail(s"Validation failed: $r")
     }

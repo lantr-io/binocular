@@ -8,7 +8,8 @@ import scalus.compiler.sir.TargetLoweringBackend
 import scalus.ledger.api.v2.OutputDatum
 import scalus.ledger.api.v3.*
 import scalus.prelude.Show.given
-import scalus.prelude.{List, *}
+import scalus.prelude.{List, Math, *}
+import scalus.prelude.Math.pow
 import scalus.uplc.Program
 import scalus.{show as _, *}
 
@@ -200,14 +201,6 @@ object BitcoinValidator extends Validator {
     def blockHeaderHash(blockHeader: BlockHeader): BlockHash =
         sha2_256(sha2_256(blockHeader.bytes))
 
-    def pow(n: BigInt, e: BigInt): BigInt =
-        def pow(n: BigInt, e: BigInt): BigInt =
-            if e == BigInt(0) then 1
-            else if e % 2 == BigInt(0) then pow(n * n, e / 2)
-            else n * pow(n, e - 1)
-        if e < BigInt(0) then fail("Negative exponent")
-        else pow(n, e)
-
     /** Converts little-endian compact bits representation to target value
       *
       * Matches `arith_uint256::SetCompact()` in arith_uint256.cpp
@@ -221,7 +214,7 @@ object BitcoinValidator extends Validator {
         val coefficient = byteStringToInteger(false, compact.slice(0, 3))
         if coefficient > BigInt(0x007fffff) then fail("Negative bits")
         else if exponent < BigInt(3)
-        then coefficient / pow(256, BigInt(3) - exponent)
+        then coefficient / Math.pow(256, BigInt(3) - exponent)
         // check overflow
         else if coefficient != BigInt(0) && ((exponent > 34) ||
                 (coefficient > 0xff && exponent > 33) ||
