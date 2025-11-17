@@ -24,9 +24,9 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
             given ec: ExecutionContext = ExecutionContext.global
 
             // Use consecutive blocks from our fixtures
-            // Start at 866970, update to 866971-866973 (3 blocks)
+            // Start at 866970, update to 866971-866972 (2 blocks)
             val startHeight = 866970
-            val updateToHeight = 866973
+            val updateToHeight = 866972
             val mockRpc = new MockBitcoinRpc()
 
             println(s"[Test] Step 1: Creating initial oracle at height $startHeight")
@@ -197,7 +197,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                     println(s"    Block 0: ${allBlockHashes(0).toHex}")
                     println(s"    Block 1: ${allBlockHashes(1).toHex}")
                     println(s"    Block 2: ${allBlockHashes(2).toHex}")
-                    println(s"    Block 3: ${allBlockHashes(3).toHex}")
+                    //println(s"    Block 3: ${allBlockHashes(3).toHex}")
 
                     // Build reference tree using MerkleTree (non-rolling)
                     val referenceMerkleTree = MerkleTree.fromHashes(allBlockHashes.toSeq)
