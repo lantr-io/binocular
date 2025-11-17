@@ -49,4 +49,7 @@ jobs:
           title: "CI ${{ job.status == 'success' && '✅' || '❌' }} - ${{ github.actor }} on ${{ github.ref_name }}"
           description: "[${{ github.event.head_commit.message }}](${{ github.event.head_commit.url }})"
           url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          color: ${{ job.status == 'success' && '0x00ff00' || '0xff0000' }}
+          username: "GitHub Actions"
+          avatar_url: "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png"
+          nodetail: true
+          notimestamp: true
