@@ -6,8 +6,8 @@ import cats.implicits.*
 
 /** Binocular CLI Application
   *
-  * Main entry point for the Binocular Bitcoin Oracle CLI.
-  * Uses the Decline library for argument parsing and command routing.
+  * Main entry point for the Binocular Bitcoin Oracle CLI. Uses the Decline library for argument
+  * parsing and command routing.
   */
 object CliApp {
 
@@ -24,36 +24,44 @@ object CliApp {
     /** CLI argument parsers */
     object CliParsers {
 
-        val limitOpt: Opts[Int] = Opts.option[Int](
-            "limit",
-            help = "Maximum number of results to return",
-            short = "n"
-        ).withDefault(10)
+        val limitOpt: Opts[Int] = Opts
+            .option[Int](
+              "limit",
+              help = "Maximum number of results to return",
+              short = "n"
+            )
+            .withDefault(10)
 
         val utxoArg: Opts[String] = Opts.argument[String](
-            metavar = "UTXO"
+          metavar = "UTXO"
         )
 
-        val startBlockOpt: Opts[Option[Long]] = Opts.option[Long](
-            "start-block",
-            help = "Bitcoin block height to start from",
-            short = "s"
-        ).orNone
+        val startBlockOpt: Opts[Option[Long]] = Opts
+            .option[Long](
+              "start-block",
+              help = "Bitcoin block height to start from",
+              short = "s"
+            )
+            .orNone
 
-        val fromBlockOpt: Opts[Option[Long]] = Opts.option[Long](
-            "from",
-            help = "Start Bitcoin block height",
-            short = "f"
-        ).orNone
+        val fromBlockOpt: Opts[Option[Long]] = Opts
+            .option[Long](
+              "from",
+              help = "Start Bitcoin block height",
+              short = "f"
+            )
+            .orNone
 
-        val toBlockOpt: Opts[Option[Long]] = Opts.option[Long](
-            "to",
-            help = "End Bitcoin block height",
-            short = "t"
-        ).orNone
+        val toBlockOpt: Opts[Option[Long]] = Opts
+            .option[Long](
+              "to",
+              help = "End Bitcoin block height",
+              short = "t"
+            )
+            .orNone
 
         val btcTxIdArg: Opts[String] = Opts.argument[String](
-            metavar = "BTC_TX_ID"
+          metavar = "BTC_TX_ID"
         )
     }
 
@@ -85,28 +93,31 @@ object CliApp {
             (utxoArg, fromBlockOpt, toBlockOpt).mapN(Cmd.UpdateOracle.apply)
         }
 
-        val proveCommand = Opts.subcommand("prove-transaction", "Prove Bitcoin transaction inclusion") {
-            (utxoArg, btcTxIdArg).mapN(Cmd.ProveTransaction.apply)
-        }
+        val proveCommand =
+            Opts.subcommand("prove-transaction", "Prove Bitcoin transaction inclusion") {
+                (utxoArg, btcTxIdArg).mapN(Cmd.ProveTransaction.apply)
+            }
 
         com.monovore.decline.Command(
-            name = "binocular",
-            header = "Binocular - Bitcoin Oracle for Cardano"
+          name = "binocular",
+          header = "Binocular - Bitcoin Oracle for Cardano"
         )(
-            infoCommand orElse
-            configCommand orElse
-            listCommand orElse
-            verifyCommand orElse
-            initCommand orElse
-            updateCommand orElse
-            proveCommand
+          infoCommand orElse
+              configCommand orElse
+              listCommand orElse
+              verifyCommand orElse
+              initCommand orElse
+              updateCommand orElse
+              proveCommand
         )
     }
 
     /** Execute the CLI application
       *
-      * @param args Command line arguments
-      * @return Exit code (0 for success, non-zero for error)
+      * @param args
+      *   Command line arguments
+      * @return
+      *   Exit code (0 for success, non-zero for error)
       */
     def run(args: Seq[String]): Int = {
         command.parse(args) match {

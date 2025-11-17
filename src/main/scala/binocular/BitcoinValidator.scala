@@ -3,7 +3,7 @@ package binocular
 import scalus.builtin.*
 import scalus.builtin.Builtins.*
 import scalus.builtin.ByteString.*
-import scalus.builtin.Data.{FromData, ToData, toData}
+import scalus.builtin.Data.{toData, FromData, ToData}
 import scalus.compiler.sir.TargetLoweringBackend
 import scalus.ledger.api.v2.OutputDatum
 import scalus.ledger.api.v3.*
@@ -30,13 +30,17 @@ object BitcoinValidator extends Validator {
     // Bitcoin consensus constants - matches Bitcoin Core chainparams.cpp
     val UnixEpoch: BigInt = 1231006505
     val TargetBlockTime: BigInt = 600 // 10 minutes - matches nPowTargetSpacing in chainparams.cpp
-    val DifficultyAdjustmentInterval: BigInt = 2016 // matches DifficultyAdjustmentInterval() in chainparams.cpp
+    val DifficultyAdjustmentInterval: BigInt =
+        2016 // matches DifficultyAdjustmentInterval() in chainparams.cpp
     val MaxFutureBlockTime: BigInt =
         7200 // 2 hours in the future in seconds - matches MAX_FUTURE_BLOCK_TIME in validation.cpp
     val MedianTimeSpan: BigInt = 11 // matches CBlockIndex::nMedianTimeSpan in chain.h:276
     // Proof of work limit - matches consensus.powLimit in chainparams.cpp
     val PowLimit: BigInt =
-        byteStringToInteger(true, hex"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+        byteStringToInteger(
+          true,
+          hex"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        )
 
     // Binocular protocol parameters
     val MaturationConfirmations: BigInt = 100 // Blocks needed for promotion to confirmed state
@@ -123,7 +127,8 @@ object BitcoinValidator extends Validator {
     // The tree state is stored as a list of hashes, one per level
     // Empty slots are represented as 32 zero bytes
 
-    val emptyHash: ByteString = hex"0000000000000000000000000000000000000000000000000000000000000000"
+    val emptyHash: ByteString =
+        hex"0000000000000000000000000000000000000000000000000000000000000000"
 
     /** Check if a ByteString is the empty hash (all zeros) */
     def isEmptyHash(bs: ByteString): Boolean =
@@ -161,7 +166,11 @@ object BitcoinValidator extends Validator {
             case List.Cons(_, tail) => 1 + listLength(tail)
 
     /** Add a hash to the rolling Merkle tree at a specific level */
-    def addHashAtLevel(levels: List[ByteString], hash: ByteString, startingLevel: BigInt): List[ByteString] =
+    def addHashAtLevel(
+        levels: List[ByteString],
+        hash: ByteString,
+        startingLevel: BigInt
+    ): List[ByteString] =
         val currentHash = getAtIndex(levels, startingLevel, emptyHash)
         if isEmptyHash(currentHash) then
             // Empty slot - just store the hash here
@@ -205,7 +214,8 @@ object BitcoinValidator extends Validator {
       *
       * Matches `arith_uint256::SetCompact()` in arith_uint256.cpp
       * @note
-      *   only works for positive numbers. Here we use it only for `target` which is always positive, so it's fine.
+      *   only works for positive numbers. Here we use it only for `target` which is always
+      *   positive, so it's fine.
       */
     def compactBitsToTarget(compact: CompactBits): BigInt = {
         // int nSize = nCompact >> 24;
@@ -230,7 +240,8 @@ object BitcoinValidator extends Validator {
       *
       * Matches `arith_uint256::GetCompact()` in arith_uint256.cpp
       * @note
-      *   only works for positive numbers. Here we use it only for `target` which is always positive, so it's fine.
+      *   only works for positive numbers. Here we use it only for `target` which is always
+      *   positive, so it's fine.
       */
     def targetToCompactBits(target: BigInt): BigInt = {
         if target == BigInt(0) then 0
@@ -268,7 +279,8 @@ object BitcoinValidator extends Validator {
       *
       * Matches `arith_uint256::GetCompact()` in arith_uint256.cpp
       * @note
-      *   only works for positive numbers. Here we use it only for `target` which is always positive, so it's fine.
+      *   only works for positive numbers. Here we use it only for `target` which is always
+      *   positive, so it's fine.
       */
     def targetToCompactByteString(target: BigInt): CompactBits = {
         val compact = targetToCompactBits(target)
@@ -307,8 +319,10 @@ object BitcoinValidator extends Validator {
     def readVarInt(input: ByteString, offset: BigInt): (BigInt, BigInt) =
         val firstByte = input.at(offset)
         if firstByte < BigInt(0xfd) then (firstByte, offset + 1)
-        else if firstByte == BigInt(0xfd) then (byteStringToInteger(false, input.slice(offset + 1, 2)), offset + 3)
-        else if firstByte == BigInt(0xfe) then (byteStringToInteger(false, input.slice(offset + 1, 4)), offset + 5)
+        else if firstByte == BigInt(0xfd) then
+            (byteStringToInteger(false, input.slice(offset + 1, 2)), offset + 3)
+        else if firstByte == BigInt(0xfe) then
+            (byteStringToInteger(false, input.slice(offset + 1, 4)), offset + 5)
         else (byteStringToInteger(false, input.slice(offset + 1, 8)), offset + 9)
 
     def parseCoinbaseTxScriptSig(coinbaseTx: ByteString): ByteString =
@@ -402,14 +416,19 @@ object BitcoinValidator extends Validator {
                 else List.Cons(head, insertReverseSorted(value, tail))
 
     // Helper: Lookup block in forks tree by hash
-    def lookupBlock(forksTree: scalus.prelude.SortedMap[BlockHash, BlockNode], key: BlockHash): Option[BlockNode] =
+    def lookupBlock(
+        forksTree: scalus.prelude.SortedMap[BlockHash, BlockNode],
+        key: BlockHash
+    ): Option[BlockNode] =
         forksTree.find((k, _) => k == key) match
             case scalus.prelude.Option.Some((_, value)) => scalus.prelude.Option.Some(value)
             case scalus.prelude.Option.None             => scalus.prelude.Option.None
 
     // Canonical chain selection - matches Algorithm 9 in Whitepaper
     // Selects the fork with highest cumulative chainwork
-    def selectCanonicalChain(forksTree: scalus.prelude.SortedMap[BlockHash, BlockNode]): Option[BlockHash] =
+    def selectCanonicalChain(
+        forksTree: scalus.prelude.SortedMap[BlockHash, BlockNode]
+    ): Option[BlockHash] =
         // Find all tips (blocks with no children) and select one with max chainwork
         def findMaxChainworkTip(
             entries: List[(BlockHash, BlockNode)],
@@ -425,7 +444,8 @@ object BitcoinValidator extends Validator {
                             case scalus.prelude.Option.None =>
                                 scalus.prelude.Option.Some((hash, node.chainwork))
                             case scalus.prelude.Option.Some((_, maxChainwork)) =>
-                                if node.chainwork > maxChainwork then scalus.prelude.Option.Some((hash, node.chainwork))
+                                if node.chainwork > maxChainwork then
+                                    scalus.prelude.Option.Some((hash, node.chainwork))
                                 else currentBest
                         findMaxChainworkTip(tail, newBest)
                     else findMaxChainworkTip(tail, currentBest)
@@ -444,7 +464,8 @@ object BitcoinValidator extends Validator {
         val prevHash = blockHeader.prevBlockHash
 
         // Check parent exists (in forksTree OR is confirmed tip)
-        val parentExists = lookupBlock(forksTree, prevHash).isDefined || prevHash == confirmedState.blockHash
+        val parentExists =
+            lookupBlock(forksTree, prevHash).isDefined || prevHash == confirmedState.blockHash
         require(parentExists, "Parent block not found")
 
         // === SECURITY: Full block validation ===
@@ -482,7 +503,8 @@ object BitcoinValidator extends Validator {
 
         // 3. VALIDATE TIMESTAMP
         val blockTime = blockHeader.timestamp
-        val medianTimePast = getMedianTimePast(confirmedState.recentTimestamps, confirmedState.recentTimestamps.size)
+        val medianTimePast =
+            getMedianTimePast(confirmedState.recentTimestamps, confirmedState.recentTimestamps.size)
         require(blockTime > medianTimePast, "Block timestamp not greater than median time past")
         require(blockTime <= currentTime + MaxFutureBlockTime, "Block timestamp too far in future")
 
@@ -542,7 +564,8 @@ object BitcoinValidator extends Validator {
                 // No blocks in forks tree
                 (List.Nil, forksTree)
             case scalus.prelude.Option.Some(canonicalTipHash) =>
-                val canonicalTipNode = lookupBlock(forksTree, canonicalTipHash).getOrFail("Canonical tip not found")
+                val canonicalTipNode =
+                    lookupBlock(forksTree, canonicalTipHash).getOrFail("Canonical tip not found")
                 val canonicalTipHeight = canonicalTipNode.height
 
                 // Walk back from canonical tip to confirmed tip
@@ -554,7 +577,10 @@ object BitcoinValidator extends Validator {
                     else
                         lookupBlock(forksTree, currentHash) match
                             case scalus.prelude.Option.Some(blockNode) =>
-                                walkChain(blockNode.prevBlockHash, List.Cons((currentHash, blockNode), acc))
+                                walkChain(
+                                  blockNode.prevBlockHash,
+                                  List.Cons((currentHash, blockNode), acc)
+                                )
                             case scalus.prelude.Option.None =>
                                 fail("Canonical chain broken")
 
@@ -703,7 +729,8 @@ object BitcoinValidator extends Validator {
                     val canonicalTipChainwork = canonicalTipNode.chainwork
 
                     // Build set of canonical chain blocks (cannot be removed)
-                    val canonicalChain = buildCanonicalChainSet(forksTree, canonicalTipHash, confirmedTip)
+                    val canonicalChain =
+                        buildCanonicalChainSet(forksTree, canonicalTipHash, confirmedTip)
 
                     // Find removable blocks (dead fork tips)
                     def isRemovable(hash: BlockHash, node: BlockNode): Boolean = {
@@ -748,7 +775,12 @@ object BitcoinValidator extends Validator {
                                 case List.Cons((hash, node), tail) =>
                                     if isRemovable(hash, node) && currentSz > targetSize then
                                         // Remove this block
-                                        performRemoval(tree.delete(hash), tail, targetSize, currentSz - 1)
+                                        performRemoval(
+                                          tree.delete(hash),
+                                          tail,
+                                          targetSize,
+                                          currentSz - 1
+                                        )
                                     else
                                         // Keep this block, continue with next
                                         performRemoval(tree, tail, targetSize, currentSz)
@@ -773,7 +805,11 @@ object BitcoinValidator extends Validator {
     }
 
     // Calculate next work required - matches CalculateNextWorkRequired() in pow.cpp:50-84
-    def calculateNextWorkRequired(currentTarget: CompactBits, blockTime: BigInt, nFirstBlockTime: BigInt): BigInt = {
+    def calculateNextWorkRequired(
+        currentTarget: CompactBits,
+        blockTime: BigInt,
+        nFirstBlockTime: BigInt
+    ): BigInt = {
         val PowTargetTimespan = DifficultyAdjustmentInterval * TargetBlockTime
         val actualTimespan =
             val timespan = blockTime - nFirstBlockTime
@@ -820,11 +856,18 @@ object BitcoinValidator extends Validator {
         val numTimestamps = prevState.recentTimestamps.size
         val medianTimePast = getMedianTimePast(prevState.recentTimestamps, numTimestamps)
         // verify the block timestamp
-        require(blockTime <= currentTime + MaxFutureBlockTime, "Block timestamp too far in the future")
-        require(blockTime > medianTimePast, "Block timestamp must be greater than median time of past 11 blocks")
+        require(
+          blockTime <= currentTime + MaxFutureBlockTime,
+          "Block timestamp too far in the future"
+        )
+        require(
+          blockTime > medianTimePast,
+          "Block timestamp must be greater than median time of past 11 blocks"
+        )
 
         val newDifficultyAdjustmentTimestamp =
-            if (prevState.blockHeight + 1) % DifficultyAdjustmentInterval == BigInt(0) then blockTime
+            if (prevState.blockHeight + 1) % DifficultyAdjustmentInterval == BigInt(0) then
+                blockTime
             else prevState.previousDifficultyAdjustmentTimestamp
 
         // Insert new blockTime maintaining reverse sort order
@@ -849,7 +892,8 @@ object BitcoinValidator extends Validator {
           blockTimestamp = blockTime,
           recentTimestamps = newTimestamps,
           previousDifficultyAdjustmentTimestamp = newDifficultyAdjustmentTimestamp,
-          confirmedBlocksTree = prevState.confirmedBlocksTree, // Preserve confirmed blocks tree (updated separately)
+          confirmedBlocksTree =
+              prevState.confirmedBlocksTree, // Preserve confirmed blocks tree (updated separately)
           forksTree = prevState.forksTree // Preserve forks tree (will be updated separately)
         )
 
@@ -864,8 +908,9 @@ object BitcoinValidator extends Validator {
 
         require(validNewState, "New state does not match expected state")
 
-    /** Compute the new ChainState after applying block headers. This function contains the core UpdateOracle logic and
-      * can be called both on-chain (from validator) and off-chain (for pre-computation).
+    /** Compute the new ChainState after applying block headers. This function contains the core
+      * UpdateOracle logic and can be called both on-chain (from validator) and off-chain (for
+      * pre-computation).
       *
       * @param prevState
       *   Current ChainState
@@ -941,7 +986,8 @@ object BitcoinValidator extends Validator {
               currentTarget = prevState.currentTarget,
               blockTimestamp = prevState.blockTimestamp,
               recentTimestamps = prevState.recentTimestamps,
-              previousDifficultyAdjustmentTimestamp = prevState.previousDifficultyAdjustmentTimestamp,
+              previousDifficultyAdjustmentTimestamp =
+                  prevState.previousDifficultyAdjustmentTimestamp,
               confirmedBlocksTree = prevState.confirmedBlocksTree,
               forksTree = finalForksTree
             )
@@ -954,7 +1000,10 @@ object BitcoinValidator extends Validator {
 
             // Add promoted blocks to Merkle tree (in order from oldest to newest)
             // promotedBlocks is already sorted from oldest to newest
-            def addPromotedBlocks(tree: List[ByteString], blocks: List[BlockHash]): List[ByteString] =
+            def addPromotedBlocks(
+                tree: List[ByteString],
+                blocks: List[BlockHash]
+            ): List[ByteString] =
                 blocks match
                     case List.Nil => tree
                     case List.Cons(blockHash, tail) =>
@@ -971,7 +1020,8 @@ object BitcoinValidator extends Validator {
               currentTarget = prevState.currentTarget,
               blockTimestamp = latestPromotedNode.addedTimestamp,
               recentTimestamps = prevState.recentTimestamps,
-              previousDifficultyAdjustmentTimestamp = prevState.previousDifficultyAdjustmentTimestamp,
+              previousDifficultyAdjustmentTimestamp =
+                  prevState.previousDifficultyAdjustmentTimestamp,
               confirmedBlocksTree = updatedMerkleTree,
               forksTree = finalForksTree
             )
@@ -983,7 +1033,12 @@ object BitcoinValidator extends Validator {
         matchingOutputs.head
     }
 
-    inline override def spend(datum: Option[Datum], redeemer: Datum, tx: TxInfo, outRef: TxOutRef): Unit = {
+    inline override def spend(
+        datum: Option[Datum],
+        redeemer: Datum,
+        tx: TxInfo,
+        outRef: TxOutRef
+    ): Unit = {
         val action = redeemer.to[Action]
 
         val intervalStartInSeconds = tx.validRange.from.boundType match
@@ -1001,10 +1056,14 @@ object BitcoinValidator extends Validator {
             case Action.UpdateOracle(blockHeaders, redeemerTime) =>
                 // Verify redeemer time is within tolerance of actual validity interval time
                 val timeDiff =
-                    if redeemerTime > intervalStartInSeconds then redeemerTime - intervalStartInSeconds
+                    if redeemerTime > intervalStartInSeconds then
+                        redeemerTime - intervalStartInSeconds
                     else intervalStartInSeconds - redeemerTime
 
-                require(timeDiff <= TimeToleranceSeconds, "Redeemer time too far from validity interval")
+                require(
+                  timeDiff <= TimeToleranceSeconds,
+                  "Redeemer time too far from validity interval"
+                )
 
                 // Compute the new state using time from redeemer (ensures offline/online consistency)
                 val computedState = computeUpdateOracleState(prevState, blockHeaders, redeemerTime)
@@ -1014,7 +1073,7 @@ object BitcoinValidator extends Validator {
                 // Extract the datum from the continuing output (provided by transaction builder)
                 val providedOutputDatum = continuingOutput.datum match
                     case OutputDatum.OutputDatum(datum) => datum
-                    case _                              => fail("Continuing output must have inline datum")
+                    case _ => fail("Continuing output must have inline datum")
 
                 val computedStateDatum = computedState.toData
 

@@ -1,6 +1,6 @@
 package binocular.cli
 
-import binocular.{BitcoinChainState, OracleTransactions, BitcoinValidator, MerkleTree, reverse}
+import binocular.{reverse, BitcoinChainState, BitcoinValidator, MerkleTree, OracleTransactions}
 import com.bloxbean.cardano.client.address.Address
 import scalus.builtin.ByteString
 import scala.concurrent.{Await, ExecutionContext}
@@ -9,10 +9,10 @@ import scala.concurrent.duration.*
 /** Integration test for ProveTransactionCommand
   *
   * Tests the complete flow of proving transaction inclusion:
-  * 1. Creates oracle at block containing transaction
-  * 2. Fetches transaction and block data from mock RPC
-  * 3. Builds Merkle proof
-  * 4. Verifies proof locally
+  *   1. Creates oracle at block containing transaction
+  *   2. Fetches transaction and block data from mock RPC
+  *   3. Builds Merkle proof
+  *   4. Verifies proof locally
   */
 class ProveTransactionCommandIntegrationTest extends CliIntegrationTestBase {
 
@@ -28,31 +28,31 @@ class ProveTransactionCommandIntegrationTest extends CliIntegrationTestBase {
 
             // Create oracle at this block
             val initialStateFuture = BitcoinChainState.getInitialChainState(
-                new binocular.SimpleBitcoinRpc(
-                    binocular.BitcoinNodeConfig(
-                        url = "mock://rpc",
-                        username = "test",
-                        password = "test",
-                        network = binocular.BitcoinNetwork.Testnet
-                    )
-                ) {
-                    override def getBlockHash(height: Int) = mockRpc.getBlockHash(height)
-                    override def getBlockHeader(hash: String) = mockRpc.getBlockHeader(hash)
-                },
-                blockHeight
+              new binocular.SimpleBitcoinRpc(
+                binocular.BitcoinNodeConfig(
+                  url = "mock://rpc",
+                  username = "test",
+                  password = "test",
+                  network = binocular.BitcoinNetwork.Testnet
+                )
+              ) {
+                  override def getBlockHash(height: Int) = mockRpc.getBlockHash(height)
+                  override def getBlockHeader(hash: String) = mockRpc.getBlockHeader(hash)
+              },
+              blockHeight
             )
 
             val initialState = Await.result(initialStateFuture, 30.seconds)
 
             val scriptAddress = new Address(
-                binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
+              binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
             )
 
             val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
-                devKit.account,
-                devKit.getBackendService,
-                scriptAddress,
-                initialState
+              devKit.account,
+              devKit.getBackendService,
+              scriptAddress,
+              initialState
             )
 
             val (oracleTxHash, oracleOutputIndex) = initTxResult match {
@@ -102,7 +102,8 @@ class ProveTransactionCommandIntegrationTest extends CliIntegrationTestBase {
 
             // Verify proof
             val txHash = ByteString.fromHex(btcTxId).reverse
-            val calculatedRoot = MerkleTree.calculateMerkleRootFromProof(txIndex, txHash, merkleProof)
+            val calculatedRoot =
+                MerkleTree.calculateMerkleRootFromProof(txIndex, txHash, merkleProof)
 
             assert(calculatedRoot == merkleRoot, "Merkle proof verification failed")
             println(s"[Test] ✓ Merkle proof verified")
@@ -167,7 +168,7 @@ class ProveTransactionCommandIntegrationTest extends CliIntegrationTestBase {
             // Test first 5 transactions (or all if less than 5)
             val testCount = Math.min(5, blockInfo.tx.length)
 
-            for (txIndex <- 0 until testCount) {
+            for txIndex <- 0 until testCount do {
                 val btcTxId = blockInfo.tx(txIndex).txid
 
                 // Build Merkle tree
@@ -181,7 +182,8 @@ class ProveTransactionCommandIntegrationTest extends CliIntegrationTestBase {
 
                 // Verify proof
                 val txHash = ByteString.fromHex(btcTxId).reverse
-                val calculatedRoot = MerkleTree.calculateMerkleRootFromProof(txIndex, txHash, merkleProof)
+                val calculatedRoot =
+                    MerkleTree.calculateMerkleRootFromProof(txIndex, txHash, merkleProof)
 
                 assert(calculatedRoot == merkleRoot, s"Proof failed for tx at index $txIndex")
                 println(s"[Test] ✓ Verified proof for transaction at index $txIndex")

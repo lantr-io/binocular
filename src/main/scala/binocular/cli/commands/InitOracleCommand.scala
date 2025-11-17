@@ -1,6 +1,6 @@
 package binocular.cli.commands
 
-import binocular.{BitcoinNodeConfig, CardanoConfig, OracleConfig, WalletConfig, SimpleBitcoinRpc, BitcoinChainState, OracleTransactions}
+import binocular.{BitcoinChainState, BitcoinNodeConfig, CardanoConfig, OracleConfig, OracleTransactions, SimpleBitcoinRpc, WalletConfig}
 import binocular.cli.Command
 
 import scala.concurrent.{Await, ExecutionContext}
@@ -92,18 +92,19 @@ case class InitOracleCommand(startBlock: Option[Long]) extends Command {
 
         // Fetch initial chain state
         val initialStateFuture = BitcoinChainState.getInitialChainState(rpc, blockHeight.toInt)
-        val initialState = try {
-            Await.result(initialStateFuture, 30.seconds)
-        } catch {
-            case e: Exception =>
-                System.err.println(s"✗ Error fetching Bitcoin block: ${e.getMessage}")
-                println()
-                println("Make sure:")
-                println("  1. Bitcoin node is running and accessible")
-                println("  2. RPC credentials are correct")
-                println("  3. Block height $blockHeight exists")
-                return 1
-        }
+        val initialState =
+            try {
+                Await.result(initialStateFuture, 30.seconds)
+            } catch {
+                case e: Exception =>
+                    System.err.println(s"✗ Error fetching Bitcoin block: ${e.getMessage}")
+                    println()
+                    println("Make sure:")
+                    println("  1. Bitcoin node is running and accessible")
+                    println("  2. RPC credentials are correct")
+                    println("  3. Block height $blockHeight exists")
+                    return 1
+            }
 
         println(s"✓ Fetched initial state:")
         println(s"  Block Height: ${initialState.blockHeight}")
@@ -114,12 +115,13 @@ case class InitOracleCommand(startBlock: Option[Long]) extends Command {
         println("Step 3: Building and submitting Cardano transaction...")
 
         // Build and submit transaction
-        val scriptAddress = new com.bloxbean.cardano.client.address.Address(oracleConf.scriptAddress)
+        val scriptAddress =
+            new com.bloxbean.cardano.client.address.Address(oracleConf.scriptAddress)
         val txResult = OracleTransactions.buildAndSubmitInitTransaction(
-            account,
-            backendService,
-            scriptAddress,
-            initialState
+          account,
+          backendService,
+          scriptAddress,
+          initialState
         )
 
         txResult match {

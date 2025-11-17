@@ -11,8 +11,9 @@ import scala.concurrent.{Await, ExecutionContext, Future}
 /** Integration test for UpdateOracle with Merkle Tree verification
   *
   * Tests that the confirmed blocks Merkle tree is correctly updated when:
-  *   1. Oracle is initialized at block N 2. Multiple blocks are submitted and promoted 3. The confirmedBlocksTree field
-  *      is properly updated 4. The Merkle root can be calculated from the tree
+  *   1. Oracle is initialized at block N 2. Multiple blocks are submitted and promoted 3. The
+  *      confirmedBlocksTree field is properly updated 4. The Merkle root can be calculated from the
+  *      tree
   */
 class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
 
@@ -86,7 +87,9 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
               "Initial tree should have 1 level (single block)"
             )
 
-            println(s"[Test] Step 2: Fetching headers for blocks ${startHeight + 1} to $updateToHeight")
+            println(
+              s"[Test] Step 2: Fetching headers for blocks ${startHeight + 1} to $updateToHeight"
+            )
 
             // Fetch headers for update
             val headersFuture = Future.sequence(
@@ -106,8 +109,10 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
             println(s"[Test] Step 3: Calculating new ChainState")
 
             // Calculate new state using shared validator logic
-            val validityTime = OracleTransactions.computeValidityIntervalTime(devKit.getBackendService)
-            val newState = BitcoinValidator.computeUpdateOracleState(initialState, headersList, validityTime)
+            val validityTime =
+                OracleTransactions.computeValidityIntervalTime(devKit.getBackendService)
+            val newState =
+                BitcoinValidator.computeUpdateOracleState(initialState, headersList, validityTime)
 
             println(s"[Test] ✓ New state calculated:")
             println(s"    Old height: ${initialState.blockHeight}")
@@ -163,14 +168,18 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                     println(s"[Test] Step 6: Verifying forks tree structure")
                     val forksTreeSize = chainState.forksTree.toList.size
                     println(s"    Forks tree size: $forksTreeSize")
-                    assert(forksTreeSize == headers.size, s"Forks tree should contain ${headers.size} new blocks, but has $forksTreeSize")
+                    assert(
+                      forksTreeSize == headers.size,
+                      s"Forks tree should contain ${headers.size} new blocks, but has $forksTreeSize"
+                    )
 
                     println(s"[Test] ✓ Forks tree has grown correctly")
 
                     println(s"[Test] Step 7: Verifying we can compute Merkle root")
 
                     // Try to compute the Merkle root from the tree
-                    val computedRoot = BitcoinValidator.getMerkleRoot(chainState.confirmedBlocksTree)
+                    val computedRoot =
+                        BitcoinValidator.getMerkleRoot(chainState.confirmedBlocksTree)
                     println(s"    Computed Merkle root: ${computedRoot.toHex}")
                     println(s"    Root length: ${computedRoot.bytes.length} bytes")
 
@@ -187,7 +196,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                     allBlockHashes += initialState.blockHash
 
                     // Add updated blocks (need to fetch their hashes)
-                    for (height <- startHeight + 1 to updateToHeight) {
+                    for height <- startHeight + 1 to updateToHeight do {
                         val hashHex = Await.result(mockRpc.getBlockHash(height), 5.seconds)
                         val hashBytes = ByteString.fromHex(hashHex).reverse
                         allBlockHashes += hashBytes
@@ -197,7 +206,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                     println(s"    Block 0: ${allBlockHashes(0).toHex}")
                     println(s"    Block 1: ${allBlockHashes(1).toHex}")
                     println(s"    Block 2: ${allBlockHashes(2).toHex}")
-                    //println(s"    Block 3: ${allBlockHashes(3).toHex}")
+                    // println(s"    Block 3: ${allBlockHashes(3).toHex}")
 
                     // Build reference tree using MerkleTree (non-rolling)
                     val referenceMerkleTree = MerkleTree.fromHashes(allBlockHashes.toSeq)
@@ -227,7 +236,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                 case scalus.prelude.List.Cons(head, tail) =>
                     // Count this level if it's not all zeros (empty)
                     val isEmpty = head.bytes.forall(_ == 0)
-                    count(tail, if (isEmpty) acc else acc + 1)
+                    count(tail, if isEmpty then acc else acc + 1)
             }
         }
         count(tree, 0)

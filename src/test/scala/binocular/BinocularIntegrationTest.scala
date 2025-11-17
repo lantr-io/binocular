@@ -10,12 +10,12 @@ import scala.jdk.CollectionConverters.*
 
 /** Integration tests for Binocular Oracle on Yaci DevKit
   *
-  * These tests require Docker to be running and will start a local Cardano devnet.
-  * Tests are marked with .ignore by default - remove .ignore to run them.
+  * These tests require Docker to be running and will start a local Cardano devnet. Tests are marked
+  * with .ignore by default - remove .ignore to run them.
   *
   * To run these tests:
-  * 1. Ensure Docker is running
-  * 2. Run: sbt "testOnly *BinocularIntegrationTest"
+  *   1. Ensure Docker is running
+  *   2. Run: sbt "testOnly *BinocularIntegrationTest"
   */
 class BinocularIntegrationTest extends YaciDevKitSpec {
     // Override default test timeout for integration tests (default is 30 seconds)
@@ -76,7 +76,8 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
                     println(s"Created initial UTXO, tx: $txHash")
 
                     // Wait for confirmation
-                    val confirmed = devKit.waitForTransaction(txHash, maxAttempts = 30, delayMs = 2000)
+                    val confirmed =
+                        devKit.waitForTransaction(txHash, maxAttempts = 30, delayMs = 2000)
                     assert(confirmed, s"Transaction $txHash should confirm")
 
                     // Verify UTXO exists at script address
@@ -85,7 +86,10 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
                     assert(scriptUtxos.nonEmpty, "Script should have at least one UTXO")
 
                     val scriptUtxo = scriptUtxos.head
-                    assert(scriptUtxo.getAmount.asScala.head.getQuantity.longValue() == 5_000_000L, "Script UTXO should have correct amount")
+                    assert(
+                      scriptUtxo.getAmount.asScala.head.getQuantity.longValue() == 5_000_000L,
+                      "Script UTXO should have correct amount"
+                    )
 
                 case Left(error) =>
                     fail(s"Failed to create initial UTXO: $error")
@@ -139,7 +143,8 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
             val initialTxHash = createResult match {
                 case Right(txHash) =>
                     println(s"✓ Created initial UTXO, tx: $txHash")
-                    val confirmed = devKit.waitForTransaction(txHash, maxAttempts = 30, delayMs = 2000)
+                    val confirmed =
+                        devKit.waitForTransaction(txHash, maxAttempts = 30, delayMs = 2000)
                     assert(confirmed, s"Initial transaction $txHash should confirm")
                     txHash
                 case Left(error) =>
@@ -158,7 +163,8 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
 
                 // Calculate expected new state
                 val headerList = scalus.prelude.List.single(header)
-                val newState = TransactionBuilders.applyHeaders(currentState, headerList, currentTime)
+                val newState =
+                    TransactionBuilders.applyHeaders(currentState, headerList, currentTime)
                 println(s"  Expected new height: ${newState.blockHeight}")
 
                 // Submit UpdateOracle transaction
@@ -175,7 +181,8 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
                 updateResult match {
                     case Right(txHash) =>
                         println(s"  ✓ UpdateOracle tx: $txHash")
-                        val confirmed = devKit.waitForTransaction(txHash, maxAttempts = 30, delayMs = 2000)
+                        val confirmed =
+                            devKit.waitForTransaction(txHash, maxAttempts = 30, delayMs = 2000)
                         assert(confirmed, s"UpdateOracle transaction $txHash should confirm")
 
                         // Update current state for next iteration
@@ -197,7 +204,9 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
       */
     private def createGenesisState(): BitcoinValidator.ChainState = {
         val genesisHeight = BigInt(865493)
-        val genesisHash = ByteString.fromHex("0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b").reverse
+        val genesisHash = ByteString
+            .fromHex("0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b")
+            .reverse
         val genesisTarget = ByteString.fromHex("17030ecd").reverse
         val genesisTimestamp = BigInt(1736701001)
         val genesisRecentTimestamps = scalus.prelude.List.single(genesisTimestamp)
@@ -208,7 +217,8 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
           currentTarget = genesisTarget,
           blockTimestamp = genesisTimestamp,
           recentTimestamps = genesisRecentTimestamps,
-          previousDifficultyAdjustmentTimestamp = genesisTimestamp - 600 * BitcoinValidator.DifficultyAdjustmentInterval,
+          previousDifficultyAdjustmentTimestamp =
+              genesisTimestamp - 600 * BitcoinValidator.DifficultyAdjustmentInterval,
           confirmedBlocksTree = prelude.List(genesisHash),
           forksTree = scalus.prelude.SortedMap.empty
         )

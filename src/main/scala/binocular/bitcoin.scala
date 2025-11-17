@@ -8,7 +8,7 @@ import scalus.ledger.api.v2.TxOutRef
 import scalus.prelude
 
 import scala.concurrent.{ExecutionContext, Future}
-import scala.concurrent.duration._
+import scala.concurrent.duration.*
 import scala.concurrent.Await
 
 object Bitcoin {
@@ -65,10 +65,10 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
     // Use simple RPC client (no bitcoin-s dependencies)
     private val rpc = new SimpleBitcoinRpc(config)
 
-    // Convert hex string to ByteString  
+    // Convert hex string to ByteString
     private def hexToByteString(hex: String): ByteString =
         ByteString.fromArray(hex.sliding(2, 2).toArray.map(Integer.parseInt(_, 16).toByte))
-    
+
     // Build 80-byte raw header from block header info
     private def buildRawHeader(header: BlockHeaderInfo): Array[Byte] = {
         val buffer = new Array[Byte](80)
@@ -76,45 +76,47 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
 
         // Version (4 bytes, little-endian) - Use actual version from RPC
         val version = header.version.toInt
-        buffer(offset) = (version & 0xFF).toByte
-        buffer(offset + 1) = ((version >> 8) & 0xFF).toByte
-        buffer(offset + 2) = ((version >> 16) & 0xFF).toByte
-        buffer(offset + 3) = ((version >> 24) & 0xFF).toByte
+        buffer(offset) = (version & 0xff).toByte
+        buffer(offset + 1) = ((version >> 8) & 0xff).toByte
+        buffer(offset + 2) = ((version >> 16) & 0xff).toByte
+        buffer(offset + 3) = ((version >> 24) & 0xff).toByte
         offset += 4
-        
+
         // Previous block hash (32 bytes, reversed from hex)
-        val prevHash = header.previousblockhash.map(h => hexToByteString(h).bytes.reverse.toArray).getOrElse(new Array[Byte](32))
+        val prevHash = header.previousblockhash
+            .map(h => hexToByteString(h).bytes.reverse.toArray)
+            .getOrElse(new Array[Byte](32))
         System.arraycopy(prevHash, 0, buffer, offset, 32)
         offset += 32
-        
+
         // Merkle root (32 bytes, reversed from hex)
         val merkleRoot = hexToByteString(header.merkleroot).bytes.reverse.toArray
         System.arraycopy(merkleRoot, 0, buffer, offset, 32)
         offset += 32
-        
+
         // Timestamp (4 bytes, little-endian)
         val time = header.time.toInt
-        buffer(offset) = (time & 0xFF).toByte
-        buffer(offset + 1) = ((time >> 8) & 0xFF).toByte
-        buffer(offset + 2) = ((time >> 16) & 0xFF).toByte
-        buffer(offset + 3) = ((time >> 24) & 0xFF).toByte
+        buffer(offset) = (time & 0xff).toByte
+        buffer(offset + 1) = ((time >> 8) & 0xff).toByte
+        buffer(offset + 2) = ((time >> 16) & 0xff).toByte
+        buffer(offset + 3) = ((time >> 24) & 0xff).toByte
         offset += 4
-        
+
         // Bits (4 bytes, little-endian - must reverse from display hex to internal byte order)
         val bits = hexToByteString(header.bits).bytes.reverse.toArray
         System.arraycopy(bits, 0, buffer, offset, 4)
         offset += 4
-        
+
         // Nonce (4 bytes, little-endian)
         val nonce = header.nonce.toInt
-        buffer(offset) = (nonce & 0xFF).toByte
-        buffer(offset + 1) = ((nonce >> 8) & 0xFF).toByte
-        buffer(offset + 2) = ((nonce >> 16) & 0xFF).toByte
-        buffer(offset + 3) = ((nonce >> 24) & 0xFF).toByte
-        
+        buffer(offset) = (nonce & 0xff).toByte
+        buffer(offset + 1) = ((nonce >> 8) & 0xff).toByte
+        buffer(offset + 2) = ((nonce >> 16) & 0xff).toByte
+        buffer(offset + 3) = ((nonce >> 24) & 0xff).toByte
+
         buffer
     }
-    
+
     private def convertHeader(header: BlockHeaderInfo): BitcoinValidator.BlockHeader =
         BitcoinValidator.BlockHeader(ByteString.fromArray(buildRawHeader(header)))
 
@@ -197,7 +199,9 @@ object HeaderSyncWithRpc {
             case Left(error) =>
                 System.err.println(s"✗ Failed to load Bitcoin node configuration: $error")
                 System.err.println("\nPlease configure Bitcoin node connection via:")
-                System.err.println("  1. Environment variables: BITCOIN_NODE_URL, BITCOIN_NODE_USER, BITCOIN_NODE_PASSWORD")
+                System.err.println(
+                  "  1. Environment variables: BITCOIN_NODE_URL, BITCOIN_NODE_USER, BITCOIN_NODE_PASSWORD"
+                )
                 System.err.println("  2. application.conf: binocular.bitcoin-node.*")
                 sys.exit(1)
         }
@@ -232,17 +236,17 @@ object HeaderSyncWithRpc {
                 sys.exit(0)
 }
 
-
 def useBinocular() = {
     def getBinocularUtxo: TxOutRef = ???
     def selectBitcoinBlock() = ??? // random previous block which exists in Binocular `blocks`
-    def selectBitcoinTxInThatBlock() = ??? // random previous block which exists in Binocular `blocks`
-    // separate DApp, like DEX or some other onchain application    
+    def selectBitcoinTxInThatBlock() =
+        ??? // random previous block which exists in Binocular `blocks`
+    // separate DApp, like DEX or some other onchain application
     def makeProofTx = {
         val bincocularRefInput = getBinocularUtxo
-        val binocularDatum: ChainState  = ???
+        val binocularDatum: ChainState = ???
         // onchain validation of Bitcoin tx inclusion:
-        
+
         // block header exists in binocularDatum.blocks
         // merkle proof of block header hash inclusion in binocularDatum.blocksMerkleRoot
         // tx hash exists in block's tx merkle root

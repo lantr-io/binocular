@@ -1,6 +1,6 @@
 package binocular.cli.commands
 
-import binocular.{OracleConfig, CardanoConfig}
+import binocular.{CardanoConfig, OracleConfig}
 import binocular.cli.Command
 
 /** Display oracle information (script address, network, backend) */

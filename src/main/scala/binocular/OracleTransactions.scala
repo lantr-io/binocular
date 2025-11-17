@@ -30,12 +30,12 @@ object OracleTransactions {
             .asInstanceOf[PlutusV3Script]
     }
 
-    /** Compute the validity interval start time that will be used on-chain. This matches the computation in
-      * buildAndSubmitUpdateTransaction.
+    /** Compute the validity interval start time that will be used on-chain. This matches the
+      * computation in buildAndSubmitUpdateTransaction.
       *
-      * The on-chain validator reads time from tx.validRange.from, which is set using .validFrom(slot). The slot is
-      * computed from System.currentTimeMillis(). To ensure offline computation matches on-chain validation, we must use
-      * the same time derivation.
+      * The on-chain validator reads time from tx.validRange.from, which is set using
+      * .validFrom(slot). The slot is computed from System.currentTimeMillis(). To ensure offline
+      * computation matches on-chain validation, we must use the same time derivation.
       *
       * @param backendService
       *   Backend service to retrieve slot configuration
@@ -47,7 +47,8 @@ object OracleTransactions {
         val currentPosixTimeMs = System.currentTimeMillis()
         val currentSlot = slotConfig.timeToSlot(currentPosixTimeMs)
         // Manually compute the slot start time: zeroTime + (slot - zeroSlot) * slotLength
-        val intervalStartMs = slotConfig.zeroTime + (currentSlot - slotConfig.zeroSlot) * slotConfig.slotLength
+        val intervalStartMs =
+            slotConfig.zeroTime + (currentSlot - slotConfig.zeroSlot) * slotConfig.slotLength
         val intervalStartSeconds = BigInt(intervalStartMs / 1000)
 
         println(s"[DEBUG computeValidityIntervalTime]")
@@ -131,7 +132,7 @@ object OracleTransactions {
                 .withSigner(SignerProviders.signerFrom(account))
                 .completeAndWait()
 
-            if (result.isSuccessful) {
+            if result.isSuccessful then {
                 Right(result.getValue)
             } else {
                 Left(s"Transaction failed: ${result.getResponse}")
@@ -186,7 +187,7 @@ object OracleTransactions {
             val utxoService = backendService.getUtxoService
             val utxos = utxoService.getUtxos(scriptAddress.getAddress, 100, 1)
 
-            if (!utxos.isSuccessful) {
+            if !utxos.isSuccessful then {
                 throw new RuntimeException(s"Failed to fetch UTxOs: ${utxos.getResponse}")
             }
 
@@ -199,7 +200,8 @@ object OracleTransactions {
 
             // Get the time that will be seen by the validator
             // Use the current blockchain slot to compute the time
-            val currentBlockchainSlot = backendService.getBlockService.getLatestBlock.getValue.getSlot
+            val currentBlockchainSlot =
+                backendService.getBlockService.getLatestBlock.getValue.getSlot
             val slotConfigEarly = SlotConfigHelper.retrieveSlotConfig(backendService)
             val intervalMs =
                 slotConfigEarly.zeroTime + (currentBlockchainSlot - slotConfigEarly.zeroSlot) * slotConfigEarly.slotLength
@@ -233,7 +235,11 @@ object OracleTransactions {
             )
 
             val scalusEvaluator =
-                new scalus.bloxbean.ScalusTransactionEvaluator(slotConfig, protocolParams, utxoSupplier)
+                new scalus.bloxbean.ScalusTransactionEvaluator(
+                  slotConfig,
+                  protocolParams,
+                  utxoSupplier
+                )
             println("[DEBUG] Using ScalusEvaluator (PlutusVM) for script cost evaluation")
 
             val quickTxBuilder = new QuickTxBuilder(backendService)
@@ -273,7 +279,9 @@ object OracleTransactions {
             println(s"  Computed currentSlot: $currentSlotFromTime")
             println(s"  Validator will see (ms): $validatorWillSeeMs")
             println(s"  Validator will see (seconds): $validatorWillSeeSeconds")
-            println(s"  MATCH: ${validityIntervalTimeSeconds.map(_ == validatorWillSeeSeconds).getOrElse(false)}")
+            println(
+              s"  MATCH: ${validityIntervalTimeSeconds.map(_ == validatorWillSeeSeconds).getOrElse(false)}"
+            )
 
             // Build, sign, and submit
             // Get current slot from the blockchain (not from time calculation)
@@ -289,7 +297,7 @@ object OracleTransactions {
                 .validFrom(currentSlot)
                 .completeAndWait()
 
-            if (result.isSuccessful) {
+            if result.isSuccessful then {
                 Right(result.getValue)
             } else {
                 Left(s"Transaction failed: ${result.getResponse}")

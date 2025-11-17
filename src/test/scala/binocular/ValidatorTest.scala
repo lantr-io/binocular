@@ -177,7 +177,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
 
         // Large number case from the test
         // target with leading 0x1234560000... -> GetCompact = 0x20123456
-        val largeTarget = BigInt("1234560000000000000000000000000000000000000000000000000000000000", 16)
+        val largeTarget =
+            BigInt("1234560000000000000000000000000000000000000000000000000000000000", 16)
         assertEquals(BitcoinValidator.targetToCompactBits(largeTarget), BigInt(0x20123456L))
     }
 
@@ -186,7 +187,10 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
         )
         val hash = BitcoinValidator.blockHeaderHash(blockHeader)
-        assertEquals(hash.reverse, hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c")
+        assertEquals(
+          hash.reverse,
+          hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c"
+        )
     }
 
     test("Block Header hash satisfies proof of work") {
@@ -196,8 +200,14 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         val hash = BitcoinValidator.blockHeaderHash(blockHeader)
         val target = BitcoinValidator.compactBitsToTarget(hex"17030ecd".reverse)
         val proofOfWork = Builtins.byteStringToInteger(false, hash)
-        assertEquals(hash, hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c".reverse)
-        assertEquals(target, BigInt("000000000000000000030ecd0000000000000000000000000000000000000000", 16))
+        assertEquals(
+          hash,
+          hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c".reverse
+        )
+        assertEquals(
+          target,
+          BigInt("000000000000000000030ecd0000000000000000000000000000000000000000", 16)
+        )
         assert(proofOfWork <= target, clue(s"proofOfWork: $proofOfWork, target: $target"))
     }
 
@@ -255,9 +265,11 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           currentTarget = bits,
           blockTimestamp = timestamp - 600,
           recentTimestamps = prelude.List(timestamp - 600),
-          previousDifficultyAdjustmentTimestamp = timestamp - 600 * BitcoinValidator.DifficultyAdjustmentInterval,
-          confirmedBlocksTree =
-              prelude.List(hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse),
+          previousDifficultyAdjustmentTimestamp =
+              timestamp - 600 * BitcoinValidator.DifficultyAdjustmentInterval,
+          confirmedBlocksTree = prelude.List(
+            hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
+          ),
           forksTree = scalus.prelude.SortedMap.empty
         )
 
@@ -458,7 +470,11 @@ class ValidatorTest extends munit.ScalaCheckSuite {
     // ===== TEST INFRASTRUCTURE HELPERS =====
 
     /** Generate a sequence of valid timestamps for testing */
-    def makeTimestampSequence(baseTime: BigInt, count: Int, spacing: BigInt = 600): scalus.prelude.List[BigInt] = {
+    def makeTimestampSequence(
+        baseTime: BigInt,
+        count: Int,
+        spacing: BigInt = 600
+    ): scalus.prelude.List[BigInt] = {
         def buildSeq(remaining: Int, currentTime: BigInt, acc: List[BigInt]): List[BigInt] = {
             if remaining == 0 then acc.reverse
             else buildSeq(remaining - 1, currentTime - spacing, currentTime :: acc)
@@ -470,7 +486,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
     def computeChainwork(parentChainwork: BigInt, target: BigInt): BigInt = {
         // Chainwork formula: parent_chainwork + 2^256 / (target + 1)
         // Simplified for testing: just add work based on target
-        val work = (BigInt(2).pow(256) / (target + 1))
+        val work = BigInt(2).pow(256) / (target + 1)
         parentChainwork + work
     }
 
@@ -497,7 +513,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
             else
                 // Create synthetic block hash (for testing only)
                 val blockHash = ByteString.fromArray(
-                  Array.fill(32)(((height % 256).toByte))
+                  Array.fill(32)((height % 256).toByte)
                 )
                 val newChainwork = computeChainwork(chainwork, target)
                 val node = BitcoinValidator.BlockNode(
@@ -508,7 +524,14 @@ class ValidatorTest extends munit.ScalaCheckSuite {
                   children = scalus.prelude.List.empty
                 )
                 val updatedTree = tree.insert(blockHash, node)
-                buildChain(remaining - 1, blockHash, height + 1, newChainwork, timestamp + 600, updatedTree)
+                buildChain(
+                  remaining - 1,
+                  blockHash,
+                  height + 1,
+                  newChainwork,
+                  timestamp + 600,
+                  updatedTree
+                )
         }
 
         buildChain(
@@ -638,7 +661,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         assertEquals(computedRoot, expectedMerkleRoot)
 
         // Test a few other transactions if there are more than one
-        if (txHashes.length > 1) {
+        if txHashes.length > 1 then {
             val lastTxHash = txHashes.last
             val lastIndex = txHashes.length - 1
             val lastMerkleProof = merkleTree.makeMerkleProof(lastIndex)
@@ -674,13 +697,27 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         // Test block heights that should NOT trigger difficulty adjustment
         val noAdjustmentHeights = Seq(0, 1, 100, 1000, 2014) // Not at 2016 interval
         for height <- noAdjustmentHeights do
-            val result = BitcoinValidator.getNextWorkRequired(height, currentTarget, blockTime, firstBlockTime)
-            assertEquals(result, currentTarget, s"Height $height should not trigger difficulty adjustment")
+            val result = BitcoinValidator.getNextWorkRequired(
+              height,
+              currentTarget,
+              blockTime,
+              firstBlockTime
+            )
+            assertEquals(
+              result,
+              currentTarget,
+              s"Height $height should not trigger difficulty adjustment"
+            )
 
         // Test block heights that SHOULD trigger difficulty adjustment
         val adjustmentHeights = Seq(2015, 4031, 6047) // Heights where (height + 1) % 2016 == 0
         for height <- adjustmentHeights do
-            val result = BitcoinValidator.getNextWorkRequired(height, currentTarget, blockTime, firstBlockTime)
+            val result = BitcoinValidator.getNextWorkRequired(
+              height,
+              currentTarget,
+              blockTime,
+              firstBlockTime
+            )
             // Result should be different from currentTarget (actually calculated)
             assert(result != currentTarget, s"Height $height should trigger difficulty adjustment")
     }
@@ -693,20 +730,29 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         val currentTarget = hex"1d00ffff".reverse // smallest difficulty
         val blockTime = BigInt(1234567890)
         val firstBlockTime =
-            BigInt(1234567890 - 2016 * 600 / 2) // Double block production, should make difficulty harder
+            BigInt(
+              1234567890 - 2016 * 600 / 2
+            ) // Double block production, should make difficulty harder
 
         // Height 2015: (2015 + 1) % 2016 = 0 (should adjust)
         // With bug: 2015 + (1 % 2016) = 2015 + 1 = 2016 ≠ 0 (would not adjust)
-        val result2015 = BitcoinValidator.getNextWorkRequired(2015, currentTarget, blockTime, firstBlockTime)
+        val result2015 =
+            BitcoinValidator.getNextWorkRequired(2015, currentTarget, blockTime, firstBlockTime)
         assert(result2015 != currentTarget, "Height 2015 should trigger difficulty adjustment")
 
         // Height 4031: (4031 + 1) % 2016 = 0 (should adjust)
-        val result4031 = BitcoinValidator.getNextWorkRequired(4031, currentTarget, blockTime, firstBlockTime)
+        val result4031 =
+            BitcoinValidator.getNextWorkRequired(4031, currentTarget, blockTime, firstBlockTime)
         assert(result4031 != currentTarget, "Height 4031 should trigger difficulty adjustment")
 
         // Height 1000: (1000 + 1) % 2016 = 1001 ≠ 0 (should not adjust)
-        val result1000 = BitcoinValidator.getNextWorkRequired(1000, currentTarget, blockTime, firstBlockTime)
-        assertEquals(result1000, currentTarget, "Height 1000 should not trigger difficulty adjustment")
+        val result1000 =
+            BitcoinValidator.getNextWorkRequired(1000, currentTarget, blockTime, firstBlockTime)
+        assertEquals(
+          result1000,
+          currentTarget,
+          "Height 1000 should not trigger difficulty adjustment"
+        )
     }
 
     // ===== FORK HANDLING TESTS =====
@@ -717,8 +763,10 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
         )
 
-        val confirmedTip = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
-        val forksTree: scalus.prelude.SortedMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] =
+        val confirmedTip =
+            hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
+        val forksTree
+            : scalus.prelude.SortedMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] =
             scalus.prelude.SortedMap.empty
 
         // Submit same block twice - should fail
@@ -730,14 +778,16 @@ class ValidatorTest extends munit.ScalaCheckSuite {
     }
 
     test("validateForkSubmission - accept pure canonical extension") {
-        val confirmedTip = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
+        val confirmedTip =
+            hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
 
         // Block extending confirmed tip
         val blockExtendingTip = BlockHeader(
           hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
         )
 
-        val forksTree: scalus.prelude.SortedMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] =
+        val forksTree
+            : scalus.prelude.SortedMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] =
             scalus.prelude.SortedMap.empty
         val headers = scalus.prelude.List.single(blockExtendingTip)
 
@@ -746,14 +796,16 @@ class ValidatorTest extends munit.ScalaCheckSuite {
     }
 
     test("validateForkSubmission - reject pure fork submission") {
-        val confirmedTip = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
+        val confirmedTip =
+            hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
 
         // Block NOT extending confirmed tip (fork)
         val forkBlock = BlockHeader(
           hex"00000020ffffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
         )
 
-        val forksTree: scalus.prelude.SortedMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] =
+        val forksTree
+            : scalus.prelude.SortedMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] =
             scalus.prelude.SortedMap.empty
         val headers = scalus.prelude.List.single(forkBlock)
 
@@ -764,7 +816,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
     }
 
     test("validateForkSubmission - accept canonical + fork") {
-        val confirmedTip = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
+        val confirmedTip =
+            hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
 
         // Block extending confirmed tip (canonical)
         val canonicalBlock = BlockHeader(
@@ -776,7 +829,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           hex"00000020ffffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
         )
 
-        val forksTree: scalus.prelude.SortedMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] =
+        val forksTree
+            : scalus.prelude.SortedMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] =
             scalus.prelude.SortedMap.empty
         val headers = scalus.prelude.List.from(Seq(canonicalBlock, forkBlock))
 
@@ -785,7 +839,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
     }
 
     test("addBlockToForksTree - block extending confirmed tip") {
-        val confirmedTip = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
+        val confirmedTip =
+            hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
         val bits = hex"17030ecd".reverse
 
         // Create a block extending the confirmed tip with valid timestamp
@@ -826,7 +881,9 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         assert(BitcoinValidator.lookupBlock(updatedForksTree, newBlockHash).isDefined)
 
         // Verify block extends confirmed tip
-        val blockNode = BitcoinValidator.lookupBlock(updatedForksTree, newBlockHash).getOrFail("Block not found")
+        val blockNode = BitcoinValidator
+            .lookupBlock(updatedForksTree, newBlockHash)
+            .getOrFail("Block not found")
         assertEquals(blockNode.prevBlockHash, confirmedTip)
         assertEquals(blockNode.height, BigInt(1001))
     }
@@ -866,7 +923,9 @@ class ValidatorTest extends munit.ScalaCheckSuite {
 
         // Verify second block extends first
         val retrievedSecondNode =
-            BitcoinValidator.lookupBlock(forksTree, secondBlockHash).getOrFail("Second block not found")
+            BitcoinValidator
+                .lookupBlock(forksTree, secondBlockHash)
+                .getOrFail("Second block not found")
         assertEquals(retrievedSecondNode.prevBlockHash, firstBlockHash)
         assertEquals(retrievedSecondNode.height, BigInt(1002))
 
@@ -876,7 +935,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
     }
 
     test("selectCanonicalChain - empty forksTree returns None") {
-        val emptyForksTree: scalus.prelude.SortedMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] =
+        val emptyForksTree
+            : scalus.prelude.SortedMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] =
             scalus.prelude.SortedMap.empty
         val result = BitcoinValidator.selectCanonicalChain(emptyForksTree)
 
@@ -884,8 +944,10 @@ class ValidatorTest extends munit.ScalaCheckSuite {
     }
 
     test("selectCanonicalChain - single block returns that block") {
-        val confirmedTip = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
-        val blockHash = hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c".reverse
+        val confirmedTip =
+            hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
+        val blockHash =
+            hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c".reverse
 
         val blockNode = BitcoinValidator.BlockNode(
           prevBlockHash = confirmedTip,
@@ -902,7 +964,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
     }
 
     test("selectCanonicalChain - selects highest chainwork") {
-        val confirmedTip = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
+        val confirmedTip =
+            hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
 
         // Block with lower chainwork
         val lowChainworkHash = hex"1111111111111111111111111111111111111111111111111111111111111111"
@@ -915,7 +978,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         )
 
         // Block with higher chainwork
-        val highChainworkHash = hex"2222222222222222222222222222222222222222222222222222222222222222"
+        val highChainworkHash =
+            hex"2222222222222222222222222222222222222222222222222222222222222222"
         val highChainworkNode = BitcoinValidator.BlockNode(
           prevBlockHash = confirmedTip,
           height = 1001,
@@ -979,7 +1043,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         val block864801Timestamp = 1728414644L
         val block864801Nonce = 4254568467L
         val block864801Version = 666378240L
-        val block864801Merkleroot = "dc2ad1c7a27d394d45961c13a9c36e1d5e6cdbea928c47cb06263bb049a9cd0f"
+        val block864801Merkleroot =
+            "dc2ad1c7a27d394d45961c13a9c36e1d5e6cdbea928c47cb06263bb049a9cd0f"
 
         val confirmedTip = ByteString.fromHex(block864800Hash).reverse
         val bits = ByteString.fromHex(block864801Bits).reverse
@@ -1077,9 +1142,15 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         val prices = CardanoInfo.mainnet.protocolParams.executionUnitPrices
         result.evaluateDebug match
             case r: Result.Success =>
-                println(s"✓ UpdateOracle single block validation succeeded, budget used: ${r.budget.showJson}")
+                println(
+                  s"✓ UpdateOracle single block validation succeeded, budget used: ${r.budget.showJson}"
+                )
                 println(r)
-                assertEquals(r.budget, ledger.ExUnits(550362, 170_322768), "Unexpected resource usage")
+                assertEquals(
+                  r.budget,
+                  ledger.ExUnits(550362, 170_322768),
+                  "Unexpected resource usage"
+                )
                 assertEquals(r.budget.fee(prices), Coin(44020), "Unexpected fee cost")
             case r: Result.Failure =>
                 fail(s"Validation failed: $r")
@@ -1099,7 +1170,9 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         )
 
         // Create redeemer with empty list
-        val redeemer = Action.UpdateOracle(scalus.prelude.List.empty, BigInt(System.currentTimeMillis() / 1000)).toData
+        val redeemer = Action
+            .UpdateOracle(scalus.prelude.List.empty, BigInt(System.currentTimeMillis() / 1000))
+            .toData
 
         val scriptAddress = new Address(
           binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
@@ -1126,7 +1199,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
 
     test("promoteQualifiedBlocks - empty forks tree returns empty list") {
         val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
-        val emptyForksTree: scalus.prelude.SortedMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] =
+        val emptyForksTree
+            : scalus.prelude.SortedMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] =
             scalus.prelude.SortedMap.empty
         val currentTime = BigInt(System.currentTimeMillis() / 1000)
 
@@ -1161,8 +1235,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         var prevHash = block1001Hash
         var prevChainwork = BigInt(1001000)
 
-        for (h <- 1002 to 1101) {
-            val hash = ByteString.fromArray(Array.fill(32)(((h % 256).toByte)))
+        for h <- 1002 to 1101 do {
+            val hash = ByteString.fromArray(Array.fill(32)((h % 256).toByte))
             val node = BitcoinValidator.BlockNode(
               prevBlockHash = prevHash,
               height = h,
@@ -1186,7 +1260,10 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         assertEquals(promotedBlocks.head, block1001Hash, "Should promote the qualified block")
 
         // Block 1001 should be removed, but 1002-1101 should remain
-        assert(BitcoinValidator.lookupBlock(updatedTree, block1001Hash).isEmpty, "Block 1001 should be removed")
+        assert(
+          BitcoinValidator.lookupBlock(updatedTree, block1001Hash).isEmpty,
+          "Block 1001 should be removed"
+        )
     }
 
     test("promoteQualifiedBlocks - reject block with insufficient confirmations") {
@@ -1209,8 +1286,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         var forksTree = scalus.prelude.SortedMap.empty.insert(blockHash, blockNode)
         var prevHash = blockHash
         var prevChainwork = BigInt(1001000)
-        for (h <- 1002 to 1050) {
-            val hash = ByteString.fromArray(Array.fill(32)(((h % 256).toByte)))
+        for h <- 1002 to 1050 do {
+            val hash = ByteString.fromArray(Array.fill(32)((h % 256).toByte))
             val node = BitcoinValidator.BlockNode(
               prevBlockHash = prevHash,
               height = h,
@@ -1230,7 +1307,11 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           currentTime
         )
 
-        assertEquals(promotedBlocks.length, BigInt(0), "Should not promote block with insufficient confirmations")
+        assertEquals(
+          promotedBlocks.length,
+          BigInt(0),
+          "Should not promote block with insufficient confirmations"
+        )
         assertEquals(updatedTree.toList.size, forksTree.toList.size, "Tree should remain unchanged")
     }
 
@@ -1253,8 +1334,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         var forksTree = scalus.prelude.SortedMap.empty.insert(blockHash, blockNode)
         var prevHash = blockHash
         var prevChainwork = BigInt(1001000)
-        for (h <- 1002 to 1101) {
-            val hash = ByteString.fromArray(Array.fill(32)(((h % 256).toByte)))
+        for h <- 1002 to 1101 do {
+            val hash = ByteString.fromArray(Array.fill(32)((h % 256).toByte))
             val node = BitcoinValidator.BlockNode(
               prevBlockHash = prevHash,
               height = h,
@@ -1274,7 +1355,11 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           currentTime
         )
 
-        assertEquals(promotedBlocks.length, BigInt(0), "Should not promote block with insufficient age")
+        assertEquals(
+          promotedBlocks.length,
+          BigInt(0),
+          "Should not promote block with insufficient age"
+        )
         assertEquals(updatedTree.toList.size, forksTree.toList.size, "Tree should remain unchanged")
     }
 
@@ -1321,8 +1406,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
 
         var prevHash = block1003Hash
         var prevChainwork = BigInt(1003000)
-        for (h <- 1004 to 1103) {
-            val hash = ByteString.fromArray(Array.fill(32)(((h % 256).toByte)))
+        for h <- 1004 to 1103 do {
+            val hash = ByteString.fromArray(Array.fill(32)((h % 256).toByte))
             val node = BitcoinValidator.BlockNode(
               prevBlockHash = prevHash,
               height = h,
@@ -1360,9 +1445,18 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         assert(!promotedList.contains(block1003Hash), "Should NOT include block 1003")
 
         // Blocks 1001 and 1002 should be removed from tree
-        assert(BitcoinValidator.lookupBlock(updatedTree, block1001Hash).isEmpty, "Block 1001 should be removed")
-        assert(BitcoinValidator.lookupBlock(updatedTree, block1002Hash).isEmpty, "Block 1002 should be removed")
-        assert(BitcoinValidator.lookupBlock(updatedTree, block1003Hash).isDefined, "Block 1003 should remain")
+        assert(
+          BitcoinValidator.lookupBlock(updatedTree, block1001Hash).isEmpty,
+          "Block 1001 should be removed"
+        )
+        assert(
+          BitcoinValidator.lookupBlock(updatedTree, block1002Hash).isEmpty,
+          "Block 1002 should be removed"
+        )
+        assert(
+          BitcoinValidator.lookupBlock(updatedTree, block1003Hash).isDefined,
+          "Block 1003 should remain"
+        )
     }
 
     test("promoteQualifiedBlocks - edge case: exactly 100 confirmations and 200 minutes") {
@@ -1384,8 +1478,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         var forksTree = scalus.prelude.SortedMap.empty.insert(blockHash, blockNode)
         var prevHash = blockHash
         var prevChainwork = BigInt(1001000)
-        for (h <- 1002 to 1101) {
-            val hash = ByteString.fromArray(Array.fill(32)(((h % 256).toByte)))
+        for h <- 1002 to 1101 do {
+            val hash = ByteString.fromArray(Array.fill(32)((h % 256).toByte))
             val node = BitcoinValidator.BlockNode(
               prevBlockHash = prevHash,
               height = h,
@@ -1426,8 +1520,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         var forksTree = scalus.prelude.SortedMap.empty.insert(blockHash, blockNode)
         var prevHash = blockHash
         var prevChainwork = BigInt(1001000)
-        for (h <- 1002 to 1100) {
-            val hash = ByteString.fromArray(Array.fill(32)(((h % 256).toByte)))
+        for h <- 1002 to 1100 do {
+            val hash = ByteString.fromArray(Array.fill(32)((h % 256).toByte))
             val node = BitcoinValidator.BlockNode(
               prevBlockHash = prevHash,
               height = h,
@@ -1447,7 +1541,11 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           currentTime
         )
 
-        assertEquals(promotedBlocks.length, BigInt(0), "Should not promote with only 99 confirmations")
+        assertEquals(
+          promotedBlocks.length,
+          BigInt(0),
+          "Should not promote with only 99 confirmations"
+        )
     }
 
     test("promoteQualifiedBlocks - edge case: 199 minutes (just below threshold)") {
@@ -1467,8 +1565,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         var forksTree = scalus.prelude.SortedMap.empty.insert(blockHash, blockNode)
         var prevHash = blockHash
         var prevChainwork = BigInt(1001000)
-        for (h <- 1002 to 1101) {
-            val hash = ByteString.fromArray(Array.fill(32)(((h % 256).toByte)))
+        for h <- 1002 to 1101 do {
+            val hash = ByteString.fromArray(Array.fill(32)((h % 256).toByte))
             val node = BitcoinValidator.BlockNode(
               prevBlockHash = prevHash,
               height = h,
@@ -1496,15 +1594,17 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         val currentTime = BigInt(System.currentTimeMillis() / 1000)
 
         // Create 5 blocks, all old enough (201 min ago)
-        val blockHashes = (1001 to 1005).map(h => ByteString.fromArray(Array.fill(32)(((h % 256).toByte))))
+        val blockHashes =
+            (1001 to 1005).map(h => ByteString.fromArray(Array.fill(32)((h % 256).toByte)))
 
-        var forksTree: scalus.prelude.SortedMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] =
+        var forksTree
+            : scalus.prelude.SortedMap[BitcoinValidator.BlockHash, BitcoinValidator.BlockNode] =
             scalus.prelude.SortedMap.empty
         var prevHash = confirmedTip
         var prevChainwork = BigInt(1000000)
 
         // Add blocks 1001-1005
-        for ((hash, height) <- blockHashes.zip(1001 to 1005)) {
+        for (hash, height) <- blockHashes.zip(1001 to 1005) do {
             val node = BitcoinValidator.BlockNode(
               prevBlockHash = prevHash,
               height = height,
@@ -1518,8 +1618,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         }
 
         // Add more blocks to reach 100 confirmations (to height 1105)
-        for (h <- 1006 to 1105) {
-            val hash = ByteString.fromArray(Array.fill(32)(((h % 256).toByte)))
+        for h <- 1006 to 1105 do {
+            val hash = ByteString.fromArray(Array.fill(32)((h % 256).toByte))
             val node = BitcoinValidator.BlockNode(
               prevBlockHash = prevHash,
               height = h,
@@ -1542,8 +1642,11 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         assertEquals(promotedBlocks.length, BigInt(5), "Should promote all 5 qualified blocks")
 
         // Verify all promoted blocks are removed from tree
-        for (hash <- blockHashes) {
-            assert(BitcoinValidator.lookupBlock(updatedTree, hash).isEmpty, s"Block should be removed from tree")
+        for hash <- blockHashes do {
+            assert(
+              BitcoinValidator.lookupBlock(updatedTree, hash).isEmpty,
+              s"Block should be removed from tree"
+            )
         }
     }
 

@@ -83,14 +83,15 @@ case class UpdateOracleCommand(
                             return 1
                     }
 
-                if (!utxos.isSuccessful) {
+                if !utxos.isSuccessful then {
                     System.err.println(s"✗ Error fetching UTxOs: ${utxos.getResponse}")
                     return 1
                 }
 
                 import scala.jdk.CollectionConverters.*
                 val allUtxos = utxos.getValue.asScala.toList
-                val targetUtxo = allUtxos.find(u => u.getTxHash == txHash && u.getOutputIndex == outputIndex)
+                val targetUtxo =
+                    allUtxos.find(u => u.getTxHash == txHash && u.getOutputIndex == outputIndex)
 
                 targetUtxo match {
                     case None =>
@@ -109,7 +110,7 @@ case class UpdateOracleCommand(
                         println("Step 3: Parsing current ChainState datum...")
 
                         val inlineDatumHex = utxo.getInlineDatum
-                        if (inlineDatumHex == null || inlineDatumHex.isEmpty) {
+                        if inlineDatumHex == null || inlineDatumHex.isEmpty then {
                             System.err.println("✗ UTxO has no inline datum")
                             return 1
                         }
@@ -121,7 +122,9 @@ case class UpdateOracleCommand(
                                 data.to[BitcoinValidator.ChainState]
                             } catch {
                                 case e: Exception =>
-                                    System.err.println(s"✗ Error parsing ChainState datum: ${e.getMessage}")
+                                    System.err.println(
+                                      s"✗ Error parsing ChainState datum: ${e.getMessage}"
+                                    )
                                     e.printStackTrace()
                                     return 1
                             }
@@ -132,7 +135,8 @@ case class UpdateOracleCommand(
                         println(s"  Fork Tree Size: ${currentChainState.forksTree.size}")
 
                         // Determine block range
-                        val startHeight = fromBlock.getOrElse(currentChainState.blockHeight.toLong + 1)
+                        val startHeight =
+                            fromBlock.getOrElse(currentChainState.blockHeight.toLong + 1)
                         val endHeight = toBlock match {
                             case Some(h) => h
                             case None    =>
@@ -145,18 +149,20 @@ case class UpdateOracleCommand(
                                     info.blocks.toLong
                                 } catch {
                                     case e: Exception =>
-                                        System.err.println(s"✗ Error fetching blockchain info: ${e.getMessage}")
+                                        System.err.println(
+                                          s"✗ Error fetching blockchain info: ${e.getMessage}"
+                                        )
                                         return 1
                                 }
                         }
 
-                        if (startHeight > endHeight) {
+                        if startHeight > endHeight then {
                             System.err.println(s"✗ Invalid block range: $startHeight to $endHeight")
                             return 1
                         }
 
                         val numBlocks = (endHeight - startHeight + 1).toInt
-                        if (numBlocks > oracleConf.maxHeadersPerTx) {
+                        if numBlocks > oracleConf.maxHeadersPerTx then {
                             System.err.println(
                               s"✗ Too many blocks requested: $numBlocks (max: ${oracleConf.maxHeadersPerTx})"
                             )
@@ -173,21 +179,24 @@ case class UpdateOracleCommand(
                         given ec: ExecutionContext = ExecutionContext.global
                         val rpc = new SimpleBitcoinRpc(btcConf)
 
-                        val headersFuture: Future[Seq[BitcoinValidator.BlockHeader]] = Future.sequence(
-                          (startHeight to endHeight).map { height =>
-                              for {
-                                  hashHex <- rpc.getBlockHash(height.toInt)
-                                  headerInfo <- rpc.getBlockHeader(hashHex)
-                              } yield BitcoinChainState.convertHeader(headerInfo)
-                          }
-                        )
+                        val headersFuture: Future[Seq[BitcoinValidator.BlockHeader]] =
+                            Future.sequence(
+                              (startHeight to endHeight).map { height =>
+                                  for {
+                                      hashHex <- rpc.getBlockHash(height.toInt)
+                                      headerInfo <- rpc.getBlockHeader(hashHex)
+                                  } yield BitcoinChainState.convertHeader(headerInfo)
+                              }
+                            )
 
                         val headers: Seq[BitcoinValidator.BlockHeader] =
                             try {
                                 Await.result(headersFuture, 60.seconds)
                             } catch {
                                 case e: Exception =>
-                                    System.err.println(s"✗ Error fetching Bitcoin headers: ${e.getMessage}")
+                                    System.err.println(
+                                      s"✗ Error fetching Bitcoin headers: ${e.getMessage}"
+                                    )
                                     return 1
                             }
 
@@ -201,14 +210,21 @@ case class UpdateOracleCommand(
                         println("Step 5: Calculating new ChainState after update...")
 
                         // Calculate new ChainState using shared validator logic
-                        val validityTime = OracleTransactions.computeValidityIntervalTime(backendService)
+                        val validityTime =
+                            OracleTransactions.computeValidityIntervalTime(backendService)
                         println(s"  Using validity interval time: $validityTime")
                         val newChainState =
                             try {
-                                BitcoinValidator.computeUpdateOracleState(currentChainState, headersList, validityTime)
+                                BitcoinValidator.computeUpdateOracleState(
+                                  currentChainState,
+                                  headersList,
+                                  validityTime
+                                )
                             } catch {
                                 case e: Exception =>
-                                    System.err.println(s"✗ Error computing new state: ${e.getMessage}")
+                                    System.err.println(
+                                      s"✗ Error computing new state: ${e.getMessage}"
+                                    )
                                     e.printStackTrace()
                                     return 1
                             }
@@ -242,7 +258,9 @@ case class UpdateOracleCommand(
                                 println()
                                 println("Next steps:")
                                 println(s"  1. Wait for transaction confirmation")
-                                println(s"  2. Verify oracle: binocular verify-oracle $resultTxHash:0")
+                                println(
+                                  s"  2. Verify oracle: binocular verify-oracle $resultTxHash:0"
+                                )
                                 0
                             case Left(errorMsg) =>
                                 println()

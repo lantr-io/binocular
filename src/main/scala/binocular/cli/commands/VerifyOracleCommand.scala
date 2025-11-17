@@ -1,6 +1,6 @@
 package binocular.cli.commands
 
-import binocular.{OracleConfig, CardanoConfig}
+import binocular.{CardanoConfig, OracleConfig}
 import binocular.cli.{Command, CommandHelpers}
 
 import scala.jdk.CollectionConverters.*
@@ -38,7 +38,7 @@ case class VerifyOracleCommand(utxo: String) extends Command {
                             val utxoService = backendService.getUtxoService
                             val utxos = utxoService.getTxOutput(txHash, outputIndex)
 
-                            if (!utxos.isSuccessful || utxos.getValue == null) {
+                            if !utxos.isSuccessful || utxos.getValue == null then {
                                 System.err.println(s"Error: UTxO not found at $txHash:$outputIndex")
                                 return 1
                             }
@@ -53,7 +53,7 @@ case class VerifyOracleCommand(utxo: String) extends Command {
                             println(s"  Lovelace: $lovelace")
 
                             // Verify it's at the oracle script address
-                            if (foundUtxo.getAddress != oracle.scriptAddress) {
+                            if foundUtxo.getAddress != oracle.scriptAddress then {
                                 println()
                                 println(s"⚠ Warning: UTxO is not at the oracle script address")
                                 println(s"  Expected: ${oracle.scriptAddress}")
@@ -63,7 +63,9 @@ case class VerifyOracleCommand(utxo: String) extends Command {
                             }
 
                             // Try to parse datum
-                            val datumCbor = Option(foundUtxo.getInlineDatum).orElse(Option(foundUtxo.getDataHash))
+                            val datumCbor = Option(foundUtxo.getInlineDatum).orElse(
+                              Option(foundUtxo.getDataHash)
+                            )
                             datumCbor match {
                                 case Some(datum) =>
                                     println()
@@ -71,7 +73,9 @@ case class VerifyOracleCommand(utxo: String) extends Command {
                                     println(s"  CBOR (truncated): ${datum.take(100)}...")
 
                                     println()
-                                    println("✓ Oracle UTxO has datum (ChainState parsing not yet implemented)")
+                                    println(
+                                      "✓ Oracle UTxO has datum (ChainState parsing not yet implemented)"
+                                    )
 
                                 case None =>
                                     println()
