@@ -18,7 +18,7 @@ import scala.concurrent.{Await, ExecutionContext}
 class InitOracleCommandIntegrationTest extends CliIntegrationTestBase {
 
     // Override default test timeout (30 seconds) to allow for Docker container startup
-    override val munitTimeout = scala.concurrent.duration.Duration(120, "s")
+    override val munitTimeout = scala.concurrent.duration.Duration(360, "s")
 
     test("init-oracle: successfully creates oracle with Bitcoin fixture data") {
         withYaciDevKit() { devKit =>
