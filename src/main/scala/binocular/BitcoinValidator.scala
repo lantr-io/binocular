@@ -1092,16 +1092,16 @@ object BitcoinValidator extends Validator {
 }
 
 object BitcoinContract {
-    inline given Compiler.Options = Compiler.Options(
+    given Compiler.Options = Compiler.Options(
       optimizeUplc = true,
       generateErrorTraces = true,
       targetLoweringBackend = TargetLoweringBackend.SirToUplcV3Lowering
     )
     def compileBitcoinProgram(): Program =
-        val sir = Compiler.compile(BitcoinValidator.validate)
+        val sir = Compiler.compileWithOptions(summon[Compiler.Options], BitcoinValidator.validate)
         //    println(sir.showHighlighted)
         //    sir.toUplcOptimized(generateErrorTraces = false).plutusV3
-        sir.toUplcOptimized(generateErrorTraces = true).plutusV3
+        sir.toUplcOptimized().plutusV3
     //    println(uplc.showHighlighted)
 
     lazy val bitcoinProgram: Program = compileBitcoinProgram()
