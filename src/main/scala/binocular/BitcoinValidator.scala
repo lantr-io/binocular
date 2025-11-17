@@ -936,7 +936,7 @@ object BitcoinValidator extends Validator {
         blockHeaders: List[BlockHeader],
         currentTime: BigInt
     ): ChainState = {
-        scalus.prelude.log("computeUpdateOracleState START")
+        log("computeUpdateOracleState START")
         
         // Validate fork submission rule (prevents stalling attack and duplicates)
         validateForkSubmission(blockHeaders, prevState.forksTree, prevState.blockHash)
@@ -951,10 +951,10 @@ object BitcoinValidator extends Validator {
         ): scalus.prelude.SortedMap[BlockHash, BlockNode] = {
             headers match
                 case List.Nil =>
-                    scalus.prelude.log("processHeaders done")
+                    log("processHeaders done")
                     currentForksTree
                 case List.Cons(header, tail) =>
-                    scalus.prelude.log("processHeaders adding block")
+                    log("processHeaders adding block")
                     val updatedTree = addBlockToForksTree(
                       currentForksTree,
                       header,
@@ -964,22 +964,22 @@ object BitcoinValidator extends Validator {
                     processHeaders(tail, updatedTree)
         }
 
-        scalus.prelude.log("processing headers")
+        log("processing headers")
         val forksTreeAfterAddition = processHeaders(blockHeaders, prevState.forksTree)
-        scalus.prelude.log("headers processed")
+        log("headers processed")
 
         // Select canonical chain (highest chainwork)
-        scalus.prelude.log("selecting canonical chain")
+        log("selecting canonical chain")
         val canonicalTip = selectCanonicalChain(forksTreeAfterAddition) match
             case scalus.prelude.Option.Some(tip) => 
-                scalus.prelude.log("canonical tip found")
+                log("canonical tip found")
                 tip
             case scalus.prelude.Option.None => 
-                scalus.prelude.log("canonical tip is prev hash")
+                log("canonical tip is prev hash")
                 prevState.blockHash
 
         // Promote qualified blocks (100+ confirmations AND 200+ min old)
-        scalus.prelude.log("promoting qualified blocks")
+        log("promoting qualified blocks")
         val (promotedBlocks, forksTreeAfterPromotion) = promoteQualifiedBlocks(
           forksTreeAfterAddition,
           canonicalTip,
@@ -988,14 +988,14 @@ object BitcoinValidator extends Validator {
         )
         
         if promotedBlocks.isEmpty then
-            scalus.prelude.log("no blocks promoted")
+            log("no blocks promoted")
         else
-            scalus.prelude.log("blocks promoted")
+            log("blocks promoted")
 
         // Run garbage collection if forks tree exceeds size limit
         val finalForksTree =
             if forksTreeAfterPromotion.toList.size > MaxForksTreeSize then
-                scalus.prelude.log("running GC")
+                log("running GC")
                 garbageCollect(
                   forksTreeAfterPromotion,
                   canonicalTip,
@@ -1003,21 +1003,22 @@ object BitcoinValidator extends Validator {
                   currentTime
                 )
             else 
-                scalus.prelude.log("skipping GC")
+                log("skipping GC")
                 forksTreeAfterPromotion
 
         // Compute new state
         // If blocks were promoted, update confirmed state
-        scalus.prelude.log("computing final state")
+        log("computing final state")
         
         // Log final forksTree size
         val finalTreeSize = finalForksTree.toList.size
-        scalus.prelude.log("ON-CHAIN final forksTree size:")
-        scalus.prelude.log(scalus.prelude.show(finalTreeSize))
-        
+        log("ON-CHAIN final forksTree size:")
+        log(scalus.prelude.show(finalTreeSize))
+        log(scalus.prelude.show(finalForksTree.toList.toData))
+
         if promotedBlocks.isEmpty then
             // No promotion: only forks tree changed
-            scalus.prelude.log("no promotion, returning state with updated forks")
+            log("no promotion, returning state with updated forks")
             ChainState(
               blockHeight = prevState.blockHeight,
               blockHash = prevState.blockHash,
@@ -1030,7 +1031,7 @@ object BitcoinValidator extends Validator {
               forksTree = finalForksTree
             )
         else
-            scalus.prelude.log("promotion occurred, updating confirmed state")
+            log("promotion occurred, updating confirmed state")
             // Promotion occurred: update confirmed state
             // Get the highest promoted block info
             val latestPromotedHash = promotedBlocks.head // List is sorted, first is highest
