@@ -19,19 +19,19 @@ case class ConfigCommand() extends Command {
         println("\n[Bitcoin Node]")
         bitcoinConfig match {
             case Right(config) => println(config)
-            case Left(err) => println(s"Error: $err")
+            case Left(err)     => println(s"Error: $err")
         }
 
         println("\n[Cardano Backend]")
         cardanoConfig match {
             case Right(config) => println(config)
-            case Left(err) => println(s"Error: $err")
+            case Left(err)     => println(s"Error: $err")
         }
 
         println("\n[Oracle]")
         oracleConfig match {
             case Right(config) => println(config)
-            case Left(err) => println(s"Error: $err")
+            case Left(err)     => println(s"Error: $err")
         }
 
         println("\n[Wallet]")
@@ -40,13 +40,14 @@ case class ConfigCommand() extends Command {
                 println(config)
                 config.getAddress() match {
                     case Right(addr) => println(s"Address: $addr")
-                    case Left(err) => println(s"Error getting address: $err")
+                    case Left(err)   => println(s"Error getting address: $err")
                 }
             case Left(err) => println(s"Error: $err")
         }
 
         // Return error if any config failed
-        val hasError = List(bitcoinConfig, cardanoConfig, oracleConfig, walletConfig).exists(_.isLeft)
-        if (hasError) 1 else 0
+        val hasError =
+            List(bitcoinConfig, cardanoConfig, oracleConfig, walletConfig).exists(_.isLeft)
+        if hasError then 1 else 0
     }
 }

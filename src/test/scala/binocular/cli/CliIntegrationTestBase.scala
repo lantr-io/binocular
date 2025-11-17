@@ -1,6 +1,6 @@
 package binocular.cli
 
-import binocular.{BitcoinNodeConfig, CardanoConfig, OracleConfig, WalletConfig, SimpleBitcoinRpc, BlockHeaderInfo, BlockInfo, TransactionInfo, RawTransactionInfo, BlockchainInfo, YaciDevKitSpec}
+import binocular.{BitcoinNodeConfig, BlockHeaderInfo, BlockInfo, BlockchainInfo, CardanoConfig, OracleConfig, RawTransactionInfo, SimpleBitcoinRpc, TransactionInfo, WalletConfig, YaciDevKitSpec}
 import com.bloxbean.cardano.client.backend.api.BackendService
 import com.bloxbean.cardano.client.account.Account
 import scala.concurrent.{ExecutionContext, Future}
@@ -10,14 +10,16 @@ import upickle.default.*
 /** Base trait for CLI integration tests
   *
   * Provides infrastructure for testing CLI commands with:
-  * - Mock Bitcoin RPC using saved fixture data
-  * - Yaci DevKit for Cardano interactions
-  * - Helper methods for common test scenarios
+  *   - Mock Bitcoin RPC using saved fixture data
+  *   - Yaci DevKit for Cardano interactions
+  *   - Helper methods for common test scenarios
   */
 trait CliIntegrationTestBase extends YaciDevKitSpec {
 
     /** Mock Bitcoin RPC that reads from test fixtures */
-    class MockBitcoinRpc(fixtureDir: String = "src/test/resources/bitcoin_blocks")(using ec: ExecutionContext) {
+    class MockBitcoinRpc(fixtureDir: String = "src/test/resources/bitcoin_blocks")(using
+        ec: ExecutionContext
+    ) {
 
         private def loadBlockFixture(height: Int): BlockFixture = {
             val file = s"$fixtureDir/block_$height.json"
@@ -29,14 +31,14 @@ trait CliIntegrationTestBase extends YaciDevKitSpec {
             // Linear search through fixtures - good enough for tests
             val dir = new java.io.File(fixtureDir)
             dir.listFiles()
-              .filter(_.getName.startsWith("block_"))
-              .filter(_.getName.endsWith(".json"))
-              .filterNot(_.getName.contains("merkle_proofs")) // Skip merkle proof files
-              .map { f =>
-                  val json = Source.fromFile(f).mkString
-                  read[BlockFixture](json)
-              }
-              .find(_.hash == hash)
+                .filter(_.getName.startsWith("block_"))
+                .filter(_.getName.endsWith(".json"))
+                .filterNot(_.getName.contains("merkle_proofs")) // Skip merkle proof files
+                .map { f =>
+                    val json = Source.fromFile(f).mkString
+                    read[BlockFixture](json)
+                }
+                .find(_.hash == hash)
         }
 
         def getBlockHash(height: Int): Future[String] = {
@@ -49,24 +51,26 @@ trait CliIntegrationTestBase extends YaciDevKitSpec {
         def getBlockHeader(hash: String): Future[BlockHeaderInfo] = {
             Future {
                 val fixture = loadBlockByHash(hash).getOrElse(
-                    throw new RuntimeException(s"Block not found: $hash")
+                  throw new RuntimeException(s"Block not found: $hash")
                 )
 
                 // Validate required fields are present
-                if (fixture.bits.isEmpty) {
-                    throw new RuntimeException(s"Missing required field 'bits' for block ${fixture.height} (${fixture.hash})")
+                if fixture.bits.isEmpty then {
+                    throw new RuntimeException(
+                      s"Missing required field 'bits' for block ${fixture.height} (${fixture.hash})"
+                    )
                 }
 
                 BlockHeaderInfo(
-                    hash = fixture.hash,
-                    height = fixture.height,
-                    version = fixture.version.toInt,
-                    merkleroot = fixture.merkleroot,
-                    time = fixture.timestamp,
-                    nonce = fixture.nonce,
-                    bits = fixture.bits,
-                    difficulty = 0.0, // Not used in our tests
-                    previousblockhash = fixture.previousblockhash
+                  hash = fixture.hash,
+                  height = fixture.height,
+                  version = fixture.version.toInt,
+                  merkleroot = fixture.merkleroot,
+                  time = fixture.timestamp,
+                  nonce = fixture.nonce,
+                  bits = fixture.bits,
+                  difficulty = 0.0, // Not used in our tests
+                  previousblockhash = fixture.previousblockhash
                 )
             }
         }
@@ -74,27 +78,29 @@ trait CliIntegrationTestBase extends YaciDevKitSpec {
         def getBlock(hash: String): Future[BlockInfo] = {
             Future {
                 val fixture = loadBlockByHash(hash).getOrElse(
-                    throw new RuntimeException(s"Block not found: $hash")
+                  throw new RuntimeException(s"Block not found: $hash")
                 )
 
                 // Validate required fields are present
-                if (fixture.bits.isEmpty) {
-                    throw new RuntimeException(s"Missing required field 'bits' for block ${fixture.height} (${fixture.hash})")
+                if fixture.bits.isEmpty then {
+                    throw new RuntimeException(
+                      s"Missing required field 'bits' for block ${fixture.height} (${fixture.hash})"
+                    )
                 }
 
                 BlockInfo(
-                    hash = fixture.hash,
-                    height = fixture.height,
-                    version = fixture.version.toInt,
-                    merkleroot = fixture.merkleroot,
-                    time = fixture.timestamp,
-                    nonce = fixture.nonce,
-                    bits = fixture.bits,
-                    difficulty = 0.0,
-                    previousblockhash = fixture.previousblockhash,
-                    tx = fixture.transactions.map { txid =>
-                        TransactionInfo(txid = txid, hex = "")
-                    }
+                  hash = fixture.hash,
+                  height = fixture.height,
+                  version = fixture.version.toInt,
+                  merkleroot = fixture.merkleroot,
+                  time = fixture.timestamp,
+                  nonce = fixture.nonce,
+                  bits = fixture.bits,
+                  difficulty = 0.0,
+                  previousblockhash = fixture.previousblockhash,
+                  tx = fixture.transactions.map { txid =>
+                      TransactionInfo(txid = txid, hex = "")
+                  }
                 )
             }
         }
@@ -103,24 +109,25 @@ trait CliIntegrationTestBase extends YaciDevKitSpec {
             Future {
                 // Find which block contains this transaction
                 val dir = new java.io.File(fixtureDir)
-                val blockWithTx = dir.listFiles()
-                  .filter(_.getName.startsWith("block_"))
-                  .filter(_.getName.endsWith(".json"))
-                  .filterNot(_.getName.contains("merkle_proofs"))
-                  .map { f =>
-                      val json = Source.fromFile(f).mkString
-                      read[BlockFixture](json)
-                  }
-                  .find(_.transactions.contains(txid))
+                val blockWithTx = dir
+                    .listFiles()
+                    .filter(_.getName.startsWith("block_"))
+                    .filter(_.getName.endsWith(".json"))
+                    .filterNot(_.getName.contains("merkle_proofs"))
+                    .map { f =>
+                        val json = Source.fromFile(f).mkString
+                        read[BlockFixture](json)
+                    }
+                    .find(_.transactions.contains(txid))
 
                 blockWithTx match {
                     case Some(block) =>
                         RawTransactionInfo(
-                            txid = txid,
-                            hash = txid,
-                            hex = "",
-                            blockhash = Some(block.hash),
-                            confirmations = 10 // Assume confirmed
+                          txid = txid,
+                          hash = txid,
+                          hex = "",
+                          blockhash = Some(block.hash),
+                          confirmations = 10 // Assume confirmed
                         )
                     case None =>
                         throw new RuntimeException(s"Transaction not found: $txid")
@@ -132,24 +139,25 @@ trait CliIntegrationTestBase extends YaciDevKitSpec {
             Future {
                 // Find highest block in fixtures
                 val dir = new java.io.File(fixtureDir)
-                val maxHeight = dir.listFiles()
-                  .filter(_.getName.startsWith("block_"))
-                  .filter(_.getName.endsWith(".json"))
-                  .filterNot(_.getName.contains("merkle_proofs"))
-                  .map { f =>
-                      val json = Source.fromFile(f).mkString
-                      read[BlockFixture](json)
-                  }
-                  .map(_.height)
-                  .maxOption
-                  .getOrElse(0)
+                val maxHeight = dir
+                    .listFiles()
+                    .filter(_.getName.startsWith("block_"))
+                    .filter(_.getName.endsWith(".json"))
+                    .filterNot(_.getName.contains("merkle_proofs"))
+                    .map { f =>
+                        val json = Source.fromFile(f).mkString
+                        read[BlockFixture](json)
+                    }
+                    .map(_.height)
+                    .maxOption
+                    .getOrElse(0)
 
                 val bestBlock = loadBlockFixture(maxHeight)
                 BlockchainInfo(
-                    chain = "test",
-                    blocks = maxHeight,
-                    headers = maxHeight,
-                    bestblockhash = bestBlock.hash
+                  chain = "test",
+                  blocks = maxHeight,
+                  headers = maxHeight,
+                  bestblockhash = bestBlock.hash
                 )
             }
         }
@@ -178,31 +186,32 @@ trait CliIntegrationTestBase extends YaciDevKitSpec {
     ): (BitcoinNodeConfig, CardanoConfig, OracleConfig, WalletConfig) = {
 
         val bitcoinConfig = BitcoinNodeConfig(
-            url = "mock://bitcoin-rpc",
-            username = "test",
-            password = "test",
-            network = binocular.BitcoinNetwork.Testnet
+          url = "mock://bitcoin-rpc",
+          username = "test",
+          password = "test",
+          network = binocular.BitcoinNetwork.Testnet
         )
 
         val cardanoConfig = CardanoConfig(
-            backend = binocular.CardanoBackend.Blockfrost,
-            network = binocular.CardanoNetwork.Testnet,
-            blockfrost = binocular.BlockfrostConfig(apiUrl = "", projectId = ""),
-            koios = binocular.KoiosConfig(apiUrl = ""),
-            ogmios = binocular.OgmiosConfig(url = "")
+          backend = binocular.CardanoBackend.Blockfrost,
+          network = binocular.CardanoNetwork.Testnet,
+          blockfrost = binocular.BlockfrostConfig(apiUrl = "", projectId = ""),
+          koios = binocular.KoiosConfig(apiUrl = ""),
+          ogmios = binocular.OgmiosConfig(url = "")
         )
 
         val oracleConfig = binocular.OracleConfig(
-            network = binocular.CardanoNetwork.Testnet,
-            startHeight = startHeight,
-            maxHeadersPerTx = 10,
-            pollInterval = 60
+          network = binocular.CardanoNetwork.Testnet,
+          startHeight = startHeight,
+          maxHeadersPerTx = 10,
+          pollInterval = 60
         )
 
-        val mnemonic = "test test test test test test test test test test test test test test test test test test test test test test test sauce"
+        val mnemonic =
+            "test test test test test test test test test test test test test test test test test test test test test test test sauce"
         val walletConfig = binocular.WalletConfig(
-            mnemonic = mnemonic,
-            network = binocular.CardanoNetwork.Testnet
+          mnemonic = mnemonic,
+          network = binocular.CardanoNetwork.Testnet
         )
 
         (bitcoinConfig, cardanoConfig, oracleConfig, walletConfig)

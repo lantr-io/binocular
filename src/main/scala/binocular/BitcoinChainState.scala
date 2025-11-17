@@ -28,16 +28,16 @@ object BitcoinChainState {
 
         // Version (4 bytes, little-endian) - Use actual version from RPC
         val version = header.version.toInt
-        buffer(offset) = (version & 0xFF).toByte
-        buffer(offset + 1) = ((version >> 8) & 0xFF).toByte
-        buffer(offset + 2) = ((version >> 16) & 0xFF).toByte
-        buffer(offset + 3) = ((version >> 24) & 0xFF).toByte
+        buffer(offset) = (version & 0xff).toByte
+        buffer(offset + 1) = ((version >> 8) & 0xff).toByte
+        buffer(offset + 2) = ((version >> 16) & 0xff).toByte
+        buffer(offset + 3) = ((version >> 24) & 0xff).toByte
         offset += 4
 
         // Previous block hash (32 bytes, reversed from hex)
         val prevHash = header.previousblockhash
-          .map(h => hexToByteString(h).bytes.reverse.toArray)
-          .getOrElse(new Array[Byte](32))
+            .map(h => hexToByteString(h).bytes.reverse.toArray)
+            .getOrElse(new Array[Byte](32))
         System.arraycopy(prevHash, 0, buffer, offset, 32)
         offset += 32
 
@@ -48,10 +48,10 @@ object BitcoinChainState {
 
         // Timestamp (4 bytes, little-endian)
         val time = header.time.toInt
-        buffer(offset) = (time & 0xFF).toByte
-        buffer(offset + 1) = ((time >> 8) & 0xFF).toByte
-        buffer(offset + 2) = ((time >> 16) & 0xFF).toByte
-        buffer(offset + 3) = ((time >> 24) & 0xFF).toByte
+        buffer(offset) = (time & 0xff).toByte
+        buffer(offset + 1) = ((time >> 8) & 0xff).toByte
+        buffer(offset + 2) = ((time >> 16) & 0xff).toByte
+        buffer(offset + 3) = ((time >> 24) & 0xff).toByte
         offset += 4
 
         // Bits (4 bytes, little-endian - must reverse from display hex to internal byte order)
@@ -61,31 +61,35 @@ object BitcoinChainState {
 
         // Nonce (4 bytes, little-endian)
         val nonce = header.nonce.toInt
-        buffer(offset) = (nonce & 0xFF).toByte
-        buffer(offset + 1) = ((nonce >> 8) & 0xFF).toByte
-        buffer(offset + 2) = ((nonce >> 16) & 0xFF).toByte
-        buffer(offset + 3) = ((nonce >> 24) & 0xFF).toByte
+        buffer(offset) = (nonce & 0xff).toByte
+        buffer(offset + 1) = ((nonce >> 8) & 0xff).toByte
+        buffer(offset + 2) = ((nonce >> 16) & 0xff).toByte
+        buffer(offset + 3) = ((nonce >> 24) & 0xff).toByte
 
-        val headerHex = buffer.map(b => f"${b & 0xFF}%02x").mkString
+        val headerHex = buffer.map(b => f"${b & 0xff}%02x").mkString
         println(s"  Built header (80 bytes): $headerHex")
 
         buffer
     }
 
-    /** Convert BlockHeaderInfo to BitcoinValidator.BlockHeader */
-    def convertHeader(header: BlockHeaderInfo): BitcoinValidator.BlockHeader =
-        BitcoinValidator.BlockHeader(ByteString.fromArray(buildRawHeader(header)))
+    /** Convert BlockHeaderInfo to BlockHeader */
+    def convertHeader(header: BlockHeaderInfo): BlockHeader =
+        BlockHeader(ByteString.fromArray(buildRawHeader(header)))
 
     /** Fetch initial ChainState from Bitcoin RPC
       *
-      * This creates a genesis ChainState for the oracle, starting from a specific block height.
-      * It fetches the block header and the difficulty adjustment block to construct a valid
-      * initial state.
+      * This creates a genesis ChainState for the oracle, starting from a specific block height. It
+      * fetches the block header and the difficulty adjustment block to construct a valid initial
+      * state.
       *
-      * @param rpc SimpleBitcoinRpc client
-      * @param blockHeight Bitcoin block height to start from
-      * @param ec ExecutionContext for async operations
-      * @return Future[ChainState] with initial oracle state
+      * @param rpc
+      *   SimpleBitcoinRpc client
+      * @param blockHeight
+      *   Bitcoin block height to start from
+      * @param ec
+      *   ExecutionContext for async operations
+      * @return
+      *   Future[ChainState] with initial oracle state
       */
     def getInitialChainState(
         rpc: SimpleBitcoinRpc,

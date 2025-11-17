@@ -48,7 +48,7 @@ class BitcoinHeaderFixturesTest extends FunSuite {
 
         // Verify each header's prevHash matches previous header's hash
         val headers = fixture.headers
-        for (i <- 1 until headers.length) {
+        for i <- 1 until headers.length do {
             val prevHeader = headers(i - 1)
             val currentHeader = headers(i)
 

@@ -1,6 +1,6 @@
 package binocular.cli.commands
 
-import binocular.{OracleConfig, CardanoConfig}
+import binocular.{CardanoConfig, OracleConfig}
 import binocular.cli.Command
 
 import scala.jdk.CollectionConverters.*
@@ -32,11 +32,13 @@ case class ListOraclesCommand(limit: Int) extends Command {
                                 .getUtxos(scriptAddress, limit, 1)
                                 .getValue
 
-                            if (utxos.isEmpty) {
+                            if utxos.isEmpty then {
                                 println("No oracle UTxOs found.")
                                 println()
                                 println("To initialize a new oracle, run:")
-                                println("  binocular init-oracle --start-block <BITCOIN_BLOCK_HEIGHT>")
+                                println(
+                                  "  binocular init-oracle --start-block <BITCOIN_BLOCK_HEIGHT>"
+                                )
                             } else {
                                 val utxoList = utxos.asScala.toList
 

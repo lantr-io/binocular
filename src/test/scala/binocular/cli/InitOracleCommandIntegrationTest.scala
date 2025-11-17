@@ -1,7 +1,7 @@
 package binocular.cli
 
 import binocular.cli.commands.InitOracleCommand
-import binocular.{BitcoinChainState, BitcoinValidator, OracleTransactions}
+import binocular.{BitcoinChainState, BitcoinValidator, ChainState, OracleTransactions}
 import com.bloxbean.cardano.client.address.Address
 import scalus.builtin.Data
 import scalus.utils.Hex.hexToBytes
@@ -12,8 +12,8 @@ import scala.concurrent.{Await, ExecutionContext}
 /** Integration test for InitOracleCommand
   *
   * Tests the complete flow of initializing an oracle:
-  *   1. Fetches Bitcoin block header from mock RPC (using fixtures) 2. Creates initial ChainState 3. Submits
-  *      transaction to Yaci DevKit 4. Verifies oracle UTxO exists with correct datum
+  *   1. Fetches Bitcoin block header from mock RPC (using fixtures) 2. Creates initial ChainState
+  *      3. Submits transaction to Yaci DevKit 4. Verifies oracle UTxO exists with correct datum
   */
 class InitOracleCommandIntegrationTest extends CliIntegrationTestBase {
 
@@ -71,7 +71,8 @@ class InitOracleCommandIntegrationTest extends CliIntegrationTestBase {
                     println(s"[Test] ✓ Oracle initialized: $txHash")
 
                     // Wait for transaction confirmation
-                    val confirmed = devKit.waitForTransaction(txHash, maxAttempts = 30, delayMs = 1000)
+                    val confirmed =
+                        devKit.waitForTransaction(txHash, maxAttempts = 30, delayMs = 1000)
                     assert(confirmed, s"Transaction $txHash did not confirm")
                     println(s"[Test] ✓ Transaction confirmed")
 
@@ -79,14 +80,16 @@ class InitOracleCommandIntegrationTest extends CliIntegrationTestBase {
                     Thread.sleep(2000) // Give some time for UTxO to be indexed
                     val utxos = devKit.getUtxos(scriptAddress.getAddress)
                     assert(utxos.nonEmpty, "No UTxOs found at oracle address")
-                    println(s"[Test] ✓ Oracle UTxO created: ${utxos.size} UTxO(s) at script address")
+                    println(
+                      s"[Test] ✓ Oracle UTxO created: ${utxos.size} UTxO(s) at script address"
+                    )
 
                     // Verify datum
                     val oracleUtxo = utxos.head
                     val inlineDatum = oracleUtxo.getInlineDatum
                     assert(inlineDatum != null && inlineDatum.nonEmpty, "Oracle UTxO has no datum")
                     val data = Data.fromCbor(inlineDatum.hexToBytes)
-                    val chainState = data.to[BitcoinValidator.ChainState]
+                    val chainState = data.to[ChainState]
 
                     assert(
                       chainState.blockHeight == startHeight,
@@ -134,7 +137,9 @@ class InitOracleCommandIntegrationTest extends CliIntegrationTestBase {
                     case e: Exception =>
                         println(s"[Test] ✓ Correctly failed with: ${e.getMessage}")
                         assert(
-                          e.getMessage.contains("No such file") || e.getMessage.contains("not found") || e.getMessage
+                          e.getMessage.contains("No such file") || e.getMessage.contains(
+                            "not found"
+                          ) || e.getMessage
                               .contains("FileNotFoundException")
                         )
                 }

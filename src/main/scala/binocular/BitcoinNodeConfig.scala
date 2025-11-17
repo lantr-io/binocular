@@ -5,11 +5,10 @@ import java.net.URI
 
 /** Configuration for Bitcoin node connection
   *
-  * Supports both local and remote Bitcoin Core nodes.
-  * Can be configured via:
-  * 1. application.conf file
-  * 2. Environment variables
-  * 3. Direct construction
+  * Supports both local and remote Bitcoin Core nodes. Can be configured via:
+  *   1. application.conf file
+  *   2. Environment variables
+  *   3. Direct construction
   *
   * Examples:
   * {{{
@@ -40,14 +39,15 @@ case class BitcoinNodeConfig(
     password: String,
     network: BitcoinNetwork = BitcoinNetwork.Mainnet
 ) {
+
     /** Get URI for Bitcoin node */
     def uri: URI = new URI(url)
 
     /** Validate configuration */
     def validate(): Either[String, Unit] = {
-        if (url.isEmpty) Left("Bitcoin node URL cannot be empty")
+        if url.isEmpty then Left("Bitcoin node URL cannot be empty")
         // Allow empty username/password for API-key-in-URL services (QuickNode, GetBlock)
-        else if (!url.startsWith("http://") && !url.startsWith("https://"))
+        else if !url.startsWith("http://") && !url.startsWith("https://") then
             Left(s"Bitcoin node URL must start with http:// or https://, got: $url")
         else Right(())
     }
@@ -75,10 +75,10 @@ object BitcoinNodeConfig {
     /** Load from environment variables
       *
       * Expected environment variables:
-      * - BITCOIN_NODE_URL (or bitcoind_rpc_url)
-      * - BITCOIN_NODE_USER (or bitcoind_rpc_user)
-      * - BITCOIN_NODE_PASSWORD (or bitcoind_rpc_password)
-      * - BITCOIN_NETWORK (optional, defaults to mainnet)
+      *   - BITCOIN_NODE_URL (or bitcoind_rpc_url)
+      *   - BITCOIN_NODE_USER (or bitcoind_rpc_user)
+      *   - BITCOIN_NODE_PASSWORD (or bitcoind_rpc_password)
+      *   - BITCOIN_NETWORK (optional, defaults to mainnet)
       */
     def fromEnv(): Either[String, BitcoinNodeConfig] = {
         val url = Option(System.getenv("BITCOIN_NODE_URL"))
@@ -122,10 +122,11 @@ object BitcoinNodeConfig {
             val url = bitcoinConfig.getString("url")
             val username = bitcoinConfig.getString("username")
             val password = bitcoinConfig.getString("password")
-            val network = if (bitcoinConfig.hasPath("network"))
-                parseNetwork(bitcoinConfig.getString("network")).getOrElse(BitcoinNetwork.Mainnet)
-            else
-                BitcoinNetwork.Mainnet
+            val network =
+                if bitcoinConfig.hasPath("network") then
+                    parseNetwork(bitcoinConfig.getString("network"))
+                        .getOrElse(BitcoinNetwork.Mainnet)
+                else BitcoinNetwork.Mainnet
 
             val nodeConfig = BitcoinNodeConfig(url, username, password, network)
             nodeConfig.validate().map(_ => nodeConfig)
@@ -137,9 +138,9 @@ object BitcoinNodeConfig {
 
     /** Load from config with fallback to environment variables
       *
-      * 1. Try environment variables first (highest priority)
-      * 2. Fall back to application.conf
-      * 3. Return error if neither works
+      *   1. Try environment variables first (highest priority)
+      *   2. Fall back to application.conf
+      *   3. Return error if neither works
       */
     def load(): Either[String, BitcoinNodeConfig] = {
         fromEnv().orElse(fromConfig())
@@ -167,7 +168,7 @@ object BitcoinNodeConfig {
         password: String,
         useSsl: Boolean = false
     ): BitcoinNodeConfig = {
-        val protocol = if (useSsl) "https" else "http"
+        val protocol = if useSsl then "https" else "http"
         BitcoinNodeConfig(
           url = s"$protocol://$host:$port",
           username = username,

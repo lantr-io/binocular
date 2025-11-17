@@ -2,7 +2,7 @@ scalaVersion := "3.3.7"
 
 //val scalusVersion = "0.13.0"
 //val scalusVersion = "0.13.0+207-58f4bcc1+20251113-0824-SNAPSHOT"
-val scalusVersion = "0.13.0+264-a27ef533-SNAPSHOT"
+val scalusVersion = "0.13.0+280-7644b60b-SNAPSHOT"
 
 scalacOptions ++= Seq("-deprecation", "-feature")
 
@@ -11,7 +11,6 @@ testFrameworks += new TestFramework("munit.Framework")
 Test / parallelExecution := false
 
 Test / javaOptions ++= Seq("-Xmx2g")
-
 
 Global / onChangedBuildSource := ReloadOnSourceChanges
 
@@ -24,7 +23,7 @@ libraryDependencies ++= Seq(
   "org.scalus" %% "scalus-bloxbean-cardano-client-lib" % scalusVersion,
   "com.lihaoyi" %% "upickle" % "4.3.2",
   "com.lihaoyi" %% "os-lib" % "0.11.3" % Test,
-  "com.typesafe" % "config" % "1.4.3",  // Configuration library
+  "com.typesafe" % "config" % "1.4.3", // Configuration library
   "org.slf4j" % "slf4j-simple" % "2.0.17",
   "org.bouncycastle" % "bcprov-jdk18on" % "1.82",
   ("org.bitcoin-s" % "bitcoin-s-bitcoind-rpc_2.13" % "1.9.11").excludeAll(

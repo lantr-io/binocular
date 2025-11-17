@@ -13,8 +13,8 @@ import scala.util.Using
 
 /** Base trait for integration tests using Yaci DevKit
   *
-  * Provides a local Cardano devnet via Docker container for testing smart contracts
-  * and transactions in a controlled environment.
+  * Provides a local Cardano devnet via Docker container for testing smart contracts and
+  * transactions in a controlled environment.
   *
   * Usage:
   * {{{
@@ -55,7 +55,8 @@ trait YaciDevKitSpec extends FunSuite {
             container.getBackendService.getEpochService.getProtocolParameters().getValue
 
         /** Get transaction service for submitting transactions */
-        def getTransactionService: TransactionService = container.getBackendService.getTransactionService
+        def getTransactionService: TransactionService =
+            container.getBackendService.getTransactionService
 
         /** Get UTXOs for an address */
         def getUtxos(address: String): List[Utxo] = {
@@ -71,10 +72,14 @@ trait YaciDevKitSpec extends FunSuite {
 
         /** Wait for transaction to be confirmed
           *
-          * @param txHash transaction hash to wait for
-          * @param maxAttempts maximum number of attempts (default: 30)
-          * @param delayMs delay between attempts in milliseconds (default: 1000)
-          * @return true if transaction was confirmed, false if timeout
+          * @param txHash
+          *   transaction hash to wait for
+          * @param maxAttempts
+          *   maximum number of attempts (default: 30)
+          * @param delayMs
+          *   delay between attempts in milliseconds (default: 1000)
+          * @return
+          *   true if transaction was confirmed, false if timeout
           */
         def waitForTransaction(
             txHash: String,
@@ -82,7 +87,7 @@ trait YaciDevKitSpec extends FunSuite {
             delayMs: Long = 1000
         ): Boolean = {
             def checkTx(attempts: Int): Boolean = {
-                if (attempts >= maxAttempts) {
+                if attempts >= maxAttempts then {
                     false
                 } else {
                     try {
@@ -100,15 +105,17 @@ trait YaciDevKitSpec extends FunSuite {
 
         /** Submit transaction and wait for confirmation
           *
-          * @param txBytes transaction bytes to submit
-          * @return transaction hash if successful
+          * @param txBytes
+          *   transaction bytes to submit
+          * @return
+          *   transaction hash if successful
           */
         def submitAndWait(txBytes: Array[Byte]): Either[String, String] = {
             try {
                 val result = getTransactionService.submitTransaction(txBytes)
-                if (result.isSuccessful) {
+                if result.isSuccessful then {
                     val txHash = result.getValue
-                    if (waitForTransaction(txHash)) {
+                    if waitForTransaction(txHash) then {
                         Right(txHash)
                     } else {
                         Left(s"Transaction $txHash did not confirm in time")
@@ -128,13 +135,16 @@ trait YaciDevKitSpec extends FunSuite {
 
     /** Create and start a Yaci DevKit container
       *
-      * @param config configuration for the container
-      * @return YaciDevKit instance with running container
+      * @param config
+      *   configuration for the container
+      * @return
+      *   YaciDevKit instance with running container
       */
     def createYaciDevKit(config: YaciDevKitConfig = YaciDevKitConfig()): YaciDevKit = {
         // Use Yaci DevKit's default mnemonic for pre-funded accounts
         // This matches the mnemonic used by Yaci CLI for generating default accounts
-        val mnemonic = "test test test test test test test test test test test test test test test test test test test test test test test sauce"
+        val mnemonic =
+            "test test test test test test test test test test test test test test test test test test test test test test test sauce"
         val account = new Account(Networks.testnet(), mnemonic)
 
         // Create container and give it a fixed name for reuse
@@ -143,7 +153,7 @@ trait YaciDevKitSpec extends FunSuite {
         container.withReuse(true)
 
         // Add log consumer if enabled
-        if (config.enableLogs) {
+        if config.enableLogs then {
             container.withLogConsumer(frame => println(s"[Yaci] ${frame.getUtf8String}"))
         }
 
@@ -157,8 +167,10 @@ trait YaciDevKitSpec extends FunSuite {
       *
       * Automatically starts and stops the container around the test.
       *
-      * @param config configuration for the container
-      * @param testFn test function to execute with the devkit
+      * @param config
+      *   configuration for the container
+      * @param testFn
+      *   test function to execute with the devkit
       */
     def withYaciDevKit[T](
         config: YaciDevKitConfig = YaciDevKitConfig()
@@ -182,7 +194,7 @@ trait YaciDevKitSpec extends FunSuite {
         }
 
         override def afterAll(): Unit = {
-            if (devKit != null) {
+            if devKit != null then {
                 devKit.stop()
             }
         }

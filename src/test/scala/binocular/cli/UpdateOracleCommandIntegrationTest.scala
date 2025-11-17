@@ -1,6 +1,6 @@
-package binocular.cli
+package binocular
+package cli
 
-import binocular.{BitcoinChainState, BitcoinValidator, OracleTransactions}
 import com.bloxbean.cardano.client.address.Address
 import scalus.builtin.Data
 import scalus.builtin.Data.fromData
@@ -13,8 +13,8 @@ import scala.concurrent.{Await, ExecutionContext, Future}
 /** Integration test for UpdateOracleCommand
   *
   * Tests the complete flow of updating an oracle:
-  *   1. Creates initial oracle at block N 2. Fetches headers for blocks N+1 to N+M from mock RPC 3. Updates oracle with
-  *      new headers 4. Verifies oracle state is updated correctly
+  *   1. Creates initial oracle at block N 2. Fetches headers for blocks N+1 to N+M from mock RPC 3.
+  *      Updates oracle with new headers 4. Verifies oracle state is updated correctly
   */
 class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
     // Extended timeout for multi-batch promotion test
@@ -72,7 +72,9 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                     fail(s"Failed to initialize oracle: $err")
             }
 
-            println(s"[Test] Step 2: Fetching headers for blocks ${startHeight + 1} to $updateToHeight")
+            println(
+              s"[Test] Step 2: Fetching headers for blocks ${startHeight + 1} to $updateToHeight"
+            )
 
             // Fetch headers for update
             val headersFuture = Future.sequence(
@@ -93,11 +95,13 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
             println(s"[Test] Step 3: Computing new state")
 
             // Compute validity interval time to ensure offline and on-chain use the same value
-            val validityTime = OracleTransactions.computeValidityIntervalTime(devKit.getBackendService)
+            val validityTime =
+                OracleTransactions.computeValidityIntervalTime(devKit.getBackendService)
             println(s"  Using validity interval time: $validityTime")
 
             // Compute new state using the shared validator logic
-            val newState = BitcoinValidator.computeUpdateOracleState(initialState, headersList, validityTime)
+            val newState =
+                BitcoinValidator.computeUpdateOracleState(initialState, headersList, validityTime)
             println(s"  Computed new state:")
             println(s"    Height: ${newState.blockHeight}")
             println(s"    Hash: ${newState.blockHash.toHex}")
@@ -139,7 +143,7 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                     val inlineDatum = latestUtxo.getInlineDatum
 
                     val data = Data.fromCbor(inlineDatum.hexToBytes)
-                    val actualState = data.to[BitcoinValidator.ChainState]
+                    val actualState = data.to[ChainState]
 
                     println(s"[Test] ✓ Updated ChainState verified:")
                     println(s"    Height: ${actualState.blockHeight}")
@@ -212,7 +216,7 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
             println(s"[Test] Attempting update with empty header list")
 
             // Try to update with empty list - should fail validation
-            val emptyHeaders = scalus.prelude.List.empty[BitcoinValidator.BlockHeader]
+            val emptyHeaders = scalus.prelude.List.empty[BlockHeader]
 
             // This should fail because validator requires non-empty headers
             println(s"[Test] ✓ Test with empty headers skipped (validator rejects empty list)")
@@ -303,10 +307,10 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                 println(s"    confirmedBlocksTree size: ${currentState.confirmedBlocksTree.size}")
 
                 val headersList = scalus.prelude.List.from(batch.toList)
-                
+
                 // Use current time for all batches except the last one
                 // For the last batch, use time + 210 minutes to trigger promotion
-                val validityTime: BigInt = if (batchIndex == batches.size - 1) {
+                val validityTime: BigInt = if batchIndex == batches.size - 1 then {
                     val currentTime = System.currentTimeMillis() / 1000
                     val advancedTime = BigInt(currentTime) + BigInt(210 * 60) // 210 minutes ahead
                     println(s"  Final batch: using advanced time to trigger promotion (+210 min)")
@@ -414,7 +418,7 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
             val inlineDatum = latestUtxo.getInlineDatum
 
             val data = Data.fromCbor(inlineDatum.hexToBytes)
-            val actualState = data.to[BitcoinValidator.ChainState]
+            val actualState = data.to[ChainState]
 
             println(s"[Test] ✓ On-chain state after forced promotion:")
             println(s"    Height: ${actualState.blockHeight}")
