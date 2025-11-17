@@ -17,6 +17,7 @@ import scalus.builtin.ByteString.hex
 import scalus.builtin.Data.toData
 import scalus.builtin.{Builtins, ByteString, Data}
 import scalus.cardano.ledger
+import scalus.cardano.ledger.{CardanoInfo, Coin}
 import scalus.ledger.api.v3.{PubKeyHash, ScriptContext}
 import scalus.uplc.eval
 import scalus.uplc.eval.*
@@ -1073,10 +1074,13 @@ class ValidatorTest extends munit.ScalaCheckSuite {
 
         // Verify the computation internally matches
         val result = BitcoinContract.bitcoinProgram $ scriptContext.toData
+        val prices = CardanoInfo.mainnet.protocolParams.executionUnitPrices
         result.evaluateDebug match
             case r: Result.Success =>
                 println(s"✓ UpdateOracle single block validation succeeded, budget used: ${r.budget.showJson}")
-                assertEquals(r.budget, ledger.ExUnits(577778, 178_499042), "Unexpected resource usage")
+                println(r)
+                assertEquals(r.budget, ledger.ExUnits(577178, 178_403042), "Unexpected resource usage")
+                assertEquals(r.budget.fee(prices), Coin(46149), "Unexpected fee cost")
             case r: Result.Failure =>
                 fail(s"Validation failed: $r")
     }
