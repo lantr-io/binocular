@@ -200,12 +200,6 @@ object BitcoinValidator extends Validator {
     def blockHeaderHash(blockHeader: BlockHeader): BlockHash =
         sha2_256(sha2_256(blockHeader.bytes))
 
-    def min(a: BigInt, b: BigInt): BigInt =
-        if a < b then a else b
-
-    def max(a: BigInt, b: BigInt): BigInt =
-        if a > b then a else b
-
     def pow(n: BigInt, e: BigInt): BigInt =
         def pow(n: BigInt, e: BigInt): BigInt =
             if e == BigInt(0) then 1
@@ -791,14 +785,14 @@ object BitcoinValidator extends Validator {
         val actualTimespan =
             val timespan = blockTime - nFirstBlockTime
             // Limit adjustment step - matches pow.cpp:55-60
-            min(
-              max(timespan, PowTargetTimespan / 4),
+            Math.min(
+              Math.max(timespan, PowTargetTimespan / 4),
               PowTargetTimespan * 4
             )
 
         val t = compactBitsToTarget(currentTarget)
         val bnNew = t * actualTimespan / PowTargetTimespan
-        min(bnNew, PowLimit)
+        Math.min(bnNew, PowLimit)
     }
 
     def updateTip(
