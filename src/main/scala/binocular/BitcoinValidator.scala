@@ -1046,20 +1046,24 @@ object BitcoinValidator extends Validator {
         matchingOutputs.head
     }
 
-    inline override def spend(
-        datum: Option[Datum],
-        redeemer: Datum,
-        tx: TxInfo,
-        outRef: TxOutRef
+    inline def update(
+        outRef: TxOutRef,
+        action: Action,
+        inputs: List[TxInInfo],
+        outputs: List[TxOut],
+        validRange: Interval
     ): Unit = {
-        val action = redeemer.to[Action]
-
-        val intervalStartInSeconds = tx.validRange.from.boundType match
+        val intervalStartInSeconds = validRange.from.boundType match
             case IntervalBoundType.Finite(time) => time / 1000
             case _                              => fail("Must have finite interval start")
 
         // Find the continuing output (output to the same script address)
-        val ownInput = tx.inputs.find { _.outRef === outRef }.getOrFail("Input not found").resolved
+        val ownInput = inputs
+            .find {
+                _.outRef === outRef
+            }
+            .getOrFail("Input not found")
+            .resolved
         val prevState =
             ownInput.datum match
                 case OutputDatum.OutputDatum(datum) =>
@@ -1081,7 +1085,7 @@ object BitcoinValidator extends Validator {
                 // Compute the new state using time from redeemer (ensures offline/online consistency)
                 val computedState = computeUpdateOracleState(prevState, blockHeaders, redeemerTime)
 
-                val continuingOutput = findUniqueOutputFrom(tx.outputs, ownInput.address)
+                val continuingOutput = findUniqueOutputFrom(outputs, ownInput.address)
 
                 // Extract the datum from the continuing output (provided by transaction builder)
                 val providedOutputDatum = continuingOutput.datum match
@@ -1096,6 +1100,50 @@ object BitcoinValidator extends Validator {
                 )
     }
 
+    // This one is for V3 lowering
+    inline override def spend(
+        datum: Option[Datum],
+        redeemer: Datum,
+        tx: TxInfo,
+        outRef: TxOutRef
+    ): Unit = {
+        val action = redeemer.to[Action]
+
+        val inputs = tx.inputs
+        val outputs = tx.outputs
+        val validRange = tx.validRange
+
+        update(outRef, action, inputs, outputs, validRange)
+    }
+
+    // This is for Sum-of-Products lowering
+    inline def spend2(
+        datum: Option[Datum],
+        redeemer: Datum,
+        txInfoData: Data,
+        outRef: TxOutRef
+    ): Unit = {
+        val action = redeemer.to[Action]
+
+        val inputs = txInfoData.field[TxInfo](_.inputs).to[List[TxInInfo]]
+        val outputs = txInfoData.field[TxInfo](_.outputs).to[List[TxOut]]
+        val validRange = txInfoData.field[TxInfo](_.validRange).to[Interval]
+        update(outRef, action, inputs, outputs, validRange)
+    }
+
+    // This is for Sum-of-Products lowering
+    def validate2(scData: Data): Unit = {
+        val sc = unConstrData(scData).snd
+        val txInfoData = sc.head
+        val redeemer = sc.tail.head
+        val scriptInfo = unConstrData(sc.tail.tail.head)
+        if scriptInfo.fst == BigInt(1) then
+            val txOutRef = scriptInfo.snd.head.to[TxOutRef]
+            val datum = scriptInfo.snd.tail.head.to[Option[Datum]]
+            spend2(datum, redeemer, txInfoData, txOutRef)
+        else fail("Invalid script context")
+    }
+
     def reverse(bs: ByteString): ByteString =
         val len = lengthOfByteString(bs)
         def loop(idx: BigInt, acc: ByteString): ByteString =
@@ -1108,10 +1156,10 @@ object BitcoinContract {
     given Compiler.Options = Compiler.Options(
       optimizeUplc = true,
       generateErrorTraces = true,
-      targetLoweringBackend = TargetLoweringBackend.SirToUplcV3Lowering
+      targetLoweringBackend = TargetLoweringBackend.SumOfProductsLowering
     )
     def compileBitcoinProgram(): Program =
-        val sir = Compiler.compileWithOptions(summon[Compiler.Options], BitcoinValidator.validate)
+        val sir = Compiler.compileWithOptions(summon[Compiler.Options], BitcoinValidator.validate2)
         //    println(sir.showHighlighted)
         //    sir.toUplcOptimized(generateErrorTraces = false).plutusV3
         sir.toUplcOptimized().plutusV3
