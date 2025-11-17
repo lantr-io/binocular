@@ -92,13 +92,13 @@ object BitcoinValidator extends Validator {
           ToData
 
     enum Action derives FromData, ToData:
-      /**
-       * Update the oracle with new block headers
-       * @param blockHeaders - new block headers to process
-       *                     (ordered from oldest to newest)
-       * @param currentTime - current on-chain time for validation in seconds since Unix epoch
-       */
-      case UpdateOracle(blockHeaders: List[BlockHeader], currentTime: BigInt)
+        /** Update the oracle with new block headers
+          * @param blockHeaders
+          *   \- new block headers to process (ordered from oldest to newest)
+          * @param currentTime
+          *   \- current on-chain time for validation in seconds since Unix epoch
+          */
+        case UpdateOracle(blockHeaders: List[BlockHeader], currentTime: BigInt)
 
     /// Bitcoin block header serialization
     //    def serializeBlockHeader(blockHeader: BlockHeader): ByteString =
@@ -989,7 +989,7 @@ object BitcoinValidator extends Validator {
               forksTree = finalForksTree
             )
     }
-    
+
     def findUniqueOutputFrom(outputs: List[TxOut], scriptAddress: Address): TxOut = {
         val matchingOutputs = outputs.filter(out => out.address === scriptAddress)
         require(matchingOutputs.nonEmpty, "No continuing output found")
@@ -1003,10 +1003,11 @@ object BitcoinValidator extends Validator {
         val intervalStartInSeconds = tx.validRange.from.boundType match
             case IntervalBoundType.Finite(time) => time / 1000
             case _                              => fail("Must have finite interval start")
-        val prevState =
-            val input = tx.inputs.find { _.outRef === outRef }.getOrFail("Input not found")
 
-            input.resolved.datum match
+        // Find the continuing output (output to the same script address)
+        val ownInput = tx.inputs.find { _.outRef === outRef }.getOrFail("Input not found").resolved
+        val prevState =
+            ownInput.datum match
                 case OutputDatum.OutputDatum(datum) =>
                     datum.to[ChainState]
                 case _ => fail("No datum")
@@ -1022,12 +1023,8 @@ object BitcoinValidator extends Validator {
                 // Compute the new state using time from redeemer (ensures offline/online consistency)
                 val computedState = computeUpdateOracleState(prevState, blockHeaders, redeemerTime)
 
-                // Find the continuing output (output to the same script address)
-                val input = tx.inputs.find { _.outRef === outRef }.getOrFail("Input not found")
-                val scriptAddress = input.resolved.address
-                
-                val continuingOutput = findUniqueOutputFrom(tx.outputs, scriptAddress)
-                
+                val continuingOutput = findUniqueOutputFrom(tx.outputs, ownInput.address)
+
                 // Extract the datum from the continuing output (provided by transaction builder)
                 val providedOutputDatum = continuingOutput.datum match
                     case OutputDatum.OutputDatum(datum) => datum
