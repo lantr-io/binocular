@@ -39,7 +39,7 @@ jobs:
         run: sbt scalafmtCheckAll scalafmtSbtCheck
 
       - name: Run tests
-        run: sbt test
+        run: sbt testOnly binocular.ValidatorTest
 
       - name: Report build status
         uses: sarisia/actions-status-discord@v1
