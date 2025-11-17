@@ -12,7 +12,6 @@ Test / parallelExecution := false
 
 Test / javaOptions ++= Seq("-Xmx2g")
 
-
 Global / onChangedBuildSource := ReloadOnSourceChanges
 
 resolvers += Resolver.sonatypeCentralSnapshots
@@ -24,7 +23,7 @@ libraryDependencies ++= Seq(
   "org.scalus" %% "scalus-bloxbean-cardano-client-lib" % scalusVersion,
   "com.lihaoyi" %% "upickle" % "4.3.2",
   "com.lihaoyi" %% "os-lib" % "0.11.3" % Test,
-  "com.typesafe" % "config" % "1.4.3",  // Configuration library
+  "com.typesafe" % "config" % "1.4.3", // Configuration library
   "org.slf4j" % "slf4j-simple" % "2.0.17",
   "org.bouncycastle" % "bcprov-jdk18on" % "1.82",
   ("org.bitcoin-s" % "bitcoin-s-bitcoind-rpc_2.13" % "1.9.11").excludeAll(
