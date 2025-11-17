@@ -1,0 +1,14 @@
+{
+  "blockHeight": 864948,
+  "blockHash": "000000000000000000025be0c4d7af89a86ad5d77f91f7256e2e42753d717b15",
+  "merkleRoot": "974dc3bf90ee8506649caca7fa836445a2024e9cdfb16a51c5fac4db1bb01ca5",
+  "totalTransactions": 1,
+  "testCases": [
+    {
+      "txIndex": 0,
+      "txHash": "974dc3bf90ee8506649caca7fa836445a2024e9cdfb16a51c5fac4db1bb01ca5",
+      "merkleProof": [],
+      "description": "Coinbase transaction (first)"
+    }
+  ]
+}

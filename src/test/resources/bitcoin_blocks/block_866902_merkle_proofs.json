@@ -1,0 +1,68 @@
+{
+  "blockHeight": 866902,
+  "blockHash": "00000000000000000001676a1898b7804be18303e68e8ceacc00c713011b0ef4",
+  "merkleRoot": "25d3b4e13ea3e6d836e25c3d2f7256e03f7c4271981a48866dcbaa59338cdeb4",
+  "totalTransactions": 5099,
+  "testCases": [
+    {
+      "txIndex": 0,
+      "txHash": "339f3a1e41cd5834171285dcc488546d98f54fb5eaa56bd3583bd87dc9e4f371",
+      "merkleProof": [
+        "cc3d02778624b3399b709ddb1929af3e003b7af3de3ebfdf6963fb972a5d23af",
+        "9e98784fbf661fcbdfb17bd2a7066c78d318146c0cd88ba42f4b132fd2e1d5be",
+        "329f5b6d69d19564ae2b5f5283b15a481d0032dd1612c7f63832b34aab0db373",
+        "b73147d4e35e1ad1f1485ae9cfbfde7e1c8edfd09f4c3033a412ff4ed432adbd",
+        "05b5e810fca3f108d392afc3f9aedabcbba8b1dadbd4817fa70936d21b0cf5cc",
+        "7bf49efb9deb665f043e15be036ad5df86c0e278be4e55e3b930233f7261b691",
+        "30923b28bd44a08f7fd514477ebfa916078872204dfe8b85ee84816e3035db12",
+        "0a4571c1ab4fe2bae81740fd497ee923225733deae3b2e8de3c4b7df795ac8d6",
+        "a0319f248e2f59ff5b8e16f7bc157beb4b7ce2ceafd0cf413328cc3e9e7107ea",
+        "3b3989ce9c62dcbe7b99f1f6499a5ec31b4ca9a75b79ece10a45c0537330dff4",
+        "4ed4893413934f01de739c116710c60c770c3b68db1ec777828a7d8ffa45a2c1",
+        "c46004fbf7e3c23ae163a5f1fd396cc6599fe536a479192f3d78cf53dc605c64",
+        "9635718aaabe2d298c31af89a2ac16f921010b35303a6e7924a1004efedcaa56"
+      ],
+      "description": "Coinbase transaction (first)"
+    },
+    {
+      "txIndex": 5098,
+      "txHash": "96d9cb5bdb1095fda93f73c158acec8d9c2ac958c026b917bc7fb8da197fcb01",
+      "merkleProof": [
+        "01cb7f19dab87fbc17b926c058c92a9c8decac58c1733fa9fd9510db5bcbd996",
+        "e681c2bb405c123c43a250d3262b2de7085232f742bea10ef8a7a8913261be10",
+        "498b80bd935ca4d4183c7f0fb2b75c7bf0c462eb57e8eae27f56e494f630ddcc",
+        "f11f6b258921e6f5e28ad53d65b49477d921bd94b60dde0cf5ab1c2444bd0db6",
+        "8344166fea00c91a069a0f9a20f5e3ce8b33c9b3f9ea9d23702e1aa8ba8341d4",
+        "31985fc67a630c2c3c046b888f0a364f48a09ae3a1ba43c487d50190c5c7f60b",
+        "cacaf479d7340e6dc779997f831a59fa347c2348febfddd748dce9af0f7ec36e",
+        "4d22e3d71c60ac30f41b385d77852a4a7efd30e93af236468c489f6070bdda06",
+        "74fdede959d4c908ddcce6052e1e85f3e1f18749d6c888d84d073bbc477ae5db",
+        "c5fc63be34925a1874f72e8bf3f9ffecaffe15ccd6d15027f7e390df9503afae",
+        "104ffaba70817f09632dcad9d3eaa1541558ed6ea38c6aed184a0a7a9eb64953",
+        "8844e2959bda674060c86cfab5544b55c3d85de6d3203ec4a99b9eef9d7bcf4b",
+        "d14ebef93e7e0e3884326ad04484ad6afdbe282e9fe0d2b538e652c869d76dd3"
+      ],
+      "description": "Last transaction"
+    },
+    {
+      "txIndex": 2549,
+      "txHash": "3334153ef835672495b2fa903514b2a75f9fd7153467ad65a06c2248a140553e",
+      "merkleProof": [
+        "3e3b9b6117f237be43e13fbb6a384290afd97d20bd9751bb7751a47416723fb6",
+        "9ca502205b2f51d20174037dd765dbf5b9785656e753426e8c4faa2b009e6b73",
+        "1507f760d1e4c70d40c60f60822444f72563233cfa5d88761f4e66d355129d7b",
+        "3063fbcd9607e4e94e77632d7327732416791f386786b743e6de6d2f7c3eddb8",
+        "cd687efa5d43c0e0c7782efc737c8e0fa46c36c2f07f12d0715e6a6586446b23",
+        "12eb0c3d53eec89f366d58c9935fe48d59e63c8c5b91e9ac0c540cd45e7bf923",
+        "be17d90d6b98cf5098736b68a981b8aff2fe517def3ba920248739c92df24099",
+        "da4e301174c1ab2e266a6a6c15db32f1a75991d70700205e76069c70c01167b1",
+        "134fd1c52b2921d519ef9b0e27fe9a9dd33275acfce5f9e21a74a4d022697212",
+        "eaaa4ebecd126f3f67742f553fbbbf3573b7f699f43a594cd65a8eee9ffe2d64",
+        "019de5542fd8cebde5696308fa2cdf4aaeb6dff40a45c7e73aca1fdc6fc8eebe",
+        "2a66ecab006dc1990c5b3107acff1983a77f5a22e71974f6fbc040ceb87abb30",
+        "9635718aaabe2d298c31af89a2ac16f921010b35303a6e7924a1004efedcaa56"
+      ],
+      "description": "Middle transaction (2550 of 5099)"
+    }
+  ]
+}
