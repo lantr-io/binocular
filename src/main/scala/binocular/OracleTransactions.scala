@@ -62,10 +62,10 @@ object OracleTransactions {
 
     /** Apply Bitcoin headers to ChainState to calculate new state */
     def applyHeaders(
-        currentState: BitcoinValidator.ChainState,
-        headers: scalus.prelude.List[BitcoinValidator.BlockHeader],
+        currentState: ChainState,
+        headers: scalus.prelude.List[BlockHeader],
         currentTime: BigInt
-    ): BitcoinValidator.ChainState = {
+    ): ChainState = {
         headers.foldLeft(currentState) { (state, header) =>
             BitcoinValidator.updateTip(state, header, currentTime)
         }
@@ -73,10 +73,10 @@ object OracleTransactions {
 
     /** Create UpdateOracle redeemer */
     def createUpdateOracleRedeemer(
-        blockHeaders: scalus.prelude.List[BitcoinValidator.BlockHeader],
+        blockHeaders: scalus.prelude.List[BlockHeader],
         currentTime: BigInt
     ): Redeemer = {
-        val action = BitcoinValidator.Action.UpdateOracle(blockHeaders, currentTime)
+        val action = Action.UpdateOracle(blockHeaders, currentTime)
         val actionData = action.toData
         val redeemerData = toPlutusData(actionData)
 
@@ -107,7 +107,7 @@ object OracleTransactions {
         account: Account,
         backendService: BackendService,
         scriptAddress: Address,
-        initialState: BitcoinValidator.ChainState,
+        initialState: ChainState,
         lovelaceAmount: Long = 5000000L // 5 ADA in lovelace
     ): Either[String, String] = {
         Try {
@@ -174,9 +174,9 @@ object OracleTransactions {
         scriptAddress: Address,
         oracleTxHash: String,
         oracleOutputIndex: Int,
-        currentChainState: BitcoinValidator.ChainState,
-        newChainState: BitcoinValidator.ChainState,
-        blockHeaders: scalus.prelude.List[BitcoinValidator.BlockHeader],
+        currentChainState: ChainState,
+        newChainState: ChainState,
+        blockHeaders: scalus.prelude.List[BlockHeader],
         validityIntervalTimeSeconds: Option[BigInt] = None
     ): Either[String, String] = {
         Try {

@@ -117,8 +117,8 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
         buffer
     }
 
-    private def convertHeader(header: BlockHeaderInfo): BitcoinValidator.BlockHeader =
-        BitcoinValidator.BlockHeader(ByteString.fromArray(buildRawHeader(header)))
+    private def convertHeader(header: BlockHeaderInfo): BlockHeader =
+        BlockHeader(ByteString.fromArray(buildRawHeader(header)))
 
     private def getInitialChainState(blockHeight: Int): Future[ChainState] = {
         val interval = BitcoinValidator.DifficultyAdjustmentInterval.toInt

@@ -17,15 +17,82 @@ import scala.annotation.tailrec
 
 extension (a: ByteString) def reverse: ByteString = ByteString.fromArray(a.bytes.reverse)
 
+// Type aliases for semantic clarity
+type BlockHash = ByteString // 32-byte SHA256d hash of block header
+type TxHash = ByteString // 32-byte SHA256d hash of transaction
+type MerkleRoot = ByteString // 32-byte Merkle tree root hash
+type CompactBits = ByteString // 4-byte compact difficulty target representation
+type BlockHeaderBytes = ByteString // 80-byte raw Bitcoin block header
+
+case class CoinbaseTx(
+    version: ByteString,
+    inputScriptSigAndSequence: ByteString,
+    txOutsAndLockTime: ByteString
+) derives FromData,
+      ToData
+
+@Compile
+object CoinbaseTx
+
+case class BlockHeader(bytes: ByteString) derives FromData, ToData
+@Compile
+object BlockHeader
+
+extension (bh: BlockHeader)
+    inline def version: BigInt =
+        byteStringToInteger(false, bh.bytes.slice(0, 4))
+
+    inline def prevBlockHash: BlockHash = bh.bytes.slice(4, 32)
+
+    inline def bits: CompactBits = bh.bytes.slice(72, 4)
+
+    inline def merkleRoot: MerkleRoot = bh.bytes.slice(36, 32)
+
+    inline def timestamp: BigInt = byteStringToInteger(false, bh.bytes.slice(68, 4))
+
+case class BlockNode(
+    prevBlockHash: BlockHash, // 32-byte hash of previous block (for chain walking)
+    height: BigInt, // Block height (for difficulty validation and depth calculation)
+    chainwork: BigInt, // Cumulative proof-of-work from genesis
+    addedTimestamp: BigInt, // When this block was added on-chain (for 200-min rule)
+    children: List[BlockHash] // Hashes of child blocks (for tree navigation)
+) derives FromData,
+      ToData
+@Compile
+object BlockNode
+
+case class ChainState(
+    // Confirmed state
+    blockHeight: BigInt,
+    blockHash: BlockHash,
+    currentTarget: CompactBits,
+    blockTimestamp: BigInt,
+    recentTimestamps: List[BigInt], // Newest first
+    previousDifficultyAdjustmentTimestamp: BigInt,
+    confirmedBlocksTree: List[ByteString], // Rolling Merkle tree state (levels array)
+
+    // Forks tree
+    forksTree: scalus.prelude.SortedMap[BlockHash, BlockNode] // Block hash → BlockNode mapping
+) derives FromData,
+      ToData
+
+@Compile
+object ChainState
+
+enum Action derives FromData, ToData:
+    /** Update the oracle with new block headers
+      * @param blockHeaders
+      *   \- new block headers to process (ordered from oldest to newest)
+      * @param currentTime
+      *   \- current on-chain time for validation in seconds since Unix epoch
+      */
+    case UpdateOracle(blockHeaders: List[BlockHeader], currentTime: BigInt)
+
+@Compile
+object Action
+
 @Compile
 object BitcoinValidator extends Validator {
-
-    // Type aliases for semantic clarity
-    type BlockHash = ByteString // 32-byte SHA256d hash of block header
-    type TxHash = ByteString // 32-byte SHA256d hash of transaction
-    type MerkleRoot = ByteString // 32-byte Merkle tree root hash
-    type CompactBits = ByteString // 4-byte compact difficulty target representation
-    type BlockHeaderBytes = ByteString // 80-byte raw Bitcoin block header
 
     // Bitcoin consensus constants - matches Bitcoin Core chainparams.cpp
     val UnixEpoch: BigInt = 1231006505
@@ -50,60 +117,6 @@ object BitcoinValidator extends Validator {
     val StaleCompetingForkAge: BigInt = 400 * 60 // 400 minutes (2× challenge period)
     val ChainworkGapThreshold: BigInt = 10 // Blocks worth of work for stale fork detection
     val MaxForksTreeSize: BigInt = 180 // Maximum forks tree size before garbage collection
-
-    case class CoinbaseTx(
-        version: ByteString,
-        inputScriptSigAndSequence: ByteString,
-        txOutsAndLockTime: ByteString
-    ) derives FromData,
-          ToData
-
-    case class BlockHeader(bytes: ByteString) derives FromData, ToData
-
-    extension (bh: BlockHeader)
-        inline def version: BigInt =
-            byteStringToInteger(false, bh.bytes.slice(0, 4))
-
-        inline def prevBlockHash: BlockHash = bh.bytes.slice(4, 32)
-
-        inline def bits: CompactBits = bh.bytes.slice(72, 4)
-
-        inline def merkleRoot: MerkleRoot = bh.bytes.slice(36, 32)
-
-        inline def timestamp: BigInt = byteStringToInteger(false, bh.bytes.slice(68, 4))
-
-    case class BlockNode(
-        prevBlockHash: BlockHash, // 32-byte hash of previous block (for chain walking)
-        height: BigInt, // Block height (for difficulty validation and depth calculation)
-        chainwork: BigInt, // Cumulative proof-of-work from genesis
-        addedTimestamp: BigInt, // When this block was added on-chain (for 200-min rule)
-        children: List[BlockHash] // Hashes of child blocks (for tree navigation)
-    ) derives FromData,
-          ToData
-
-    case class ChainState(
-        // Confirmed state
-        blockHeight: BigInt,
-        blockHash: BlockHash,
-        currentTarget: CompactBits,
-        blockTimestamp: BigInt,
-        recentTimestamps: List[BigInt], // Newest first
-        previousDifficultyAdjustmentTimestamp: BigInt,
-        confirmedBlocksTree: List[ByteString], // Rolling Merkle tree state (levels array)
-
-        // Forks tree
-        forksTree: scalus.prelude.SortedMap[BlockHash, BlockNode] // Block hash → BlockNode mapping
-    ) derives FromData,
-          ToData
-
-    enum Action derives FromData, ToData:
-        /** Update the oracle with new block headers
-          * @param blockHeaders
-          *   \- new block headers to process (ordered from oldest to newest)
-          * @param currentTime
-          *   \- current on-chain time for validation in seconds since Unix epoch
-          */
-        case UpdateOracle(blockHeaders: List[BlockHeader], currentTime: BigInt)
 
     /// Bitcoin block header serialization
     //    def serializeBlockHeader(blockHeader: BlockHeader): ByteString =

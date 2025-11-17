@@ -1,6 +1,5 @@
 package binocular
 
-import binocular.BitcoinValidator.{BlockHeader, ChainState}
 import org.apache.pekko.actor.ActorSystem
 import org.bitcoins.core.protocol.blockchain.BlockHeader as BtcHeader
 import org.bitcoins.rpc.client.v27.BitcoindV27RpcClient

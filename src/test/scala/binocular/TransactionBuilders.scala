@@ -99,12 +99,12 @@ object TransactionBuilders {
       *   Redeemer with UpdateOracle action
       */
     def createUpdateOracleRedeemer(
-        blockHeaders: scalus.prelude.List[BitcoinValidator.BlockHeader],
+        blockHeaders: scalus.prelude.List[BlockHeader],
         currentTime: BigInt = BigInt(System.currentTimeMillis() / 1000)
     ): Redeemer = {
-        val action = BitcoinValidator.Action.UpdateOracle(blockHeaders, currentTime)
+        val action = Action.UpdateOracle(blockHeaders, currentTime)
         // Action derives ToData, so we can use the derived instance
-        val actionData = ToData.toData(action)(using BitcoinValidator.Action.derived$ToData)
+        val actionData = ToData.toData(action)(using Action.derived$ToData)
         val redeemerData = scalusDataToPlutusData(actionData)
 
         Redeemer
@@ -151,9 +151,9 @@ object TransactionBuilders {
         account: Account,
         backendService: BackendService,
         scriptAddress: Address,
-        prevChainState: BitcoinValidator.ChainState,
-        newChainState: BitcoinValidator.ChainState,
-        blockHeaders: scalus.prelude.List[BitcoinValidator.BlockHeader],
+        prevChainState: ChainState,
+        newChainState: ChainState,
+        blockHeaders: scalus.prelude.List[BlockHeader],
         script: PlutusV3Script
     ): Either[String, String] = {
         try {
@@ -176,7 +176,7 @@ object TransactionBuilders {
 
             // 2. Parse current datum from UTXO
             val currentDatum = scalusDataToPlutusData(
-              ToData.toData(prevChainState)(using BitcoinValidator.ChainState.derived$ToData)
+              ToData.toData(prevChainState)(using ChainState.derived$ToData)
             )
 
             // 3. Create UpdateOracle redeemer
@@ -186,7 +186,7 @@ object TransactionBuilders {
 
             // 4. Convert new ChainState to PlutusData for new datum
             val newStateData =
-                ToData.toData(newChainState)(using BitcoinValidator.ChainState.derived$ToData)
+                ToData.toData(newChainState)(using ChainState.derived$ToData)
             val newDatum = scalusDataToPlutusData(newStateData)
 
             // 5. Calculate amount to lock (same as input)
@@ -246,13 +246,13 @@ object TransactionBuilders {
         account: Account,
         backendService: BackendService,
         scriptAddress: Address,
-        genesisState: BitcoinValidator.ChainState,
+        genesisState: ChainState,
         lovelaceAmount: Long = 5_000_000L
     ): Either[String, String] = {
         try {
             // Convert ChainState to PlutusData for inline datum
             val stateData =
-                ToData.toData(genesisState)(using BitcoinValidator.ChainState.derived$ToData)
+                ToData.toData(genesisState)(using ChainState.derived$ToData)
             val plutusDatum = scalusDataToPlutusData(stateData)
 
             // Create amount
@@ -324,10 +324,10 @@ object TransactionBuilders {
       *   new ChainState after applying all headers
       */
     def applyHeaders(
-        currentState: BitcoinValidator.ChainState,
-        headers: scalus.prelude.List[BitcoinValidator.BlockHeader],
+        currentState: ChainState,
+        headers: scalus.prelude.List[BlockHeader],
         currentTime: BigInt
-    ): BitcoinValidator.ChainState = {
+    ): ChainState = {
         headers.foldLeft(currentState) { (state, header) =>
             BitcoinValidator.updateTip(state, header, currentTime)
         }

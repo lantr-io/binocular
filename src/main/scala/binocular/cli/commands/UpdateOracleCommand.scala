@@ -119,7 +119,7 @@ case class UpdateOracleCommand(
                             try {
                                 val data = Data.fromCbor(inlineDatumHex.hexToBytes)
                                 // Parse as ChainState - use extension method on Data
-                                data.to[BitcoinValidator.ChainState]
+                                data.to[ChainState]
                             } catch {
                                 case e: Exception =>
                                     System.err.println(
@@ -179,7 +179,7 @@ case class UpdateOracleCommand(
                         given ec: ExecutionContext = ExecutionContext.global
                         val rpc = new SimpleBitcoinRpc(btcConf)
 
-                        val headersFuture: Future[Seq[BitcoinValidator.BlockHeader]] =
+                        val headersFuture: Future[Seq[BlockHeader]] =
                             Future.sequence(
                               (startHeight to endHeight).map { height =>
                                   for {
@@ -189,7 +189,7 @@ case class UpdateOracleCommand(
                               }
                             )
 
-                        val headers: Seq[BitcoinValidator.BlockHeader] =
+                        val headers: Seq[BlockHeader] =
                             try {
                                 Await.result(headersFuture, 60.seconds)
                             } catch {

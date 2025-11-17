@@ -72,9 +72,9 @@ object BitcoinChainState {
         buffer
     }
 
-    /** Convert BlockHeaderInfo to BitcoinValidator.BlockHeader */
-    def convertHeader(header: BlockHeaderInfo): BitcoinValidator.BlockHeader =
-        BitcoinValidator.BlockHeader(ByteString.fromArray(buildRawHeader(header)))
+    /** Convert BlockHeaderInfo to BlockHeader */
+    def convertHeader(header: BlockHeaderInfo): BlockHeader =
+        BlockHeader(ByteString.fromArray(buildRawHeader(header)))
 
     /** Fetch initial ChainState from Bitcoin RPC
       *

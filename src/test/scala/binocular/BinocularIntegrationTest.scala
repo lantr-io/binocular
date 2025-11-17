@@ -202,7 +202,7 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
       *
       * Uses Bitcoin block 865493 as the initial confirmed state.
       */
-    private def createGenesisState(): BitcoinValidator.ChainState = {
+    private def createGenesisState(): ChainState = {
         val genesisHeight = BigInt(865493)
         val genesisHash = ByteString
             .fromHex("0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b")
@@ -211,7 +211,7 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
         val genesisTimestamp = BigInt(1736701001)
         val genesisRecentTimestamps = scalus.prelude.List.single(genesisTimestamp)
 
-        BitcoinValidator.ChainState(
+        ChainState(
           blockHeight = genesisHeight,
           blockHash = genesisHash,
           currentTarget = genesisTarget,

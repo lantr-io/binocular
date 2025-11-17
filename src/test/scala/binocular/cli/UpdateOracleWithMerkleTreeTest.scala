@@ -76,7 +76,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
             val initialUtxos = devKit.getUtxos(scriptAddress.getAddress)
             val initialUtxo = initialUtxos.head
             val initialData = Data.fromCbor(initialUtxo.getInlineDatum.hexToBytes)
-            val initialChainState = initialData.to[BitcoinValidator.ChainState]
+            val initialChainState = initialData.to[ChainState]
 
             println(s"[Test] ✓ Initial Merkle tree:")
             println(s"    Tree size: ${countTreeLevels(initialChainState.confirmedBlocksTree)}")
@@ -154,7 +154,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                     val inlineDatum = latestUtxo.getInlineDatum
 
                     val data = Data.fromCbor(inlineDatum.hexToBytes)
-                    val chainState = data.to[BitcoinValidator.ChainState]
+                    val chainState = data.to[ChainState]
 
                     println(s"[Test] ✓ Updated ChainState verified:")
                     println(s"    Height: ${chainState.blockHeight}")

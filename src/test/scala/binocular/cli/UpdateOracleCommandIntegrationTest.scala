@@ -1,9 +1,8 @@
-package binocular.cli
+package binocular
+package cli
 
-import binocular.{BitcoinChainState, BitcoinValidator, OracleTransactions}
 import com.bloxbean.cardano.client.address.Address
 import scalus.builtin.Data
-import scalus.builtin.Data.fromData
 import scalus.utils.Hex.hexToBytes
 
 import scala.concurrent.duration.*
@@ -142,7 +141,7 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                     val inlineDatum = latestUtxo.getInlineDatum
 
                     val data = Data.fromCbor(inlineDatum.hexToBytes)
-                    val actualState = data.to[BitcoinValidator.ChainState]
+                    val actualState = data.to[ChainState]
 
                     println(s"[Test] ✓ Updated ChainState verified:")
                     println(s"    Height: ${actualState.blockHeight}")
@@ -215,7 +214,7 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
             println(s"[Test] Attempting update with empty header list")
 
             // Try to update with empty list - should fail validation
-            val emptyHeaders = scalus.prelude.List.empty[BitcoinValidator.BlockHeader]
+            val emptyHeaders = scalus.prelude.List.empty[BlockHeader]
 
             // This should fail because validator requires non-empty headers
             println(s"[Test] ✓ Test with empty headers skipped (validator rejects empty list)")
@@ -382,7 +381,7 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
             val inlineDatum = latestUtxo.getInlineDatum
 
             val data = Data.fromCbor(inlineDatum.hexToBytes)
-            val actualState = data.to[BitcoinValidator.ChainState]
+            val actualState = data.to[ChainState]
 
             println(s"[Test] ✓ On-chain state after forced promotion:")
             println(s"    Height: ${actualState.blockHeight}")

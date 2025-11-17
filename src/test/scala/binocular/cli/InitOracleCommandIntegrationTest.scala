@@ -1,7 +1,7 @@
 package binocular.cli
 
 import binocular.cli.commands.InitOracleCommand
-import binocular.{BitcoinChainState, BitcoinValidator, OracleTransactions}
+import binocular.{BitcoinChainState, BitcoinValidator, ChainState, OracleTransactions}
 import com.bloxbean.cardano.client.address.Address
 import scalus.builtin.Data
 import scalus.utils.Hex.hexToBytes
@@ -89,7 +89,7 @@ class InitOracleCommandIntegrationTest extends CliIntegrationTestBase {
                     val inlineDatum = oracleUtxo.getInlineDatum
                     assert(inlineDatum != null && inlineDatum.nonEmpty, "Oracle UTxO has no datum")
                     val data = Data.fromCbor(inlineDatum.hexToBytes)
-                    val chainState = data.to[BitcoinValidator.ChainState]
+                    val chainState = data.to[ChainState]
 
                     assert(
                       chainState.blockHeight == startHeight,
