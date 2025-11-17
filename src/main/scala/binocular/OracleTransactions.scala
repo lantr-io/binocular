@@ -175,9 +175,9 @@ object OracleTransactions {
         scriptAddress: Address,
         oracleTxHash: String,
         oracleOutputIndex: Int,
-        currentChainState: BitcoinValidator.ChainState,
-        newChainState: BitcoinValidator.ChainState,
-        blockHeaders: scalus.prelude.List[BitcoinValidator.BlockHeader],
+        currentChainState: ChainState,
+        newChainState: ChainState,
+        blockHeaders: scalus.prelude.List[BlockHeader],
         validityIntervalTimeSeconds: BigInt
     ): Either[String, String] = {
         Try {
@@ -205,7 +205,7 @@ object OracleTransactions {
             if (inputDatum == null || inputDatum.isEmpty) {
                 throw new RuntimeException(s"Input UTxO has no inline datum: $oracleTxHash:$oracleOutputIndex")
             }
-            val inputState = Data.fromCbor(scalus.utils.Hex.hexToBytes(inputDatum)).to[BitcoinValidator.ChainState]
+            val inputState = Data.fromCbor(scalus.utils.Hex.hexToBytes(inputDatum)).to[ChainState]
             
             if (inputState.blockHeight != currentChainState.blockHeight ||
                 inputState.blockHash != currentChainState.blockHash) {

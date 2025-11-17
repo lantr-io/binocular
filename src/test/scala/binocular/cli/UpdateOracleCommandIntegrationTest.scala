@@ -358,7 +358,7 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                         val utxos = devKit.getUtxos(scriptAddress.getAddress)
                         require(utxos.nonEmpty, "No UTxOs found after batch update")
                         val latestUtxo = utxos.head
-                        val actualOnChainState = Data.fromCbor(latestUtxo.getInlineDatum.hexToBytes).to[BitcoinValidator.ChainState]
+                        val actualOnChainState = Data.fromCbor(latestUtxo.getInlineDatum.hexToBytes).to[ChainState]
                         
                         println(s"  On-chain state after batch ${batchIndex + 1}:")
                         println(s"    blockHeight: ${actualOnChainState.blockHeight}")
