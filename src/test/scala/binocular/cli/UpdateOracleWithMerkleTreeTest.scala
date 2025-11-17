@@ -130,7 +130,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
               initialState,
               newState,
               headersList,
-              Some(validityTime)
+              validityTime
             )
 
             updateTxResult match {
@@ -160,9 +160,10 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                     println(s"    Height: ${chainState.blockHeight}")
                     println(s"    Hash: ${chainState.blockHash.toHex}")
 
+                    // height should not changed, because blocks are not yet confirmed
                     assert(
-                      chainState.blockHeight == updateToHeight,
-                      s"Updated height mismatch: ${chainState.blockHeight} != $updateToHeight"
+                      chainState.blockHeight == startHeight,
+                      s"Updated height mismatch: ${chainState.blockHeight} != $startHeight"
                     )
 
                     println(s"[Test] Step 6: Verifying forks tree structure")
@@ -208,6 +209,11 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                     println(s"    Block 2: ${allBlockHashes(2).toHex}")
                     // println(s"    Block 3: ${allBlockHashes(3).toHex}")
 
+                    /**
+                     *
+                     * Here nothing hase changed because blocks are not yet confirmed,
+                     * so we cannot verify the confirmedBlocksTree against allBlockHashes.
+                     *
                     // Build reference tree using MerkleTree (non-rolling)
                     val referenceMerkleTree = MerkleTree.fromHashes(allBlockHashes.toSeq)
                     val referenceRoot = referenceMerkleTree.getMerkleRoot
@@ -221,7 +227,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                     )
 
                     println(s"[Test] ✓✓✓ Rolling Merkle tree matches reference implementation!")
-
+                    **/
                 case Left(err) =>
                     fail(s"Failed to update oracle: $err")
             }

@@ -246,7 +246,7 @@ case class UpdateOracleCommand(
                           currentChainState,
                           newChainState,
                           headersList,
-                          Some(validityTime)
+                          validityTime
                         )
 
                         txResult match {
