@@ -102,7 +102,9 @@ object TransactionBuilders {
         blockHeaders: scalus.prelude.List[BlockHeader],
         currentTime: BigInt = BigInt(System.currentTimeMillis() / 1000)
     ): Redeemer = {
-        val action = Action.UpdateOracle(blockHeaders, currentTime)
+        // Dummy hash for tests (real implementation computes actual hash)
+        val dummyHash = scalus.builtin.ByteString.empty
+        val action = Action.UpdateOracle(blockHeaders, currentTime, dummyHash)
         // Action derives ToData, so we can use the derived instance
         val actionData = ToData.toData(action)(using Action.derived$ToData)
         val redeemerData = scalusDataToPlutusData(actionData)

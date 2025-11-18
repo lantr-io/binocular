@@ -179,7 +179,7 @@ object BitcoinHeaderFixtures {
           recentTimestamps = prelude.List.single(timestamp),
           previousDifficultyAdjustmentTimestamp = estimatedPrevAdjustmentTime,
           confirmedBlocksTree = scalus.prelude.List(blockHash),
-          forksTree = prelude.SortedMap.empty
+          forksTree = prelude.List.Nil
         )
     }
 

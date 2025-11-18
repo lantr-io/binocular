@@ -116,7 +116,7 @@ object BitcoinChainState {
           recentTimestamps = prelude.List(BigInt(header.time)),
           previousDifficultyAdjustmentTimestamp = BigInt(adjustmentHeader.time),
           confirmedBlocksTree = prelude.List(blockHash), // Single-element Merkle tree: [blockHash]
-          forksTree = prelude.SortedMap.empty // Initialize with empty forks tree
+          forksTree = prelude.List.Nil // Initialize with empty forks tree
         )
     }
 }

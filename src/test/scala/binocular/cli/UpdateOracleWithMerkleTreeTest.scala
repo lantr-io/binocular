@@ -167,7 +167,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                     )
 
                     println(s"[Test] Step 6: Verifying forks tree structure")
-                    val forksTreeSize = chainState.forksTree.toList.size
+                    val forksTreeSize = chainState.forksTree.size
                     println(s"    Forks tree size: $forksTreeSize")
                     assert(
                       forksTreeSize == headers.size,
