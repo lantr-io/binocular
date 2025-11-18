@@ -9,7 +9,7 @@ import com.bloxbean.cardano.client.function.helper.SignerProviders
 import com.bloxbean.cardano.client.plutus.spec.{PlutusV3Script, Redeemer}
 import com.bloxbean.cardano.client.quicktx.{QuickTxBuilder, ScriptTx, Tx}
 import scalus.bloxbean.Interop.toPlutusData
-import scalus.builtin.Data
+import scalus.builtin.{ByteString, Data}
 import scalus.builtin.Data.toData
 
 import scala.jdk.CollectionConverters.*
@@ -75,9 +75,10 @@ object OracleTransactions {
     /** Create UpdateOracle redeemer */
     def createUpdateOracleRedeemer(
         blockHeaders: scalus.prelude.List[BlockHeader],
-        currentTime: BigInt
+        currentTime: BigInt,
+        inputDatumHash: ByteString
     ): Redeemer = {
-        val action = Action.UpdateOracle(blockHeaders, currentTime)
+        val action = Action.UpdateOracle(blockHeaders, currentTime, inputDatumHash)
         val actionData = action.toData
         val redeemerData = toPlutusData(actionData)
 
@@ -275,14 +276,19 @@ object OracleTransactions {
             val redeemerTime =
                 validityIntervalTimeSeconds // Use the time that was used to compute the state
 
+            // Compute input datum hash for redeemer
+            val inputDatumHash = scalus.builtin.Builtins.blake2b_256(
+              scalus.builtin.Builtins.serialiseData(currentChainState.toData)
+            )
+
             // Create UpdateOracle redeemer with the time that was used to compute the state
-            val redeemer = createUpdateOracleRedeemer(blockHeaders, redeemerTime)
+            val redeemer = createUpdateOracleRedeemer(blockHeaders, redeemerTime, inputDatumHash)
 
             // Convert new ChainState to PlutusData for output
             val newStateData = newChainState.toData
             val newDatum = toPlutusData(newStateData)
 
-            println(s"[DEBUG] New state forksTree size: ${newChainState.forksTree.toList.size}")
+            println(s"[DEBUG] New state forksTree size: ${newChainState.forksTree.size}")
 
             // Calculate amount (same as input)
             val lovelaceAmount = targetUtxo.getAmount.asScala.head.getQuantity

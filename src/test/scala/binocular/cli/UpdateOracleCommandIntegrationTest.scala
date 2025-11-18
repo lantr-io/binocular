@@ -105,7 +105,7 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
             println(s"  Computed new state:")
             println(s"    Height: ${newState.blockHeight}")
             println(s"    Hash: ${newState.blockHash.toHex}")
-            println(s"    Forks tree size: ${newState.forksTree.toList.size}")
+            println(s"    Forks tree size: ${newState.forksTree.size}")
 
             println(s"[Test] Step 4: Submitting update transaction")
 
@@ -148,7 +148,7 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                     println(s"[Test] ✓ Updated ChainState verified:")
                     println(s"    Height: ${actualState.blockHeight}")
                     println(s"    Hash: ${actualState.blockHash.toHex}")
-                    println(s"    Forks tree size: ${actualState.forksTree.toList.size}")
+                    println(s"    Forks tree size: ${actualState.forksTree.size}")
 
                     // Verify the on-chain state matches our computed state
                     assert(
@@ -305,7 +305,7 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                 println(s"  Current state before batch:")
                 println(s"    blockHeight: ${currentState.blockHeight}")
                 println(s"    blockHash: ${currentState.blockHash.toHex}")
-                println(s"    forksTree size: ${currentState.forksTree.toList.size}")
+                println(s"    forksTree size: ${currentState.forksTree.size}")
                 println(s"    confirmedBlocksTree size: ${currentState.confirmedBlocksTree.size}")
 
                 val headersList = scalus.prelude.List.from(batch.toList)
@@ -331,12 +331,12 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                 println(s"  [Batch ${batchIndex + 1}] Off-chain computed state:")
                 println(s"    blockHeight: ${newState.blockHeight}")
                 println(s"    blockHash: ${newState.blockHash.toHex}")
-                println(s"    forksTree size: ${newState.forksTree.toList.size}")
+                println(s"    forksTree size: ${newState.forksTree.size}")
                 println(s"    confirmedBlocksTree size: ${newState.confirmedBlocksTree.size}")
 
                 // Log forksTree keys for debugging (full hex)
                 println(s"  [Batch ${batchIndex + 1}] OFF-CHAIN forksTree keys (full hex):")
-                newState.forksTree.toList.foreach { case (k, _) =>
+                newState.forksTree.foreach { case (k, _) =>
                     println(s"    ${k.toHex}")
                 }
 
@@ -370,7 +370,7 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                         println(s"  On-chain state after batch ${batchIndex + 1}:")
                         println(s"    blockHeight: ${actualOnChainState.blockHeight}")
                         println(s"    blockHash: ${actualOnChainState.blockHash.toHex}")
-                        println(s"    forksTree size: ${actualOnChainState.forksTree.toList.size}")
+                        println(s"    forksTree size: ${actualOnChainState.forksTree.size}")
                         println(
                           s"    confirmedBlocksTree size: ${actualOnChainState.confirmedBlocksTree.size}"
                         )
@@ -378,14 +378,14 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                         // Verify on-chain state matches what we computed off-chain
                         if actualOnChainState.blockHeight != newState.blockHeight ||
                             actualOnChainState.blockHash != newState.blockHash ||
-                            actualOnChainState.forksTree.toList.size != newState.forksTree.toList.size
+                            actualOnChainState.forksTree.size != newState.forksTree.size
                         then {
 
                             fail(
                               s"ERROR: On-chain state does not match off-chain computed state!\n" +
                                   s"  This should be impossible - validator can only validate, not modify.\n" +
-                                  s"  Off-chain: height=${newState.blockHeight}, hash=${newState.blockHash.toHex}, forksTree=${newState.forksTree.toList.size}\n" +
-                                  s"  On-chain:  height=${actualOnChainState.blockHeight}, hash=${actualOnChainState.blockHash.toHex}, forksTree=${actualOnChainState.forksTree.toList.size}"
+                                  s"  Off-chain: height=${newState.blockHeight}, hash=${newState.blockHash.toHex}, forksTree=${newState.forksTree.size}\n" +
+                                  s"  On-chain:  height=${actualOnChainState.blockHeight}, hash=${actualOnChainState.blockHash.toHex}, forksTree=${actualOnChainState.forksTree.size}"
                             )
                         }
 
@@ -402,8 +402,8 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
             println(s"[Test] Step 3: Verifying promotion occurred")
             println(s"  Initial confirmed height: ${initialState.blockHeight}")
             println(s"  Final confirmed height: ${currentState.blockHeight}")
-            println(s"  Initial forks tree size: ${initialState.forksTree.toList.size}")
-            println(s"  Final forks tree size: ${currentState.forksTree.toList.size}")
+            println(s"  Initial forks tree size: ${initialState.forksTree.size}")
+            println(s"  Final forks tree size: ${currentState.forksTree.size}")
 
             // Verify that promotion occurred
             val heightIncrease = currentState.blockHeight - initialState.blockHeight
@@ -435,7 +435,7 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
             println(s"[Test] ✓ On-chain state after forced promotion:")
             println(s"    Height: ${actualState.blockHeight}")
             println(s"    Hash: ${actualState.blockHash.toHex}")
-            println(s"    Forks tree size: ${actualState.forksTree.toList.size}")
+            println(s"    Forks tree size: ${actualState.forksTree.size}")
             println(s"    Confirmed blocks tree size: ${actualState.confirmedBlocksTree.size}")
 
             // Verify state matches expectations
