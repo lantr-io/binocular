@@ -9,7 +9,7 @@ object BitcoinContract {
     given Compiler.Options = Compiler.Options(
       optimizeUplc = true,
       generateErrorTraces = true,
-      targetLoweringBackend = TargetLoweringBackend.SumOfProductsLowering
+      targetLoweringBackend = TargetLoweringBackend.SirToUplcV3Lowering
     )
     def compileBitcoinProgram(): Program =
         val sir = Compiler.compileWithOptions(summon[Compiler.Options], BitcoinValidator.validate2)
