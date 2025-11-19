@@ -920,13 +920,12 @@ class ValidatorTest extends munit.ScalaCheckSuite {
 
         val newBlockHash = BitcoinValidator.blockHeaderHash(newBlockHeader)
 
-        // Verify block was added - should find branch containing this block
+        // Verify block was added - should find branch with this block as tip
         val branchOpt = BitcoinValidator.findBranch(updatedForksTree, newBlockHash)
-        assert(branchOpt.isDefined, "Block should be in forks tree")
+        assert(branchOpt.isDefined, "Block should be tip of a branch in forks tree")
 
-        // Verify it's at the tip of the branch
-        val (branch, isAtTip) = branchOpt.getOrFail("Branch not found")
-        assert(isAtTip, "Block should be at branch tip")
+        // Verify it's the tip of the branch
+        val branch = branchOpt.getOrFail("Branch not found")
         assertEquals(branch.tipHash, newBlockHash)
         assertEquals(branch.tipHeight, BigInt(1001))
     }
@@ -966,15 +965,18 @@ class ValidatorTest extends munit.ScalaCheckSuite {
 
         val forksTree = scalus.prelude.List.single(branch)
 
-        // Verify both blocks are in tree
-        assert(BitcoinValidator.findBranch(forksTree, firstBlockHash).isDefined, "First block should be in branch")
-        assert(BitcoinValidator.findBranch(forksTree, secondBlockHash).isDefined, "Second block should be in branch")
+        // findBranch only finds by tip hash now (since parents are always tips of their branches)
+        // First block is NOT the tip, so findBranch won't find it directly
+        assert(BitcoinValidator.findBranch(forksTree, firstBlockHash).isEmpty, "First block is not a tip, so findBranch returns None")
+        assert(BitcoinValidator.findBranch(forksTree, secondBlockHash).isDefined, "Second block is the tip")
 
         // Verify second block is at tip
-        val (foundBranch, isAtTip) = BitcoinValidator.findBranch(forksTree, secondBlockHash).getOrFail("Branch not found")
-        assert(isAtTip, "Second block should be at tip")
+        val foundBranch = BitcoinValidator.findBranch(forksTree, secondBlockHash).getOrFail("Branch not found")
         assertEquals(foundBranch.tipHash, secondBlockHash)
         assertEquals(foundBranch.tipHeight, BigInt(1002))
+
+        // First block can be found in the branch's recentBlocks
+        assert(BitcoinValidator.existsInSortedList(foundBranch.recentBlocks, firstBlockHash), "First block should be in branch's recentBlocks")
 
         // Verify canonical chain selection picks highest chainwork (the branch)
         val canonicalBranch = BitcoinValidator.selectCanonicalChain(forksTree)
@@ -1226,14 +1228,14 @@ class ValidatorTest extends munit.ScalaCheckSuite {
                   s"✓ UpdateOracle single block validation succeeded, budget used: ${r.budget.showJson}"
                 )
                 println(r)
-                // Resource usage with ForkBranch implementation (optimized)
+                // Resource usage with ForkBranch implementation (optimized findBranch)
                 // and debug logging enabled
                 assertEquals(
                   r.budget,
-                  ledger.ExUnits(576357, 172_378666),
+                  ledger.ExUnits(576057, 172_330666),
                   "Unexpected resource usage"
                 )
-                assertEquals(r.budget.fee(prices), Coin(45668), "Unexpected fee cost")
+                assertEquals(r.budget.fee(prices), Coin(45660), "Unexpected fee cost")
             case r: Result.Failure =>
                 fail(s"Validation failed: $r")
     }

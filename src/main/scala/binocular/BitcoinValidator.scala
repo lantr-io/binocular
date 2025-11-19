@@ -150,25 +150,22 @@ object BitcoinValidator extends Validator {
     // These functions work with the optimized ForkBranch structure where consecutive
     // blocks in a fork are stored together, reducing memory usage by ~90%.
 
-    /** Find a branch containing the given block hash
-      * Returns Option[(branch, isAtTip)] where isAtTip indicates if hash is the branch tip
+    /** Find a branch by its tip hash.
+      * Returns the branch if found. Parent blocks are always tips of their branches
+      * (forks create new branches, so we only need to check tips).
       */
     def findBranch(
         forksTree: List[ForkBranch],
         blockHash: BlockHash
-    ): Option[(ForkBranch, Boolean)] = {
-        def search(remaining: List[ForkBranch]): Option[(ForkBranch, Boolean)] = {
+    ): Option[ForkBranch] = {
+        def search(remaining: List[ForkBranch]): Option[ForkBranch] = {
             remaining match
                 case List.Nil => scalus.prelude.Option.None
                 case List.Cons(branch, tail) =>
-                    // Check if this is the tip
                     if branch.tipHash == blockHash then
-                        scalus.prelude.Option.Some((branch, true))
+                        scalus.prelude.Option.Some(branch)
                     else
-                        // Check if it's in recentBlocks
-                        val found = existsInSortedList(branch.recentBlocks, blockHash)
-                        if found then scalus.prelude.Option.Some((branch, false))
-                        else search(tail)
+                        search(tail)
         }
         search(forksTree)
     }
@@ -630,6 +627,7 @@ object BitcoinValidator extends Validator {
         // === SECURITY: Full block validation ===
 
         // Calculate parent height and chainwork
+        // Parent is always at the tip of its branch (forks create new branches)
         val (parentHeight, parentChainwork, parentTimestamp, parentBits) =
             if parentIsConfirmedTip then
                 (
@@ -640,13 +638,8 @@ object BitcoinValidator extends Validator {
                 )
             else
                 parentBranchOpt match
-                    case scalus.prelude.Option.Some((branch, isAtTip)) =>
-                        if isAtTip then
-                            (branch.tipHeight, branch.tipChainwork, branch.recentBlocks.head.timestamp, branch.recentBlocks.head.bits)
-                        else
-                            // Parent is in recentBlocks, need to find it
-                            val parentBlock = lookupInRecentBlocks(branch.recentBlocks, prevHash).getOrFail("Parent not found in recentBlocks")
-                            (parentBlock.height, parentBlock.chainwork, parentBlock.timestamp, parentBlock.bits)
+                    case scalus.prelude.Option.Some(branch) =>
+                        (branch.tipHeight, branch.tipChainwork, branch.recentBlocks.head.timestamp, branch.recentBlocks.head.bits)
                     case scalus.prelude.Option.None =>
                         fail("Parent branch not found")
 
@@ -681,7 +674,7 @@ object BitcoinValidator extends Validator {
             else
                 // For fork blocks, use branch's recentBlocks for median-time-past
                 parentBranchOpt match
-                    case scalus.prelude.Option.Some((branch, _)) =>
+                    case scalus.prelude.Option.Some(branch) =>
                         val timestamps = branch.recentBlocks.map(_.timestamp)
                         getMedianTimePast(timestamps, timestamps.size)
                     case scalus.prelude.Option.None => fail("Parent branch not found")
@@ -709,26 +702,15 @@ object BitcoinValidator extends Validator {
         )
 
         // Determine how to update forksTree based on parent location
+        // Parent is always at the tip of its branch (forks create new branches)
         parentBranchOpt match
-            case scalus.prelude.Option.Some((parentBranch, isAtTip)) =>
-                if isAtTip then
-                    // Case 1: Parent is branch tip - extend the branch
-                    log("Extending existing branch")
-                    val extendedBranch = extendBranch(parentBranch, newBlock)
-                    updateBranch(forksTree, parentBranch, extendedBranch)
-                else
-                    // Case 2: Parent is in recentBlocks but not tip - creating a fork
-                    // Create a new branch starting from this block
-                    log("Creating new fork branch from mid-branch point")
-                    val newBranch = ForkBranch(
-                      tipHash = hash,
-                      tipHeight = blockHeight,
-                      tipChainwork = newChainwork,
-                      recentBlocks = List.single(newBlock)
-                    )
-                    List.Cons(newBranch, forksTree)
+            case scalus.prelude.Option.Some(parentBranch) =>
+                // Parent is branch tip - extend the branch
+                log("Extending existing branch")
+                val extendedBranch = extendBranch(parentBranch, newBlock)
+                updateBranch(forksTree, parentBranch, extendedBranch)
             case scalus.prelude.Option.None =>
-                // Case 3: Parent is confirmed tip - create new branch
+                // Parent is confirmed tip - create new branch
                 log("Creating new branch from confirmed tip")
                 val newBranch = ForkBranch(
                   tipHash = hash,
