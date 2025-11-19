@@ -370,7 +370,8 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                   newState,
                   headersList,
                   validityTime,
-                  referenceScriptUtxo
+                  referenceScriptUtxo,
+                  inTestMode = true // Skip off-chain time tolerance check
                 )
 
                 updateTxResult match {
@@ -449,7 +450,10 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
             val utxos = devKit.getUtxos(scriptAddress.getAddress)
             assert(utxos.nonEmpty, "No UTxOs found at oracle address after promotion")
 
-            val latestUtxo = utxos.head
+            // Filter for UTxO with inline datum (oracle UTxO, not reference script UTxO)
+            val latestUtxo = utxos.find(_.getInlineDatum != null).getOrElse {
+                fail("No oracle UTxO with inline datum found after promotion")
+            }
             val inlineDatum = latestUtxo.getInlineDatum
 
             val data = Data.fromCbor(inlineDatum.hexToBytes)

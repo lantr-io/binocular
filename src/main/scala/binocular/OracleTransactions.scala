@@ -225,7 +225,8 @@ object OracleTransactions {
         newChainState: ChainState,
         blockHeaders: scalus.prelude.List[BlockHeader],
         validityIntervalTimeSeconds: BigInt,
-        referenceScriptUtxo: Option[(String, Int)] = None // Optional: (txHash, outputIndex) of reference script UTxO
+        referenceScriptUtxo: Option[(String, Int)] = None, // Optional: (txHash, outputIndex) of reference script UTxO
+        inTestMode: Boolean = false // Skip time tolerance check in test mode
     ): Either[String, String] = {
         Try {
             // Get the script
@@ -308,7 +309,8 @@ object OracleTransactions {
             )
             println(s"  Time difference: $timeDiff seconds")
 
-            if timeDiff > TimeToleranceSeconds then {
+            // Skip time tolerance check in test mode to allow simulated time advancement
+            if !inTestMode && timeDiff > TimeToleranceSeconds then {
                 throw new RuntimeException(
                   s"Time mismatch: provided time ($validityIntervalTimeSeconds) differs from tx.validRange time ($validatorWillSeeTime) by $timeDiff seconds (tolerance: $TimeToleranceSeconds s). " +
                       s"This will cause on-chain validation failure. " +

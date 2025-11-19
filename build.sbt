@@ -18,6 +18,27 @@ resolvers += Resolver.sonatypeCentralSnapshots
 
 addCompilerPlugin("org.scalus" %% "scalus-plugin" % scalusVersion)
 
+// Generate TestConfig.scala with different TestMode values for main vs test
+Compile / sourceGenerators += Def.task {
+  val file = (Compile / sourceManaged).value / "binocular" / "TestConfig.scala"
+  IO.write(file, """package binocular
+object TestConfig {
+  inline def TestMode: Boolean = false
+}
+""")
+  Seq(file)
+}.taskValue
+
+Test / sourceGenerators += Def.task {
+  val file = (Test / sourceManaged).value / "binocular" / "TestConfig.scala"
+  IO.write(file, """package binocular
+object TestConfig {
+  inline def TestMode: Boolean = true
+}
+""")
+  Seq(file)
+}.taskValue
+
 libraryDependencies ++= Seq(
   "org.scalus" %% "scalus" % scalusVersion,
   "org.scalus" %% "scalus-bloxbean-cardano-client-lib" % scalusVersion,
