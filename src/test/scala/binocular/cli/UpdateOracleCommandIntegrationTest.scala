@@ -231,7 +231,7 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
             // Start at 866970, add blocks up to 866970 + 105 to ensure 100+ confirmations
             val startHeight = 866970
             val totalBlocks = 105 // More than MaturationConfirmations (100)
-            val batchSize = 10 // Process 10 headers per transaction
+            val batchSize = 10 // Process 10 headers per transaction (using reference script to reduce tx size)
             val finalHeight = startHeight + totalBlocks
             val mockRpc = new MockBitcoinRpc()
 
@@ -275,6 +275,25 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                     (txHash, 0)
                 case Left(err) =>
                     fail(s"Failed to initialize oracle: $err")
+            }
+
+            // Deploy reference script to reduce transaction size
+            // Deploy to script address to avoid collateral conflicts with account's UTxOs
+            println(s"[Test] Step 1b: Deploying reference script")
+            val refScriptResult = OracleTransactions.deployReferenceScript(
+              devKit.account,
+              devKit.getBackendService,
+              scriptAddress.getAddress  // Deploy to script address
+            )
+
+            val referenceScriptUtxo = refScriptResult match {
+                case Right((txHash, outputIndex)) =>
+                    println(s"[Test] ✓ Reference script deployed: $txHash:$outputIndex")
+                    devKit.waitForTransaction(txHash, maxAttempts = 30)
+                    Thread.sleep(2000)
+                    Some((txHash, outputIndex))
+                case Left(err) =>
+                    fail(s"Failed to deploy reference script: $err")
             }
 
             println(s"[Test] Step 2: Adding ${totalBlocks} blocks in batches of $batchSize")
@@ -340,7 +359,7 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                     println(s"    tip: ${branch.tipHash.toHex}, height: ${branch.tipHeight}, blocks: ${branch.recentBlocks.size}")
                 }
 
-                // Submit update transaction
+                // Submit update transaction (using reference script to reduce tx size)
                 val updateTxResult = OracleTransactions.buildAndSubmitUpdateTransaction(
                   devKit.account,
                   devKit.getBackendService,
@@ -350,7 +369,8 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                   currentState,
                   newState,
                   headersList,
-                  validityTime
+                  validityTime,
+                  referenceScriptUtxo
                 )
 
                 updateTxResult match {
@@ -363,9 +383,12 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                         // Since validator only validates (can't modify), on-chain state MUST match newState
                         val utxos = devKit.getUtxos(scriptAddress.getAddress)
                         require(utxos.nonEmpty, "No UTxOs found after batch update")
-                        val latestUtxo = utxos.head
+                        // Filter for UTxO with inline datum (oracle UTxO, not reference script UTxO)
+                        val oracleUtxo = utxos.find(_.getInlineDatum != null).getOrElse {
+                            fail("No oracle UTxO with inline datum found after batch update")
+                        }
                         val actualOnChainState =
-                            Data.fromCbor(latestUtxo.getInlineDatum.hexToBytes).to[ChainState]
+                            Data.fromCbor(oracleUtxo.getInlineDatum.hexToBytes).to[ChainState]
 
                         println(s"  On-chain state after batch ${batchIndex + 1}:")
                         println(s"    blockHeight: ${actualOnChainState.blockHeight}")
@@ -391,8 +414,8 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
 
                         // Update for next iteration
                         currentState = newState
-                        currentTxHash = resultTxHash
-                        currentOutputIndex = 0
+                        currentTxHash = oracleUtxo.getTxHash
+                        currentOutputIndex = oracleUtxo.getOutputIndex
 
                     case Left(errorMsg) =>
                         fail(s"Failed to update oracle with batch ${batchIndex + 1}: $errorMsg")

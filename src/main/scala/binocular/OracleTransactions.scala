@@ -5,6 +5,7 @@ import com.bloxbean.cardano.client.account.Account
 import com.bloxbean.cardano.client.address.Address
 import com.bloxbean.cardano.client.api.model.Amount
 import com.bloxbean.cardano.client.backend.api.{BackendService, DefaultUtxoSupplier}
+import scalus.utils.Hex
 import com.bloxbean.cardano.client.function.helper.SignerProviders
 import com.bloxbean.cardano.client.plutus.spec.{PlutusV3Script, Redeemer}
 import com.bloxbean.cardano.client.quicktx.{QuickTxBuilder, ScriptTx, Tx}
@@ -29,6 +30,48 @@ object OracleTransactions {
             .cborHex(scriptCborHex)
             .build()
             .asInstanceOf[PlutusV3Script]
+    }
+
+    /** Deploy the oracle script to a UTxO as a reference script.
+      * This allows subsequent transactions to use the script without including it in the tx body,
+      * significantly reducing transaction size.
+      *
+      * @param account Account to fund the reference script UTxO
+      * @param backendService Backend service
+      * @return Either error message or (txHash, outputIndex) of the reference script UTxO
+      */
+    def deployReferenceScript(
+        account: Account,
+        backendService: BackendService,
+        destinationAddress: String  // Address to deploy reference script to
+    ): Either[String, (String, Int)] = {
+        Try {
+            val script = getCompiledScript()
+            val quickTxBuilder = new QuickTxBuilder(backendService)
+
+            // Create a UTxO that holds the script as a reference script
+            // Deploy to specified address (should be different from account's address to avoid collateral conflicts)
+            // Pass the script as the last argument to payToAddress to attach it as a reference script
+            val tx = new Tx()
+                .payToAddress(destinationAddress, java.util.List.of(Amount.lovelace(java.math.BigInteger.valueOf(5000000))), script)
+                .from(account.baseAddress())
+
+            val result = quickTxBuilder
+                .compose(tx)
+                .withSigner(SignerProviders.signerFrom(account))
+                .completeAndWait()
+
+            if result.isSuccessful then {
+                // The reference script UTxO is at output index 0
+                Right((result.getValue, 0))
+            } else {
+                Left(s"Failed to deploy reference script: ${result.getResponse}")
+            }
+        } match {
+            case Success(result) => result
+            case Failure(ex) =>
+                Left(s"Error deploying reference script: ${ex.getMessage}")
+        }
     }
 
     /** Compute the validity interval start time that will be used on-chain. This matches the
@@ -181,7 +224,8 @@ object OracleTransactions {
         currentChainState: ChainState,
         newChainState: ChainState,
         blockHeaders: scalus.prelude.List[BlockHeader],
-        validityIntervalTimeSeconds: BigInt
+        validityIntervalTimeSeconds: BigInt,
+        referenceScriptUtxo: Option[(String, Int)] = None // Optional: (txHash, outputIndex) of reference script UTxO
     ): Either[String, String] = {
         Try {
             // Get the script
@@ -301,32 +345,64 @@ object OracleTransactions {
             // Wrap UtxoService as UtxoSupplier
             val utxoSupplier = new DefaultUtxoSupplier(backendService.getUtxoService)
 
+            // Create ScriptSupplier if using reference script
+            val scriptHashHex = Hex.bytesToHex(script.getScriptHash)
+            val scriptSupplier: scalus.bloxbean.ScriptSupplier = referenceScriptUtxo match {
+                case Some(_) =>
+                    // Provide our script when asked for it
+                    new scalus.bloxbean.ScriptSupplier {
+                        override def getScript(hash: String): com.bloxbean.cardano.client.plutus.spec.PlutusScript =
+                            if hash == scriptHashHex then script
+                            else throw new RuntimeException(s"Unknown script hash: $hash")
+                    }
+                case None =>
+                    // No reference script, use empty supplier
+                    scalus.bloxbean.NoScriptSupplier()
+            }
+
             val scalusEvaluator =
                 new scalus.bloxbean.ScalusTransactionEvaluator(
                   slotConfig,
                   protocolParams,
-                  utxoSupplier
+                  utxoSupplier,
+                  scriptSupplier
                 )
             println("[DEBUG] Using ScalusEvaluator (PlutusVM) for script cost evaluation")
 
             val quickTxBuilder = new QuickTxBuilder(backendService)
 
-            val scriptTx = new ScriptTx()
-                .collectFrom(targetUtxo, redeemer.getData)
-                .payToContract(scriptAddress.getAddress, amount, newDatum)
-                .attachSpendingValidator(script)
+            // Build ScriptTx - use reference script if provided, otherwise attach script directly
+            val scriptTx = referenceScriptUtxo match {
+                case Some((refTxHash, refOutputIndex)) =>
+                    println(s"[DEBUG] Using reference script from UTxO: $refTxHash:$refOutputIndex")
+                    new ScriptTx()
+                        .collectFrom(targetUtxo, redeemer.getData)
+                        .readFrom(refTxHash, refOutputIndex)
+                        .payToContract(scriptAddress.getAddress, amount, newDatum)
+                case None =>
+                    println(s"[DEBUG] Attaching script directly to transaction")
+                    new ScriptTx()
+                        .collectFrom(targetUtxo, redeemer.getData)
+                        .payToContract(scriptAddress.getAddress, amount, newDatum)
+                        .attachSpendingValidator(script)
+            }
 
             // Build, sign, and submit using the current blockchain slot for validFrom
             // This ensures tx.validRange.from corresponds to the time we used in the redeemer
             println(s"[DEBUG] Using validFrom slot: $currentBlockchainSlot")
 
-            val result = quickTxBuilder
+            // Build TxContext - provide reference script for evaluation if using reference input
+            val txContext = quickTxBuilder
                 .compose(scriptTx)
                 .feePayer(account.baseAddress())
                 .withSigner(SignerProviders.signerFrom(account))
                 .withTxEvaluator(scalusEvaluator)
                 .validFrom(currentBlockchainSlot)
-                .completeAndWait()
+
+            val result = referenceScriptUtxo match {
+                case Some(_) => txContext.withReferenceScripts(script).completeAndWait()
+                case None => txContext.completeAndWait()
+            }
 
             if result.isSuccessful then {
                 Right(result.getValue)
