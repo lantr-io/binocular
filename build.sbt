@@ -20,23 +20,29 @@ addCompilerPlugin("org.scalus" %% "scalus-plugin" % scalusVersion)
 
 // Generate TestConfig.scala with different TestMode values for main vs test
 Compile / sourceGenerators += Def.task {
-  val file = (Compile / sourceManaged).value / "binocular" / "TestConfig.scala"
-  IO.write(file, """package binocular
+    val file = (Compile / sourceManaged).value / "binocular" / "TestConfig.scala"
+    IO.write(
+      file,
+      """package binocular
 object TestConfig {
   inline def TestMode: Boolean = false
 }
-""")
-  Seq(file)
+"""
+    )
+    Seq(file)
 }.taskValue
 
 Test / sourceGenerators += Def.task {
-  val file = (Test / sourceManaged).value / "binocular" / "TestConfig.scala"
-  IO.write(file, """package binocular
+    val file = (Test / sourceManaged).value / "binocular" / "TestConfig.scala"
+    IO.write(
+      file,
+      """package binocular
 object TestConfig {
   inline def TestMode: Boolean = true
 }
-""")
-  Seq(file)
+"""
+    )
+    Seq(file)
 }.taskValue
 
 libraryDependencies ++= Seq(
