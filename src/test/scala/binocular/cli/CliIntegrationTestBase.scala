@@ -178,6 +178,33 @@ trait CliIntegrationTestBase extends YaciDevKitSpec {
         description: Option[String] = None // Optional - for documentation
     ) derives ReadWriter
 
+    /** Merkle proof test case from JSON */
+    case class MerkleProofTestCase(
+        txIndex: Int,
+        txHash: String,
+        merkleProof: Seq[String],
+        description: String
+    ) derives ReadWriter
+
+    /** Merkle proof fixture from JSON */
+    case class MerkleProofFixture(
+        blockHeight: Int,
+        blockHash: String,
+        merkleRoot: String,
+        totalTransactions: Int,
+        testCases: Seq[MerkleProofTestCase]
+    ) derives ReadWriter
+
+    /** Load merkle proof fixture for a block */
+    def loadMerkleProofFixture(
+        height: Int,
+        fixtureDir: String = "src/test/resources/bitcoin_blocks"
+    ): MerkleProofFixture = {
+        val file = s"$fixtureDir/block_${height}_merkle_proofs.json"
+        val json = Source.fromFile(file).mkString
+        read[MerkleProofFixture](json)
+    }
+
     /** Helper to create test configurations for CLI commands */
     def createTestConfigs(
         devKit: YaciDevKit,

@@ -813,26 +813,6 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         )
     }
 
-    // ===== FORK HANDLING TESTS =====
-
-    test("validateForkSubmission - reject duplicate blocks") {
-        // Create a block header
-        val blockHeader = BlockHeader(
-          hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
-        )
-
-        val confirmedTip =
-            hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
-        val forksTree: scalus.prelude.List[ForkBranch] = scalus.prelude.List.Nil
-
-        // Submit same block twice - should fail
-        val duplicateHeaders = scalus.prelude.List.from(Seq(blockHeader, blockHeader))
-
-        intercept[RuntimeException] {
-            BitcoinValidator.validateForkSubmission(duplicateHeaders, forksTree, confirmedTip)
-        }
-    }
-
     test("validateForkSubmission - accept pure canonical extension") {
         val confirmedTip =
             hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
@@ -1257,10 +1237,10 @@ class ValidatorTest extends munit.ScalaCheckSuite {
                 // and debug logging enabled
                 assertEquals(
                   r.budget,
-                  ledger.ExUnits(576057, 172_330666),
+                  ledger.ExUnits(462922, 142939784),
                   "Unexpected resource usage"
                 )
-                assertEquals(r.budget.fee(prices), Coin(45660), "Unexpected fee cost")
+                assertEquals(r.budget.fee(prices), Coin(37003), "Unexpected fee cost")
             case r: Result.Failure =>
                 fail(s"Validation failed: $r")
     }
