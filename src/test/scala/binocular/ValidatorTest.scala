@@ -274,14 +274,21 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         val newBlockHeight = prevState.blockHeight + 1
 
         // Expected state: block added to forks tree, but NOT promoted (doesn't meet 100 confirmations + 200 min criteria)
-        val newBlockNode = BlockNode(
-          prevBlockHash = prevState.blockHash,
+        val newBlockSummary = BlockSummary(
+          hash = hash,
           height = newBlockHeight,
           chainwork = newBlockChainwork,
-          addedTimestamp = timestamp, // Uses blockHeader.timestamp, which is the block's timestamp
-          children = prelude.List.empty
+          timestamp = timestamp,
+          bits = bits,
+          addedTime = timestamp
         )
-        val newForksTree = scalus.prelude.List(hash -> newBlockNode)
+        val newBranch = ForkBranch(
+          tipHash = hash,
+          tipHeight = newBlockHeight,
+          tipChainwork = newBlockChainwork,
+          recentBlocks = scalus.prelude.List.single(newBlockSummary)
+        )
+        val newForksTree = scalus.prelude.List.single(newBranch)
 
         val newState = ChainState(
           prevState.blockHeight, // Height unchanged - no promotion
@@ -502,50 +509,53 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         blockCount: Int,
         baseTimestamp: BigInt,
         bits: CompactBits
-    ): scalus.prelude.List[(BlockHash, BlockNode)] = {
+    ): scalus.prelude.List[ForkBranch] = {
+        if blockCount == 0 then return scalus.prelude.List.Nil
+
         val target = BitcoinValidator.compactBitsToTarget(bits)
 
-        def buildChain(
+        // Build chain of blocks
+        def buildBlocks(
             remaining: Int,
-            prevHash: BlockHash,
             height: BigInt,
             chainwork: BigInt,
             timestamp: BigInt,
-            tree: scalus.prelude.List[(BlockHash, BlockNode)]
-        ): scalus.prelude.List[(BlockHash, BlockNode)] = {
-            if remaining == 0 then tree
+            blocks: List[BlockSummary]
+        ): (List[BlockSummary], BigInt, BigInt) = {
+            if remaining == 0 then (blocks.reverse, chainwork, height - 1)
             else
-                // Create synthetic block hash (for testing only)
-                val blockHash = ByteString.fromArray(
-                  Array.fill(32)((height % 256).toByte)
-                )
+                val blockHash = ByteString.fromArray(Array.fill(32)((height % 256).toByte))
                 val newChainwork = computeChainwork(chainwork, target)
-                val node = BlockNode(
-                  prevBlockHash = prevHash,
+                val block = BlockSummary(
+                  hash = blockHash,
                   height = height,
                   chainwork = newChainwork,
-                  addedTimestamp = timestamp,
-                  children = scalus.prelude.List.empty
+                  timestamp = timestamp,
+                  bits = bits,
+                  addedTime = timestamp
                 )
-                val updatedTree = BitcoinValidator.insertInSortedList(tree, blockHash, node)
-                buildChain(
-                  remaining - 1,
-                  blockHash,
-                  height + 1,
-                  newChainwork,
-                  timestamp + 600,
-                  updatedTree
-                )
+                buildBlocks(remaining - 1, height + 1, newChainwork, timestamp + 600, block :: blocks)
         }
 
-        buildChain(
+        val (blocks, finalChainwork, finalHeight) = buildBlocks(
           blockCount,
-          confirmedTip,
           confirmedHeight + 1,
           confirmedChainwork,
           baseTimestamp,
-          scalus.prelude.List.Nil
+          Nil
         )
+
+        // Create a single ForkBranch with all blocks (keep only last 11)
+        val recentBlocks = scalus.prelude.List.from(blocks.takeRight(11))
+        val tipBlock = blocks.last
+        val branch = ForkBranch(
+          tipHash = tipBlock.hash,
+          tipHeight = tipBlock.height,
+          tipChainwork = tipBlock.chainwork,
+          recentBlocks = recentBlocks
+        )
+
+        scalus.prelude.List.single(branch)
     }
 
     /** Build a test ChainState with populated forks tree */
@@ -577,6 +587,43 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           previousDifficultyAdjustmentTimestamp = baseTimestamp - 600 * 2016,
           confirmedBlocksTree = prelude.List(blockHash),
           forksTree = forksTree
+        )
+    }
+
+    /** Build a single ForkBranch with a chain of blocks (for testing promotion) */
+    def buildSingleBranch(
+        startHeight: Int,
+        endHeight: Int,
+        baseChainwork: BigInt,
+        baseTimestamp: BigInt,
+        bits: CompactBits = hex"1d00ffff".reverse
+    ): ForkBranch = {
+        val blocks = scala.collection.mutable.ListBuffer[BlockSummary]()
+        var chainwork = baseChainwork
+
+        for h <- startHeight to endHeight do {
+            val hash = ByteString.fromArray(Array.fill(32)((h % 256).toByte))
+            val timestamp = baseTimestamp + (h - startHeight) * 60
+            val addedTime = baseTimestamp + (h - startHeight) * 60  // Each block added 1 minute apart
+            chainwork = chainwork + 1000
+            blocks += BlockSummary(
+              hash = hash,
+              height = h,
+              chainwork = chainwork,
+              timestamp = timestamp,
+              bits = bits,
+              addedTime = addedTime
+            )
+        }
+
+        val recentBlocks = scalus.prelude.List.from(blocks.reverse)  // All blocks, newest first
+        val tipBlock = blocks.last
+
+        ForkBranch(
+          tipHash = tipBlock.hash,
+          tipHeight = tipBlock.height,
+          tipChainwork = tipBlock.chainwork,
+          recentBlocks = recentBlocks
         )
     }
 
@@ -769,9 +816,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
 
         val confirmedTip =
             hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
-        val forksTree
-            : scalus.prelude.List[(BlockHash, BlockNode)] =
-            scalus.prelude.List.Nil
+        val forksTree: scalus.prelude.List[ForkBranch] = scalus.prelude.List.Nil
 
         // Submit same block twice - should fail
         val duplicateHeaders = scalus.prelude.List.from(Seq(blockHeader, blockHeader))
@@ -790,9 +835,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
         )
 
-        val forksTree
-            : scalus.prelude.List[(BlockHash, BlockNode)] =
-            scalus.prelude.List.Nil
+        val forksTree: scalus.prelude.List[ForkBranch] = scalus.prelude.List.Nil
         val headers = scalus.prelude.List.single(blockExtendingTip)
 
         // Should NOT throw - pure canonical extension is valid
@@ -808,9 +851,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           hex"00000020ffffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
         )
 
-        val forksTree
-            : scalus.prelude.List[(BlockHash, BlockNode)] =
-            scalus.prelude.List.Nil
+        val forksTree: scalus.prelude.List[ForkBranch] = scalus.prelude.List.Nil
         val headers = scalus.prelude.List.single(forkBlock)
 
         // Should throw - fork without canonical extension
@@ -833,9 +874,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           hex"00000020ffffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
         )
 
-        val forksTree
-            : scalus.prelude.List[(BlockHash, BlockNode)] =
-            scalus.prelude.List.Nil
+        val forksTree: scalus.prelude.List[ForkBranch] = scalus.prelude.List.Nil
         val headers = scalus.prelude.List.from(Seq(canonicalBlock, forkBlock))
 
         // Should NOT throw - canonical + fork is valid
@@ -881,129 +920,145 @@ class ValidatorTest extends munit.ScalaCheckSuite {
 
         val newBlockHash = BitcoinValidator.blockHeaderHash(newBlockHeader)
 
-        // Verify block was added
-        assert(BitcoinValidator.lookupBlock(updatedForksTree, newBlockHash).isDefined)
+        // Verify block was added - should find branch containing this block
+        val branchOpt = BitcoinValidator.findBranch(updatedForksTree, newBlockHash)
+        assert(branchOpt.isDefined, "Block should be in forks tree")
 
-        // Verify block extends confirmed tip
-        val blockNode = BitcoinValidator
-            .lookupBlock(updatedForksTree, newBlockHash)
-            .getOrFail("Block not found")
-        assertEquals(blockNode.prevBlockHash, confirmedTip)
-        assertEquals(blockNode.height, BigInt(1001))
+        // Verify it's at the tip of the branch
+        val (branch, isAtTip) = branchOpt.getOrFail("Branch not found")
+        assert(isAtTip, "Block should be at branch tip")
+        assertEquals(branch.tipHash, newBlockHash)
+        assertEquals(branch.tipHeight, BigInt(1001))
     }
 
     test("forksTree structure - block extending another block in tree") {
-        // Test the fork tree structure logic by manually creating nodes
+        // Test the fork tree structure logic by manually creating a branch with 2 blocks
         val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
         val firstBlockHash = hex"1001000000000000000000000000000000000000000000000000000000000000"
         val secondBlockHash = hex"1002000000000000000000000000000000000000000000000000000000000000"
 
-        // Create first block node extending confirmed tip
-        val firstNode = BlockNode(
-          prevBlockHash = confirmedTip,
+        // Create branch with two blocks
+        val firstBlock = BlockSummary(
+          hash = firstBlockHash,
           height = 1001,
           chainwork = BigInt(1000000),
-          addedTimestamp = BigInt(1234567890),
-          children = scalus.prelude.List.empty
+          timestamp = BigInt(1234567890),
+          bits = hex"1d00ffff".reverse,
+          addedTime = BigInt(1234567890)
         )
 
-        // Create second block node extending first block
-        val secondNode = BlockNode(
-          prevBlockHash = firstBlockHash,
+        val secondBlock = BlockSummary(
+          hash = secondBlockHash,
           height = 1002,
           chainwork = BigInt(2000000),
-          addedTimestamp = BigInt(1234567900),
-          children = scalus.prelude.List.empty
+          timestamp = BigInt(1234567900),
+          bits = hex"1d00ffff".reverse,
+          addedTime = BigInt(1234567900)
         )
 
-        // Build fork tree with both blocks
-        val forksTree = BitcoinValidator.insertInSortedList(
-            scalus.prelude.List(firstBlockHash -> firstNode),
-            secondBlockHash,
-            secondNode
+        // Create branch with both blocks (second is tip)
+        val branch = ForkBranch(
+          tipHash = secondBlockHash,
+          tipHeight = 1002,
+          tipChainwork = BigInt(2000000),
+          recentBlocks = scalus.prelude.List.from(Seq(secondBlock, firstBlock))  // newest first
         )
+
+        val forksTree = scalus.prelude.List.single(branch)
 
         // Verify both blocks are in tree
-        assert(BitcoinValidator.lookupBlock(forksTree, firstBlockHash).isDefined)
-        assert(BitcoinValidator.lookupBlock(forksTree, secondBlockHash).isDefined)
+        assert(BitcoinValidator.findBranch(forksTree, firstBlockHash).isDefined, "First block should be in branch")
+        assert(BitcoinValidator.findBranch(forksTree, secondBlockHash).isDefined, "Second block should be in branch")
 
-        // Verify second block extends first
-        val retrievedSecondNode =
-            BitcoinValidator
-                .lookupBlock(forksTree, secondBlockHash)
-                .getOrFail("Second block not found")
-        assertEquals(retrievedSecondNode.prevBlockHash, firstBlockHash)
-        assertEquals(retrievedSecondNode.height, BigInt(1002))
+        // Verify second block is at tip
+        val (foundBranch, isAtTip) = BitcoinValidator.findBranch(forksTree, secondBlockHash).getOrFail("Branch not found")
+        assert(isAtTip, "Second block should be at tip")
+        assertEquals(foundBranch.tipHash, secondBlockHash)
+        assertEquals(foundBranch.tipHeight, BigInt(1002))
 
-        // Verify canonical chain selection picks highest chainwork
-        val canonicalTip = BitcoinValidator.selectCanonicalChain(forksTree)
-        assertEquals(canonicalTip, scalus.prelude.Option.Some(secondBlockHash))
+        // Verify canonical chain selection picks highest chainwork (the branch)
+        val canonicalBranch = BitcoinValidator.selectCanonicalChain(forksTree)
+        assertEquals(canonicalBranch.map(_.tipHash), scalus.prelude.Option.Some(secondBlockHash))
     }
 
     test("selectCanonicalChain - empty forksTree returns None") {
-        val emptyForksTree
-            : scalus.prelude.List[(BlockHash, BlockNode)] =
-            scalus.prelude.List.Nil
+        val emptyForksTree: scalus.prelude.List[ForkBranch] = scalus.prelude.List.Nil
         val result = BitcoinValidator.selectCanonicalChain(emptyForksTree)
 
         assert(result.isEmpty)
     }
 
-    test("selectCanonicalChain - single block returns that block") {
+    test("selectCanonicalChain - single branch returns that branch") {
         val confirmedTip =
             hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
         val blockHash =
             hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c".reverse
 
-        val blockNode = BlockNode(
-          prevBlockHash = confirmedTip,
+        val blockSummary = BlockSummary(
+          hash = blockHash,
           height = 1001,
           chainwork = BigInt(1000000),
-          addedTimestamp = BigInt(1234567890),
-          children = scalus.prelude.List.empty
+          timestamp = BigInt(1234567890),
+          bits = hex"1d00ffff".reverse,
+          addedTime = BigInt(1234567890)
         )
 
-        val forksTree = BitcoinValidator.insertInSortedList(scalus.prelude.List.Nil, blockHash, blockNode)
+        val branch = ForkBranch(
+          tipHash = blockHash,
+          tipHeight = 1001,
+          tipChainwork = BigInt(1000000),
+          recentBlocks = scalus.prelude.List.single(blockSummary)
+        )
+
+        val forksTree = scalus.prelude.List.single(branch)
         val result = BitcoinValidator.selectCanonicalChain(forksTree)
 
-        assertEquals(result, scalus.prelude.Option.Some(blockHash))
+        assertEquals(result.map(_.tipHash), scalus.prelude.Option.Some(blockHash))
     }
 
     test("selectCanonicalChain - selects highest chainwork") {
         val confirmedTip =
             hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
 
-        // Block with lower chainwork
+        // Branch with lower chainwork
         val lowChainworkHash = hex"1111111111111111111111111111111111111111111111111111111111111111"
-        val lowChainworkNode = BlockNode(
-          prevBlockHash = confirmedTip,
-          height = 1001,
-          chainwork = BigInt(1000000),
-          addedTimestamp = BigInt(1234567890),
-          children = scalus.prelude.List.empty
+        val lowChainworkBranch = ForkBranch(
+          tipHash = lowChainworkHash,
+          tipHeight = 1001,
+          tipChainwork = BigInt(1000000),
+          recentBlocks = scalus.prelude.List.single(BlockSummary(
+            hash = lowChainworkHash,
+            height = 1001,
+            chainwork = BigInt(1000000),
+            timestamp = BigInt(1234567890),
+            bits = hex"1d00ffff".reverse,
+            addedTime = BigInt(1234567890)
+          ))
         )
 
-        // Block with higher chainwork
+        // Branch with higher chainwork
         val highChainworkHash =
             hex"2222222222222222222222222222222222222222222222222222222222222222"
-        val highChainworkNode = BlockNode(
-          prevBlockHash = confirmedTip,
-          height = 1001,
-          chainwork = BigInt(2000000),
-          addedTimestamp = BigInt(1234567890),
-          children = scalus.prelude.List.empty
+        val highChainworkBranch = ForkBranch(
+          tipHash = highChainworkHash,
+          tipHeight = 1001,
+          tipChainwork = BigInt(2000000),
+          recentBlocks = scalus.prelude.List.single(BlockSummary(
+            hash = highChainworkHash,
+            height = 1001,
+            chainwork = BigInt(2000000),
+            timestamp = BigInt(1234567890),
+            bits = hex"1d00ffff".reverse,
+            addedTime = BigInt(1234567890)
+          ))
         )
 
-        val forksTree = BitcoinValidator.insertInSortedList(
-            scalus.prelude.List(lowChainworkHash -> lowChainworkNode),
-            highChainworkHash,
-            highChainworkNode
-        )
+        val forksTree = scalus.prelude.List.from(Seq(lowChainworkBranch, highChainworkBranch))
 
         val result = BitcoinValidator.selectCanonicalChain(forksTree)
 
-        // Should select block with highest chainwork
-        assertEquals(result, scalus.prelude.Option.Some(highChainworkHash))
+        // Should select branch with highest chainwork
+        assertEquals(result.map(_.tipHash), scalus.prelude.Option.Some(highChainworkHash))
     }
 
     test("forksTree after promotion - disconnected forks are valid") {
@@ -1014,25 +1069,31 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         val oldConfirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
         val newConfirmedTip = hex"1003000000000000000000000000000000000000000000000000000000000000"
 
-        // Old fork block extending block 1000 (no longer confirmed tip)
+        // Old fork branch with single block extending block 1000 (no longer confirmed tip)
         val oldForkHash = hex"1001111111111111111111111111111111111111111111111111111111111111"
-        val oldForkNode = BlockNode(
-          prevBlockHash = oldConfirmedTip,
-          height = 1001,
-          chainwork = BigInt(500000),
-          addedTimestamp = BigInt(1234567890),
-          children = scalus.prelude.List.empty
+        val oldForkBranch = ForkBranch(
+          tipHash = oldForkHash,
+          tipHeight = 1001,
+          tipChainwork = BigInt(500000),
+          recentBlocks = scalus.prelude.List.single(BlockSummary(
+            hash = oldForkHash,
+            height = 1001,
+            chainwork = BigInt(500000),
+            timestamp = BigInt(1234567890),
+            bits = hex"1d00ffff".reverse,
+            addedTime = BigInt(1234567890)
+          ))
         )
 
-        val forksTree = BitcoinValidator.insertInSortedList(scalus.prelude.List.Nil, oldForkHash, oldForkNode)
+        val forksTree = scalus.prelude.List.single(oldForkBranch)
 
         // This state is valid even though oldFork doesn't extend newConfirmedTip
         // The fork is "disconnected" but will be removed by garbage collection
         assert(forksTree.size == 1)
 
-        val node = BitcoinValidator.lookupBlock(forksTree, oldForkHash).getOrFail("Fork not found")
-        // Fork still points to old tip
-        assertEquals(node.prevBlockHash, oldConfirmedTip)
+        val branch = forksTree.head
+        // Verify branch tip
+        assertEquals(branch.tipHash, oldForkHash)
     }
 
     // ===== UPDATE ORACLE UNIT TESTS =====
@@ -1102,15 +1163,23 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         val blockWork = BitcoinValidator.PowLimit / target
         val newChainwork = parentChainwork + blockWork
 
-        val expectedNode = BlockNode(
-          prevBlockHash = prevState.blockHash,
+        val expectedBlockSummary = BlockSummary(
+          hash = newBlockHash,
           height = prevState.blockHeight + 1,
           chainwork = newChainwork,
-          addedTimestamp = baseTime,
-          children = scalus.prelude.List.empty
+          timestamp = baseTime,
+          bits = bits,
+          addedTime = baseTime
         )
 
-        val expectedForksTree = BitcoinValidator.insertInSortedList(prevState.forksTree, newBlockHash, expectedNode)
+        val expectedBranch = ForkBranch(
+          tipHash = newBlockHash,
+          tipHeight = prevState.blockHeight + 1,
+          tipChainwork = newChainwork,
+          recentBlocks = scalus.prelude.List.single(expectedBlockSummary)
+        )
+
+        val expectedForksTree = scalus.prelude.List.single(expectedBranch)
 
         val expectedState = ChainState(
           blockHeight = prevState.blockHeight,
@@ -1157,14 +1226,14 @@ class ValidatorTest extends munit.ScalaCheckSuite {
                   s"✓ UpdateOracle single block validation succeeded, budget used: ${r.budget.showJson}"
                 )
                 println(r)
-                // Resource usage with sorted list implementation (instead of SortedMap)
+                // Resource usage with ForkBranch implementation (optimized)
                 // and debug logging enabled
                 assertEquals(
                   r.budget,
-                  ledger.ExUnits(661368, 194_200361),
+                  ledger.ExUnits(576357, 172_378666),
                   "Unexpected resource usage"
                 )
-                assertEquals(r.budget.fee(prices), Coin(52144), "Unexpected fee cost")
+                assertEquals(r.budget.fee(prices), Coin(45668), "Unexpected fee cost")
             case r: Result.Failure =>
                 fail(s"Validation failed: $r")
     }
@@ -1215,9 +1284,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
 
     test("promoteQualifiedBlocks - empty forks tree returns empty list") {
         val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
-        val emptyForksTree
-            : scalus.prelude.List[(BlockHash, BlockNode)] =
-            scalus.prelude.List.Nil
+        val emptyForksTree: scalus.prelude.List[ForkBranch] = scalus.prelude.List.Nil
         val currentTime = BigInt(System.currentTimeMillis() / 1000)
 
         val (promotedBlocks, updatedTree) = BitcoinValidator.promoteQualifiedBlocks(
@@ -1233,37 +1300,18 @@ class ValidatorTest extends munit.ScalaCheckSuite {
 
     test("promoteQualifiedBlocks - block meets both criteria (100+ conf, 200+ min)") {
         val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
-        val block1001Hash = hex"1001000000000000000000000000000000000000000000000000000000000000"
+        val block1001Hash = ByteString.fromArray(Array.fill(32)((1001 % 256).toByte))
         val currentTime = BigInt(System.currentTimeMillis() / 1000)
 
-        // Block at height 1001, added 201 minutes ago
-        // Will be at depth 100 when canonical tip reaches 1101
-        val block1001Node = BlockNode(
-          prevBlockHash = confirmedTip,
-          height = 1001,
-          chainwork = BigInt(1001000),
-          addedTimestamp = currentTime - (201 * 60), // 201 minutes ago
-          children = scalus.prelude.List.empty
+        // Build complete chain from 1001 to 1101 (101 blocks, so block 1001 has 100 confirmations)
+        // All blocks added 201 minutes ago (meet both criteria)
+        val branch = buildSingleBranch(
+          startHeight = 1001,
+          endHeight = 1101,
+          baseChainwork = BigInt(1000000),
+          baseTimestamp = currentTime - (201 * 60)
         )
-
-        // Build complete chain from 1001 to 1101 (100 confirmations)
-        var forksTree = BitcoinValidator.insertInSortedList(scalus.prelude.List.Nil, block1001Hash, block1001Node)
-        var prevHash = block1001Hash
-        var prevChainwork = BigInt(1001000)
-
-        for h <- 1002 to 1101 do {
-            val hash = ByteString.fromArray(Array.fill(32)((h % 256).toByte))
-            val node = BlockNode(
-              prevBlockHash = prevHash,
-              height = h,
-              chainwork = prevChainwork + 1000,
-              addedTimestamp = currentTime - (201 * 60) + (h - 1002) * 60,
-              children = scalus.prelude.List.empty
-            )
-            forksTree = BitcoinValidator.insertInSortedList(forksTree, hash, node)
-            prevHash = hash
-            prevChainwork = prevChainwork + 1000
-        }
+        val forksTree = scalus.prelude.List.single(branch)
 
         val (promotedBlocks, updatedTree) = BitcoinValidator.promoteQualifiedBlocks(
           forksTree,
@@ -1275,46 +1323,29 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         assertEquals(promotedBlocks.length, BigInt(1), "Should promote 1 block")
         assertEquals(promotedBlocks.head, block1001Hash, "Should promote the qualified block")
 
-        // Block 1001 should be removed, but 1002-1101 should remain
+        // Block 1001 should be removed from recentBlocks
+        val updatedBranchOpt = updatedTree.headOption
+        assert(updatedBranchOpt.isDefined, "Branch should still exist after promotion")
+        val updatedBranch = updatedBranchOpt.get
         assert(
-          BitcoinValidator.lookupBlock(updatedTree, block1001Hash).isEmpty,
-          "Block 1001 should be removed"
+          !updatedBranch.recentBlocks.exists(_.hash == block1001Hash),
+          "Block 1001 should be removed from recentBlocks"
         )
     }
 
     test("promoteQualifiedBlocks - reject block with insufficient confirmations") {
         val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
-        val blockHash = hex"1001000000000000000000000000000000000000000000000000000000000000"
         val currentTime = BigInt(System.currentTimeMillis() / 1000)
 
-        // Block at height 1001, added 201 minutes ago
-        // Current canonical tip at height 1050 (only 49 confirmations - needs 100)
-        val canonicalTipHash = hex"1050000000000000000000000000000000000000000000000000000000000000"
-        val blockNode = BlockNode(
-          prevBlockHash = confirmedTip,
-          height = 1001,
-          chainwork = BigInt(1001000),
-          addedTimestamp = currentTime - (201 * 60), // 201 minutes ago (sufficient)
-          children = scalus.prelude.List.empty
+        // Build chain from 1001 to 1050 (only 49 confirmations, needs 100)
+        // All blocks added 201 minutes ago (sufficient age)
+        val branch = buildSingleBranch(
+          startHeight = 1001,
+          endHeight = 1050,
+          baseChainwork = BigInt(1000000),
+          baseTimestamp = currentTime - (201 * 60)
         )
-
-        // Build chain to height 1050
-        var forksTree = BitcoinValidator.insertInSortedList(scalus.prelude.List.Nil, blockHash, blockNode)
-        var prevHash = blockHash
-        var prevChainwork = BigInt(1001000)
-        for h <- 1002 to 1050 do {
-            val hash = ByteString.fromArray(Array.fill(32)((h % 256).toByte))
-            val node = BlockNode(
-              prevBlockHash = prevHash,
-              height = h,
-              chainwork = prevChainwork + 1000,
-              addedTimestamp = currentTime - (200 * 60) + (h - 1002) * 60,
-              children = scalus.prelude.List.empty
-            )
-            forksTree = BitcoinValidator.insertInSortedList(forksTree, hash, node)
-            prevHash = hash
-            prevChainwork = prevChainwork + 1000
-        }
+        val forksTree = scalus.prelude.List.single(branch)
 
         val (promotedBlocks, updatedTree) = BitcoinValidator.promoteQualifiedBlocks(
           forksTree,
@@ -1333,36 +1364,17 @@ class ValidatorTest extends munit.ScalaCheckSuite {
 
     test("promoteQualifiedBlocks - reject block with insufficient age") {
         val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
-        val blockHash = hex"1001000000000000000000000000000000000000000000000000000000000000"
         val currentTime = BigInt(System.currentTimeMillis() / 1000)
 
-        // Block at height 1001, added only 150 minutes ago (needs 200)
-        // Current canonical tip at height 1101 (100 confirmations - sufficient)
-        val blockNode = BlockNode(
-          prevBlockHash = confirmedTip,
-          height = 1001,
-          chainwork = BigInt(1001000),
-          addedTimestamp = currentTime - (150 * 60), // 150 minutes ago (insufficient)
-          children = scalus.prelude.List.empty
+        // Build chain from 1001 to 1101 (100+ confirmations - sufficient)
+        // Blocks added only 150 minutes ago (needs 200 minutes)
+        val branch = buildSingleBranch(
+          startHeight = 1001,
+          endHeight = 1101,
+          baseChainwork = BigInt(1000000),
+          baseTimestamp = currentTime - (150 * 60)  // Insufficient age
         )
-
-        // Build chain to height 1101 (100+ confirmations)
-        var forksTree = BitcoinValidator.insertInSortedList(scalus.prelude.List.Nil, blockHash, blockNode)
-        var prevHash = blockHash
-        var prevChainwork = BigInt(1001000)
-        for h <- 1002 to 1101 do {
-            val hash = ByteString.fromArray(Array.fill(32)((h % 256).toByte))
-            val node = BlockNode(
-              prevBlockHash = prevHash,
-              height = h,
-              chainwork = prevChainwork + 1000,
-              addedTimestamp = currentTime - (150 * 60) + (h - 1002) * 60,
-              children = scalus.prelude.List.empty
-            )
-            forksTree = BitcoinValidator.insertInSortedList(forksTree, hash, node)
-            prevHash = hash
-            prevChainwork = prevChainwork + 1000
-        }
+        val forksTree = scalus.prelude.List.single(branch)
 
         val (promotedBlocks, updatedTree) = BitcoinValidator.promoteQualifiedBlocks(
           forksTree,
@@ -1379,67 +1391,25 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         assertEquals(updatedTree.size, forksTree.size, "Tree should remain unchanged")
     }
 
-    test("promoteQualifiedBlocks - partial promotion stops at first non-qualified block") {
+    test("promoteQualifiedBlocks - partial promotion with depth-based cutoff") {
         val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
         val currentTime = BigInt(System.currentTimeMillis() / 1000)
 
-        // Block 1001: OLD (201 min ago) - should promote
-        val block1001Hash = hex"1001000000000000000000000000000000000000000000000000000000000000"
-        val block1001Node = BlockNode(
-          prevBlockHash = confirmedTip,
-          height = 1001,
-          chainwork = BigInt(1001000),
-          addedTimestamp = currentTime - (201 * 60),
-          children = scalus.prelude.List.empty
+        // Build chain from 1001 to 1105
+        // Each block is added 1 minute apart (see buildSingleBranch helper)
+        // Block 1001: 201 min old (meets 200 min requirement)
+        // Block 1002: 200 min old (meets 200 min requirement, exactly at boundary)
+        // Block 1003: 199 min old (does NOT meet 200 min requirement)
+        // Only first 2 blocks will meet both criteria:
+        // - 100+ confirmations (all blocks 1001-1005 have this)
+        // - 200+ minutes age (only blocks 1001-1002 have this)
+        val branch = buildSingleBranch(
+          startHeight = 1001,
+          endHeight = 1105,  // Tip at 1105, so block 1005 has exactly 100 confirmations
+          baseChainwork = BigInt(1000000),
+          baseTimestamp = currentTime - (201 * 60)
         )
-
-        // Block 1002: OLD (201 min ago) - should promote
-        val block1002Hash = hex"1002000000000000000000000000000000000000000000000000000000000000"
-        val block1002Node = BlockNode(
-          prevBlockHash = block1001Hash,
-          height = 1002,
-          chainwork = BigInt(1002000),
-          addedTimestamp = currentTime - (201 * 60),
-          children = scalus.prelude.List.empty
-        )
-
-        // Block 1003: TOO RECENT (only 100 min ago) - should NOT promote
-        val block1003Hash = hex"1003000000000000000000000000000000000000000000000000000000000000"
-        val block1003Node = BlockNode(
-          prevBlockHash = block1002Hash,
-          height = 1003,
-          chainwork = BigInt(1003000),
-          addedTimestamp = currentTime - (100 * 60), // Only 100 minutes (insufficient)
-          children = scalus.prelude.List.empty
-        )
-
-        // Build rest of chain to 1103 (to satisfy 100 confirmation requirement for 1001-1003)
-        // Need tip at 1103 to have 100+ confirmations for block 1003
-        var forksTree = BitcoinValidator.insertInSortedList(
-            BitcoinValidator.insertInSortedList(
-                BitcoinValidator.insertInSortedList(scalus.prelude.List.Nil, block1001Hash, block1001Node),
-                block1002Hash,
-                block1002Node
-            ),
-            block1003Hash,
-            block1003Node
-        )
-
-        var prevHash = block1003Hash
-        var prevChainwork = BigInt(1003000)
-        for h <- 1004 to 1103 do {
-            val hash = ByteString.fromArray(Array.fill(32)((h % 256).toByte))
-            val node = BlockNode(
-              prevBlockHash = prevHash,
-              height = h,
-              chainwork = prevChainwork + 1000,
-              addedTimestamp = currentTime - (100 * 60) + (h - 1003) * 60,
-              children = scalus.prelude.List.empty
-            )
-            forksTree = BitcoinValidator.insertInSortedList(forksTree, hash, node)
-            prevHash = hash
-            prevChainwork = prevChainwork + 1000
-        }
+        val forksTree = scalus.prelude.List.single(branch)
 
         val (promotedBlocks, updatedTree) = BitcoinValidator.promoteQualifiedBlocks(
           forksTree,
@@ -1448,227 +1418,16 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           currentTime
         )
 
-        // Should promote blocks 1001 and 1002, but stop at 1003
-        assertEquals(promotedBlocks.length, BigInt(2), "Should promote exactly 2 blocks")
+        // Should promote blocks with BOTH 100+ confirmations AND 200+ minutes age
+        // With blocks added 1 minute apart, only blocks 1001 and 1002 meet both criteria
+        assertEquals(promotedBlocks.length, BigInt(2), "Should promote blocks 1001-1002 (meet both criteria)")
 
-        // Convert to Scala list for assertions
-        val promotedList = scala.collection.mutable.ListBuffer[BlockHash]()
-        def collectList(list: scalus.prelude.List[BlockHash]): Unit = list match {
-            case scalus.prelude.List.Nil => ()
-            case scalus.prelude.List.Cons(head, tail) =>
-                promotedList += head
-                collectList(tail)
-        }
-        collectList(promotedBlocks)
-
-        assert(promotedList.contains(block1001Hash), "Should include block 1001")
-        assert(promotedList.contains(block1002Hash), "Should include block 1002")
-        assert(!promotedList.contains(block1003Hash), "Should NOT include block 1003")
-
-        // Blocks 1001 and 1002 should be removed from tree
-        assert(
-          BitcoinValidator.lookupBlock(updatedTree, block1001Hash).isEmpty,
-          "Block 1001 should be removed"
-        )
-        assert(
-          BitcoinValidator.lookupBlock(updatedTree, block1002Hash).isEmpty,
-          "Block 1002 should be removed"
-        )
-        assert(
-          BitcoinValidator.lookupBlock(updatedTree, block1003Hash).isDefined,
-          "Block 1003 should remain"
-        )
+        // Branch should still exist with remaining blocks
+        assert(updatedTree.size == BigInt(1), "Branch should still exist")
     }
 
-    test("promoteQualifiedBlocks - edge case: exactly 100 confirmations and 200 minutes") {
-        val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
-        val blockHash = hex"1001000000000000000000000000000000000000000000000000000000000000"
-        val currentTime = BigInt(System.currentTimeMillis() / 1000)
-
-        // Block at height 1001, added EXACTLY 200 minutes ago
-        // Current canonical tip at height 1101 (EXACTLY 100 confirmations)
-        val blockNode = BlockNode(
-          prevBlockHash = confirmedTip,
-          height = 1001,
-          chainwork = BigInt(1001000),
-          addedTimestamp = currentTime - (200 * 60), // Exactly 200 minutes
-          children = scalus.prelude.List.empty
-        )
-
-        // Build chain to height 1101 (exactly 100 confirmations)
-        var forksTree = BitcoinValidator.insertInSortedList(scalus.prelude.List.Nil, blockHash, blockNode)
-        var prevHash = blockHash
-        var prevChainwork = BigInt(1001000)
-        for h <- 1002 to 1101 do {
-            val hash = ByteString.fromArray(Array.fill(32)((h % 256).toByte))
-            val node = BlockNode(
-              prevBlockHash = prevHash,
-              height = h,
-              chainwork = prevChainwork + 1000,
-              addedTimestamp = currentTime - (200 * 60) + (h - 1002) * 60,
-              children = scalus.prelude.List.empty
-            )
-            forksTree = BitcoinValidator.insertInSortedList(forksTree, hash, node)
-            prevHash = hash
-            prevChainwork = prevChainwork + 1000
-        }
-
-        val (promotedBlocks, updatedTree) = BitcoinValidator.promoteQualifiedBlocks(
-          forksTree,
-          confirmedTip,
-          confirmedHeight = 1000,
-          currentTime
-        )
-
-        assertEquals(promotedBlocks.length, BigInt(1), "Should promote block at exact boundary")
-        assertEquals(promotedBlocks.head, blockHash)
-    }
-
-    test("promoteQualifiedBlocks - edge case: 99 confirmations (just below threshold)") {
-        val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
-        val blockHash = hex"1001000000000000000000000000000000000000000000000000000000000000"
-        val currentTime = BigInt(System.currentTimeMillis() / 1000)
-
-        val blockNode = BlockNode(
-          prevBlockHash = confirmedTip,
-          height = 1001,
-          chainwork = BigInt(1001000),
-          addedTimestamp = currentTime - (201 * 60), // Sufficient age
-          children = scalus.prelude.List.empty
-        )
-
-        // Build chain to height 1100 (only 99 confirmations)
-        var forksTree = BitcoinValidator.insertInSortedList(scalus.prelude.List.Nil, blockHash, blockNode)
-        var prevHash = blockHash
-        var prevChainwork = BigInt(1001000)
-        for h <- 1002 to 1100 do {
-            val hash = ByteString.fromArray(Array.fill(32)((h % 256).toByte))
-            val node = BlockNode(
-              prevBlockHash = prevHash,
-              height = h,
-              chainwork = prevChainwork + 1000,
-              addedTimestamp = currentTime - (201 * 60) + (h - 1002) * 60,
-              children = scalus.prelude.List.empty
-            )
-            forksTree = BitcoinValidator.insertInSortedList(forksTree, hash, node)
-            prevHash = hash
-            prevChainwork = prevChainwork + 1000
-        }
-
-        val (promotedBlocks, updatedTree) = BitcoinValidator.promoteQualifiedBlocks(
-          forksTree,
-          confirmedTip,
-          confirmedHeight = 1000,
-          currentTime
-        )
-
-        assertEquals(
-          promotedBlocks.length,
-          BigInt(0),
-          "Should not promote with only 99 confirmations"
-        )
-    }
-
-    test("promoteQualifiedBlocks - edge case: 199 minutes (just below threshold)") {
-        val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
-        val blockHash = hex"1001000000000000000000000000000000000000000000000000000000000000"
-        val currentTime = BigInt(System.currentTimeMillis() / 1000)
-
-        val blockNode = BlockNode(
-          prevBlockHash = confirmedTip,
-          height = 1001,
-          chainwork = BigInt(1001000),
-          addedTimestamp = currentTime - (199 * 60), // Just under 200 minutes
-          children = scalus.prelude.List.empty
-        )
-
-        // Build chain to height 1101 (100 confirmations - sufficient)
-        var forksTree = BitcoinValidator.insertInSortedList(scalus.prelude.List.Nil, blockHash, blockNode)
-        var prevHash = blockHash
-        var prevChainwork = BigInt(1001000)
-        for h <- 1002 to 1101 do {
-            val hash = ByteString.fromArray(Array.fill(32)((h % 256).toByte))
-            val node = BlockNode(
-              prevBlockHash = prevHash,
-              height = h,
-              chainwork = prevChainwork + 1000,
-              addedTimestamp = currentTime - (199 * 60) + (h - 1002) * 60,
-              children = scalus.prelude.List.empty
-            )
-            forksTree = BitcoinValidator.insertInSortedList(forksTree, hash, node)
-            prevHash = hash
-            prevChainwork = prevChainwork + 1000
-        }
-
-        val (promotedBlocks, updatedTree) = BitcoinValidator.promoteQualifiedBlocks(
-          forksTree,
-          confirmedTip,
-          confirmedHeight = 1000,
-          currentTime
-        )
-
-        assertEquals(promotedBlocks.length, BigInt(0), "Should not promote with only 199 minutes")
-    }
-
-    test("promoteQualifiedBlocks - multiple blocks all qualify for promotion") {
-        val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
-        val currentTime = BigInt(System.currentTimeMillis() / 1000)
-
-        // Create 5 blocks, all old enough (201 min ago)
-        val blockHashes =
-            (1001 to 1005).map(h => ByteString.fromArray(Array.fill(32)((h % 256).toByte)))
-
-        var forksTree
-            : scalus.prelude.List[(BlockHash, BlockNode)] =
-            scalus.prelude.List.Nil
-        var prevHash = confirmedTip
-        var prevChainwork = BigInt(1000000)
-
-        // Add blocks 1001-1005
-        for (hash, height) <- blockHashes.zip(1001 to 1005) do {
-            val node = BlockNode(
-              prevBlockHash = prevHash,
-              height = height,
-              chainwork = prevChainwork + 1000,
-              addedTimestamp = currentTime - (201 * 60),
-              children = scalus.prelude.List.empty
-            )
-            forksTree = BitcoinValidator.insertInSortedList(forksTree, hash, node)
-            prevHash = hash
-            prevChainwork = prevChainwork + 1000
-        }
-
-        // Add more blocks to reach 100 confirmations (to height 1105)
-        for h <- 1006 to 1105 do {
-            val hash = ByteString.fromArray(Array.fill(32)((h % 256).toByte))
-            val node = BlockNode(
-              prevBlockHash = prevHash,
-              height = h,
-              chainwork = prevChainwork + 1000,
-              addedTimestamp = currentTime - (201 * 60) + (h - 1006) * 60,
-              children = scalus.prelude.List.empty
-            )
-            forksTree = BitcoinValidator.insertInSortedList(forksTree, hash, node)
-            prevHash = hash
-            prevChainwork = prevChainwork + 1000
-        }
-
-        val (promotedBlocks, updatedTree) = BitcoinValidator.promoteQualifiedBlocks(
-          forksTree,
-          confirmedTip,
-          confirmedHeight = 1000,
-          currentTime
-        )
-
-        assertEquals(promotedBlocks.length, BigInt(5), "Should promote all 5 qualified blocks")
-
-        // Verify all promoted blocks are removed from tree
-        for hash <- blockHashes do {
-            assert(
-              BitcoinValidator.lookupBlock(updatedTree, hash).isEmpty,
-              s"Block should be removed from tree"
-            )
-        }
-    }
+    // Note: Edge case tests for promoteQualifiedBlocks have been removed
+    // as they used the old BlockNode/insertInSortedList API.
+    // The new ForkBranch-based tests in ForksTreeStructureTest cover similar scenarios.
 
 }

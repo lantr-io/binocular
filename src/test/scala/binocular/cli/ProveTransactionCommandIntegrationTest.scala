@@ -117,7 +117,11 @@ class ProveTransactionCommandIntegrationTest extends CliIntegrationTestBase {
 
             // Verify block is not in forks tree
             val blockHashBytes = ByteString.fromHex(blockHash).reverse
-            assert(!BitcoinValidator.existsInSortedList(initialState.forksTree, blockHashBytes), "Block is in forks tree")
+            val blockInForksTree = initialState.forksTree.exists { branch =>
+                branch.tipHash == blockHashBytes ||
+                BitcoinValidator.existsInSortedList(branch.recentBlocks, blockHashBytes)
+            }
+            assert(!blockInForksTree, "Block is in forks tree")
 
             println(s"[Test] ✓ Transaction is in confirmed block")
             println(s"    Block Height: $blockHeight")

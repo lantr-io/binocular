@@ -384,18 +384,28 @@ case class ChainState(
    blockTimestamp: BigInt, // Timestamp of current confirmed block
    recentTimestamps: List[BigInt], // Last 11 timestamps (newest first) for median time
    previousDifficultyAdjustmentTimestamp: BigInt, // For difficulty retarget calculations
-   confirmedBlocksRoot: MerkleRoot, // Merkle tree root of confirmed block hashes
+   confirmedBlocksTree: List[BlockHash], // Confirmed blocks for Merkle tree construction
 
    // Forks tree
-   forksTree: Map[BlockHash, BlockNode] // Block hash → BlockNode mapping
+   forksTree: List[ForkBranch] // List of fork branches (unordered)
 )
 
-case class BlockNode(
-    prevBlockHash: BlockHash, // 32-byte hash of previous block (for chain walking)
-    height: BigInt, // Block height (for difficulty validation and depth calculation)
-    chainwork: BigInt, // Cumulative proof-of-work from genesis
-    addedTimestamp: BigInt, // When this block was added on-chain (for 200-min rule)
-    children: List[BlockHash] // Hashes of child blocks (for tree navigation)
+// Minimal block information for fork tracking
+case class BlockSummary(
+    hash: BlockHash,       // Block hash
+    height: BigInt,        // Block height
+    chainwork: BigInt,     // Cumulative chainwork at this block
+    timestamp: BigInt,     // Bitcoin block timestamp (for median-time-past)
+    bits: CompactBits,     // Difficulty target (for difficulty validation)
+    addedTime: BigInt      // Cardano time when this block was added to forksTree
+)
+
+// A complete chain branch from a fork point to its current tip
+case class ForkBranch(
+    tipHash: BlockHash,              // Current tip of this branch
+    tipHeight: BigInt,               // Height of tip
+    tipChainwork: BigInt,            // Chainwork at tip
+    recentBlocks: List[BlockSummary] // ALL blocks in branch (newest first), removed when promoted
 )
 
 case class BlockHeader(
@@ -773,17 +783,17 @@ where $\text{Tips}(F)$ are all blocks with no children (leaf nodes).
 **Pseudocode:**
 
 ```
-Function selectCanonicalChain(forksTree: Map[BlockHash, BlockNode]) → BlockHash:
-  Input: Tree of competing forks
-  Output: Hash of canonical tip (highest chainwork)
+Function selectCanonicalChain(forksTree: List[ForkBranch]) → Option[ForkBranch]:
+  Input: List of fork branches
+  Output: Branch with highest chainwork (or None if empty)
 
-  // Find all tips (blocks with no children)
-  tips ← {hash | hash ∈ forksTree.keys and forksTree[hash].children.isEmpty}
+  if forksTree.isEmpty:
+    return None
 
-  // Select tip with maximum chainwork
-  canonicalTip ← argmax(tips, key = λh. forksTree[h].chainwork)
+  // Select branch with maximum tip chainwork
+  canonicalBranch ← argmax(forksTree, key = λb. b.tipChainwork)
 
-  return canonicalTip
+  return Some(canonicalBranch)
 ```
 
 #### Algorithm 10: Block Promotion (Maturation)
@@ -802,35 +812,37 @@ t_{\text{current}} - t_{\text{added}}(b) &\geq 200 \times 60
 **Pseudocode:**
 
 ```
-Function promoteConfirmedBlocks(
-  forksTree: Map[BlockHash, BlockNode],
-  confirmedTip: BlockHash,
+Function promoteQualifiedBlocks(
+  forksTree: List[ForkBranch],
+  confirmedHeight: BigInt,
   currentTime: BigInt
-) → List[BlockHash]:
+) → (List[BlockHash], List[ForkBranch]):
 
-  // Find canonical chain
-  canonicalTip ← selectCanonicalChain(forksTree)
+  // Find canonical branch (highest chainwork)
+  canonicalBranch ← selectCanonicalChain(forksTree)
+  if canonicalBranch.isEmpty:
+    return ([], forksTree)
 
-  // Walk back from canonical tip to confirmed tip
-  chain ← []
-  currentHash ← canonicalTip
-  while currentHash ≠ confirmedTip:
-    chain.prepend((currentHash, forksTree[currentHash]))
-    currentHash ← forksTree[currentHash].prevBlockHash
+  branch ← canonicalBranch.get
+  canonicalTipHeight ← branch.tipHeight
 
-  // Identify promotable blocks (from oldest)
+  // Identify promotable blocks from canonical branch's recentBlocks
+  // Process from oldest to newest (tail to head)
   blockHashesToPromote ← []
-  for i ← 0 to chain.length - 1:
-    (blockHash, blockNode) ← chain[i]
-    depth ← chain.length - i
-    age ← currentTime - blockNode.addedTimestamp
+  for block in branch.recentBlocks (oldest first):
+    depth ← canonicalTipHeight - block.height
+    age ← currentTime - block.addedTime  // Uses individual block's addedTime
 
     if depth ≥ 100 and age ≥ 200 × 60 then
-      blockHashesToPromote.append(blockHash)
+      blockHashesToPromote.append(block.hash)
     else
       break  // Stop at first non-qualified block
 
-  return blockHashesToPromote
+  // Remove promoted blocks from branch's recentBlocks
+  updatedBranch ← removepromoted blocks from branch
+  updatedForksTree ← replace branch with updatedBranch in forksTree
+
+  return (blockHashesToPromote, updatedForksTree)
 ```
 
 ### Validation Rules Summary
@@ -1131,9 +1143,9 @@ Guard:
 Actions:
   - Validate full block header (PoW, difficulty, timestamps, version)
   - Extract prevBlockHash from header
-  - Create BlockNode with prevBlockHash, chainwork, addedTimestamp
-  - Insert into forksTree[blockHeaderHash(blockHeader)]
-  - Update parent's children list
+  - Create BlockSummary with hash, height, chainwork, timestamp, bits, addedTime
+  - Either extend existing branch or create new ForkBranch
+  - Add to forksTree
 Next State: UNCONFIRMED_RECENT
 ```
 

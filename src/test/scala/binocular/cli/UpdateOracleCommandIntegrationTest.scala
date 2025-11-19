@@ -334,10 +334,10 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                 println(s"    forksTree size: ${newState.forksTree.size}")
                 println(s"    confirmedBlocksTree size: ${newState.confirmedBlocksTree.size}")
 
-                // Log forksTree keys for debugging (full hex)
-                println(s"  [Batch ${batchIndex + 1}] OFF-CHAIN forksTree keys (full hex):")
-                newState.forksTree.foreach { case (k, _) =>
-                    println(s"    ${k.toHex}")
+                // Log forksTree branches for debugging
+                println(s"  [Batch ${batchIndex + 1}] OFF-CHAIN forksTree branches:")
+                newState.forksTree.foreach { branch =>
+                    println(s"    tip: ${branch.tipHash.toHex}, height: ${branch.tipHeight}, blocks: ${branch.recentBlocks.size}")
                 }
 
                 // Submit update transaction

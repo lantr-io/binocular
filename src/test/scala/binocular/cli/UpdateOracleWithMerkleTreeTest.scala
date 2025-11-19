@@ -167,11 +167,16 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                     )
 
                     println(s"[Test] Step 6: Verifying forks tree structure")
-                    val forksTreeSize = chainState.forksTree.size
-                    println(s"    Forks tree size: $forksTreeSize")
+                    val numBranches = chainState.forksTree.size
+                    // Count total blocks across all branches
+                    val totalBlocks = chainState.forksTree.foldLeft(BigInt(0)) { (acc, branch) =>
+                        acc + branch.recentBlocks.size
+                    }
+                    println(s"    Forks tree branches: $numBranches")
+                    println(s"    Total blocks in forks tree: $totalBlocks")
                     assert(
-                      forksTreeSize == headers.size,
-                      s"Forks tree should contain ${headers.size} new blocks, but has $forksTreeSize"
+                      totalBlocks == headers.size,
+                      s"Forks tree should contain ${headers.size} new blocks, but has $totalBlocks"
                     )
 
                     println(s"[Test] ✓ Forks tree has grown correctly")

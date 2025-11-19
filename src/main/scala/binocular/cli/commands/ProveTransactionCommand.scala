@@ -158,7 +158,13 @@ case class ProveTransactionCommand(
                         val blockHashBytes = ByteString.fromHex(blockHash).reverse
 
                         // Check if block is in confirmed state (not in forks tree)
-                        if BitcoinValidator.existsInSortedList(chainState.forksTree, blockHashBytes) then {
+                        // With ForkBranch, need to check if block is in any branch
+                        val blockInForksTree = chainState.forksTree.exists { branch =>
+                            branch.tipHash == blockHashBytes ||
+                            BitcoinValidator.existsInSortedList(branch.recentBlocks, blockHashBytes)
+                        }
+
+                        if blockInForksTree then {
                             System.err.println(s"✗ Block is still in fork tree (not yet confirmed)")
                             println(s"  The oracle needs to be updated to confirm this block")
                             return 1
