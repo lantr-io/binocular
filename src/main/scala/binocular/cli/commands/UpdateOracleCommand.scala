@@ -162,111 +162,171 @@ case class UpdateOracleCommand(
                         }
 
                         val numBlocks = (endHeight - startHeight + 1).toInt
-                        if numBlocks > oracleConf.maxHeadersPerTx then {
-                            System.err.println(
-                              s"✗ Too many blocks requested: $numBlocks (max: ${oracleConf.maxHeadersPerTx})"
-                            )
-                            System.err.println(s"  Use --from and --to options to limit the range")
-                            return 1
-                        }
+                        val batchSize = oracleConf.maxHeadersPerTx
 
-                        println()
-                        println(
-                          s"Step 4: Fetching Bitcoin headers from block $startHeight to $endHeight ($numBlocks headers)..."
-                        )
-
-                        // Fetch Bitcoin headers
+                        // Create execution context for async operations
                         given ec: ExecutionContext = ExecutionContext.global
                         val rpc = new SimpleBitcoinRpc(btcConf)
 
-                        val headersFuture: Future[Seq[BlockHeader]] =
-                            Future.sequence(
-                              (startHeight to endHeight).map { height =>
-                                  for {
-                                      hashHex <- rpc.getBlockHash(height.toInt)
-                                      headerInfo <- rpc.getBlockHeader(hashHex)
-                                  } yield BitcoinChainState.convertHeader(headerInfo)
-                              }
+                        // Split into batches if needed
+                        val batches = (startHeight to endHeight).grouped(batchSize).toList
+                        val totalBatches = batches.size
+
+                        if totalBatches > 1 then {
+                            println()
+                            println(
+                              s"Step 4: Processing $numBlocks blocks in $totalBatches batches of up to $batchSize headers each..."
+                            )
+                        } else {
+                            println()
+                            println(
+                              s"Step 4: Fetching Bitcoin headers from block $startHeight to $endHeight ($numBlocks headers)..."
+                            )
+                        }
+
+                        // Track current state and UTxO across batches
+                        var currentState = currentChainState
+                        var currentTxHash = txHash
+                        var currentOutputIndex = outputIndex
+
+                        for (batch, batchIndex) <- batches.zipWithIndex do {
+                            val batchStart = batch.head
+                            val batchEnd = batch.last
+                            val batchNum = batchIndex + 1
+
+                            if totalBatches > 1 then {
+                                println()
+                                println(
+                                  s"  Batch $batchNum/$totalBatches: blocks $batchStart to $batchEnd"
+                                )
+                            }
+
+                            // Fetch Bitcoin headers for this batch
+                            val headersFuture: Future[Seq[BlockHeader]] =
+                                Future.sequence(
+                                  batch.map { height =>
+                                      for {
+                                          hashHex <- rpc.getBlockHash(height.toInt)
+                                          headerInfo <- rpc.getBlockHeader(hashHex)
+                                      } yield BitcoinChainState.convertHeader(headerInfo)
+                                  }
+                                )
+
+                            val headers: Seq[BlockHeader] =
+                                try {
+                                    Await.result(headersFuture, 60.seconds)
+                                } catch {
+                                    case e: Exception =>
+                                        System.err.println(
+                                          s"✗ Error fetching Bitcoin headers: ${e.getMessage}"
+                                        )
+                                        return 1
+                                }
+
+                            if totalBatches == 1 then {
+                                println(s"✓ Fetched $numBlocks Bitcoin headers")
+                            }
+
+                            // Convert to Scalus list
+                            val headersList = scalus.prelude.List.from(headers.toList)
+
+                            // Calculate new ChainState using shared validator logic
+                            val validityTime =
+                                OracleTransactions.computeValidityIntervalTime(backendService)
+
+                            if totalBatches == 1 then {
+                                println()
+                                println("Step 5: Calculating new ChainState after update...")
+                                println(s"  Using validity interval time: $validityTime")
+                            }
+
+                            val newChainState =
+                                try {
+                                    BitcoinValidator.computeUpdateOracleState(
+                                      currentState,
+                                      headersList,
+                                      validityTime
+                                    )
+                                } catch {
+                                    case e: Exception =>
+                                        System.err.println(
+                                          s"✗ Error computing new state: ${e.getMessage}"
+                                        )
+                                        e.printStackTrace()
+                                        return 1
+                                }
+
+                            if totalBatches == 1 then {
+                                println(s"✓ New oracle state calculated:")
+                                println(s"  Block Height: ${newChainState.blockHeight}")
+                                println(s"  Block Hash: ${newChainState.blockHash.toHex}")
+                                println()
+                                println(
+                                  "Step 6: Building and submitting UpdateOracle transaction..."
+                                )
+                            }
+
+                            // Build and submit transaction with pre-computed state and validity time
+                            val txResult = OracleTransactions.buildAndSubmitUpdateTransaction(
+                              account,
+                              backendService,
+                              scriptAddress,
+                              currentTxHash,
+                              currentOutputIndex,
+                              currentState,
+                              newChainState,
+                              headersList,
+                              validityTime
                             )
 
-                        val headers: Seq[BlockHeader] =
-                            try {
-                                Await.result(headersFuture, 60.seconds)
-                            } catch {
-                                case e: Exception =>
-                                    System.err.println(
-                                      s"✗ Error fetching Bitcoin headers: ${e.getMessage}"
-                                    )
+                            txResult match {
+                                case Right(resultTxHash) =>
+                                    if totalBatches > 1 then {
+                                        println(s"    ✓ Batch $batchNum submitted: $resultTxHash")
+                                    }
+                                    // Update state and UTxO for next batch
+                                    currentState = newChainState
+                                    currentTxHash = resultTxHash
+                                    currentOutputIndex = 0 // Oracle output is always at index 0
+
+                                    // Wait for confirmation before next batch
+                                    if batchIndex < batches.size - 1 then {
+                                        println(s"    Waiting for confirmation...")
+                                        Thread.sleep(3000) // Wait 3 seconds between batches
+                                    }
+
+                                case Left(errorMsg) =>
+                                    println()
+                                    System.err.println(s"✗ Error submitting transaction: $errorMsg")
+                                    if totalBatches > 1 then {
+                                        System.err.println(
+                                          s"  Failed at batch $batchNum (blocks $batchStart to $batchEnd)"
+                                        )
+                                        System.err.println(
+                                          s"  Successfully processed ${batchIndex * batchSize} blocks before failure"
+                                        )
+                                    }
                                     return 1
                             }
-
-                        println(s"✓ Fetched $numBlocks Bitcoin headers")
-                        println(s" headers: ${headers.map(h => h.bytes.toHex).mkString(", ")}")
-
-                        // Convert to Scalus list
-                        val headersList = scalus.prelude.List.from(headers.toList)
-
-                        println()
-                        println("Step 5: Calculating new ChainState after update...")
-
-                        // Calculate new ChainState using shared validator logic
-                        val validityTime =
-                            OracleTransactions.computeValidityIntervalTime(backendService)
-                        println(s"  Using validity interval time: $validityTime")
-                        val newChainState =
-                            try {
-                                BitcoinValidator.computeUpdateOracleState(
-                                  currentChainState,
-                                  headersList,
-                                  validityTime
-                                )
-                            } catch {
-                                case e: Exception =>
-                                    System.err.println(
-                                      s"✗ Error computing new state: ${e.getMessage}"
-                                    )
-                                    e.printStackTrace()
-                                    return 1
-                            }
-
-                        println(s"✓ New oracle state calculated:")
-                        println(s"  Block Height: ${newChainState.blockHeight}")
-                        println(s"  Block Hash: ${newChainState.blockHash.toHex}")
-
-                        println()
-                        println("Step 6: Building and submitting UpdateOracle transaction...")
-
-                        // Build and submit transaction with pre-computed state and validity time
-                        val txResult = OracleTransactions.buildAndSubmitUpdateTransaction(
-                          account,
-                          backendService,
-                          scriptAddress,
-                          txHash,
-                          outputIndex,
-                          currentChainState,
-                          newChainState,
-                          headersList,
-                          validityTime
-                        )
-
-                        txResult match {
-                            case Right(resultTxHash) =>
-                                println()
-                                println("✓ Oracle updated successfully!")
-                                println(s"  Transaction Hash: $resultTxHash")
-                                println(s"  Updated from block $startHeight to $endHeight")
-                                println()
-                                println("Next steps:")
-                                println(s"  1. Wait for transaction confirmation")
-                                println(
-                                  s"  2. Verify oracle: binocular verify-oracle $resultTxHash:0"
-                                )
-                                0
-                            case Left(errorMsg) =>
-                                println()
-                                System.err.println(s"✗ Error submitting transaction: $errorMsg")
-                                1
                         }
+
+                        // Final success message
+                        println()
+                        println("✓ Oracle updated successfully!")
+                        println(s"  Transaction Hash: $currentTxHash")
+                        println(
+                          s"  Updated from block $startHeight to $endHeight ($numBlocks blocks)"
+                        )
+                        if totalBatches > 1 then {
+                            println(s"  Processed in $totalBatches batches")
+                        }
+                        println()
+                        println("Next steps:")
+                        println(s"  1. Wait for transaction confirmation")
+                        println(
+                          s"  2. Verify oracle: binocular verify-oracle $currentTxHash:0"
+                        )
+                        0
                 }
 
             case (Left(err), _, _, _) =>
