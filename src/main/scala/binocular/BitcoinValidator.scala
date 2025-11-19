@@ -464,6 +464,37 @@ object BitcoinValidator extends Validator {
                 // List is sorted, so just get middle element
                 timestamps !! index
 
+    def getMedianTimePastFromBlocks(blocks: List[BlockSummary]): BigInt = {
+        // Calculate median in single recursive pass through up to MedianTimeSpan blocks
+        // First pass counts, second pass finds median at index count/2
+
+        @tailrec
+        def step(medianPointer: List[BlockSummary], currentPointer: List[BlockSummary], counted: BigInt, maxCount: BigInt): BigInt = {
+            currentPointer match
+                case List.Nil => medianPointer match
+                    case List.Nil => UnixEpoch
+                    case List.Cons(block, tail) =>
+                        block.timestamp
+                case List.Cons(block, tail) =>
+                    val (prevTimestamp, nextMedianPointer) = medianPointer match
+                        case List.Nil => (UnixEpoch, medianPointer) // impossible case
+                        case List.Cons(b, medianTail) => (b.timestamp, medianTail)
+                    if counted + 1 == maxCount then
+                        // Reached max count, return median
+                        prevTimestamp
+                    else
+                        tail match
+                            case List.Nil => prevTimestamp
+                            case List.Cons(_, tail2) =>
+                                step(medianPointer, tail2, counted + 2, maxCount)
+        }
+
+        step(blocks, blocks, 0, MedianTimeSpan)
+
+    }
+
+
+
     def merkleRootFromInclusionProof(
         merkleProof: List[TxHash],
         hash: TxHash,
@@ -675,8 +706,7 @@ object BitcoinValidator extends Validator {
                 // For fork blocks, use branch's recentBlocks for median-time-past
                 parentBranchOpt match
                     case scalus.prelude.Option.Some(branch) =>
-                        val timestamps = branch.recentBlocks.map(_.timestamp)
-                        getMedianTimePast(timestamps, timestamps.size)
+                        getMedianTimePastFromBlocks(branch.recentBlocks)
                     case scalus.prelude.Option.None => fail("Parent branch not found")
 
         require(blockTime > medianTimePast, "Block timestamp not greater than median time past")
