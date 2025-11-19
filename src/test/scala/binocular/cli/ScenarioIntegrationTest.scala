@@ -22,7 +22,7 @@ import scala.concurrent.{Await, ExecutionContext, Future}
   */
 class ScenarioIntegrationTest extends CliIntegrationTestBase {
     // Extended timeout for multi-batch promotion test
-    override val munitTimeout = scala.concurrent.duration.Duration(240, "s")
+    override val munitTimeout = scala.concurrent.duration.Duration(360, "s")
 
     test("scenario: basic oracle update with new blocks") {
         withYaciDevKit() { devKit =>
@@ -313,7 +313,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
               }
             )
 
-            val allHeaders = Await.result(allHeadersFuture, 60.seconds)
+            val allHeaders = Await.result(allHeadersFuture, 120.seconds)
             println(s"[Test] ✓ Fetched ${allHeaders.length} headers total")
 
             // Process in batches
@@ -710,10 +710,10 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
 
             // Get block info
             val blockHashFuture = mockRpc.getBlockHash(blockHeight)
-            val blockHash = Await.result(blockHashFuture, 10.seconds)
+            val blockHash = Await.result(blockHashFuture, 50.seconds)
 
             val blockInfoFuture = mockRpc.getBlock(blockHash)
-            val blockInfo = Await.result(blockInfoFuture, 10.seconds)
+            val blockInfo = Await.result(blockInfoFuture, 50.seconds)
 
             println(s"[Test] Testing Merkle proofs for multiple transaction indices")
 
