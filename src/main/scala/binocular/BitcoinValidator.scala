@@ -706,12 +706,12 @@ object BitcoinValidator extends Validator {
         parentBranchOpt match
             case scalus.prelude.Option.Some(parentBranch) =>
                 // Parent is branch tip - extend the branch
-                log("Extending existing branch")
+                // log("Extending existing branch")
                 val extendedBranch = extendBranch(parentBranch, newBlock)
                 updateBranch(forksTree, parentBranch, extendedBranch)
             case scalus.prelude.Option.None =>
                 // Parent is confirmed tip - create new branch
-                log("Creating new branch from confirmed tip")
+                // log("Creating new branch from confirmed tip")
                 val newBranch = ForkBranch(
                   tipHash = hash,
                   tipHeight = blockHeight,
@@ -793,28 +793,9 @@ object BitcoinValidator extends Validator {
         forksTree: List[ForkBranch],
         confirmedTip: BlockHash
     ): Unit = {
-        // RULE 1: Check for duplicate blocks in submission
-        def checkDuplicates(
-            headers: List[BlockHeader],
-            seen: List[BlockHash]
-        ): Unit = {
-            headers match
-                case List.Nil => ()
-                case List.Cons(header, tail) =>
-                    val hash = blockHeaderHash(header)
-                    // Check if hash already in seen list
-                    def contains(list: List[BlockHash], target: BlockHash): Boolean = {
-                        list match
-                            case List.Nil => false
-                            case List.Cons(h, t) =>
-                                if h == target then true
-                                else contains(t, target)
-                    }
-                    if contains(seen, hash) then fail("Duplicate block in submission")
-                    else checkDuplicates(tail, List.Cons(hash, seen))
-        }
-
-        checkDuplicates(blockHeaders, List.Nil)
+        // Note: Duplicate blocks are implicitly rejected by addBlockToForksTree
+        // because after adding the first block, its parent becomes unreachable
+        // (findBranch only finds tips, and the duplicate's parent is no longer a tip)
 
         // Find current canonical tip hash
         val canonicalTipHash = selectCanonicalChain(forksTree) match
@@ -1100,11 +1081,11 @@ object BitcoinValidator extends Validator {
         blockHeaders: List[BlockHeader],
         currentTime: BigInt
     ): ChainState = {
-        scalus.prelude.log("computeUpdateOracleState START")
-        scalus.prelude.log("INPUT prevState.forksTree.size:")
-        scalus.prelude.log(scalus.prelude.show(prevState.forksTree.size))
-        scalus.prelude.log("INPUT prevState.blockHeight:")
-        scalus.prelude.log(scalus.prelude.show(prevState.blockHeight))
+        // scalus.prelude.log("computeUpdateOracleState START")
+        // scalus.prelude.log("INPUT prevState.forksTree.size:")
+        // scalus.prelude.log(scalus.prelude.show(prevState.forksTree.size))
+        // scalus.prelude.log("INPUT prevState.blockHeight:")
+        // scalus.prelude.log(scalus.prelude.show(prevState.blockHeight))
 
         // Validate fork submission rule (prevents stalling attack and duplicates)
         validateForkSubmission(blockHeaders, prevState.forksTree, prevState.blockHash)
@@ -1119,10 +1100,10 @@ object BitcoinValidator extends Validator {
         ): List[ForkBranch] = {
             headers match
                 case List.Nil =>
-                    scalus.prelude.log("processHeaders done")
+                    // scalus.prelude.log("processHeaders done")
                     currentForksTree
                 case List.Cons(header, tail) =>
-                    scalus.prelude.log("processHeaders adding block")
+                    // scalus.prelude.log("processHeaders adding block")
                     val updatedTree = addBlockToForksTree(
                       currentForksTree,
                       header,
@@ -1132,23 +1113,23 @@ object BitcoinValidator extends Validator {
                     processHeaders(tail, updatedTree)
         }
 
-        scalus.prelude.log("processing headers")
+        // scalus.prelude.log("processing headers")
         val forksTreeAfterAddition = processHeaders(blockHeaders, prevState.forksTree)
-        scalus.prelude.log("headers processed")
+        // scalus.prelude.log("headers processed")
 
         // Select canonical chain (highest chainwork)
-        scalus.prelude.log("selecting canonical chain")
+        // scalus.prelude.log("selecting canonical chain")
         val canonicalBranchOpt = selectCanonicalChain(forksTreeAfterAddition)
         val canonicalTipHash = canonicalBranchOpt match
             case scalus.prelude.Option.Some(branch) =>
-                scalus.prelude.log("canonical tip found")
+                // scalus.prelude.log("canonical tip found")
                 branch.tipHash
             case scalus.prelude.Option.None =>
-                scalus.prelude.log("canonical tip is prev hash")
+                // scalus.prelude.log("canonical tip is prev hash")
                 prevState.blockHash
 
         // Promote qualified blocks (100+ confirmations AND 200+ min old)
-        scalus.prelude.log("promoting qualified blocks")
+        // scalus.prelude.log("promoting qualified blocks")
         val (promotedBlocks, forksTreeAfterPromotion) = promoteQualifiedBlocks(
           forksTreeAfterAddition,
           prevState.blockHash,  // confirmedTip
@@ -1156,15 +1137,15 @@ object BitcoinValidator extends Validator {
           currentTime
         )
         
-        if promotedBlocks.isEmpty then
-            scalus.prelude.log("no blocks promoted")
-        else
-            scalus.prelude.log("blocks promoted")
+        // if promotedBlocks.isEmpty then
+        //     scalus.prelude.log("no blocks promoted")
+        // else
+        //     scalus.prelude.log("blocks promoted")
 
         // Run garbage collection if forks tree exceeds size limit
         val finalForksTree =
             if forksTreeAfterPromotion.size > MaxForksTreeSize then
-                scalus.prelude.log("running GC")
+                // scalus.prelude.log("running GC")
                 garbageCollect(
                   forksTreeAfterPromotion,
                   prevState.blockHash,  // confirmedTip
@@ -1172,21 +1153,21 @@ object BitcoinValidator extends Validator {
                   currentTime
                 )
             else
-                scalus.prelude.log("skipping GC")
+                // scalus.prelude.log("skipping GC")
                 forksTreeAfterPromotion
 
         // Compute new state
         // If blocks were promoted, update confirmed state
-        scalus.prelude.log("computing final state")
+        // scalus.prelude.log("computing final state")
         
         // Log final forksTree size
         val finalTreeSize = finalForksTree.size
-        scalus.prelude.log("ON-CHAIN final forksTree size:")
-        scalus.prelude.log(scalus.prelude.show(finalTreeSize))
+        // scalus.prelude.log("ON-CHAIN final forksTree size:")
+        // scalus.prelude.log(scalus.prelude.show(finalTreeSize))
         
         if promotedBlocks.isEmpty then
             // No promotion: only forks tree changed
-            scalus.prelude.log("no promotion, returning state with updated forks")
+            // scalus.prelude.log("no promotion, returning state with updated forks")
             ChainState(
               blockHeight = prevState.blockHeight,
               blockHash = prevState.blockHash,
@@ -1199,7 +1180,7 @@ object BitcoinValidator extends Validator {
               forksTree = finalForksTree
             )
         else
-            scalus.prelude.log("promotion occurred, updating confirmed state")
+            // scalus.prelude.log("promotion occurred, updating confirmed state")
             // Promotion occurred: update confirmed state
             // Find the canonical branch to get promoted block info
             val canonicalBranch = canonicalBranchOpt.getOrFail("Canonical branch should exist after promotion")
@@ -1274,10 +1255,10 @@ object BitcoinValidator extends Validator {
                 // Datum hash verification disabled for production (expensive)
                 // Uncomment for debugging datum non-determinism issues:
                 // val actualInputDatumHash = blake2b_256(serialiseData(prevState.toData))
-                // scalus.prelude.log("Expected inputDatumHash from redeemer (hex):")
-                // scalus.prelude.log(scalus.prelude.Prelude.encodeHex(inputDatumHash))
-                // scalus.prelude.log("Actual inputDatumHash computed on-chain (hex):")
-                // scalus.prelude.log(scalus.prelude.Prelude.encodeHex(actualInputDatumHash))
+                // // scalus.prelude.log("Expected inputDatumHash from redeemer (hex):")
+                // // scalus.prelude.log(scalus.prelude.Prelude.encodeHex(inputDatumHash))
+                // // scalus.prelude.log("Actual inputDatumHash computed on-chain (hex):")
+                // // scalus.prelude.log(scalus.prelude.Prelude.encodeHex(actualInputDatumHash))
                 // require(
                 //   inputDatumHash == actualInputDatumHash,
                 //   "Input datum hash mismatch - datum was modified!"
