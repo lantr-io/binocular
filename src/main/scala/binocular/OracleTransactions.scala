@@ -32,18 +32,21 @@ object OracleTransactions {
             .asInstanceOf[PlutusV3Script]
     }
 
-    /** Deploy the oracle script to a UTxO as a reference script.
-      * This allows subsequent transactions to use the script without including it in the tx body,
-      * significantly reducing transaction size.
+    /** Deploy the oracle script to a UTxO as a reference script. This allows subsequent
+      * transactions to use the script without including it in the tx body, significantly reducing
+      * transaction size.
       *
-      * @param account Account to fund the reference script UTxO
-      * @param backendService Backend service
-      * @return Either error message or (txHash, outputIndex) of the reference script UTxO
+      * @param account
+      *   Account to fund the reference script UTxO
+      * @param backendService
+      *   Backend service
+      * @return
+      *   Either error message or (txHash, outputIndex) of the reference script UTxO
       */
     def deployReferenceScript(
         account: Account,
         backendService: BackendService,
-        destinationAddress: String  // Address to deploy reference script to
+        destinationAddress: String // Address to deploy reference script to
     ): Either[String, (String, Int)] = {
         Try {
             val script = getCompiledScript()
@@ -53,7 +56,11 @@ object OracleTransactions {
             // Deploy to specified address (should be different from account's address to avoid collateral conflicts)
             // Pass the script as the last argument to payToAddress to attach it as a reference script
             val tx = new Tx()
-                .payToAddress(destinationAddress, java.util.List.of(Amount.lovelace(java.math.BigInteger.valueOf(5000000))), script)
+                .payToAddress(
+                  destinationAddress,
+                  java.util.List.of(Amount.lovelace(java.math.BigInteger.valueOf(5000000))),
+                  script
+                )
                 .from(account.baseAddress())
 
             val result = quickTxBuilder
@@ -225,7 +232,8 @@ object OracleTransactions {
         newChainState: ChainState,
         blockHeaders: scalus.prelude.List[BlockHeader],
         validityIntervalTimeSeconds: BigInt,
-        referenceScriptUtxo: Option[(String, Int)] = None, // Optional: (txHash, outputIndex) of reference script UTxO
+        referenceScriptUtxo: Option[(String, Int)] =
+            None, // Optional: (txHash, outputIndex) of reference script UTxO
         inTestMode: Boolean = false // Skip time tolerance check in test mode
     ): Either[String, String] = {
         Try {
@@ -353,7 +361,9 @@ object OracleTransactions {
                 case Some(_) =>
                     // Provide our script when asked for it
                     new scalus.bloxbean.ScriptSupplier {
-                        override def getScript(hash: String): com.bloxbean.cardano.client.plutus.spec.PlutusScript =
+                        override def getScript(
+                            hash: String
+                        ): com.bloxbean.cardano.client.plutus.spec.PlutusScript =
                             if hash == scriptHashHex then script
                             else throw new RuntimeException(s"Unknown script hash: $hash")
                     }
@@ -403,7 +413,7 @@ object OracleTransactions {
 
             val result = referenceScriptUtxo match {
                 case Some(_) => txContext.withReferenceScripts(script).completeAndWait()
-                case None => txContext.completeAndWait()
+                case None    => txContext.completeAndWait()
             }
 
             if result.isSuccessful then {

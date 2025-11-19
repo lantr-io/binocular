@@ -64,44 +64,45 @@ object BlockNode
 // These structures reduce memory consumption by storing only fork points and
 // recent blocks instead of the entire unconfirmed chain history.
 
-/** Summary of a block with essential validation data.
-  * Stored in a sliding window (last 11 blocks) per branch for validation.
+/** Summary of a block with essential validation data. Stored in a sliding window (last 11 blocks)
+  * per branch for validation.
   */
 case class BlockSummary(
-    hash: BlockHash,       // Block hash
-    height: BigInt,        // Block height
-    chainwork: BigInt,     // Cumulative chainwork at this block
-    timestamp: BigInt,     // Bitcoin block timestamp (for median-time-past)
-    bits: CompactBits,     // Difficulty target (for difficulty validation)
-    addedTime: BigInt      // Cardano time when this block was added to forksTree
+    hash: BlockHash, // Block hash
+    height: BigInt, // Block height
+    chainwork: BigInt, // Cumulative chainwork at this block
+    timestamp: BigInt, // Bitcoin block timestamp (for median-time-past)
+    bits: CompactBits, // Difficulty target (for difficulty validation)
+    addedTime: BigInt // Cardano time when this block was added to forksTree
 ) derives FromData,
       ToData
 @Compile
 object BlockSummary
 
-/** A complete chain branch from a fork point to its current tip.
-  * Maintains ALL blocks in the branch (newest first) for:
-  * - Median-time-past validation (needs last 11 blocks)
-  * - Promotion tracking (blocks are removed from list when promoted)
-  * - Each block has individual addedTime for accurate challenge period enforcement
+/** A complete chain branch from a fork point to its current tip. Maintains ALL blocks in the branch
+  * (newest first) for:
+  *   - Median-time-past validation (needs last 11 blocks)
+  *   - Promotion tracking (blocks are removed from list when promoted)
+  *   - Each block has individual addedTime for accurate challenge period enforcement
   */
 case class ForkBranch(
-    tipHash: BlockHash,                  // Current tip of this branch
-    tipHeight: BigInt,                   // Height of tip
-    tipChainwork: BigInt,                // Chainwork at tip
-    recentBlocks: List[BlockSummary]     // ALL blocks in branch (newest first), each with individual addedTime
+    tipHash: BlockHash, // Current tip of this branch
+    tipHeight: BigInt, // Height of tip
+    tipChainwork: BigInt, // Chainwork at tip
+    recentBlocks: List[
+      BlockSummary
+    ] // ALL blocks in branch (newest first), each with individual addedTime
 ) derives FromData,
       ToData
 @Compile
 object ForkBranch
 
-/** A fork point where one or more branches diverge.
-  * Maps to the block hash where the fork occurred.
+/** A fork point where one or more branches diverge. Maps to the block hash where the fork occurred.
   */
 case class ForkNode(
-    forkPointHash: BlockHash,       // Where this fork diverged from (confirmed tip or another fork)
-    forkPointHeight: BigInt,        // Height where fork occurred
-    branches: List[ForkBranch]      // All branches from this fork point
+    forkPointHash: BlockHash, // Where this fork diverged from (confirmed tip or another fork)
+    forkPointHeight: BigInt, // Height where fork occurred
+    branches: List[ForkBranch] // All branches from this fork point
 ) derives FromData,
       ToData
 @Compile
@@ -136,7 +137,11 @@ enum Action derives FromData, ToData:
       * @param inputDatumHash
       *   \- blake2b-256 hash of the input datum (for debugging non-determinism)
       */
-    case UpdateOracle(blockHeaders: List[BlockHeader], currentTime: BigInt, inputDatumHash: ByteString)
+    case UpdateOracle(
+        blockHeaders: List[BlockHeader],
+        currentTime: BigInt,
+        inputDatumHash: ByteString
+    )
 
 @Compile
 object Action
@@ -150,9 +155,8 @@ object BitcoinValidator extends Validator {
     // These functions work with the optimized ForkBranch structure where consecutive
     // blocks in a fork are stored together, reducing memory usage by ~90%.
 
-    /** Find a branch by its tip hash.
-      * Returns the branch if found. Parent blocks are always tips of their branches
-      * (forks create new branches, so we only need to check tips).
+    /** Find a branch by its tip hash. Returns the branch if found. Parent blocks are always tips of
+      * their branches (forks create new branches, so we only need to check tips).
       */
     def findBranch(
         forksTree: List[ForkBranch],
@@ -162,10 +166,8 @@ object BitcoinValidator extends Validator {
             remaining match
                 case List.Nil => scalus.prelude.Option.None
                 case List.Cons(branch, tail) =>
-                    if branch.tipHash == blockHash then
-                        scalus.prelude.Option.Some(branch)
-                    else
-                        search(tail)
+                    if branch.tipHash == blockHash then scalus.prelude.Option.Some(branch)
+                    else search(tail)
         }
         search(forksTree)
     }
@@ -197,9 +199,9 @@ object BitcoinValidator extends Validator {
         search(blocks)
     }
 
-    /** Extend a branch by adding a new block at the tip
-      * Updates tipHash, tipHeight, tipChainwork and prepends new block to recentBlocks
-      * Keeps ALL blocks in the branch until they are promoted
+    /** Extend a branch by adding a new block at the tip Updates tipHash, tipHeight, tipChainwork
+      * and prepends new block to recentBlocks Keeps ALL blocks in the branch until they are
+      * promoted
       */
     def extendBranch(
         branch: ForkBranch,
@@ -229,8 +231,7 @@ object BitcoinValidator extends Validator {
                     if branch.tipHash == branchToRemove.tipHash then
                         // Found it - skip this branch
                         accumulated.reverse ++ tail
-                    else
-                        remove(tail, List.Cons(branch, accumulated))
+                    else remove(tail, List.Cons(branch, accumulated))
         }
         remove(forksTree, List.Nil)
     }
@@ -262,7 +263,9 @@ object BitcoinValidator extends Validator {
         )
 
     // Binocular protocol parameters
-    val MaturationConfirmations: BigInt = BigInt(100) // Blocks needed for promotion to confirmed state
+    val MaturationConfirmations: BigInt = BigInt(
+      100
+    ) // Blocks needed for promotion to confirmed state
     val TimeToleranceSeconds: BigInt =
         36 * 60 * 60 // Maximum difference between redeemer time and validity interval time (shoukd be the time of cardano consesnus)
     val ChallengeAging: BigInt = 200 * 60 // 200 minutes in seconds (challenge period)
@@ -469,12 +472,18 @@ object BitcoinValidator extends Validator {
         // First pass counts, second pass finds median at index count/2
 
         @tailrec
-        def step(medianPointer: List[BlockSummary], currentPointer: List[BlockSummary], counted: BigInt, maxCount: BigInt): BigInt = {
+        def step(
+            medianPointer: List[BlockSummary],
+            currentPointer: List[BlockSummary],
+            counted: BigInt,
+            maxCount: BigInt
+        ): BigInt = {
             currentPointer match
-                case List.Nil => medianPointer match
-                    case List.Nil => UnixEpoch
-                    case List.Cons(block, tail) =>
-                        block.timestamp
+                case List.Nil =>
+                    medianPointer match
+                        case List.Nil => UnixEpoch
+                        case List.Cons(block, tail) =>
+                            block.timestamp
                 case List.Cons(block, tail) =>
                     val (prevTimestamp, nextMedianPointer) = medianPointer match
                         case List.Nil => (UnixEpoch, medianPointer) // impossible case
@@ -492,8 +501,6 @@ object BitcoinValidator extends Validator {
         step(blocks, blocks, 0, MedianTimeSpan)
 
     }
-
-
 
     def merkleRootFromInclusionProof(
         merkleProof: List[TxHash],
@@ -670,7 +677,12 @@ object BitcoinValidator extends Validator {
             else
                 parentBranchOpt match
                     case scalus.prelude.Option.Some(branch) =>
-                        (branch.tipHeight, branch.tipChainwork, branch.recentBlocks.head.timestamp, branch.recentBlocks.head.bits)
+                        (
+                          branch.tipHeight,
+                          branch.tipChainwork,
+                          branch.recentBlocks.head.timestamp,
+                          branch.recentBlocks.head.bits
+                        )
                     case scalus.prelude.Option.None =>
                         fail("Parent branch not found")
 
@@ -701,7 +713,10 @@ object BitcoinValidator extends Validator {
         val blockTime = blockHeader.timestamp
         val medianTimePast =
             if parentIsConfirmedTip then
-                getMedianTimePast(confirmedState.recentTimestamps, confirmedState.recentTimestamps.size)
+                getMedianTimePast(
+                  confirmedState.recentTimestamps,
+                  confirmedState.recentTimestamps.size
+                )
             else
                 // For fork blocks, use branch's recentBlocks for median-time-past
                 parentBranchOpt match
@@ -728,7 +743,7 @@ object BitcoinValidator extends Validator {
           chainwork = newChainwork,
           timestamp = blockTime,
           bits = blockHeader.bits,
-          addedTime = currentTime  // Cardano time when block added
+          addedTime = currentTime // Cardano time when block added
         )
 
         // Determine how to update forksTree based on parent location
@@ -776,7 +791,8 @@ object BitcoinValidator extends Validator {
                         case List.Nil => accumulated
                         case List.Cons(block, tail) =>
                             val depth = canonicalTipHeight - block.height
-                            val age = currentTime - block.addedTime  // Use individual block's addedTime
+                            val age =
+                                currentTime - block.addedTime // Use individual block's addedTime
 
                             if depth >= MaturationConfirmations && age >= ChallengeAging then
                                 // This block qualifies for promotion
@@ -802,15 +818,15 @@ object BitcoinValidator extends Validator {
                         }
 
                         // If all blocks were promoted, remove the entire branch
-                        if remainingBlocks.isEmpty then
-                            removeBranch(forksTree, canonicalBranch)
+                        if remainingBlocks.isEmpty then removeBranch(forksTree, canonicalBranch)
                         else
                             // Update branch with remaining blocks
                             val updatedBranch = ForkBranch(
                               tipHash = canonicalBranch.tipHash,
                               tipHeight = canonicalBranch.tipHeight,
                               tipChainwork = canonicalBranch.tipChainwork,
-                              recentBlocks = remainingBlocks  // Remaining blocks keep their individual addedTime
+                              recentBlocks =
+                                  remainingBlocks // Remaining blocks keep their individual addedTime
                             )
                             updateBranch(forksTree, canonicalBranch, updatedBranch)
 
@@ -887,7 +903,9 @@ object BitcoinValidator extends Validator {
                         else
                             val heightGap = canonicalTipHeight - branch.tipHeight
                             // Use the oldest block's addedTime (last in list) for age calculation
-                            val oldestBlockTime = branch.recentBlocks.lastOption.map(_.addedTime).getOrElse(currentTime)
+                            val oldestBlockTime = branch.recentBlocks.lastOption
+                                .map(_.addedTime)
+                                .getOrElse(currentTime)
                             val age = currentTime - oldestBlockTime
                             val chainworkGap = canonicalTipChainwork - branch.tipChainwork
 
@@ -909,7 +927,9 @@ object BitcoinValidator extends Validator {
                             val isLongCompetingFork =
                                 age >= ChallengeAging &&
                                     branch.tipHeight >= (confirmedHeight + MaturationConfirmations) &&
-                                    chainworkGap > BigInt(0) // Any chainwork gap qualifies for removal after challenge period
+                                    chainworkGap > BigInt(
+                                      0
+                                    ) // Any chainwork gap qualifies for removal after challenge period
 
                             isOldDeadFork || isStaleCompetingFork || isLongCompetingFork
                     }
@@ -927,10 +947,8 @@ object BitcoinValidator extends Validator {
                             remaining match
                                 case List.Nil => accumulated.reverse
                                 case List.Cons(branch, tail) =>
-                                    if isRemovable(branch) then
-                                        filterBranches(tail, accumulated)
-                                    else
-                                        filterBranches(tail, List.Cons(branch, accumulated))
+                                    if isRemovable(branch) then filterBranches(tail, accumulated)
+                                    else filterBranches(tail, List.Cons(branch, accumulated))
                         }
 
                         val filtered = filterBranches(branches, List.Nil)
@@ -961,14 +979,18 @@ object BitcoinValidator extends Validator {
                                     val maxBranch = findMax(remaining.tail, remaining.head)
 
                                     // Remove maxBranch from remaining
-                                    val newRemaining = remaining.filter(b => b.tipHash != maxBranch.tipHash)
+                                    val newRemaining =
+                                        remaining.filter(b => b.tipHash != maxBranch.tipHash)
 
-                                    selectTopN(newRemaining, List.Cons(maxBranch, selected), count - 1)
+                                    selectTopN(
+                                      newRemaining,
+                                      List.Cons(maxBranch, selected),
+                                      count - 1
+                                    )
                             }
 
                             selectTopN(filtered, List.Nil, targetSize)
-                        else
-                            filtered
+                        else filtered
                     }
 
                     performRemoval(forksTree, MaxForksTreeSize)
@@ -1162,11 +1184,11 @@ object BitcoinValidator extends Validator {
         // scalus.prelude.log("promoting qualified blocks")
         val (promotedBlocks, forksTreeAfterPromotion) = promoteQualifiedBlocks(
           forksTreeAfterAddition,
-          prevState.blockHash,  // confirmedTip
+          prevState.blockHash, // confirmedTip
           prevState.blockHeight,
           currentTime
         )
-        
+
         // if promotedBlocks.isEmpty then
         //     scalus.prelude.log("no blocks promoted")
         // else
@@ -1178,7 +1200,7 @@ object BitcoinValidator extends Validator {
                 // scalus.prelude.log("running GC")
                 garbageCollect(
                   forksTreeAfterPromotion,
-                  prevState.blockHash,  // confirmedTip
+                  prevState.blockHash, // confirmedTip
                   prevState.blockHeight,
                   currentTime
                 )
@@ -1189,12 +1211,12 @@ object BitcoinValidator extends Validator {
         // Compute new state
         // If blocks were promoted, update confirmed state
         // scalus.prelude.log("computing final state")
-        
+
         // Log final forksTree size
         val finalTreeSize = finalForksTree.size
         // scalus.prelude.log("ON-CHAIN final forksTree size:")
         // scalus.prelude.log(scalus.prelude.show(finalTreeSize))
-        
+
         if promotedBlocks.isEmpty then
             // No promotion: only forks tree changed
             // scalus.prelude.log("no promotion, returning state with updated forks")
@@ -1213,14 +1235,16 @@ object BitcoinValidator extends Validator {
             // scalus.prelude.log("promotion occurred, updating confirmed state")
             // Promotion occurred: update confirmed state
             // Find the canonical branch to get promoted block info
-            val canonicalBranch = canonicalBranchOpt.getOrFail("Canonical branch should exist after promotion")
+            val canonicalBranch =
+                canonicalBranchOpt.getOrFail("Canonical branch should exist after promotion")
 
             // Get the latest promoted block hash (head of list)
             val latestPromotedHash = promotedBlocks.head
 
             // Find the promoted block in canonical branch's recentBlocks
-            val latestPromotedBlock = lookupInRecentBlocks(canonicalBranch.recentBlocks, latestPromotedHash)
-                .getOrFail("Promoted block not found in canonical branch")
+            val latestPromotedBlock =
+                lookupInRecentBlocks(canonicalBranch.recentBlocks, latestPromotedHash)
+                    .getOrFail("Promoted block not found in canonical branch")
 
             // Add promoted blocks to Merkle tree (in order from oldest to newest)
             // promotedBlocks is already sorted from oldest to newest
@@ -1241,11 +1265,11 @@ object BitcoinValidator extends Validator {
             ChainState(
               blockHeight = latestPromotedBlock.height,
               blockHash = latestPromotedHash,
-              currentTarget = latestPromotedBlock.bits,  // Use promoted block's difficulty
+              currentTarget = latestPromotedBlock.bits, // Use promoted block's difficulty
               blockTimestamp = latestPromotedBlock.timestamp,
-              recentTimestamps = prevState.recentTimestamps,  // TODO: should be updated
+              recentTimestamps = prevState.recentTimestamps, // TODO: should be updated
               previousDifficultyAdjustmentTimestamp =
-                  prevState.previousDifficultyAdjustmentTimestamp,  // TODO: should be updated
+                  prevState.previousDifficultyAdjustmentTimestamp, // TODO: should be updated
               confirmedBlocksTree = updatedMerkleTree,
               forksTree = finalForksTree
             )

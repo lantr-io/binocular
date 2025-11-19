@@ -78,7 +78,10 @@ class ForksTreeStructureTest extends FunSuite {
         forksTree = BitcoinValidator.updateBranch(forksTree, branch101, branch102)
 
         println(s"After adding block 102 (extending branch): forksTree.size = ${forksTree.size}")
-        assert(forksTree.size == 1, "After extending with block 102, forksTree should still have 1 branch")
+        assert(
+          forksTree.size == 1,
+          "After extending with block 102, forksTree should still have 1 branch"
+        )
 
         // Verify the branch now contains 2 blocks in recentBlocks
         val currentBranch = forksTree.head
@@ -101,10 +104,15 @@ class ForksTreeStructureTest extends FunSuite {
         forksTree = BitcoinValidator.updateBranch(forksTree, branch102, branch103)
 
         println(s"After adding block 103 (extending branch): forksTree.size = ${forksTree.size}")
-        println(s"Branch tip: height=${branch103.tipHeight}, recentBlocks.size=${branch103.recentBlocks.size}")
+        println(
+          s"Branch tip: height=${branch103.tipHeight}, recentBlocks.size=${branch103.recentBlocks.size}"
+        )
 
         // EXPECTED with new structure: forksTree.size == 1 (single branch containing all 3 blocks)
-        assert(forksTree.size == 1, "After extending with block 103, forksTree should still have 1 branch")
+        assert(
+          forksTree.size == 1,
+          "After extending with block 103, forksTree should still have 1 branch"
+        )
         assert(branch103.recentBlocks.size == 3, "Recent blocks should contain 3 blocks")
 
         println("✓ Linear chain maintains compact structure: 1 ForkBranch for 3 blocks")
@@ -117,8 +125,8 @@ class ForksTreeStructureTest extends FunSuite {
         val confirmedTip = ByteString.fromHex("aa" * 32)
         val block101Hash = ByteString.fromHex("01" * 32)
         val block102Hash = ByteString.fromHex("02" * 32)
-        val block103aHash = ByteString.fromHex("03a" * 16)  // Fork A
-        val block103bHash = ByteString.fromHex("03b" * 16)  // Fork B
+        val block103aHash = ByteString.fromHex("03a" * 16) // Fork A
+        val block103bHash = ByteString.fromHex("03b" * 16) // Fork B
 
         var forksTree = List.Nil: List[ForkBranch]
 
@@ -128,9 +136,23 @@ class ForksTreeStructureTest extends FunSuite {
           tipHeight = BigInt(102),
           tipChainwork = BigInt(2000),
           recentBlocks = List.Cons(
-            BlockSummary(block102Hash, BigInt(102), BigInt(2000), BigInt(1002000), ByteString.fromHex("1d00ffff"), BigInt(1002000)),
+            BlockSummary(
+              block102Hash,
+              BigInt(102),
+              BigInt(2000),
+              BigInt(1002000),
+              ByteString.fromHex("1d00ffff"),
+              BigInt(1002000)
+            ),
             List.single(
-              BlockSummary(block101Hash, BigInt(101), BigInt(1000), BigInt(1001000), ByteString.fromHex("1d00ffff"), BigInt(1001000))
+              BlockSummary(
+                block101Hash,
+                BigInt(101),
+                BigInt(1000),
+                BigInt(1001000),
+                ByteString.fromHex("1d00ffff"),
+                BigInt(1001000)
+              )
             )
           )
         )
@@ -142,7 +164,14 @@ class ForksTreeStructureTest extends FunSuite {
         // Now add block 103a (extends block 102 - extends the tip)
         val branch103a = BitcoinValidator.extendBranch(
           branch102,
-          BlockSummary(block103aHash, BigInt(103), BigInt(3000), BigInt(1003000), ByteString.fromHex("1d00ffff"), BigInt(1003000))
+          BlockSummary(
+            block103aHash,
+            BigInt(103),
+            BigInt(3000),
+            BigInt(1003000),
+            ByteString.fromHex("1d00ffff"),
+            BigInt(1003000)
+          )
         )
         forksTree = BitcoinValidator.updateBranch(forksTree, branch102, branch103a)
 
@@ -154,9 +183,16 @@ class ForksTreeStructureTest extends FunSuite {
         val branch103b = ForkBranch(
           tipHash = block103bHash,
           tipHeight = BigInt(103),
-          tipChainwork = BigInt(3100),  // Slightly higher chainwork
+          tipChainwork = BigInt(3100), // Slightly higher chainwork
           recentBlocks = List.single(
-            BlockSummary(block103bHash, BigInt(103), BigInt(3100), BigInt(1003500), ByteString.fromHex("1d00ffff"), BigInt(1003500))
+            BlockSummary(
+              block103bHash,
+              BigInt(103),
+              BigInt(3100),
+              BigInt(1003500),
+              ByteString.fromHex("1d00ffff"),
+              BigInt(1003500)
+            )
           )
         )
         forksTree = List.Cons(branch103b, forksTree)
@@ -164,8 +200,10 @@ class ForksTreeStructureTest extends FunSuite {
         println(s"After creating fork at 103b: forksTree.size = ${forksTree.size}")
         println(s"Branches:")
         forksTree.foreach { branch =>
-            println(s"  Tip: ${branch.tipHash.toHex.take(8)}..., Height: ${branch.tipHeight}, " +
-                   s"Chainwork: ${branch.tipChainwork}, RecentBlocks: ${branch.recentBlocks.size}")
+            println(
+              s"  Tip: ${branch.tipHash.toHex.take(8)}..., Height: ${branch.tipHeight}, " +
+                  s"Chainwork: ${branch.tipChainwork}, RecentBlocks: ${branch.recentBlocks.size}"
+            )
         }
 
         // With a fork, we SHOULD keep 2 branches:
@@ -193,12 +231,19 @@ class ForksTreeStructureTest extends FunSuite {
           tipHeight = BigInt(1),
           tipChainwork = BigInt(1000),
           recentBlocks = List.single(
-            BlockSummary(block1Hash, BigInt(1), BigInt(1000), BigInt(1000000), ByteString.fromHex("1d00ffff"), BigInt(1000000))
+            BlockSummary(
+              block1Hash,
+              BigInt(1),
+              BigInt(1000),
+              BigInt(1000000),
+              ByteString.fromHex("1d00ffff"),
+              BigInt(1000000)
+            )
           )
         )
 
         // Add 110 more blocks (total 111)
-        for (i <- 2 to 111) {
+        for i <- 2 to 111 do {
             val blockHash = ByteString.fromHex(f"$i%02x" * 32)
             val blockSummary = BlockSummary(
               blockHash,
@@ -206,7 +251,7 @@ class ForksTreeStructureTest extends FunSuite {
               BigInt(i * 1000),
               BigInt(1000000 + i * 1000),
               ByteString.fromHex("1d00ffff"),
-              BigInt(1000000 + i * 1000)  // addedTime same as timestamp for test
+              BigInt(1000000 + i * 1000) // addedTime same as timestamp for test
             )
             branch = BitcoinValidator.extendBranch(branch, blockSummary)
         }

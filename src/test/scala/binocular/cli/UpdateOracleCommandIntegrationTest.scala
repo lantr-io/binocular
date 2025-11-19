@@ -231,7 +231,8 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
             // Start at 866970, add blocks up to 866970 + 105 to ensure 100+ confirmations
             val startHeight = 866970
             val totalBlocks = 105 // More than MaturationConfirmations (100)
-            val batchSize = 10 // Process 10 headers per transaction (using reference script to reduce tx size)
+            val batchSize =
+                10 // Process 10 headers per transaction (using reference script to reduce tx size)
             val finalHeight = startHeight + totalBlocks
             val mockRpc = new MockBitcoinRpc()
 
@@ -283,7 +284,7 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
             val refScriptResult = OracleTransactions.deployReferenceScript(
               devKit.account,
               devKit.getBackendService,
-              scriptAddress.getAddress  // Deploy to script address
+              scriptAddress.getAddress // Deploy to script address
             )
 
             val referenceScriptUtxo = refScriptResult match {
@@ -356,7 +357,9 @@ class UpdateOracleCommandIntegrationTest extends CliIntegrationTestBase {
                 // Log forksTree branches for debugging
                 println(s"  [Batch ${batchIndex + 1}] OFF-CHAIN forksTree branches:")
                 newState.forksTree.foreach { branch =>
-                    println(s"    tip: ${branch.tipHash.toHex}, height: ${branch.tipHeight}, blocks: ${branch.recentBlocks.size}")
+                    println(
+                      s"    tip: ${branch.tipHash.toHex}, height: ${branch.tipHeight}, blocks: ${branch.recentBlocks.size}"
+                    )
                 }
 
                 // Submit update transaction (using reference script to reduce tx size)

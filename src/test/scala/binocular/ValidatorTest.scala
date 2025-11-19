@@ -534,7 +534,13 @@ class ValidatorTest extends munit.ScalaCheckSuite {
                   bits = bits,
                   addedTime = timestamp
                 )
-                buildBlocks(remaining - 1, height + 1, newChainwork, timestamp + 600, block :: blocks)
+                buildBlocks(
+                  remaining - 1,
+                  height + 1,
+                  newChainwork,
+                  timestamp + 600,
+                  block :: blocks
+                )
         }
 
         val (blocks, finalChainwork, finalHeight) = buildBlocks(
@@ -604,7 +610,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         for h <- startHeight to endHeight do {
             val hash = ByteString.fromArray(Array.fill(32)((h % 256).toByte))
             val timestamp = baseTimestamp + (h - startHeight) * 60
-            val addedTime = baseTimestamp + (h - startHeight) * 60  // Each block added 1 minute apart
+            val addedTime =
+                baseTimestamp + (h - startHeight) * 60 // Each block added 1 minute apart
             chainwork = chainwork + 1000
             blocks += BlockSummary(
               hash = hash,
@@ -616,7 +623,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
             )
         }
 
-        val recentBlocks = scalus.prelude.List.from(blocks.reverse)  // All blocks, newest first
+        val recentBlocks = scalus.prelude.List.from(blocks.reverse) // All blocks, newest first
         val tipBlock = blocks.last
 
         ForkBranch(
@@ -960,23 +967,33 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           tipHash = secondBlockHash,
           tipHeight = 1002,
           tipChainwork = BigInt(2000000),
-          recentBlocks = scalus.prelude.List.from(Seq(secondBlock, firstBlock))  // newest first
+          recentBlocks = scalus.prelude.List.from(Seq(secondBlock, firstBlock)) // newest first
         )
 
         val forksTree = scalus.prelude.List.single(branch)
 
         // findBranch only finds by tip hash now (since parents are always tips of their branches)
         // First block is NOT the tip, so findBranch won't find it directly
-        assert(BitcoinValidator.findBranch(forksTree, firstBlockHash).isEmpty, "First block is not a tip, so findBranch returns None")
-        assert(BitcoinValidator.findBranch(forksTree, secondBlockHash).isDefined, "Second block is the tip")
+        assert(
+          BitcoinValidator.findBranch(forksTree, firstBlockHash).isEmpty,
+          "First block is not a tip, so findBranch returns None"
+        )
+        assert(
+          BitcoinValidator.findBranch(forksTree, secondBlockHash).isDefined,
+          "Second block is the tip"
+        )
 
         // Verify second block is at tip
-        val foundBranch = BitcoinValidator.findBranch(forksTree, secondBlockHash).getOrFail("Branch not found")
+        val foundBranch =
+            BitcoinValidator.findBranch(forksTree, secondBlockHash).getOrFail("Branch not found")
         assertEquals(foundBranch.tipHash, secondBlockHash)
         assertEquals(foundBranch.tipHeight, BigInt(1002))
 
         // First block can be found in the branch's recentBlocks
-        assert(BitcoinValidator.existsInSortedList(foundBranch.recentBlocks, firstBlockHash), "First block should be in branch's recentBlocks")
+        assert(
+          BitcoinValidator.existsInSortedList(foundBranch.recentBlocks, firstBlockHash),
+          "First block should be in branch's recentBlocks"
+        )
 
         // Verify canonical chain selection picks highest chainwork (the branch)
         val canonicalBranch = BitcoinValidator.selectCanonicalChain(forksTree)
@@ -1028,14 +1045,16 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           tipHash = lowChainworkHash,
           tipHeight = 1001,
           tipChainwork = BigInt(1000000),
-          recentBlocks = scalus.prelude.List.single(BlockSummary(
-            hash = lowChainworkHash,
-            height = 1001,
-            chainwork = BigInt(1000000),
-            timestamp = BigInt(1234567890),
-            bits = hex"1d00ffff".reverse,
-            addedTime = BigInt(1234567890)
-          ))
+          recentBlocks = scalus.prelude.List.single(
+            BlockSummary(
+              hash = lowChainworkHash,
+              height = 1001,
+              chainwork = BigInt(1000000),
+              timestamp = BigInt(1234567890),
+              bits = hex"1d00ffff".reverse,
+              addedTime = BigInt(1234567890)
+            )
+          )
         )
 
         // Branch with higher chainwork
@@ -1045,14 +1064,16 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           tipHash = highChainworkHash,
           tipHeight = 1001,
           tipChainwork = BigInt(2000000),
-          recentBlocks = scalus.prelude.List.single(BlockSummary(
-            hash = highChainworkHash,
-            height = 1001,
-            chainwork = BigInt(2000000),
-            timestamp = BigInt(1234567890),
-            bits = hex"1d00ffff".reverse,
-            addedTime = BigInt(1234567890)
-          ))
+          recentBlocks = scalus.prelude.List.single(
+            BlockSummary(
+              hash = highChainworkHash,
+              height = 1001,
+              chainwork = BigInt(2000000),
+              timestamp = BigInt(1234567890),
+              bits = hex"1d00ffff".reverse,
+              addedTime = BigInt(1234567890)
+            )
+          )
         )
 
         val forksTree = scalus.prelude.List.from(Seq(lowChainworkBranch, highChainworkBranch))
@@ -1077,14 +1098,16 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           tipHash = oldForkHash,
           tipHeight = 1001,
           tipChainwork = BigInt(500000),
-          recentBlocks = scalus.prelude.List.single(BlockSummary(
-            hash = oldForkHash,
-            height = 1001,
-            chainwork = BigInt(500000),
-            timestamp = BigInt(1234567890),
-            bits = hex"1d00ffff".reverse,
-            addedTime = BigInt(1234567890)
-          ))
+          recentBlocks = scalus.prelude.List.single(
+            BlockSummary(
+              hash = oldForkHash,
+              height = 1001,
+              chainwork = BigInt(500000),
+              timestamp = BigInt(1234567890),
+              bits = hex"1d00ffff".reverse,
+              addedTime = BigInt(1234567890)
+            )
+          )
         )
 
         val forksTree = scalus.prelude.List.single(oldForkBranch)
@@ -1198,7 +1221,9 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         val inputDatumHash = scalus.builtin.Builtins.blake2b_256(
           scalus.builtin.Builtins.serialiseData(prevState.toData)
         )
-        val redeemer = Action.UpdateOracle(scalus.prelude.List.single(blockHeader), baseTime, inputDatumHash).toData
+        val redeemer = Action
+            .UpdateOracle(scalus.prelude.List.single(blockHeader), baseTime, inputDatumHash)
+            .toData
 
         // Create script context and transaction
         val scriptAddress = new Address(
@@ -1258,7 +1283,11 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           scalus.builtin.Builtins.serialiseData(prevState.toData)
         )
         val redeemer = Action
-            .UpdateOracle(scalus.prelude.List.empty, BigInt(System.currentTimeMillis() / 1000), inputDatumHash)
+            .UpdateOracle(
+              scalus.prelude.List.empty,
+              BigInt(System.currentTimeMillis() / 1000),
+              inputDatumHash
+            )
             .toData
 
         val scriptAddress = new Address(
@@ -1374,7 +1403,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           startHeight = 1001,
           endHeight = 1101,
           baseChainwork = BigInt(1000000),
-          baseTimestamp = currentTime - (150 * 60)  // Insufficient age
+          baseTimestamp = currentTime - (150 * 60) // Insufficient age
         )
         val forksTree = scalus.prelude.List.single(branch)
 
@@ -1407,7 +1436,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         // - 200+ minutes age (only blocks 1001-1002 have this)
         val branch = buildSingleBranch(
           startHeight = 1001,
-          endHeight = 1105,  // Tip at 1105, so block 1005 has exactly 100 confirmations
+          endHeight = 1105, // Tip at 1105, so block 1005 has exactly 100 confirmations
           baseChainwork = BigInt(1000000),
           baseTimestamp = currentTime - (201 * 60)
         )
@@ -1422,7 +1451,11 @@ class ValidatorTest extends munit.ScalaCheckSuite {
 
         // Should promote blocks with BOTH 100+ confirmations AND 200+ minutes age
         // With blocks added 1 minute apart, only blocks 1001 and 1002 meet both criteria
-        assertEquals(promotedBlocks.length, BigInt(2), "Should promote blocks 1001-1002 (meet both criteria)")
+        assertEquals(
+          promotedBlocks.length,
+          BigInt(2),
+          "Should promote blocks 1001-1002 (meet both criteria)"
+        )
 
         // Branch should still exist with remaining blocks
         assert(updatedTree.size == BigInt(1), "Branch should still exist")
