@@ -3,15 +3,12 @@ package binocular
 import binocular.BitcoinValidator.*
 import scalus.builtin.ByteString
 import scalus.prelude
+import scalus.utils.Hex.hexToBytes
 
 import scala.concurrent.{ExecutionContext, Future}
 
 /** Helper utilities for creating initial ChainState from Bitcoin node */
 object BitcoinChainState {
-
-    /** Convert hex string to ByteString */
-    private def hexToByteString(hex: String): ByteString =
-        ByteString.fromArray(hex.sliding(2, 2).toArray.map(Integer.parseInt(_, 16).toByte))
 
     /** Build 80-byte raw header from block header info */
     private def buildRawHeader(header: BlockHeaderInfo): Array[Byte] = {
@@ -36,13 +33,13 @@ object BitcoinChainState {
 
         // Previous block hash (32 bytes, reversed from hex)
         val prevHash = header.previousblockhash
-            .map(h => hexToByteString(h).bytes.reverse.toArray)
+            .map(h => h.hexToBytes.reverse)
             .getOrElse(new Array[Byte](32))
         System.arraycopy(prevHash, 0, buffer, offset, 32)
         offset += 32
 
         // Merkle root (32 bytes, reversed from hex)
-        val merkleRoot = hexToByteString(header.merkleroot).bytes.reverse.toArray
+        val merkleRoot = header.merkleroot.hexToBytes.reverse
         System.arraycopy(merkleRoot, 0, buffer, offset, 32)
         offset += 32
 
@@ -55,7 +52,7 @@ object BitcoinChainState {
         offset += 4
 
         // Bits (4 bytes, little-endian - must reverse from display hex to internal byte order)
-        val bits = hexToByteString(header.bits).bytes.reverse.toArray
+        val bits = header.bits.hexToBytes.reverse
         System.arraycopy(bits, 0, buffer, offset, 4)
         offset += 4
 
@@ -105,9 +102,9 @@ object BitcoinChainState {
             adjustmentHeader <- rpc.getBlockHeader(adjustmentBlockHashHex)
             // Bits from RPC is in big-endian (display order), but Bitcoin headers use little-endian
             // Reverse the bytes to match the format in the block header
-            bits = ByteString.fromArray(hexToByteString(header.bits).bytes.reverse.toArray)
+            bits = ByteString.fromArray(header.bits.hexToBytes.reverse)
             // Block hash from RPC is in display order (big-endian), but we store it in internal order (little-endian)
-            blockHash = ByteString.fromArray(hexToByteString(header.hash).bytes.reverse.toArray)
+            blockHash = ByteString.fromArray(header.hash.hexToBytes.reverse)
         } yield ChainState(
           blockHeight = blockHeight,
           blockHash = blockHash,
