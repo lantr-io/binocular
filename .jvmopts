@@ -1,0 +1,8 @@
+# Memory settings - use percentage of physical RAM for portability
+# Initial heap: 25% of physical RAM
+-XX:InitialRAMPercentage=25.0
+# Max heap: 75% of physical RAM
+-XX:MaxRAMPercentage=75.0
+-Xss64M
+
+
