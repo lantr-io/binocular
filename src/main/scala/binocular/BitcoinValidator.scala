@@ -86,7 +86,6 @@ case class ForkBranch(
 @Compile
 object ForkBranch
 
-
 case class ChainState(
     // Confirmed state
     blockHeight: BigInt,
