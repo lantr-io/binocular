@@ -10,8 +10,8 @@ import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
 import org.bouncycastle.crypto.signers.Ed25519Signer
 import org.scalacheck.Prop.forAll
 import scalus.*
+import scalus.bloxbean.Interop
 import scalus.bloxbean.Interop.{getScriptInfoV3, getTxInfoV3, toScalusData}
-import scalus.bloxbean.{Interop, SlotConfig}
 import scalus.builtin.ByteString.hex
 import scalus.builtin.Data.toData
 import scalus.builtin.{Builtins, ByteString, Data}
@@ -50,7 +50,7 @@ case class BitcoinBlock(
     tx: List[String]
 ) derives ReadWriter
 
-case class CekResult(budget: ExBudget, logs: Seq[String])
+case class CekResult(budget: ledger.ExUnits, logs: Seq[String])
 
 class ValidatorTest extends munit.ScalaCheckSuite {
     private given PlutusVM = PlutusVM.makePlutusV3VM()
@@ -347,14 +347,14 @@ class ValidatorTest extends munit.ScalaCheckSuite {
             case r: Result.Failure => fail(r.toString)
     }
 
-    def posixTimeToSlot(time: Long, sc: SlotConfig): Long = {
+    def posixTimeToSlot(time: Long, sc: ledger.SlotConfig): Long = {
         val msAfterBegin = time - sc.zeroTime
         msAfterBegin / sc.slotLength + sc.zeroSlot
     }
 
     def signMessage(claim: ByteString, privateKey: Ed25519PrivateKeyParameters): ByteString =
-        val signer = new Ed25519Signer();
-        signer.init(true, privateKey);
+        val signer = new Ed25519Signer()
+        signer.init(true, privateKey)
         signer.update(claim.bytes, 0, claim.size)
         ByteString.fromArray(signer.generateSignature())
 
@@ -364,7 +364,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         tx: Transaction,
         txhash: String,
         utxos: Map[TransactionInput, TransactionOutput],
-        slotConfig: SlotConfig,
+        slotConfig: ledger.SlotConfig,
         protocolVersion: Int
     ): ScriptContext = {
         import scala.jdk.CollectionConverters.*
@@ -436,7 +436,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
               .scriptRef(script)
               .build()
         )
-        val slot = posixTimeToSlot(intervalStartMs * 1000, SlotConfig.Mainnet)
+        val slot = posixTimeToSlot(intervalStartMs * 1000, ledger.SlotConfig.Mainnet)
         val tx = Transaction
             .builder()
             .body(
@@ -473,7 +473,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           tx,
           TransactionUtil.getTxHash(tx),
           utxo,
-          SlotConfig.Mainnet,
+          ledger.SlotConfig.Mainnet,
           protocolVersion = 9
         )
         (scriptContext, tx)
