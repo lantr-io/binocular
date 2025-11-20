@@ -35,11 +35,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-sbt-
 
-      - name: Check formatting
-        run: sbt scalafmtCheckAll scalafmtSbtCheck
-
-      - name: Run tests
-        run: sbt testOnly binocular.ValidatorTest
+      - name: Check formatting and run tests
+        run: sbt "scalafmtCheckAll;scalafmtSbtCheck;test"
 
       - name: Report build status
         uses: sarisia/actions-status-discord@v1
