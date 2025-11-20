@@ -47,17 +47,6 @@ extension (bh: BlockHeader)
 
     inline def timestamp: BigInt = byteStringToInteger(false, bh.bytes.slice(68, 4))
 
-case class BlockNode(
-    prevBlockHash: BlockHash, // 32-byte hash of previous block (for chain walking)
-    height: BigInt, // Block height (for difficulty validation and depth calculation)
-    chainwork: BigInt, // Cumulative proof-of-work from genesis
-    addedTimestamp: BigInt, // When this block was added on-chain (for 200-min rule)
-    children: List[BlockHash] // Hashes of child blocks (for tree navigation)
-) derives FromData,
-      ToData
-@Compile
-object BlockNode
-
 // ============================================================================
 // Optimized ForksTree Data Structures
 // ============================================================================
@@ -97,16 +86,6 @@ case class ForkBranch(
 @Compile
 object ForkBranch
 
-/** A fork point where one or more branches diverge. Maps to the block hash where the fork occurred.
-  */
-case class ForkNode(
-    forkPointHash: BlockHash, // Where this fork diverged from (confirmed tip or another fork)
-    forkPointHeight: BigInt, // Height where fork occurred
-    branches: List[ForkBranch] // All branches from this fork point
-) derives FromData,
-      ToData
-@Compile
-object ForkNode
 
 case class ChainState(
     // Confirmed state
