@@ -1,9 +1,13 @@
 package binocular.cli.commands
 
-import binocular.{CardanoConfig, OracleConfig}
+import binocular.{CardanoConfig, ChainState, OracleConfig}
 import binocular.cli.{Command, CommandHelpers}
+import scalus.builtin.Data
+import scalus.builtin.Data.{FromData, fromData}
+import scalus.builtin.ByteString.given
 
 import scala.jdk.CollectionConverters.*
+import scala.util.{Failure, Success, Try}
 
 /** Verify oracle UTxO and validate state */
 case class VerifyOracleCommand(utxo: String) extends Command {
@@ -63,23 +67,53 @@ case class VerifyOracleCommand(utxo: String) extends Command {
                             }
 
                             // Try to parse datum
-                            val datumCbor = Option(foundUtxo.getInlineDatum).orElse(
-                              Option(foundUtxo.getDataHash)
-                            )
+                            val datumCbor = Option(foundUtxo.getInlineDatum)
                             datumCbor match {
-                                case Some(datum) =>
+                                case Some(datumHex) =>
                                     println()
-                                    println(s"✓ Datum found")
-                                    println(s"  CBOR (truncated): ${datum.take(100)}...")
+                                    println(s"✓ Inline datum found")
 
-                                    println()
-                                    println(
-                                      "✓ Oracle UTxO has datum (ChainState parsing not yet implemented)"
-                                    )
+                                    // Parse ChainState from datum
+                                    Try {
+                                        import scalus.builtin.ByteString
+                                        val bs = ByteString.fromHex(datumHex)
+                                        val data = Data.fromCbor(bs)
+                                        val chainState = fromData[ChainState](data)
+                                        chainState
+                                    } match {
+                                        case Success(chainState) =>
+                                            println()
+                                            println("✓ ChainState parsed successfully:")
+                                            println(s"  Block Height: ${chainState.blockHeight}")
+                                            println(s"  Block Hash: ${chainState.blockHash.toHex}")
+                                            println(s"  Block Timestamp: ${chainState.blockTimestamp}")
+                                            println(s"  Current Target: ${chainState.currentTarget.toHex}")
+                                            println(s"  Recent Timestamps: ${chainState.recentTimestamps.size} entries")
+                                            println(s"  Previous Diff Adjustment: ${chainState.previousDifficultyAdjustmentTimestamp}")
+                                            println(s"  Confirmed Blocks Tree: ${chainState.confirmedBlocksTree.size} levels")
+                                            println(s"  Forks Tree: ${chainState.forksTree.size} branches")
+
+                                            if chainState.forksTree.nonEmpty then {
+                                                println()
+                                                println("  Fork tree branches:")
+                                                chainState.forksTree.take(5).foreach { branch =>
+                                                    println(s"    - Branch tip: ${branch.tipHash.toHex.take(16)}..., height: ${branch.tipHeight}, chainwork: ${branch.tipChainwork}, blocks: ${branch.recentBlocks.size}")
+                                                }
+                                                if chainState.forksTree.size > 5 then {
+                                                    println(s"    ... and ${chainState.forksTree.size - 5} more branches")
+                                                }
+                                            }
+
+                                        case Failure(ex) =>
+                                            println()
+                                            println(s"✗ Error parsing ChainState: ${ex.getMessage}")
+                                            println(s"  CBOR (truncated): ${datumHex.take(100)}...")
+                                            ex.printStackTrace()
+                                    }
 
                                 case None =>
                                     println()
-                                    println(s"⚠ Warning: No datum found")
+                                    println(s"⚠ Warning: No inline datum found")
                                     println("  Oracle UTxOs should have inline datums")
                             }
 

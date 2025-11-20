@@ -47,8 +47,11 @@ cd binocular
 sbt assembly
 
 # The CLI jar will be at target/scala-3.3.7/binocular-assembly-*.jar
-# Or run directly with sbt:
-sbt "runMain binocular.cli.Main --help"
+# Run it directly:
+java -jar target/scala-3.3.7/binocular-assembly-*.jar --help
+
+# Or run directly with sbt (no assembly needed):
+sbt "runMain binocular.main --help"
 ```
 
 ## Configuration
@@ -79,31 +82,37 @@ export MAX_HEADERS_PER_TX="10"  # Headers per transaction (default: 10)
 
 ### Alternative: Configuration File
 
-Create `~/.binocular/config.conf`:
+Create `src/main/resources/application.conf` or use the existing `src/test/resources/application.conf` as a template:
 
 ```hocon
-bitcoin {
-  rpc-url = "http://localhost:8332"
-  rpc-user = "your_rpc_user"
-  rpc-password = "your_rpc_password"
-  network = "mainnet"
-}
+binocular {
+  bitcoin-node {
+    url = "http://localhost:8332"
+    username = "your_rpc_user"
+    password = "your_rpc_password"
+    network = "mainnet"
+  }
 
-cardano {
-  network = "preview"
-  backend = "blockfrost"
-  blockfrost-api-key = "your_api_key"
-}
+  cardano {
+    network = "preview"
+    backend = "blockfrost"
+    blockfrost {
+      project-id = "your_blockfrost_project_id"
+    }
+  }
 
-wallet {
-  mnemonic = "your twenty four word mnemonic phrase here ..."
-}
+  wallet {
+    mnemonic = "your twenty four mnemonic phrase "
+  }
 
-oracle {
-  start-height = 866970
-  max-headers-per-tx = 10
+  oracle {
+    start-height = 866970
+    max-headers-per-tx = 10
+  }
 }
 ```
+
+Note: Environment variables take precedence over values in `application.conf` when using the `${?VAR_NAME}` syntax.
 
 ## Demo Steps
 
@@ -113,7 +122,7 @@ Create a new oracle UTxO on Cardano with the initial Bitcoin block state:
 
 ```bash
 # Initialize oracle at a specific Bitcoin block height
-sbt "runMain binocular.cli.Main init-oracle --start-block 866970"
+sbt "runMain binocular.main init-oracle --start-block 866970"
 ```
 
 **Expected Output:**
@@ -150,16 +159,16 @@ Add new Bitcoin blocks to the oracle. The command automatically batches if you r
 
 ```bash
 # Update oracle with blocks from current height to latest
-sbt "runMain binocular.cli.Main update-oracle --utxo abc123...:0"
+sbt "runMain binocular.main update-oracle --utxo abc123...:0"
 
 # Or specify a range
-sbt "runMain binocular.cli.Main update-oracle --utxo abc123...:0 --from 866971 --to 867070"
+sbt "runMain binocular.main update-oracle --utxo abc123...:0 --from 866971 --to 867070"
 ```
 
 **For 100+ blocks (required for promotion):**
 ```bash
 # Add 105 blocks to trigger promotion
-sbt "runMain binocular.cli.Main update-oracle --utxo abc123...:0 --to 867075"
+sbt "runMain binocular.main update-oracle --utxo abc123...:0 --to 867075"
 ```
 
 The command will automatically split into batches of 10 blocks each.
@@ -206,7 +215,7 @@ For blocks to be promoted from the forks tree to confirmed state, they must:
 You can check the oracle state periodically:
 
 ```bash
-sbt "runMain binocular.cli.Main list-oracles"
+sbt "runMain binocular.main list-oracles"
 ```
 
 ### Step 4: Update Again to Trigger Promotion
@@ -215,7 +224,7 @@ After the challenge period, submit more blocks to trigger promotion:
 
 ```bash
 # Add a few more blocks to trigger promotion check
-sbt "runMain binocular.cli.Main update-oracle --utxo xyz999...:0 --to 867080"
+sbt "runMain binocular.main update-oracle --utxo xyz999...:0 --to 867080"
 ```
 
 **Expected Output (with promotion):**
@@ -237,7 +246,7 @@ Now you can prove that a Bitcoin transaction is included in the confirmed blockc
 # Find a transaction ID from one of the confirmed blocks
 # For example, from block 866970
 
-sbt "runMain binocular.cli.Main prove-transaction \
+sbt "runMain binocular.main prove-transaction \
   --utxo promo123...:0 \
   --btc-tx f44ba1e992bc2cc4ac0da8d654600b80c8ca4f9f58fcd3e38c0dee1fae8f9ee5"
 ```
@@ -398,19 +407,19 @@ transaction exists in the specified block.
 ### List All Oracles
 
 ```bash
-sbt "runMain binocular.cli.Main list-oracles"
+sbt "runMain binocular.main list-oracles"
 ```
 
 ### Get Oracle Info
 
 ```bash
-sbt "runMain binocular.cli.Main info --utxo abc123...:0"
+sbt "runMain binocular.main info --utxo abc123...:0"
 ```
 
 ### Verify Oracle State
 
 ```bash
-sbt "runMain binocular.cli.Main verify-oracle --utxo abc123...:0"
+sbt "runMain binocular.main verify-oracle --utxo abc123...:0"
 ```
 
 ## Timeline Summary

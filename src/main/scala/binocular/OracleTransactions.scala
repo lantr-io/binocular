@@ -40,32 +40,74 @@ object OracleTransactions {
       *   Account to fund the reference script UTxO
       * @param backendService
       *   Backend service
+      * @param destinationAddress
+      *   Address to deploy reference script to
+      * @param consumeOldRefScript
+      *   Optional (txHash, outputIndex) of old reference script UTxO to consume
       * @return
       *   Either error message or (txHash, outputIndex) of the reference script UTxO
       */
     def deployReferenceScript(
         account: Account,
         backendService: BackendService,
-        destinationAddress: String // Address to deploy reference script to
+        destinationAddress: String,
+        consumeOldRefScript: Option[(String, Int)] = None
     ): Either[String, (String, Int)] = {
         Try {
             val script = getCompiledScript()
             val quickTxBuilder = new QuickTxBuilder(backendService)
 
             // Create a UTxO that holds the script as a reference script
-            // Deploy to specified address (should be different from account's address to avoid collateral conflicts)
-            // Pass the script as the last argument to payToAddress to attach it as a reference script
-            val tx = new Tx()
+            // Large scripts require significant minimum ADA (~47 ADA for our 10KB script)
+            // Using 50 ADA to be safe
+            // IMPORTANT: Must pass scriptRefBytes(), not the script object itself!
+            val txBase = new Tx()
                 .payToAddress(
                   destinationAddress,
-                  java.util.List.of(Amount.lovelace(java.math.BigInteger.valueOf(5000000))),
-                  script
+                  java.util.List.of(Amount.lovelace(java.math.BigInteger.valueOf(50000000))), // 50 ADA
+                  script.scriptRefBytes() // Get the CBOR bytes!
                 )
-                .from(account.baseAddress())
+
+            // If consuming old reference script, add it as input
+            val tx = consumeOldRefScript match {
+                case Some((oldTxHash, oldOutputIndex)) =>
+                    println(s"[DEBUG] Consuming old reference script: $oldTxHash:$oldOutputIndex")
+                    // Fetch the UTxO to consume
+                    val utxoService = backendService.getUtxoService
+                    val oldUtxo = utxoService.getTxOutput(oldTxHash, oldOutputIndex)
+                    if !oldUtxo.isSuccessful || oldUtxo.getValue == null then {
+                        throw new RuntimeException(s"Failed to fetch old reference script UTxO: ${oldUtxo.getResponse}")
+                    }
+                    txBase.collectFrom(java.util.List.of(oldUtxo.getValue))
+                case None =>
+                    txBase.from(account.baseAddress())
+            }
+
+            // Build and submit the transaction
+            // QuickTxBuilder underestimates the fee when deploying reference scripts because it doesn't
+            // account for the ~10KB script bytes in the output. We adjust both fee and change output.
+            // The actual fee should be ~755,000 lovelace based on real network feedback.
+            import com.bloxbean.cardano.client.function.TxBuilder
+            val adjustFeeAndChange: TxBuilder = (context, txn) => {
+                val currentFee = txn.getBody.getFee
+                val feeIncrease = java.math.BigInteger.valueOf(200000) // Add 0.2 ADA
+                val newFee = currentFee.add(feeIncrease)
+                txn.getBody.setFee(newFee)
+
+                // Reduce the change output (last output) by the fee increase
+                val outputs = txn.getBody.getOutputs
+                if (outputs.size() >= 2) {
+                    val changeOutput = outputs.get(outputs.size() - 1) // Last output is change
+                    val currentAmount = changeOutput.getValue.getCoin
+                    val newAmount = currentAmount.subtract(feeIncrease)
+                    changeOutput.getValue.setCoin(newAmount)
+                }
+            }
 
             val result = quickTxBuilder
                 .compose(tx)
                 .withSigner(SignerProviders.signerFrom(account))
+                .postBalanceTx(adjustFeeAndChange)  // Adjust fee AND change output after balance
                 .completeAndWait()
 
             if result.isSuccessful then {
@@ -79,6 +121,51 @@ object OracleTransactions {
             case Failure(ex) =>
                 Left(s"Error deploying reference script: ${ex.getMessage}")
         }
+    }
+
+    /** Find existing reference script UTxOs at a given address
+      *
+      * Searches for UTxOs that contain the oracle script as a reference script.
+      *
+      * @param backendService
+      *   Backend service
+      * @param searchAddress
+      *   Address to search for reference scripts
+      * @return
+      *   List of (txHash, outputIndex) tuples for UTxOs with matching reference script.
+      *   Returns empty list if none found (not an error).
+      *   Throws exception on query failures.
+      */
+    def findReferenceScriptUtxos(
+        backendService: BackendService,
+        searchAddress: String
+    ): List[(String, Int)] = {
+        val script = getCompiledScript()
+        val expectedScriptHash = Hex.bytesToHex(script.getScriptHash)
+
+        println(s"Searching for reference script UTxOs at address: $searchAddress")
+        println(s"Expected script hash: $expectedScriptHash")
+
+        // Query UTxOs at the address
+        val utxoService = backendService.getUtxoService
+        val utxos = utxoService.getUtxos(searchAddress, 100, 1)
+
+        if !utxos.isSuccessful then {
+            throw new RuntimeException(s"Failed to fetch UTxOs: ${utxos.getResponse}")
+        }
+
+        val allUtxos = utxos.getValue.asScala.toList
+
+        // Filter UTxOs that have a reference script matching our script hash
+        val matchingUtxos = allUtxos.filter { utxo =>
+            val refScriptHash = Option(utxo.getReferenceScriptHash)
+            // Exclude the known broken UTxO with 0 script bytes
+            val isBroken = utxo.getTxHash == "95d13b561f1b6056018b6eb113da05ee6e5d4c8d0de9f4ddbedfe2be1fd66284" && utxo.getOutputIndex == 0
+            refScriptHash.exists(hash => hash == expectedScriptHash && hash != null && !hash.isEmpty) && !isBroken
+        }.map(utxo => (utxo.getTxHash, utxo.getOutputIndex))
+
+        println(s"Found ${matchingUtxos.size} matching reference script UTxO(s)")
+        matchingUtxos
     }
 
     /** Compute the validity interval start time that will be used on-chain. This matches the
@@ -191,7 +278,10 @@ object OracleTransactions {
             }
         } match {
             case Success(result) => result
-            case Failure(ex)     => Left(s"Error building transaction: ${ex.getMessage}")
+            case Failure(ex) =>
+                // Print stack trace for debugging
+                ex.printStackTrace()
+                Left(s"Error building transaction: ${ex.getMessage}\nCause: ${Option(ex.getCause).map(_.getMessage).getOrElse("none")}")
         }
     }
 
@@ -350,7 +440,11 @@ object OracleTransactions {
 
             // Build transaction using ScriptTx
             // Configure ScalusEvaluator for this transaction to use PlutusVM instead of default Rust evaluator
-            val protocolParams = backendService.getEpochService.getProtocolParameters.getValue
+            val protocolParamsResult = backendService.getEpochService.getProtocolParameters
+            if !protocolParamsResult.isSuccessful then {
+                throw new RuntimeException(s"Error fetching protocol params: ${protocolParamsResult.getResponse} (code: ${protocolParamsResult.code()})")
+            }
+            val protocolParams = protocolParamsResult.getValue
 
             // Wrap UtxoService as UtxoSupplier
             val utxoSupplier = new DefaultUtxoSupplier(backendService.getUtxoService)
@@ -403,7 +497,9 @@ object OracleTransactions {
             // This ensures tx.validRange.from corresponds to the time we used in the redeemer
             println(s"[DEBUG] Using validFrom slot: $currentBlockchainSlot")
 
-            // Build TxContext - provide reference script for evaluation if using reference input
+            // Build TxContext - use automatic collateral selection
+            // The reference script is at the script address (not wallet), so it won't be
+            // selected as collateral. No need for manual collateral selection.
             val txContext = quickTxBuilder
                 .compose(scriptTx)
                 .feePayer(account.baseAddress())

@@ -104,9 +104,20 @@ object OracleConfig {
       *   - ORACLE_START_HEIGHT: Optional starting block height
       *   - ORACLE_MAX_HEADERS_PER_TX: Maximum headers per transaction (default: 10)
       *   - ORACLE_POLL_INTERVAL: Poll interval in seconds (default: 60)
-      *   - CARDANO_NETWORK: mainnet, preprod, preview, or testnet (default: mainnet)
+      *   - CARDANO_NETWORK: mainnet, preprod, preview, or testnet
+      *
+      * @param useDefaults If true, uses "mainnet" as default when CARDANO_NETWORK not set.
+      *                    If false, returns Left when CARDANO_NETWORK not set.
       */
-    def fromEnv(): Either[String, OracleConfig] = {
+    def fromEnv(useDefaults: Boolean = false): Either[String, OracleConfig] = {
+        val networkStrOpt = sys.env.get("CARDANO_NETWORK")
+
+        val networkStr = (networkStrOpt, useDefaults) match {
+            case (Some(net), _) => net
+            case (None, true) => "mainnet"
+            case (None, false) => return Left("CARDANO_NETWORK environment variable not set")
+        }
+
         val startHeight = sys.env.get("ORACLE_START_HEIGHT").flatMap(s => Try(s.toLong).toOption)
         val maxHeadersPerTx = sys.env
             .get("ORACLE_MAX_HEADERS_PER_TX")
@@ -116,7 +127,6 @@ object OracleConfig {
             .get("ORACLE_POLL_INTERVAL")
             .flatMap(s => Try(s.toInt).toOption)
             .getOrElse(60)
-        val networkStr = sys.env.getOrElse("CARDANO_NETWORK", "mainnet")
 
         for {
             network <- CardanoNetwork.fromString(networkStr)

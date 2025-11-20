@@ -3,6 +3,9 @@ package binocular.cli.commands
 import binocular.cli.{Command, CommandHelpers}
 import binocular.*
 import com.bloxbean.cardano.client.address.Address
+import com.bloxbean.cardano.client.api.model.Amount
+import com.bloxbean.cardano.client.function.helper.SignerProviders
+import com.bloxbean.cardano.client.quicktx.{QuickTxBuilder, Tx}
 import scalus.utils.Hex.hexToBytes
 import scalus.bloxbean.Interop.toScalusData
 import scalus.builtin.Data.fromData
@@ -68,11 +71,87 @@ case class UpdateOracleCommand(
                         return 1
                 }
 
-                println()
-                println("Step 2: Fetching current oracle UTxO from Cardano...")
+                // Skip wallet splitting - deploy reference script to script address instead
+                // This avoids collateral conflicts (ref script at script address won't be selected as collateral)
 
-                // Fetch the specific UTxO
+                println()
+                println("Step 3: Checking for reference script...")
+
+                // Check if reference script exists at script address (like integration test does)
+                // Deploying to script address avoids collateral conflicts
                 val scriptAddress = new Address(oracleConf.scriptAddress)
+                val referenceScriptUtxo = try {
+                    val existingRefs = OracleTransactions.findReferenceScriptUtxos(
+                      backendService,
+                      scriptAddress.getAddress
+                    )
+
+                    existingRefs.headOption match {
+                        case Some((txHash, outputIdx)) =>
+                            println(s"✓ Found existing reference script at $txHash:$outputIdx")
+                            Some((txHash, outputIdx))
+                        case None =>
+                            println(s"✗ No reference script found, deploying one...")
+                            println(s"  This is a one-time operation to reduce transaction sizes")
+                            println(s"  Deploying to script address (like integration test)")
+
+                            OracleTransactions.deployReferenceScript(
+                              account,
+                              backendService,
+                              scriptAddress.getAddress  // Deploy to script address, not wallet
+                            ) match {
+                                case Right((txHash, outputIdx)) =>
+                                    println(s"✓ Reference script deployed at $txHash:$outputIdx")
+                                    println(s"  This will save ~10KB per transaction")
+
+                                    // Wait for the new wallet UTxO (change from ref script deployment) to be indexed
+                                    println(s"  Waiting for new wallet UTxO to be indexed...")
+                                    val walletUtxoIndexed = {
+                                        var found = false
+                                        var attempts = 0
+                                        val maxAttempts = 30 // 30 attempts * 2 seconds = 60 seconds max
+                                        while (!found && attempts < maxAttempts) {
+                                            Thread.sleep(2000) // Wait 2 seconds between polls
+                                            attempts += 1
+                                            try {
+                                                val utxos = backendService.getUtxoService.getUtxos(account.baseAddress(), 10, 1)
+                                                if (utxos.isSuccessful) {
+                                                    // Look for the new wallet UTxO from the ref script deployment
+                                                    found = utxos.getValue.asScala.exists(u =>
+                                                        u.getTxHash == txHash && u.getOutputIndex == 1
+                                                    )
+                                                    if (found) {
+                                                        println(s"  ✓ Wallet UTxO indexed after ${attempts * 2} seconds")
+                                                    } else if (attempts % 5 == 0) {
+                                                        println(s"  Still waiting... (${attempts * 2}s elapsed)")
+                                                    }
+                                                }
+                                            } catch {
+                                                case _: Exception => // Ignore query errors, keep trying
+                                            }
+                                        }
+                                        if (!found) {
+                                            System.err.println(s"  ⚠ Warning: Wallet UTxO not indexed after ${maxAttempts * 2} seconds, continuing anyway")
+                                        }
+                                        found
+                                    }
+
+                                    Some((txHash, outputIdx))
+                                case Left(err) =>
+                                    System.err.println(s"✗ Failed to deploy reference script: $err")
+                                    System.err.println(s"  Cannot proceed without reference script (transactions would exceed 16KB limit)")
+                                    return 1
+                            }
+                    }
+                } catch {
+                    case e: Exception =>
+                        System.err.println(s"✗ Error checking for reference script: ${e.getMessage}")
+                        e.printStackTrace()
+                        return 1
+                }
+
+                println()
+                println("Step 4: Fetching current oracle UTxO from Cardano...")
                 val utxoService = backendService.getUtxoService
                 val utxos =
                     try {
@@ -107,7 +186,7 @@ case class UpdateOracleCommand(
 
                         // Parse ChainState datum
                         println()
-                        println("Step 3: Parsing current ChainState datum...")
+                        println("Step 5: Parsing current ChainState datum...")
 
                         val inlineDatumHex = utxo.getInlineDatum
                         if inlineDatumHex == null || inlineDatumHex.isEmpty then {
@@ -134,9 +213,21 @@ case class UpdateOracleCommand(
                         println(s"  Block Hash: ${currentChainState.blockHash.toHex}")
                         println(s"  Fork Tree Size: ${currentChainState.forksTree.size}")
 
+                        // Determine the highest block we have (either confirmed or in fork tree)
+                        val highestBlock = if currentChainState.forksTree.nonEmpty then {
+                            // Find the highest block in fork tree
+                            val maxForkHeight = currentChainState.forksTree.foldLeft(0L) { (max, branch) =>
+                                math.max(max, branch.tipHeight.toLong)
+                            }
+                            println(s"  Highest fork tree block: $maxForkHeight")
+                            maxForkHeight
+                        } else {
+                            currentChainState.blockHeight.toLong
+                        }
+
                         // Determine block range
                         val startHeight =
-                            fromBlock.getOrElse(currentChainState.blockHeight.toLong + 1)
+                            fromBlock.getOrElse(highestBlock + 1)
                         val endHeight = toBlock match {
                             case Some(h) => h
                             case None    =>
@@ -164,6 +255,19 @@ case class UpdateOracleCommand(
                         val numBlocks = (endHeight - startHeight + 1).toInt
                         val batchSize = oracleConf.maxHeadersPerTx
 
+                        // Warn if too many blocks to fetch (likely to hit rate limits)
+                        val maxRecommendedBlocks = 500
+                        if numBlocks > maxRecommendedBlocks then {
+                            println()
+                            println(s"⚠ Warning: Attempting to fetch $numBlocks blocks")
+                            println(s"  This may hit Bitcoin RPC rate limits and fail.")
+                            println(s"  Recommended: Use --to parameter to limit range to ~$maxRecommendedBlocks blocks")
+                            println(s"  Example: --to ${startHeight + maxRecommendedBlocks - 1}")
+                            println()
+                            println("  Press Ctrl+C to cancel, or continuing in 5 seconds...")
+                            Thread.sleep(5000)
+                        }
+
                         // Create execution context for async operations
                         given ec: ExecutionContext = ExecutionContext.global
                         val rpc = new SimpleBitcoinRpc(btcConf)
@@ -175,12 +279,12 @@ case class UpdateOracleCommand(
                         if totalBatches > 1 then {
                             println()
                             println(
-                              s"Step 4: Processing $numBlocks blocks in $totalBatches batches of up to $batchSize headers each..."
+                              s"Step 5: Processing $numBlocks blocks in $totalBatches batches of up to $batchSize headers each..."
                             )
                         } else {
                             println()
                             println(
-                              s"Step 4: Fetching Bitcoin headers from block $startHeight to $endHeight ($numBlocks headers)..."
+                              s"Step 5: Fetching Bitcoin headers from block $startHeight to $endHeight ($numBlocks headers)..."
                             )
                         }
 
@@ -236,7 +340,7 @@ case class UpdateOracleCommand(
 
                             if totalBatches == 1 then {
                                 println()
-                                println("Step 5: Calculating new ChainState after update...")
+                                println("Step 6: Calculating new ChainState after update...")
                                 println(s"  Using validity interval time: $validityTime")
                             }
 
@@ -262,7 +366,7 @@ case class UpdateOracleCommand(
                                 println(s"  Block Hash: ${newChainState.blockHash.toHex}")
                                 println()
                                 println(
-                                  "Step 6: Building and submitting UpdateOracle transaction..."
+                                  "Step 7: Building and submitting UpdateOracle transaction..."
                                 )
                             }
 
@@ -276,7 +380,8 @@ case class UpdateOracleCommand(
                               currentState,
                               newChainState,
                               headersList,
-                              validityTime
+                              validityTime,
+                              referenceScriptUtxo
                             )
 
                             txResult match {
@@ -284,15 +389,75 @@ case class UpdateOracleCommand(
                                     if totalBatches > 1 then {
                                         println(s"    ✓ Batch $batchNum submitted: $resultTxHash")
                                     }
-                                    // Update state and UTxO for next batch
+                                    // Update state and UTxO reference for next batch
                                     currentState = newChainState
                                     currentTxHash = resultTxHash
                                     currentOutputIndex = 0 // Oracle output is always at index 0
 
-                                    // Wait for confirmation before next batch
+                                    // Wait for UTxO to be indexed before next batch
                                     if batchIndex < batches.size - 1 then {
-                                        println(s"    Waiting for confirmation...")
-                                        Thread.sleep(3000) // Wait 3 seconds between batches
+                                        println(s"    Waiting for UTxO to be indexed...")
+
+                                        // Poll Blockfrost until the UTxO is available using the SAME API
+                                        // that the transaction builder uses (getUtxos by address)
+                                        var utxoAvailable = false
+                                        var attempts = 0
+                                        val maxAttempts = 30 // Try for up to 30 seconds
+
+                                        while !utxoAvailable && attempts < maxAttempts do {
+                                            Thread.sleep(1000)
+                                            attempts += 1
+
+                                            // Use same API as OracleTransactions.buildAndSubmitUpdateTransaction
+                                            val scriptAddr = oracleConf.scriptAddress
+                                            val utxosCheck = backendService.getUtxoService.getUtxos(scriptAddr, 100, 1)
+                                            if utxosCheck.isSuccessful && utxosCheck.getValue != null then {
+                                                val utxoList = utxosCheck.getValue.asScala.toList
+                                                val found = utxoList.exists(u =>
+                                                    u.getTxHash == resultTxHash && u.getOutputIndex == 0
+                                                )
+                                                if found then {
+                                                    utxoAvailable = true
+                                                    println(s"    ✓ UTxO indexed after ${attempts}s")
+                                                }
+                                            }
+                                        }
+
+                                        if !utxoAvailable then {
+                                            System.err.println(s"    ✗ UTxO not available after ${maxAttempts}s")
+                                            return 1
+                                        }
+
+                                        // Wait for NEW wallet UTxOs from this transaction to be indexed
+                                        // We need the change output to be available for next batch's collateral
+                                        println(s"    Waiting for new wallet UTxOs from batch ${batchNum}...")
+                                        var newUtxoFound = false
+                                        var walletAttempts = 0
+                                        val maxWalletAttempts = 30
+
+                                        while !newUtxoFound && walletAttempts < maxWalletAttempts do {
+                                            Thread.sleep(1000)
+                                            walletAttempts += 1
+
+                                            // Check if wallet has the NEW change output from resultTxHash
+                                            val walletUtxosCheck = backendService.getUtxoService.getUtxos(
+                                                account.baseAddress(), 100, 1
+                                            )
+                                            if walletUtxosCheck.isSuccessful && walletUtxosCheck.getValue != null then {
+                                                val walletUtxos = walletUtxosCheck.getValue.asScala.toList
+                                                // Look for UTxO from the transaction we just submitted
+                                                val hasNewUtxo = walletUtxos.exists(u => u.getTxHash == resultTxHash)
+                                                if hasNewUtxo then {
+                                                    newUtxoFound = true
+                                                    println(s"    ✓ New wallet UTxO indexed (after ${walletAttempts}s)")
+                                                }
+                                            }
+                                        }
+
+                                        if !newUtxoFound then {
+                                            System.err.println(s"    ✗ New wallet UTxO not indexed after ${maxWalletAttempts}s")
+                                            return 1
+                                        }
                                     }
 
                                 case Left(errorMsg) =>

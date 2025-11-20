@@ -201,10 +201,10 @@ object CardanoConfig {
             val blockfrostApiUrl = sys.env.getOrElse(
               "BLOCKFROST_API_URL",
               network match {
-                  case CardanoNetwork.Mainnet => "https://cardano-mainnet.blockfrost.io/api/v0"
-                  case CardanoNetwork.Preprod => "https://cardano-preprod.blockfrost.io/api/v0"
-                  case CardanoNetwork.Preview => "https://cardano-preview.blockfrost.io/api/v0"
-                  case CardanoNetwork.Testnet => "https://cardano-testnet.blockfrost.io/api/v0"
+                  case CardanoNetwork.Mainnet => "https://cardano-mainnet.blockfrost.io/api/v0/"
+                  case CardanoNetwork.Preprod => "https://cardano-preprod.blockfrost.io/api/v0/"
+                  case CardanoNetwork.Preview => "https://cardano-preview.blockfrost.io/api/v0/"
+                  case CardanoNetwork.Testnet => "https://cardano-testnet.blockfrost.io/api/v0/"
               }
             )
 
@@ -250,11 +250,15 @@ object CardanoConfig {
                 backend <- CardanoBackend.fromString(backendStr)
                 network <- CardanoNetwork.fromString(networkStr)
             } yield {
+                // Get API URL and ensure it ends with /
+                val blockfrostUrl = cardanoConfig.getString("blockfrost.api-url")
+                val normalizedUrl = if blockfrostUrl.endsWith("/") then blockfrostUrl else blockfrostUrl + "/"
+
                 CardanoConfig(
                   backend = backend,
                   network = network,
                   blockfrost = BlockfrostConfig(
-                    apiUrl = cardanoConfig.getString("blockfrost.api-url"),
+                    apiUrl = normalizedUrl,
                     projectId = cardanoConfig.getString("blockfrost.project-id")
                   ),
                   koios = KoiosConfig(
@@ -308,10 +312,10 @@ object CardanoConfig {
         projectId: String
     ): CardanoConfig = {
         val apiUrl = network match {
-            case CardanoNetwork.Mainnet => "https://cardano-mainnet.blockfrost.io/api/v0"
-            case CardanoNetwork.Preprod => "https://cardano-preprod.blockfrost.io/api/v0"
-            case CardanoNetwork.Preview => "https://cardano-preview.blockfrost.io/api/v0"
-            case CardanoNetwork.Testnet => "https://cardano-testnet.blockfrost.io/api/v0"
+            case CardanoNetwork.Mainnet => "https://cardano-mainnet.blockfrost.io/api/v0/"
+            case CardanoNetwork.Preprod => "https://cardano-preprod.blockfrost.io/api/v0/"
+            case CardanoNetwork.Preview => "https://cardano-preview.blockfrost.io/api/v0/"
+            case CardanoNetwork.Testnet => "https://cardano-testnet.blockfrost.io/api/v0/"
         }
 
         CardanoConfig(

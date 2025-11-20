@@ -1,9 +1,13 @@
 package binocular.cli.commands
 
-import binocular.{CardanoConfig, OracleConfig}
+import binocular.{CardanoConfig, ChainState, OracleConfig}
 import binocular.cli.Command
+import scalus.builtin.Data
+import scalus.builtin.Data.fromData
+import scalus.builtin.ByteString.given
 
 import scala.jdk.CollectionConverters.*
+import scala.util.{Failure, Success, Try}
 
 /** List oracle UTxOs on Cardano */
 case class ListOraclesCommand(limit: Int) extends Command {
@@ -40,12 +44,24 @@ case class ListOraclesCommand(limit: Int) extends Command {
                                   "  binocular init-oracle --start-block <BITCOIN_BLOCK_HEIGHT>"
                                 )
                             } else {
-                                val utxoList = utxos.asScala.toList
+                                // Filter out reference script UTxOs (they have scriptRef but no inline datum)
+                                val oracleUtxos = utxos.asScala.toList.filter { utxo =>
+                                    // Oracle UTxOs must have inline datum and no reference script
+                                    utxo.getInlineDatum != null && utxo.getReferenceScriptHash == null
+                                }
 
-                                println(s"Found ${utxoList.size} oracle UTxO(s):")
-                                println()
+                                if oracleUtxos.isEmpty then {
+                                    println("No oracle UTxOs found (only reference script UTxOs present).")
+                                    println()
+                                    println("To initialize a new oracle, run:")
+                                    println(
+                                      "  binocular init-oracle --start-block <BITCOIN_BLOCK_HEIGHT>"
+                                    )
+                                } else {
+                                    println(s"Found ${oracleUtxos.size} oracle UTxO(s):")
+                                    println()
 
-                                utxoList.foreach { utxo =>
+                                    oracleUtxos.foreach { utxo =>
                                     val txHash = utxo.getTxHash
                                     val outputIndex = utxo.getOutputIndex
                                     val lovelace = utxo.getAmount.asScala.headOption
@@ -55,11 +71,33 @@ case class ListOraclesCommand(limit: Int) extends Command {
                                     println(s"  • $txHash:$outputIndex")
                                     println(s"    Lovelace: $lovelace")
 
-                                    // Try to show datum info if available
-                                    Option(utxo.getInlineDatum).foreach { datum =>
-                                        println(s"    Datum: ${datum.take(100)}...")
+                                    // Try to parse and show ChainState info
+                                    Option(utxo.getInlineDatum) match {
+                                        case Some(datumHex) =>
+                                            Try {
+                                                import scalus.builtin.ByteString
+                                                val bs = ByteString.fromHex(datumHex)
+                                                val data = Data.fromCbor(bs)
+                                                val chainState = fromData[ChainState](data)
+                                                chainState
+                                            } match {
+                                                case Success(chainState) =>
+                                                    println(s"    Block Height: ${chainState.blockHeight}")
+                                                    println(s"    Block Hash: ${chainState.blockHash.toHex.take(16)}...")
+                                                    if chainState.forksTree.nonEmpty then {
+                                                        val maxForkHeight = chainState.forksTree.foldLeft(0L) { (max, branch) =>
+                                                            math.max(max, branch.tipHeight.toLong)
+                                                        }
+                                                        println(s"    Fork Tree: ${chainState.forksTree.size} branch(es), highest at $maxForkHeight")
+                                                    }
+                                                case Failure(_) =>
+                                                    println(s"    Datum: ${datumHex.take(100)}... (could not parse)")
+                                            }
+                                        case None =>
+                                            println(s"    No inline datum")
                                     }
                                     println()
+                                }
                                 }
                             }
                             0
