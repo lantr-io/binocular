@@ -161,7 +161,7 @@ case class ProveTransactionCommand(
                         // With ForkBranch, need to check if block is in any branch
                         val blockInForksTree = chainState.forksTree.exists { branch =>
                             branch.tipHash == blockHashBytes ||
-                            BitcoinValidator.existsInSortedList(branch.recentBlocks, blockHashBytes)
+                            BitcoinValidator.existsHash(branch.recentBlocks, blockHashBytes)
                         }
 
                         if blockInForksTree then {

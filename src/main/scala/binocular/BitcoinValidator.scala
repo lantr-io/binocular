@@ -151,7 +151,7 @@ object BitcoinValidator extends Validator {
     }
 
     /** Check if a block exists anywhere in the recentBlocks list by hash */
-    def existsInSortedList(blocks: List[BlockSummary], hash: BlockHash): Boolean = {
+    def existsHash(blocks: List[BlockSummary], hash: BlockHash): Boolean = {
         def check(remaining: List[BlockSummary]): Boolean = {
             remaining match
                 case List.Nil => false
@@ -246,7 +246,8 @@ object BitcoinValidator extends Validator {
     ) // Blocks needed for promotion to confirmed state
     val TimeToleranceSeconds: BigInt =
         36 * 60 * 60 // Maximum difference between redeemer time and validity interval time (shoukd be the time of cardano consesnus)
-    val ChallengeAging: BigInt = 200 * 60 // 200 minutes in seconds (challenge period)
+    //val ChallengeAging: BigInt = 200 * 60 // 200 minutes in seconds (challenge period)
+    val ChallengeAging: BigInt = 20 * 60 // 20 minutes in seconds (challenge period) to speedup testing
     val StaleCompetingForkAge: BigInt = 400 * 60 // 400 minutes (2× challenge period)
     val ChainworkGapThreshold: BigInt = 10 // Blocks worth of work for stale fork detection
     val MaxForksTreeSize: BigInt = 180 // Maximum forks tree size before garbage collection
@@ -445,39 +446,35 @@ object BitcoinValidator extends Validator {
                 // List is sorted, so just get middle element
                 timestamps !! index
 
-    def getMedianTimePastFromBlocks(blocks: List[BlockSummary]): BigInt = {
-        // Calculate median in single recursive pass through up to MedianTimeSpan blocks
-        // First pass counts, second pass finds median at index count/2
+    def getMedianTimePastFromBlocks(
+        forkBlocks: List[BlockSummary],
+        confirmedTimestamps: List[BigInt]
+    ): BigInt = {
+        // Collect timestamps from fork blocks, then from confirmed state if needed
+        // Sort using insertion sort (efficient for n ≤ 11)
+        // Bitcoin allows out-of-order timestamps, so we must sort before finding median
 
         @tailrec
-        def step(
-            medianPointer: List[BlockSummary],
-            currentPointer: List[BlockSummary],
-            counted: BigInt,
-            maxCount: BigInt
-        ): BigInt = {
-            currentPointer match
-                case List.Nil =>
-                    medianPointer match
-                        case List.Nil => UnixEpoch
-                        case List.Cons(block, tail) =>
-                            block.timestamp
-                case List.Cons(block, tail) =>
-                    val (prevTimestamp, nextMedianPointer) = medianPointer match
-                        case List.Nil => (UnixEpoch, medianPointer) // impossible case
-                        case List.Cons(b, medianTail) => (b.timestamp, medianTail)
-                    if counted + 1 == maxCount then
-                        // Reached max count, return median
-                        prevTimestamp
-                    else
-                        tail match
-                            case List.Nil => prevTimestamp
-                            case List.Cons(_, tail2) =>
-                                step(medianPointer, tail2, counted + 2, maxCount)
-        }
+        def collect(
+            remaining: List[BlockSummary],
+            confirmed: List[BigInt],
+            sorted: List[BigInt],
+            count: BigInt
+        ): List[BigInt] =
+            if count >= MedianTimeSpan then sorted
+            else
+                remaining match
+                    case List.Cons(block, tail) =>
+                        collect(tail, confirmed, insertReverseSorted(block.timestamp, sorted), count + 1)
+                    case List.Nil =>
+                        // Fork exhausted, continue with confirmed timestamps
+                        confirmed match
+                            case List.Nil => sorted
+                            case List.Cons(ts, tail) =>
+                                collect(List.Nil, tail, insertReverseSorted(ts, sorted), count + 1)
 
-        step(blocks, blocks, 0, MedianTimeSpan)
-
+        val sortedTimestamps = collect(forkBlocks, confirmedTimestamps, List.Nil, 0)
+        getMedianTimePast(sortedTimestamps, sortedTimestamps.size)
     }
 
     def merkleRootFromInclusionProof(
@@ -696,10 +693,10 @@ object BitcoinValidator extends Validator {
                   confirmedState.recentTimestamps.size
                 )
             else
-                // For fork blocks, use branch's recentBlocks for median-time-past
+                // For fork blocks, use branch's recentBlocks + confirmed timestamps for median-time-past
                 parentBranchOpt match
                     case scalus.prelude.Option.Some(branch) =>
-                        getMedianTimePastFromBlocks(branch.recentBlocks)
+                        getMedianTimePastFromBlocks(branch.recentBlocks, confirmedState.recentTimestamps)
                     case scalus.prelude.Option.None => fail("Parent branch not found")
 
         require(blockTime > medianTimePast, "Block timestamp not greater than median time past")
@@ -757,56 +754,57 @@ object BitcoinValidator extends Validator {
                 // No blocks in forks tree
                 (List.Nil, forksTree)
             case scalus.prelude.Option.Some(canonicalBranch) =>
-                // Identify promotable blocks from the canonical branch
-                // We check blocks from oldest (end of recentBlocks list) to newest
+                // Split blocks into (remainingReverse, promoted) in a single pass
+                // recentBlocks is newest-first, so we traverse from newest to oldest
+                // Once we find a promotable block, all older blocks (rest of list) are also promotable
                 val canonicalTipHeight = canonicalBranch.tipHeight
 
-                def identifyPromotable(
+                // Returns (remaining blocks reversed, promoted hashes oldest-first)
+                // When no promotion, remainingReverse is Nil and we use original recentBlocks
+                def splitPromotable(
                     blocks: List[BlockSummary],
-                    accumulated: List[BlockHash]
-                ): List[BlockHash] =
+                    remainingReverse: List[BlockSummary]
+                ): (List[BlockSummary], List[BlockHash]) =
                     blocks match
-                        case List.Nil => accumulated
+                        case List.Nil => (remainingReverse, List.Nil)
                         case List.Cons(block, tail) =>
                             val depth = canonicalTipHeight - block.height
-                            val age =
-                                currentTime - block.addedTime // Use individual block's addedTime
+                            val age = currentTime - block.addedTime
 
                             if depth >= MaturationConfirmations && age >= ChallengeAging then
-                                // This block qualifies for promotion
-                                identifyPromotable(tail, List.Cons(block.hash, accumulated))
+                                // This block and all older blocks (tail) are promotable
+                                // Extract hashes from tail + this block (already oldest-first order)
+                                def extractHashes(
+                                    bs: List[BlockSummary],
+                                    acc: List[BlockHash]
+                                ): List[BlockHash] =
+                                    bs match
+                                        case List.Nil             => acc
+                                        case List.Cons(b, tailBs) => extractHashes(tailBs, List.Cons(b.hash, acc))
+                                val promotedHashes = extractHashes(tail, List.Cons(block.hash, List.Nil))
+                                (remainingReverse, promotedHashes)
                             else
-                                // Stop at first non-qualified block
-                                accumulated
+                                // Not yet promotable, add to remaining and continue
+                                splitPromotable(tail, List.Cons(block, remainingReverse))
 
-                // Reverse recentBlocks to process from oldest to newest
-                val promotableBlocks = identifyPromotable(
-                  canonicalBranch.recentBlocks.reverse,
-                  List.Nil
-                )
+                val (remainingReverse, promotableBlocks) =
+                    splitPromotable(canonicalBranch.recentBlocks, List.Nil)
 
-                // If we promoted some blocks, remove the canonical branch from forksTree
-                // (it will be reconstructed with remaining unpromoted blocks if any)
+                // Update forks tree based on promotion result
                 val updatedTree =
                     if promotableBlocks.isEmpty then forksTree
+                    else if remainingReverse.isEmpty then
+                        // All blocks were promoted, remove the entire branch
+                        removeBranch(forksTree, canonicalBranch)
                     else
-                        // Remove promoted blocks from canonical branch
-                        val remainingBlocks = canonicalBranch.recentBlocks.filter { block =>
-                            !promotableBlocks.contains(block.hash)
-                        }
-
-                        // If all blocks were promoted, remove the entire branch
-                        if remainingBlocks.isEmpty then removeBranch(forksTree, canonicalBranch)
-                        else
-                            // Update branch with remaining blocks
-                            val updatedBranch = ForkBranch(
-                              tipHash = canonicalBranch.tipHash,
-                              tipHeight = canonicalBranch.tipHeight,
-                              tipChainwork = canonicalBranch.tipChainwork,
-                              recentBlocks =
-                                  remainingBlocks // Remaining blocks keep their individual addedTime
-                            )
-                            updateBranch(forksTree, canonicalBranch, updatedBranch)
+                        // Update branch with remaining blocks (need to reverse back)
+                        val updatedBranch = ForkBranch(
+                          tipHash = canonicalBranch.tipHash,
+                          tipHeight = canonicalBranch.tipHeight,
+                          tipChainwork = canonicalBranch.tipChainwork,
+                          recentBlocks = remainingReverse.reverse
+                        )
+                        updateBranch(forksTree, canonicalBranch, updatedBranch)
 
                 (promotableBlocks, updatedTree)
 

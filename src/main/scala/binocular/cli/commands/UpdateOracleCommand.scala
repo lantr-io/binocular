@@ -305,16 +305,21 @@ case class UpdateOracleCommand(
                                 )
                             }
 
-                            // Fetch Bitcoin headers for this batch
+                            // Fetch Bitcoin headers for this batch sequentially to avoid rate limiting
+                            def fetchHeadersSequentially(heights: List[Long], acc: List[BlockHeader]): Future[List[BlockHeader]] = {
+                                heights match {
+                                    case Nil => Future.successful(acc.reverse)
+                                    case h :: tail =>
+                                        for {
+                                            hashHex <- rpc.getBlockHash(h.toInt)
+                                            headerInfo <- rpc.getBlockHeader(hashHex)
+                                            header = BitcoinChainState.convertHeader(headerInfo)
+                                            rest <- fetchHeadersSequentially(tail, header :: acc)
+                                        } yield rest
+                                }
+                            }
                             val headersFuture: Future[Seq[BlockHeader]] =
-                                Future.sequence(
-                                  batch.map { height =>
-                                      for {
-                                          hashHex <- rpc.getBlockHash(height.toInt)
-                                          headerInfo <- rpc.getBlockHeader(hashHex)
-                                      } yield BitcoinChainState.convertHeader(headerInfo)
-                                  }
-                                )
+                                fetchHeadersSequentially(batch.toList, Nil)
 
                             val headers: Seq[BlockHeader] =
                                 try {

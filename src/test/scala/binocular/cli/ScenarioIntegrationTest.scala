@@ -549,7 +549,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
             val blockHashBytes = ByteString.fromHex(blockHash).reverse
             val blockInForksTree = actualState.forksTree.exists { branch =>
                 branch.tipHash == blockHashBytes ||
-                BitcoinValidator.existsInSortedList(branch.recentBlocks, blockHashBytes)
+                BitcoinValidator.existsHash(branch.recentBlocks, blockHashBytes)
             }
             assert(!blockInForksTree, "Block should not be in forks tree after promotion")
 

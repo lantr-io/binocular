@@ -96,13 +96,19 @@ case class ListOraclesCommand(limit: Int) extends Command {
                                                         println(s"    ⚠ INVALID: Only $timestampCount/11 timestamps (oracle unusable)")
                                                     } else {
                                                         // Check if timestamps are properly sorted (descending)
-                                                        val timestamps = chainState.recentTimestamps.toList
+                                                        import scalus.prelude.List as ScalusList
+                                                        def toScalaList(l: ScalusList[BigInt]): scala.List[BigInt] = l match {
+                                                            case ScalusList.Nil => scala.Nil
+                                                            case ScalusList.Cons(h, t) => h :: toScalaList(t)
+                                                        }
+                                                        val timestamps = toScalaList(chainState.recentTimestamps)
                                                         val isSorted = timestamps.sliding(2).forall {
                                                             case Seq(a, b) => a >= b
                                                             case _ => true
                                                         }
                                                         if !isSorted then {
                                                             println(s"    ⚠ INVALID: Timestamps not sorted (oracle unusable)")
+                                                            println(s"    Timestamps: ${timestamps.mkString(", ")}")
                                                         }
                                                     }
                                                 case Failure(e) =>

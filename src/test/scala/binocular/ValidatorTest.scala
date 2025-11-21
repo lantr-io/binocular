@@ -971,7 +971,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
 
         // First block can be found in the branch's recentBlocks
         assert(
-          BitcoinValidator.existsInSortedList(foundBranch.recentBlocks, firstBlockHash),
+          BitcoinValidator.existsHash(foundBranch.recentBlocks, firstBlockHash),
           "First block should be in branch's recentBlocks"
         )
 
@@ -1237,10 +1237,10 @@ class ValidatorTest extends munit.ScalaCheckSuite {
                 // and debug logging enabled
                 assertEquals(
                   r.budget,
-                  ledger.ExUnits(462922, 142939784),
+                  ledger.ExUnits(461910, 143344310),
                   "Unexpected resource usage"
                 )
-                assertEquals(r.budget.fee(prices), Coin(37003), "Unexpected fee cost")
+                assertEquals(r.budget.fee(prices), Coin(36973), "Unexpected fee cost")
             case r: Result.Failure =>
                 fail(s"Validation failed: $r")
     }
@@ -1376,14 +1376,15 @@ class ValidatorTest extends munit.ScalaCheckSuite {
     test("promoteQualifiedBlocks - reject block with insufficient age") {
         val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
         val currentTime = BigInt(System.currentTimeMillis() / 1000)
+        val challengeAgingSeconds = BitcoinValidator.ChallengeAging
 
         // Build chain from 1001 to 1101 (100+ confirmations - sufficient)
-        // Blocks added only 150 minutes ago (needs 200 minutes)
+        // Blocks added 1 minute less than ChallengeAging (insufficient age)
         val branch = buildSingleBranch(
           startHeight = 1001,
           endHeight = 1101,
           baseChainwork = BigInt(1000000),
-          baseTimestamp = currentTime - (150 * 60) // Insufficient age
+          baseTimestamp = currentTime - challengeAgingSeconds + 60 // 1 minute less than required
         )
         val forksTree = scalus.prelude.List.single(branch)
 
@@ -1405,20 +1406,22 @@ class ValidatorTest extends munit.ScalaCheckSuite {
     test("promoteQualifiedBlocks - partial promotion with depth-based cutoff") {
         val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
         val currentTime = BigInt(System.currentTimeMillis() / 1000)
+        val challengeAgingSeconds = BitcoinValidator.ChallengeAging
+        val challengeAgingMinutes = challengeAgingSeconds / 60
 
         // Build chain from 1001 to 1105
         // Each block is added 1 minute apart (see buildSingleBranch helper)
-        // Block 1001: 201 min old (meets 200 min requirement)
-        // Block 1002: 200 min old (meets 200 min requirement, exactly at boundary)
-        // Block 1003: 199 min old (does NOT meet 200 min requirement)
+        // Block 1001: (challengeAging + 1) min old (meets requirement)
+        // Block 1002: challengeAging min old (meets requirement, exactly at boundary)
+        // Block 1003: (challengeAging - 1) min old (does NOT meet requirement)
         // Only first 2 blocks will meet both criteria:
         // - 100+ confirmations (all blocks 1001-1005 have this)
-        // - 200+ minutes age (only blocks 1001-1002 have this)
+        // - challengeAging+ age (only blocks 1001-1002 have this)
         val branch = buildSingleBranch(
           startHeight = 1001,
           endHeight = 1105, // Tip at 1105, so block 1005 has exactly 100 confirmations
           baseChainwork = BigInt(1000000),
-          baseTimestamp = currentTime - (201 * 60)
+          baseTimestamp = currentTime - (challengeAgingMinutes + 1) * 60
         )
         val forksTree = scalus.prelude.List.single(branch)
 
@@ -1429,7 +1432,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           currentTime
         )
 
-        // Should promote blocks with BOTH 100+ confirmations AND 200+ minutes age
+        // Should promote blocks with BOTH 100+ confirmations AND challengeAging+ age
         // With blocks added 1 minute apart, only blocks 1001 and 1002 meet both criteria
         assertEquals(
           promotedBlocks.length,
