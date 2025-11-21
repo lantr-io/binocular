@@ -741,13 +741,13 @@ object BitcoinValidator extends Validator {
                 List.Cons(newBranch, forksTree)
 
     // Block promotion (maturation) - matches Algorithm 10 in Whitepaper
-    // Returns (list of promoted block hashes, updated forks tree with promoted blocks removed)
+    // Returns (list of promoted blocks oldest-first, updated forks tree with promoted blocks removed)
     def promoteQualifiedBlocks(
         forksTree: List[ForkBranch],
         confirmedTip: BlockHash,
         confirmedHeight: BigInt,
         currentTime: BigInt
-    ): (List[BlockHash], List[ForkBranch]) =
+    ): (List[BlockSummary], List[ForkBranch]) =
         // Find canonical branch
         selectCanonicalChain(forksTree) match
             case scalus.prelude.Option.None =>
@@ -759,12 +759,12 @@ object BitcoinValidator extends Validator {
                 // Once we find a promotable block, all older blocks (rest of list) are also promotable
                 val canonicalTipHeight = canonicalBranch.tipHeight
 
-                // Returns (remaining blocks reversed, promoted hashes oldest-first)
+                // Returns (remaining blocks reversed, promoted blocks oldest-first)
                 // When no promotion, remainingReverse is Nil and we use original recentBlocks
                 def splitPromotable(
                     blocks: List[BlockSummary],
                     remainingReverse: List[BlockSummary]
-                ): (List[BlockSummary], List[BlockHash]) =
+                ): (List[BlockSummary], List[BlockSummary]) =
                     blocks match
                         case List.Nil => (remainingReverse, List.Nil)
                         case List.Cons(block, tail) =>
@@ -773,26 +773,26 @@ object BitcoinValidator extends Validator {
 
                             if depth >= MaturationConfirmations && age >= ChallengeAging then
                                 // This block and all older blocks (tail) are promotable
-                                // Extract hashes from tail + this block (already oldest-first order)
-                                def extractHashes(
+                                // Reverse tail and prepend this block to get oldest-first order
+                                def reverseAndPrepend(
                                     bs: List[BlockSummary],
-                                    acc: List[BlockHash]
-                                ): List[BlockHash] =
+                                    acc: List[BlockSummary]
+                                ): List[BlockSummary] =
                                     bs match
                                         case List.Nil             => acc
-                                        case List.Cons(b, tailBs) => extractHashes(tailBs, List.Cons(b.hash, acc))
-                                val promotedHashes = extractHashes(tail, List.Cons(block.hash, List.Nil))
-                                (remainingReverse, promotedHashes)
+                                        case List.Cons(b, tailBs) => reverseAndPrepend(tailBs, List.Cons(b, acc))
+                                val promotedBlocks = reverseAndPrepend(tail, List.Cons(block, List.Nil))
+                                (remainingReverse, promotedBlocks)
                             else
                                 // Not yet promotable, add to remaining and continue
                                 splitPromotable(tail, List.Cons(block, remainingReverse))
 
-                val (remainingReverse, promotableBlocks) =
+                val (remainingReverse, promotedBlocks) =
                     splitPromotable(canonicalBranch.recentBlocks, List.Nil)
 
                 // Update forks tree based on promotion result
                 val updatedTree =
-                    if promotableBlocks.isEmpty then forksTree
+                    if promotedBlocks.isEmpty then forksTree
                     else if remainingReverse.isEmpty then
                         // All blocks were promoted, remove the entire branch
                         removeBranch(forksTree, canonicalBranch)
@@ -806,7 +806,7 @@ object BitcoinValidator extends Validator {
                         )
                         updateBranch(forksTree, canonicalBranch, updatedBranch)
 
-                (promotableBlocks, updatedTree)
+                (promotedBlocks, updatedTree)
 
     // Validate fork submission rule: must include canonical extension
     // Prevents attack where adversary submits only forks to stall Oracle progress
@@ -1210,28 +1210,19 @@ object BitcoinValidator extends Validator {
         else
             // scalus.prelude.log("promotion occurred, updating confirmed state")
             // Promotion occurred: update confirmed state
-            // Find the canonical branch to get promoted block info
-            val canonicalBranch =
-                canonicalBranchOpt.getOrFail("Canonical branch should exist after promotion")
-
-            // Get the latest promoted block hash (head of list)
-            val latestPromotedHash = promotedBlocks.head
-
-            // Find the promoted block in canonical branch's recentBlocks
-            val latestPromotedBlock =
-                lookupInRecentBlocks(canonicalBranch.recentBlocks, latestPromotedHash)
-                    .getOrFail("Promoted block not found in canonical branch")
+            // Get the latest (newest) promoted block (last in oldest-first list)
+            val latestPromotedBlock = promotedBlocks.last
 
             // Add promoted blocks to Merkle tree (in order from oldest to newest)
             // promotedBlocks is already sorted from oldest to newest
             def addPromotedBlocks(
                 tree: List[ByteString],
-                blocks: List[BlockHash]
+                blocks: List[BlockSummary]
             ): List[ByteString] =
                 blocks match
                     case List.Nil => tree
-                    case List.Cons(blockHash, tail) =>
-                        addPromotedBlocks(addToMerkleTree(tree, blockHash), tail)
+                    case List.Cons(block, tail) =>
+                        addPromotedBlocks(addToMerkleTree(tree, block.hash), tail)
 
             val updatedMerkleTree = addPromotedBlocks(prevState.confirmedBlocksTree, promotedBlocks)
 
@@ -1240,7 +1231,7 @@ object BitcoinValidator extends Validator {
             // For now, preserve these fields - full implementation requires walking promoted chain
             ChainState(
               blockHeight = latestPromotedBlock.height,
-              blockHash = latestPromotedHash,
+              blockHash = latestPromotedBlock.hash,
               currentTarget = latestPromotedBlock.bits, // Use promoted block's difficulty
               blockTimestamp = latestPromotedBlock.timestamp,
               recentTimestamps = prevState.recentTimestamps, // TODO: should be updated

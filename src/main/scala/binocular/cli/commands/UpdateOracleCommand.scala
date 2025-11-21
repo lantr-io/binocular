@@ -175,9 +175,16 @@ case class UpdateOracleCommand(
                 targetUtxo match {
                     case None =>
                         System.err.println(s"✗ UTxO not found: $txHash:$outputIndex")
-                        System.err.println(s"  Available UTxOs:")
-                        allUtxos.foreach { u =>
-                            System.err.println(s"    ${u.getTxHash}:${u.getOutputIndex}")
+                        val validOracles = CommandHelpers.filterValidOracleUtxos(allUtxos)
+                        if validOracles.nonEmpty then {
+                            System.err.println(s"  Available valid oracle UTxOs:")
+                            validOracles.foreach { vo =>
+                                System.err.println(
+                                  s"    ${vo.utxoRef} (height: ${vo.chainState.blockHeight})"
+                                )
+                            }
+                        } else {
+                            System.err.println(s"  No valid oracle UTxOs found at script address")
                         }
                         return 1
 

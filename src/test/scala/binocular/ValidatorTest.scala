@@ -1332,7 +1332,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         )
 
         assertEquals(promotedBlocks.length, BigInt(1), "Should promote 1 block")
-        assertEquals(promotedBlocks.head, block1001Hash, "Should promote the qualified block")
+        assertEquals(promotedBlocks.head.hash, block1001Hash, "Should promote the qualified block")
 
         // Block 1001 should be removed from recentBlocks
         val updatedBranchOpt = updatedTree.headOption

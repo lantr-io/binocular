@@ -1,7 +1,7 @@
 package binocular.cli.commands
 
 import binocular.{CardanoConfig, ChainState, OracleConfig}
-import binocular.cli.Command
+import binocular.cli.{Command, CommandHelpers}
 import scalus.builtin.Data
 import scalus.builtin.Data.fromData
 import scalus.builtin.ByteString.given
@@ -36,90 +36,56 @@ case class ListOraclesCommand(limit: Int) extends Command {
                                 .getUtxos(scriptAddress, limit, 1)
                             val utxos = Option(utxosResult.getValue).getOrElse(java.util.Collections.emptyList())
 
-                            if utxos.isEmpty then {
-                                println("No oracle UTxOs found.")
+                            val allUtxos = utxos.asScala.toList
+                            val validOracles = CommandHelpers.filterValidOracleUtxos(allUtxos)
+
+                            if validOracles.isEmpty then {
+                                // Check if there are any oracle-like UTxOs (with datum) that are invalid
+                                val oracleLikeUtxos = allUtxos.filter(CommandHelpers.isOracleUtxo)
+                                if oracleLikeUtxos.nonEmpty then {
+                                    println("No valid oracle UTxOs found.")
+                                    println(s"Found ${oracleLikeUtxos.size} invalid oracle UTxO(s):")
+                                    oracleLikeUtxos.foreach { utxo =>
+                                        println(s"  • ${utxo.getTxHash}:${utxo.getOutputIndex}")
+                                        CommandHelpers.parseChainState(utxo) match {
+                                            case Some(cs) =>
+                                                val timestampCount = cs.recentTimestamps.size
+                                                if timestampCount < 11 then
+                                                    println(s"    ⚠ Only $timestampCount/11 timestamps")
+                                                else if !CommandHelpers.isValidChainState(cs) then
+                                                    println(s"    ⚠ Timestamps not sorted")
+                                            case None =>
+                                                println(s"    ⚠ Cannot parse ChainState")
+                                        }
+                                    }
+                                } else if allUtxos.nonEmpty then {
+                                    println("No oracle UTxOs found (only reference script UTxOs present).")
+                                } else {
+                                    println("No oracle UTxOs found.")
+                                }
                                 println()
                                 println("To initialize a new oracle, run:")
-                                println(
-                                  "  binocular init-oracle --start-block <BITCOIN_BLOCK_HEIGHT>"
-                                )
+                                println("  binocular init-oracle --start-block <BITCOIN_BLOCK_HEIGHT>")
                             } else {
-                                // Filter out reference script UTxOs (they have scriptRef but no inline datum)
-                                val oracleUtxos = utxos.asScala.toList.filter { utxo =>
-                                    // Oracle UTxOs must have inline datum and no reference script
-                                    utxo.getInlineDatum != null && utxo.getReferenceScriptHash == null
-                                }
+                                println(s"Found ${validOracles.size} valid oracle UTxO(s):")
+                                println()
 
-                                if oracleUtxos.isEmpty then {
-                                    println("No oracle UTxOs found (only reference script UTxOs present).")
-                                    println()
-                                    println("To initialize a new oracle, run:")
-                                    println(
-                                      "  binocular init-oracle --start-block <BITCOIN_BLOCK_HEIGHT>"
-                                    )
-                                } else {
-                                    println(s"Found ${oracleUtxos.size} oracle UTxO(s):")
-                                    println()
-
-                                    oracleUtxos.foreach { utxo =>
-                                    val txHash = utxo.getTxHash
-                                    val outputIndex = utxo.getOutputIndex
-                                    val lovelace = utxo.getAmount.asScala.headOption
+                                validOracles.foreach { vo =>
+                                    val lovelace = vo.utxo.getAmount.asScala.headOption
                                         .map(_.getQuantity)
                                         .getOrElse("0")
 
-                                    println(s"  • $txHash:$outputIndex")
+                                    println(s"  • ${vo.utxoRef}")
                                     println(s"    Lovelace: $lovelace")
-
-                                    // Try to parse and show ChainState info
-                                    Option(utxo.getInlineDatum) match {
-                                        case Some(datumHex) =>
-                                            Try {
-                                                import scalus.builtin.ByteString
-                                                val bs = ByteString.fromHex(datumHex)
-                                                val data = Data.fromCbor(bs)
-                                                val chainState = fromData[ChainState](data)
-                                                chainState
-                                            } match {
-                                                case Success(chainState) =>
-                                                    println(s"    Block Height: ${chainState.blockHeight}")
-                                                    println(s"    Block Hash: ${chainState.blockHash.toHex.take(16)}...")
-                                                    if chainState.forksTree.nonEmpty then {
-                                                        val maxForkHeight = chainState.forksTree.foldLeft(0L) { (max, branch) =>
-                                                            math.max(max, branch.tipHeight.toLong)
-                                                        }
-                                                        println(s"    Fork Tree: ${chainState.forksTree.size} branch(es), highest at $maxForkHeight")
-                                                    }
-                                                    // Validate datum integrity
-                                                    val timestampCount = chainState.recentTimestamps.size
-                                                    if timestampCount < 11 then {
-                                                        println(s"    ⚠ INVALID: Only $timestampCount/11 timestamps (oracle unusable)")
-                                                    } else {
-                                                        // Check if timestamps are properly sorted (descending)
-                                                        import scalus.prelude.List as ScalusList
-                                                        def toScalaList(l: ScalusList[BigInt]): scala.List[BigInt] = l match {
-                                                            case ScalusList.Nil => scala.Nil
-                                                            case ScalusList.Cons(h, t) => h :: toScalaList(t)
-                                                        }
-                                                        val timestamps = toScalaList(chainState.recentTimestamps)
-                                                        val isSorted = timestamps.sliding(2).forall {
-                                                            case Seq(a, b) => a >= b
-                                                            case _ => true
-                                                        }
-                                                        if !isSorted then {
-                                                            println(s"    ⚠ INVALID: Timestamps not sorted (oracle unusable)")
-                                                            println(s"    Timestamps: ${timestamps.mkString(", ")}")
-                                                        }
-                                                    }
-                                                case Failure(e) =>
-                                                    println(s"    ⚠ INVALID: Cannot parse datum as ChainState")
-                                                    println(s"    Error: ${e.getMessage}")
-                                            }
-                                        case None =>
-                                            println(s"    No inline datum")
+                                    println(s"    Block Height: ${vo.chainState.blockHeight}")
+                                    println(s"    Block Hash: ${vo.chainState.blockHash.toHex.take(16)}...")
+                                    if vo.chainState.forksTree.nonEmpty then {
+                                        val maxForkHeight = vo.chainState.forksTree.foldLeft(0L) { (max, branch) =>
+                                            math.max(max, branch.tipHeight.toLong)
+                                        }
+                                        println(s"    Fork Tree: ${vo.chainState.forksTree.size} branch(es), highest at $maxForkHeight")
                                     }
                                     println()
-                                }
                                 }
                             }
                             0
