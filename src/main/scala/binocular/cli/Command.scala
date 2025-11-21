@@ -87,7 +87,7 @@ object CommandHelpers {
     /** Check if ChainState is valid (has 11 sorted timestamps) */
     def isValidChainState(chainState: ChainState): Boolean = {
         def toScalaList(l: ScalusList[BigInt]): scala.List[BigInt] = l match {
-            case ScalusList.Nil         => scala.Nil
+            case ScalusList.Nil        => scala.Nil
             case ScalusList.Cons(h, t) => h :: toScalaList(t)
         }
         val timestamps = toScalaList(chainState.recentTimestamps)
@@ -97,8 +97,8 @@ object CommandHelpers {
         }
     }
 
-    /** Try to get a valid oracle UTxO from a raw UTxO
-      * Returns Some(ValidOracleUtxo) if UTxO has valid datum with valid ChainState
+    /** Try to get a valid oracle UTxO from a raw UTxO Returns Some(ValidOracleUtxo) if UTxO has
+      * valid datum with valid ChainState
       */
     def tryValidateOracleUtxo(utxo: Utxo): Option[ValidOracleUtxo] =
         if !isOracleUtxo(utxo) then None

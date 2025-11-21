@@ -106,16 +106,17 @@ object OracleConfig {
       *   - ORACLE_POLL_INTERVAL: Poll interval in seconds (default: 60)
       *   - CARDANO_NETWORK: mainnet, preprod, preview, or testnet
       *
-      * @param useDefaults If true, uses "mainnet" as default when CARDANO_NETWORK not set.
-      *                    If false, returns Left when CARDANO_NETWORK not set.
+      * @param useDefaults
+      *   If true, uses "mainnet" as default when CARDANO_NETWORK not set. If false, returns Left
+      *   when CARDANO_NETWORK not set.
       */
     def fromEnv(useDefaults: Boolean = false): Either[String, OracleConfig] = {
         val networkStrOpt = sys.env.get("CARDANO_NETWORK")
 
         val networkStr = (networkStrOpt, useDefaults) match {
             case (Some(net), _) => net
-            case (None, true) => "mainnet"
-            case (None, false) => return Left("CARDANO_NETWORK environment variable not set")
+            case (None, true)   => "mainnet"
+            case (None, false)  => return Left("CARDANO_NETWORK environment variable not set")
         }
 
         val startHeight = sys.env.get("ORACLE_START_HEIGHT").flatMap(s => Try(s.toLong).toOption)

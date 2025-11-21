@@ -252,7 +252,8 @@ object CardanoConfig {
             } yield {
                 // Get API URL and ensure it ends with /
                 val blockfrostUrl = cardanoConfig.getString("blockfrost.api-url")
-                val normalizedUrl = if blockfrostUrl.endsWith("/") then blockfrostUrl else blockfrostUrl + "/"
+                val normalizedUrl =
+                    if blockfrostUrl.endsWith("/") then blockfrostUrl else blockfrostUrl + "/"
 
                 CardanoConfig(
                   backend = backend,

@@ -105,7 +105,10 @@ object BitcoinChainState {
             // Fetch timestamps for the previous 11 blocks (for median-time-past validation)
             // Fetch sequentially to avoid rate limiting from RPC providers
             recentTimestampsSeq <- {
-                def fetchTimestamps(remaining: scala.List[Int], acc: scala.List[BigInt]): Future[scala.List[BigInt]] = {
+                def fetchTimestamps(
+                    remaining: scala.List[Int],
+                    acc: scala.List[BigInt]
+                ): Future[scala.List[BigInt]] = {
                     remaining match {
                         case Nil => Future.successful(acc.reverse)
                         case h :: tail if h >= 0 =>
@@ -131,8 +134,8 @@ object BitcoinChainState {
             // Bitcoin allows out-of-order timestamps, so block height order != timestamp order
             sortedTimestamps = recentTimestampsSeq.sortBy(-_) // Sort descending by timestamp value
             // Convert to scalus List
-            recentTimestamps = sortedTimestamps.foldRight(prelude.List.Nil: prelude.List[BigInt])((ts, acc) =>
-                prelude.List.Cons(ts, acc)
+            recentTimestamps = sortedTimestamps.foldRight(prelude.List.Nil: prelude.List[BigInt])(
+              (ts, acc) => prelude.List.Cons(ts, acc)
             )
         } yield ChainState(
           blockHeight = blockHeight,

@@ -64,7 +64,9 @@ object OracleTransactions {
             val txBase = new Tx()
                 .payToAddress(
                   destinationAddress,
-                  java.util.List.of(Amount.lovelace(java.math.BigInteger.valueOf(50000000))), // 50 ADA
+                  java.util.List.of(
+                    Amount.lovelace(java.math.BigInteger.valueOf(50000000))
+                  ), // 50 ADA
                   script.scriptRefBytes() // Get the CBOR bytes!
                 )
 
@@ -76,7 +78,9 @@ object OracleTransactions {
                     val utxoService = backendService.getUtxoService
                     val oldUtxo = utxoService.getTxOutput(oldTxHash, oldOutputIndex)
                     if !oldUtxo.isSuccessful || oldUtxo.getValue == null then {
-                        throw new RuntimeException(s"Failed to fetch old reference script UTxO: ${oldUtxo.getResponse}")
+                        throw new RuntimeException(
+                          s"Failed to fetch old reference script UTxO: ${oldUtxo.getResponse}"
+                        )
                     }
                     txBase.collectFrom(java.util.List.of(oldUtxo.getValue))
                 case None =>
@@ -96,7 +100,7 @@ object OracleTransactions {
 
                 // Reduce the change output (last output) by the fee increase
                 val outputs = txn.getBody.getOutputs
-                if (outputs.size() >= 2) {
+                if outputs.size() >= 2 then {
                     val changeOutput = outputs.get(outputs.size() - 1) // Last output is change
                     val currentAmount = changeOutput.getValue.getCoin
                     val newAmount = currentAmount.subtract(feeIncrease)
@@ -107,7 +111,7 @@ object OracleTransactions {
             val result = quickTxBuilder
                 .compose(tx)
                 .withSigner(SignerProviders.signerFrom(account))
-                .postBalanceTx(adjustFeeAndChange)  // Adjust fee AND change output after balance
+                .postBalanceTx(adjustFeeAndChange) // Adjust fee AND change output after balance
                 .completeAndWait()
 
             if result.isSuccessful then {
@@ -132,9 +136,8 @@ object OracleTransactions {
       * @param searchAddress
       *   Address to search for reference scripts
       * @return
-      *   List of (txHash, outputIndex) tuples for UTxOs with matching reference script.
-      *   Returns empty list if none found (not an error).
-      *   Throws exception on query failures.
+      *   List of (txHash, outputIndex) tuples for UTxOs with matching reference script. Returns
+      *   empty list if none found (not an error). Throws exception on query failures.
       */
     def findReferenceScriptUtxos(
         backendService: BackendService,
@@ -157,12 +160,17 @@ object OracleTransactions {
         val allUtxos = utxos.getValue.asScala.toList
 
         // Filter UTxOs that have a reference script matching our script hash
-        val matchingUtxos = allUtxos.filter { utxo =>
-            val refScriptHash = Option(utxo.getReferenceScriptHash)
-            // Exclude the known broken UTxO with 0 script bytes
-            val isBroken = utxo.getTxHash == "95d13b561f1b6056018b6eb113da05ee6e5d4c8d0de9f4ddbedfe2be1fd66284" && utxo.getOutputIndex == 0
-            refScriptHash.exists(hash => hash == expectedScriptHash && hash != null && !hash.isEmpty) && !isBroken
-        }.map(utxo => (utxo.getTxHash, utxo.getOutputIndex))
+        val matchingUtxos = allUtxos
+            .filter { utxo =>
+                val refScriptHash = Option(utxo.getReferenceScriptHash)
+                // Exclude the known broken UTxO with 0 script bytes
+                val isBroken =
+                    utxo.getTxHash == "95d13b561f1b6056018b6eb113da05ee6e5d4c8d0de9f4ddbedfe2be1fd66284" && utxo.getOutputIndex == 0
+                refScriptHash.exists(hash =>
+                    hash == expectedScriptHash && hash != null && !hash.isEmpty
+                ) && !isBroken
+            }
+            .map(utxo => (utxo.getTxHash, utxo.getOutputIndex))
 
         println(s"Found ${matchingUtxos.size} matching reference script UTxO(s)")
         matchingUtxos
@@ -278,10 +286,12 @@ object OracleTransactions {
             }
         } match {
             case Success(result) => result
-            case Failure(ex) =>
+            case Failure(ex)     =>
                 // Print stack trace for debugging
                 ex.printStackTrace()
-                Left(s"Error building transaction: ${ex.getMessage}\nCause: ${Option(ex.getCause).map(_.getMessage).getOrElse("none")}")
+                Left(
+                  s"Error building transaction: ${ex.getMessage}\nCause: ${Option(ex.getCause).map(_.getMessage).getOrElse("none")}"
+                )
         }
     }
 
@@ -442,7 +452,9 @@ object OracleTransactions {
             // Configure ScalusEvaluator for this transaction to use PlutusVM instead of default Rust evaluator
             val protocolParamsResult = backendService.getEpochService.getProtocolParameters
             if !protocolParamsResult.isSuccessful then {
-                throw new RuntimeException(s"Error fetching protocol params: ${protocolParamsResult.getResponse} (code: ${protocolParamsResult.code()})")
+                throw new RuntimeException(
+                  s"Error fetching protocol params: ${protocolParamsResult.getResponse} (code: ${protocolParamsResult.code()})"
+                )
             }
             val protocolParams = protocolParamsResult.getValue
 

@@ -34,7 +34,9 @@ case class ListOraclesCommand(limit: Int) extends Command {
                             // Query UTxOs at script address
                             val utxosResult = backendService.getUtxoService
                                 .getUtxos(scriptAddress, limit, 1)
-                            val utxos = Option(utxosResult.getValue).getOrElse(java.util.Collections.emptyList())
+                            val utxos = Option(utxosResult.getValue).getOrElse(
+                              java.util.Collections.emptyList()
+                            )
 
                             val allUtxos = utxos.asScala.toList
                             val validOracles = CommandHelpers.filterValidOracleUtxos(allUtxos)
@@ -44,14 +46,18 @@ case class ListOraclesCommand(limit: Int) extends Command {
                                 val oracleLikeUtxos = allUtxos.filter(CommandHelpers.isOracleUtxo)
                                 if oracleLikeUtxos.nonEmpty then {
                                     println("No valid oracle UTxOs found.")
-                                    println(s"Found ${oracleLikeUtxos.size} invalid oracle UTxO(s):")
+                                    println(
+                                      s"Found ${oracleLikeUtxos.size} invalid oracle UTxO(s):"
+                                    )
                                     oracleLikeUtxos.foreach { utxo =>
                                         println(s"  • ${utxo.getTxHash}:${utxo.getOutputIndex}")
                                         CommandHelpers.parseChainState(utxo) match {
                                             case Some(cs) =>
                                                 val timestampCount = cs.recentTimestamps.size
                                                 if timestampCount < 11 then
-                                                    println(s"    ⚠ Only $timestampCount/11 timestamps")
+                                                    println(
+                                                      s"    ⚠ Only $timestampCount/11 timestamps"
+                                                    )
                                                 else if !CommandHelpers.isValidChainState(cs) then
                                                     println(s"    ⚠ Timestamps not sorted")
                                             case None =>
@@ -59,13 +65,17 @@ case class ListOraclesCommand(limit: Int) extends Command {
                                         }
                                     }
                                 } else if allUtxos.nonEmpty then {
-                                    println("No oracle UTxOs found (only reference script UTxOs present).")
+                                    println(
+                                      "No oracle UTxOs found (only reference script UTxOs present)."
+                                    )
                                 } else {
                                     println("No oracle UTxOs found.")
                                 }
                                 println()
                                 println("To initialize a new oracle, run:")
-                                println("  binocular init-oracle --start-block <BITCOIN_BLOCK_HEIGHT>")
+                                println(
+                                  "  binocular init-oracle --start-block <BITCOIN_BLOCK_HEIGHT>"
+                                )
                             } else {
                                 println(s"Found ${validOracles.size} valid oracle UTxO(s):")
                                 println()
@@ -78,12 +88,17 @@ case class ListOraclesCommand(limit: Int) extends Command {
                                     println(s"  • ${vo.utxoRef}")
                                     println(s"    Lovelace: $lovelace")
                                     println(s"    Block Height: ${vo.chainState.blockHeight}")
-                                    println(s"    Block Hash: ${vo.chainState.blockHash.toHex.take(16)}...")
+                                    println(
+                                      s"    Block Hash: ${vo.chainState.blockHash.toHex.take(16)}..."
+                                    )
                                     if vo.chainState.forksTree.nonEmpty then {
-                                        val maxForkHeight = vo.chainState.forksTree.foldLeft(0L) { (max, branch) =>
-                                            math.max(max, branch.tipHeight.toLong)
+                                        val maxForkHeight = vo.chainState.forksTree.foldLeft(0L) {
+                                            (max, branch) =>
+                                                math.max(max, branch.tipHeight.toLong)
                                         }
-                                        println(s"    Fork Tree: ${vo.chainState.forksTree.size} branch(es), highest at $maxForkHeight")
+                                        println(
+                                          s"    Fork Tree: ${vo.chainState.forksTree.size} branch(es), highest at $maxForkHeight"
+                                        )
                                     }
                                     println()
                                 }
