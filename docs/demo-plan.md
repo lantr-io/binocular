@@ -159,16 +159,16 @@ Add new Bitcoin blocks to the oracle. The command automatically batches if you r
 
 ```bash
 # Update oracle with blocks from current height to latest
-sbt "runMain binocular.main update-oracle --utxo abc123...:0"
+sbt "runMain binocular.main update-oracle abc123...:0"
 
 # Or specify a range
-sbt "runMain binocular.main update-oracle --utxo abc123...:0 --from 866971 --to 867070"
+sbt "runMain binocular.main update-oracle --from 866971 --to 867070 abc123...:0"
 ```
 
 **For 100+ blocks (required for promotion):**
 ```bash
 # Add 105 blocks to trigger promotion
-sbt "runMain binocular.main update-oracle --utxo abc123...:0 --to 867075"
+sbt "runMain binocular.main update-oracle --to 867075 abc123...:0"
 ```
 
 The command will automatically split into batches of 10 blocks each.
@@ -224,7 +224,7 @@ After the challenge period, submit more blocks to trigger promotion:
 
 ```bash
 # Add a few more blocks to trigger promotion check
-sbt "runMain binocular.main update-oracle --utxo xyz999...:0 --to 867080"
+sbt "runMain binocular.main update-oracle --to 867080 xyz999...:0"
 ```
 
 **Expected Output (with promotion):**
@@ -246,9 +246,7 @@ Now you can prove that a Bitcoin transaction is included in the confirmed blockc
 # Find a transaction ID from one of the confirmed blocks
 # For example, from block 866970
 
-sbt "runMain binocular.main prove-transaction \
-  --utxo promo123...:0 \
-  --btc-tx f44ba1e992bc2cc4ac0da8d654600b80c8ca4f9f58fcd3e38c0dee1fae8f9ee5"
+sbt "runMain binocular.main prove-transaction promo123...:0 f44ba1e992bc2cc4ac0da8d654600b80c8ca4f9f58fcd3e38c0dee1fae8f9ee5"
 ```
 
 **Expected Output:**
@@ -410,16 +408,10 @@ transaction exists in the specified block.
 sbt "runMain binocular.main list-oracles"
 ```
 
-### Get Oracle Info
-
-```bash
-sbt "runMain binocular.main info --utxo abc123...:0"
-```
-
 ### Verify Oracle State
 
 ```bash
-sbt "runMain binocular.main verify-oracle --utxo abc123...:0"
+sbt "runMain binocular.main verify-oracle abc123...:0"
 ```
 
 ## Timeline Summary
