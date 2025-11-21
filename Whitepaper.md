@@ -340,8 +340,8 @@ make forward progress on every update while still allowing legitimate fork compe
 
 Multiple competing forks coexist in the forks tree. The canonical chain is determined by:
 
-- Cumulative chainwork calculation (sum of difficulty targets)
-- Follows Bitcoin's longest chain rule
+- Cumulative chainwork calculation (sum of block proof-of-work values, where each block's work = 2^256 / (target + 1))
+- Follows Bitcoin's longest chain rule (most accumulated work, not most blocks)
 - Selection happens automatically on every update
 
 **3. Block Promotion (Maturation)**
@@ -433,6 +433,7 @@ DifficultyAdjustmentInterval: BigInt = 2016 // Retarget every 2016 blocks
 MaxFutureBlockTime: BigInt = 7200 // 2 hours (MAX_FUTURE_BLOCK_TIME)
 MedianTimeSpan: BigInt = 11 // For median-time-past (CBlockIndex::nMedianTimeSpan)
 PowLimit: BigInt = 0x00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+TwoTo256: BigInt = 115792089237316195423570985008687907853269984665640564039457584007913129639936 // 2^256 for chainwork calculation
 MaturationConfirmations: BigInt = 100 // Blocks needed for promotion
 ChallengeAging: BigInt = 200 * 60 // 200 minutes in seconds
 ```
@@ -586,6 +587,45 @@ Function validateProofOfWork(header: BlockHeader, targetBits: CompactBits) → B
 ```
 
 **Implementation Reference:** BitcoinValidator.scala:357-361
+
+#### Algorithm 4a: Block Proof Calculation (Chainwork)
+
+Calculates the proof-of-work value for a block, representing the expected number of hashes required to find a valid block at the given difficulty. This is used to compute cumulative chainwork for canonical chain selection. Matches `GetBlockProof()` in Bitcoin Core's `chain.cpp`.
+
+**Mathematical Specification:**
+
+Given difficulty target $t$, the proof-of-work (work) for a block is:
+$$
+\text{work}(t) = \frac{2^{256}}{t + 1}
+$$
+
+The cumulative chainwork for a chain is the sum of work values for all blocks:
+$$
+\text{chainwork}(h) = \sum_{i=0}^{h} \text{work}(t_i)
+$$
+
+where $h$ is the block height and $t_i$ is the target at height $i$.
+
+**Note on Bitcoin Core Implementation:**
+
+Bitcoin Core uses an algebraic equivalent to avoid overflow when computing $2^{256}$:
+$$
+\frac{2^{256}}{t + 1} = \frac{\sim t}{t + 1} + 1
+$$
+
+where $\sim t = (2^{256} - 1) - t$ is the bitwise NOT of $t$. However, for our implementation we use a precomputed constant for $2^{256}$.
+
+**Pseudocode:**
+
+```
+Constant: TwoTo256 = 115792089237316195423570985008687907853269984665640564039457584007913129639936
+
+Function calculateBlockProof(target: BigInt) → BigInt:
+  // Matches GetBlockProof() in Bitcoin Core's chain.cpp
+  return TwoTo256 / (target + 1)
+```
+
+**Implementation Reference:** BitcoinValidator.scala:262-271
 
 #### Algorithm 5: Median Time Past
 
