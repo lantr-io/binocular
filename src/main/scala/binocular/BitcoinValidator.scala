@@ -240,17 +240,35 @@ object BitcoinValidator extends Validator {
           hex"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
         )
 
+    // 2^256 constant for chainwork calculation
+    // Used in GetBlockProof() formula: work = 2^256 / (target + 1)
+    // Precomputed to avoid on-chain exponentiation
+    val TwoTo256: BigInt = BigInt(
+      "115792089237316195423570985008687907853269984665640564039457584007913129639936"
+    )
+
     // Binocular protocol parameters
-    val MaturationConfirmations: BigInt = BigInt(
-      100
-    ) // Blocks needed for promotion to confirmed state
+    val MaturationConfirmations: BigInt = 100 // Blocks needed for promotion to confirmed state
     val TimeToleranceSeconds: BigInt =
         36 * 60 * 60 // Maximum difference between redeemer time and validity interval time (shoukd be the time of cardano consesnus)
-    //val ChallengeAging: BigInt = 200 * 60 // 200 minutes in seconds (challenge period)
-    val ChallengeAging: BigInt = 20 * 60 // 20 minutes in seconds (challenge period) to speedup testing
+    // val ChallengeAging: BigInt = 200 * 60 // 200 minutes in seconds (challenge period)
+    val ChallengeAging: BigInt =
+        20 * 60 // 20 minutes in seconds (challenge period) to speedup testing
     val StaleCompetingForkAge: BigInt = 400 * 60 // 400 minutes (2× challenge period)
     val ChainworkGapThreshold: BigInt = 10 // Blocks worth of work for stale fork detection
     val MaxForksTreeSize: BigInt = 180 // Maximum forks tree size before garbage collection
+
+    /** Calculate proof-of-work for a block given its target Matches GetBlockProof() in Bitcoin
+      * Core's chain.cpp
+      *
+      * Formula: 2^256^ / (target + 1)
+      *
+      * This represents the expected number of hashes needed to find a valid block at this
+      * difficulty
+      */
+    def calculateBlockProof(target: BigInt): BigInt = {
+        TwoTo256 / (target + 1)
+    }
 
     /// Bitcoin block header serialization
     //    def serializeBlockHeader(blockHeader: BlockHeader): ByteString =
@@ -465,7 +483,12 @@ object BitcoinValidator extends Validator {
             else
                 remaining match
                     case List.Cons(block, tail) =>
-                        collect(tail, confirmed, insertReverseSorted(block.timestamp, sorted), count + 1)
+                        collect(
+                          tail,
+                          confirmed,
+                          insertReverseSorted(block.timestamp, sorted),
+                          count + 1
+                        )
                     case List.Nil =>
                         // Fork exhausted, continue with confirmed timestamps
                         confirmed match
@@ -645,7 +668,9 @@ object BitcoinValidator extends Validator {
             if parentIsConfirmedTip then
                 (
                   confirmedState.blockHeight,
-                  compactBitsToTarget(confirmedState.currentTarget), // Simplified
+                  calculateBlockProof(
+                    compactBitsToTarget(confirmedState.currentTarget)
+                  ), // Work for this block
                   confirmedState.blockTimestamp,
                   confirmedState.currentTarget
                 )
@@ -696,7 +721,10 @@ object BitcoinValidator extends Validator {
                 // For fork blocks, use branch's recentBlocks + confirmed timestamps for median-time-past
                 parentBranchOpt match
                     case scalus.prelude.Option.Some(branch) =>
-                        getMedianTimePastFromBlocks(branch.recentBlocks, confirmedState.recentTimestamps)
+                        getMedianTimePastFromBlocks(
+                          branch.recentBlocks,
+                          confirmedState.recentTimestamps
+                        )
                     case scalus.prelude.Option.None => fail("Parent branch not found")
 
         require(blockTime > medianTimePast, "Block timestamp not greater than median time past")
@@ -707,8 +735,9 @@ object BitcoinValidator extends Validator {
 
         // === End validation ===
 
-        // Calculate chainwork
-        val blockWork = PowLimit / target
+        // Calculate chainwork using Bitcoin Core's formula: 2^256 / (target + 1)
+        // Matches GetBlockProof() in Bitcoin Core's chain.cpp
+        val blockWork = calculateBlockProof(target)
         val newChainwork = parentChainwork + blockWork
 
         // Create BlockSummary for this block
@@ -779,9 +808,11 @@ object BitcoinValidator extends Validator {
                                     acc: List[BlockSummary]
                                 ): List[BlockSummary] =
                                     bs match
-                                        case List.Nil             => acc
-                                        case List.Cons(b, tailBs) => reverseAndPrepend(tailBs, List.Cons(b, acc))
-                                val promotedBlocks = reverseAndPrepend(tail, List.Cons(block, List.Nil))
+                                        case List.Nil => acc
+                                        case List.Cons(b, tailBs) =>
+                                            reverseAndPrepend(tailBs, List.Cons(b, acc))
+                                val promotedBlocks =
+                                    reverseAndPrepend(tail, List.Cons(block, List.Nil))
                                 (remainingReverse, promotedBlocks)
                             else
                                 // Not yet promotable, add to remaining and continue

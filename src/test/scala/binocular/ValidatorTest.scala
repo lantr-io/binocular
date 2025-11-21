@@ -173,6 +173,65 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         assertEquals(BitcoinValidator.targetToCompactBits(largeTarget), BigInt(0x20123456L))
     }
 
+    test("TwoTo256 constant is correct") {
+        // Verify that the precomputed TwoTo256 constant equals 2^256
+        val computed = BigInt(2).pow(256)
+        val constant = BitcoinValidator.TwoTo256
+        assertEquals(constant, computed, "TwoTo256 constant must equal 2^256")
+    }
+
+    test("chainwork calculation matches Bitcoin Core GetBlockProof") {
+        // This test verifies that chainwork (block proof) calculation matches Bitcoin Core's GetBlockProof()
+        // Reference: Bitcoin Core src/chain.cpp::GetBlockProof()
+        // Correct formula: work = 2^256 / (target + 1)
+
+        // Test case 1: Real Bitcoin mainnet block 865494
+        // bits: 0x17030ecd from block header
+        val bits1 = hex"17030ecd".reverse
+        val target1 = BitcoinValidator.compactBitsToTarget(bits1)
+
+        // Calculate using CORRECT Bitcoin Core formula: 2^256 / (target + 1)
+        val twoTo256 = BigInt(2).pow(256)
+        val correctWork1 = twoTo256 / (target1 + BigInt(1))
+
+        // Calculate using BitcoinValidator.calculateBlockProof (should match correct formula)
+        val actualWork1 = BitcoinValidator.calculateBlockProof(target1)
+
+        // Verify that BitcoinValidator.calculateBlockProof matches the correct formula
+        assertEquals(
+          actualWork1,
+          correctWork1,
+          "BitcoinValidator.calculateBlockProof should match Bitcoin Core formula: 2^256 / (target + 1)"
+        )
+
+        // Test case 2: Bitcoin genesis block difficulty (easiest)
+        // bits: 0x1d00ffff (486604799 in decimal)
+        val bits2 = hex"1d00ffff".reverse
+        val target2 = BitcoinValidator.compactBitsToTarget(bits2)
+
+        val correctWork2 = twoTo256 / (target2 + BigInt(1))
+        val actualWork2 = BitcoinValidator.calculateBlockProof(target2)
+
+        assertEquals(
+          actualWork2,
+          correctWork2,
+          "Genesis block work should match Bitcoin Core formula"
+        )
+
+        // Test case 3: Very high difficulty (recent blocks)
+        val bits3 = hex"0202f128".reverse // From test block 867936
+        val target3 = BitcoinValidator.compactBitsToTarget(bits3)
+
+        val correctWork3 = twoTo256 / (target3 + BigInt(1))
+        val actualWork3 = BitcoinValidator.calculateBlockProof(target3)
+
+        assertEquals(
+          actualWork3,
+          correctWork3,
+          "High difficulty work should match Bitcoin Core formula"
+        )
+    }
+
     test("Block Header hash") {
         val blockHeader = BlockHeader(
           hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
@@ -259,9 +318,10 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         )
 
         // Calculate chainwork for the new block (matching BitcoinValidator logic)
-        // When parent is confirmed tip, parent chainwork = compactBitsToTarget(confirmedState.currentTarget)
-        val parentChainwork = BitcoinValidator.compactBitsToTarget(prevState.currentTarget)
-        val blockWork = BitcoinValidator.PowLimit / target
+        // When parent is confirmed tip, parent chainwork = calculateBlockProof(target of parent)
+        val parentTarget = BitcoinValidator.compactBitsToTarget(prevState.currentTarget)
+        val parentChainwork = BitcoinValidator.calculateBlockProof(parentTarget)
+        val blockWork = BitcoinValidator.calculateBlockProof(target)
         val newBlockChainwork = parentChainwork + blockWork
         val newBlockHeight = prevState.blockHeight + 1
 
@@ -488,8 +548,8 @@ class ValidatorTest extends munit.ScalaCheckSuite {
     /** Calculate accumulated chainwork for a block */
     def computeChainwork(parentChainwork: BigInt, target: BigInt): BigInt = {
         // Chainwork formula: parent_chainwork + 2^256 / (target + 1)
-        // Simplified for testing: just add work based on target
-        val work = BigInt(2).pow(256) / (target + 1)
+        // Use BitcoinValidator.calculateBlockProof to ensure consistency
+        val work = BitcoinValidator.calculateBlockProof(target)
         parentChainwork + work
     }
 
@@ -1155,9 +1215,10 @@ class ValidatorTest extends munit.ScalaCheckSuite {
         val newBlockHash = BitcoinValidator.blockHeaderHash(blockHeader)
         val target = BitcoinValidator.compactBitsToTarget(bits)
 
-        // Parent chainwork: when parent is confirmed tip, use compactBitsToTarget(confirmedState.currentTarget)
-        val parentChainwork = BitcoinValidator.compactBitsToTarget(prevState.currentTarget)
-        val blockWork = BitcoinValidator.PowLimit / target
+        // Parent chainwork: when parent is confirmed tip, calculate proof of parent's target
+        val parentTarget = BitcoinValidator.compactBitsToTarget(prevState.currentTarget)
+        val parentChainwork = BitcoinValidator.calculateBlockProof(parentTarget)
+        val blockWork = BitcoinValidator.calculateBlockProof(target)
         val newChainwork = parentChainwork + blockWork
 
         val expectedBlockSummary = BlockSummary(
@@ -1227,12 +1288,13 @@ class ValidatorTest extends munit.ScalaCheckSuite {
                 println(r)
                 // Resource usage with ForkBranch implementation (optimized findBranch)
                 // and debug logging enabled
+                // Updated for correct chainwork calculation using 2^256 / (target + 1)
                 assertEquals(
                   r.budget,
-                  ledger.ExUnits(460910, 143184310),
+                  ledger.ExUnits(463020, 143828562),
                   "Unexpected resource usage"
                 )
-                assertEquals(r.budget.fee(prices), Coin(36904), "Unexpected fee cost")
+                assertEquals(r.budget.fee(prices), Coin(37072), "Unexpected fee cost")
             case r: Result.Failure =>
                 fail(s"Validation failed: $r")
     }
