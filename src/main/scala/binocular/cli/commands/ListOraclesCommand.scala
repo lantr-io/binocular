@@ -32,9 +32,9 @@ case class ListOraclesCommand(limit: Int) extends Command {
                             println()
 
                             // Query UTxOs at script address
-                            val utxos = backendService.getUtxoService
+                            val utxosResult = backendService.getUtxoService
                                 .getUtxos(scriptAddress, limit, 1)
-                                .getValue
+                            val utxos = Option(utxosResult.getValue).getOrElse(java.util.Collections.emptyList())
 
                             if utxos.isEmpty then {
                                 println("No oracle UTxOs found.")
@@ -90,8 +90,24 @@ case class ListOraclesCommand(limit: Int) extends Command {
                                                         }
                                                         println(s"    Fork Tree: ${chainState.forksTree.size} branch(es), highest at $maxForkHeight")
                                                     }
-                                                case Failure(_) =>
-                                                    println(s"    Datum: ${datumHex.take(100)}... (could not parse)")
+                                                    // Validate datum integrity
+                                                    val timestampCount = chainState.recentTimestamps.size
+                                                    if timestampCount < 11 then {
+                                                        println(s"    ⚠ INVALID: Only $timestampCount/11 timestamps (oracle unusable)")
+                                                    } else {
+                                                        // Check if timestamps are properly sorted (descending)
+                                                        val timestamps = chainState.recentTimestamps.toList
+                                                        val isSorted = timestamps.sliding(2).forall {
+                                                            case Seq(a, b) => a >= b
+                                                            case _ => true
+                                                        }
+                                                        if !isSorted then {
+                                                            println(s"    ⚠ INVALID: Timestamps not sorted (oracle unusable)")
+                                                        }
+                                                    }
+                                                case Failure(e) =>
+                                                    println(s"    ⚠ INVALID: Cannot parse datum as ChainState")
+                                                    println(s"    Error: ${e.getMessage}")
                                             }
                                         case None =>
                                             println(s"    No inline datum")

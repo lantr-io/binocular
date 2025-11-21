@@ -120,7 +120,9 @@ object CliApp {
       *   Exit code (0 for success, non-zero for error)
       */
     def run(args: Seq[String]): Int = {
-        command.parse(args) match {
+        // Trim whitespace from arguments to handle extra spaces
+        val trimmedArgs = args.map(_.trim).filter(_.nonEmpty)
+        command.parse(trimmedArgs) match {
             case Left(help) =>
                 System.err.println(help)
                 1

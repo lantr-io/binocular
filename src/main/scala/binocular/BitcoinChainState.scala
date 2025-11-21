@@ -94,23 +94,52 @@ object BitcoinChainState {
     )(using ec: ExecutionContext): Future[ChainState] = {
         val interval = BitcoinValidator.DifficultyAdjustmentInterval.toInt
         val adjustmentBlockHeight = blockHeight - (blockHeight % interval)
+        val medianTimeSpan = BitcoinValidator.MedianTimeSpan.toInt // 11 blocks
 
         for {
             blockHashHex <- rpc.getBlockHash(blockHeight)
             header <- rpc.getBlockHeader(blockHashHex)
             adjustmentBlockHashHex <- rpc.getBlockHash(adjustmentBlockHeight)
             adjustmentHeader <- rpc.getBlockHeader(adjustmentBlockHashHex)
+
+            // Fetch timestamps for the previous 11 blocks (for median-time-past validation)
+            // Fetch sequentially to avoid rate limiting from RPC providers
+            recentTimestampsSeq <- {
+                def fetchTimestamps(remaining: scala.List[Int], acc: scala.List[BigInt]): Future[scala.List[BigInt]] = {
+                    remaining match {
+                        case Nil => Future.successful(acc.reverse)
+                        case h :: tail if h >= 0 =>
+                            for {
+                                hash <- rpc.getBlockHash(h)
+                                hdr <- rpc.getBlockHeader(hash)
+                                rest <- fetchTimestamps(tail, BigInt(hdr.time) :: acc)
+                            } yield rest
+                        case _ :: tail =>
+                            fetchTimestamps(tail, BigInt(0) :: acc)
+                    }
+                }
+                val heights = (0 until medianTimeSpan).map(i => blockHeight - i).toList
+                fetchTimestamps(heights, Nil)
+            }
+
             // Bits from RPC is in big-endian (display order), but Bitcoin headers use little-endian
             // Reverse the bytes to match the format in the block header
             bits = ByteString.fromArray(header.bits.hexToBytes.reverse)
             // Block hash from RPC is in display order (big-endian), but we store it in internal order (little-endian)
             blockHash = ByteString.fromArray(header.hash.hexToBytes.reverse)
+            // Sort timestamps by value (descending) - required for median-time-past calculation
+            // Bitcoin allows out-of-order timestamps, so block height order != timestamp order
+            sortedTimestamps = recentTimestampsSeq.sortBy(-_) // Sort descending by timestamp value
+            // Convert to scalus List
+            recentTimestamps = sortedTimestamps.foldRight(prelude.List.Nil: prelude.List[BigInt])((ts, acc) =>
+                prelude.List.Cons(ts, acc)
+            )
         } yield ChainState(
           blockHeight = blockHeight,
           blockHash = blockHash,
           currentTarget = bits,
           blockTimestamp = BigInt(header.time),
-          recentTimestamps = prelude.List(BigInt(header.time)),
+          recentTimestamps = recentTimestamps,
           previousDifficultyAdjustmentTimestamp = BigInt(adjustmentHeader.time),
           confirmedBlocksTree = prelude.List(blockHash), // Single-element Merkle tree: [blockHash]
           forksTree = prelude.List.Nil // Initialize with empty forks tree

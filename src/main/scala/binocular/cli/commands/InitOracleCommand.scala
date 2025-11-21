@@ -111,6 +111,18 @@ case class InitOracleCommand(startBlock: Option[Long]) extends Command {
         println(s"  Block Hash: ${initialState.blockHash.toHex}")
         println(s"  Block Timestamp: ${initialState.blockTimestamp}")
         println(s"  Current Target: ${initialState.currentTarget.toHex}")
+        println(s"  Recent Timestamps: ${initialState.recentTimestamps.size} entries")
+
+        // Validate that we have enough timestamps for median-time-past validation
+        val requiredTimestamps = 11 // MedianTimeSpan
+        if (initialState.recentTimestamps.size < requiredTimestamps) {
+            System.err.println(s"✗ Error: Insufficient timestamps for median-time-past validation")
+            System.err.println(s"  Got ${initialState.recentTimestamps.size}, need $requiredTimestamps")
+            System.err.println(s"  This is a bug - please report it")
+            return 1
+        }
+        println(s"✓ Validated: All $requiredTimestamps timestamps present for median-time-past")
+
         println()
         println("Step 3: Building and submitting Cardano transaction...")
 
