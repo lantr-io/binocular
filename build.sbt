@@ -82,15 +82,15 @@ libraryDependencies ++= Seq(
 
 // Assembly configuration
 assembly / assemblyMergeStrategy := {
-  case PathList("META-INF", "MANIFEST.MF") => MergeStrategy.discard
-  case PathList("META-INF", xs @ _*) => MergeStrategy.discard
-  case PathList("module-info.class") => MergeStrategy.discard
-  case PathList("net", "i2p", "crypto", "eddsa", xs @ _*) => MergeStrategy.first
-  case x if x.endsWith(".proto") => MergeStrategy.first
-  case x if x.contains("bouncycastle") => MergeStrategy.first
-  case "reference.conf" => MergeStrategy.concat
-  case "application.conf" => MergeStrategy.concat
-  case _ => MergeStrategy.first
+    case PathList("META-INF", "MANIFEST.MF")                => MergeStrategy.discard
+    case PathList("META-INF", xs @ _*)                      => MergeStrategy.discard
+    case PathList("module-info.class")                      => MergeStrategy.discard
+    case PathList("net", "i2p", "crypto", "eddsa", xs @ _*) => MergeStrategy.first
+    case x if x.endsWith(".proto")                          => MergeStrategy.first
+    case x if x.contains("bouncycastle")                    => MergeStrategy.first
+    case "reference.conf"                                   => MergeStrategy.concat
+    case "application.conf"                                 => MergeStrategy.concat
+    case _                                                  => MergeStrategy.first
 }
 
 // Specify main class for assembly
