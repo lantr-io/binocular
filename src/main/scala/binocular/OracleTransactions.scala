@@ -21,8 +21,7 @@ object OracleTransactions {
 
     /** Get compiled PlutusV3 script */
     def getCompiledScript(): PlutusV3Script = {
-        val program = BitcoinContract.bitcoinProgram
-        val scriptCborHex = program.doubleCborHex
+        val scriptCborHex = OracleConfig.getScriptCborHex()
 
         PlutusV3Script
             .builder()

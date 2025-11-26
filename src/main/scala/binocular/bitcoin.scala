@@ -253,3 +253,4 @@ def useBinocular() = {
     }
 
 }
+// trigger $(date)

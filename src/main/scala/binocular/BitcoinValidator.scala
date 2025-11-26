@@ -1398,3 +1398,4 @@ object BitcoinValidator extends Validator {
             else loop(idx + 1, consByteString(bs.at(idx), acc))
         loop(0, ByteString.empty)
 }
+// recompile trigger $(date +%s)

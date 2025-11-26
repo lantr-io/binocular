@@ -120,6 +120,11 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) {
         }
     }
 
+    /** Get raw block header hex by hash (verbose=false) - returns 80 bytes as hex */
+    def getBlockHeaderRaw(hash: String): Future[String] = {
+        call("getblockheader", ujson.Arr(hash, false)).map(_.str)
+    }
+
     /** Get block header by hash (verbose=true) */
     def getBlockHeader(hash: String): Future[BlockHeaderInfo] = {
         call("getblockheader", ujson.Arr(hash, true)).map { result =>

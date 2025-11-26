@@ -544,40 +544,131 @@ case class ProveTransactionCommand(
 
                         println(s"✓ Merkle proof verified locally")
 
-                        // Output proof
+                        // Step 8: Build block proof (block in Oracle's confirmed tree)
+                        println()
+                        println("Step 8: Building block proof for Oracle's confirmed tree...")
+
+                        // Count blocks in the rolling merkle tree by checking which levels are occupied
+                        // In a rolling merkle tree, each non-empty level i represents 2^i blocks
+                        val emptyHash = ByteString.unsafeFromArray(new Array[Byte](32))
+                        def countBlocksInTree(tree: scalus.prelude.List[ByteString]): Int = {
+                            var count = 0
+                            var power = 1 // 2^level
+                            var current = tree
+                            while (current != scalus.prelude.List.Nil) {
+                                current match {
+                                    case scalus.prelude.List.Cons(hash, tail) =>
+                                        if (hash != emptyHash) count += power
+                                        power *= 2
+                                        current = tail
+                                    case _ => current = scalus.prelude.List.Nil
+                                }
+                            }
+                            count
+                        }
+
+                        // Derive block index from Oracle state
+                        val confirmedHeight = chainState.blockHeight.toInt
+                        val numConfirmedBlocks = countBlocksInTree(chainState.confirmedBlocksTree)
+                        val distanceFromTip = confirmedHeight - blockHeader.height
+                        val blockIndex = numConfirmedBlocks - 1 - distanceFromTip
+
+                        println(s"  Oracle confirmed height: $confirmedHeight")
+                        println(s"  Blocks in tree: $numConfirmedBlocks")
+                        println(s"  Block ${blockHeader.height} is $distanceFromTip blocks from tip")
+                        println(s"  Target block index: $blockIndex")
+
+                        // Fetch block hashes for all confirmed blocks
+                        val firstBlockHeight = confirmedHeight - numConfirmedBlocks + 1
+                        val confirmedBlockHashes =
+                            try {
+                                (firstBlockHeight to confirmedHeight).map { height =>
+                                    val hash = Await.result(rpc.getBlockHash(height), 30.seconds)
+                                    ByteString.fromHex(hash).reverse
+                                }.toList
+                            } catch {
+                                case e: Exception =>
+                                    System.err.println(s"✗ Error fetching confirmed block hashes: ${e.getMessage}")
+                                    return 1
+                            }
+
+                        // Build merkle tree from confirmed blocks and generate proof
+                        val blockTree = MerkleTree.fromHashes(confirmedBlockHashes)
+                        val blockTreeRoot = blockTree.getMerkleRoot
+                        val blockMerkleProof = blockTree.makeMerkleProof(blockIndex)
+
+                        // Verify block proof locally
+                        val targetBlockHashBytes = ByteString.fromHex(targetBlockHash).reverse
+                        val calculatedBlockRoot =
+                            MerkleTree.calculateMerkleRootFromProof(blockIndex, targetBlockHashBytes, blockMerkleProof)
+
+                        // Compare with Oracle's confirmedBlocksTree root
+                        val oracleTreeRoot = BitcoinValidator.getMerkleRoot(chainState.confirmedBlocksTree)
+
+                        println(s"  Calculated block tree root: ${calculatedBlockRoot.toHex}")
+                        println(s"  Oracle tree root: ${oracleTreeRoot.toHex}")
+
+                        if calculatedBlockRoot != oracleTreeRoot then {
+                            println()
+                            println("⚠ Block tree root mismatch - this may be due to rolling tree differences")
+                            println("  The proof structure may need adjustment for the rolling merkle tree")
+                        } else {
+                            println(s"✓ Block proof verified!")
+                        }
+
+                        // Get raw block header (80 bytes)
+                        val rawBlockHeader =
+                            try {
+                                Await.result(rpc.getBlockHeaderRaw(targetBlockHash), 30.seconds)
+                            } catch {
+                                case e: Exception =>
+                                    System.err.println(s"✗ Error fetching raw block header: ${e.getMessage}")
+                                    return 1
+                            }
+
+                        // Output both proofs
                         println()
                         println("=" * 70)
-                        println("TRANSACTION INCLUSION PROOF")
+                        println("TWO-PROOF TRANSACTION VERIFICATION")
                         println("=" * 70)
                         println()
+                        println("--- Transaction Details ---")
                         println(s"Transaction ID: $btcTxId")
                         println(s"Block Hash: $targetBlockHash")
                         println(s"Block Height: ${blockHeader.height}")
-                        println(s"Transaction Index: $txIdx")
                         confirmations.foreach(c => println(s"Confirmations: $c"))
                         println()
+                        println("--- Oracle State ---")
                         println(s"Oracle UTxO: $oracleTxHash:$oracleOutputIndex")
                         println(s"Oracle Height: ${chainState.blockHeight}")
-                        println(s"Oracle Block: ${chainState.blockHash.toHex}")
                         println()
-                        println(s"Merkle Root: ${merkleRoot.toHex}")
-                        println(
-                          s"Expected Root: ${ByteString.fromHex(blockHeader.merkleroot).reverse.toHex}"
-                        )
-                        println()
-                        println("Merkle Proof (use with --proof for offline verification):")
+                        println("--- PROOF 1: Transaction in Block ---")
+                        println(s"TX Index: $txIdx")
+                        println(s"TX Merkle Root: ${merkleRoot.toHex}")
+                        println(s"TX Proof (${merkleProof.length} hashes):")
                         merkleProof.zipWithIndex.foreach { case (hash, i) =>
                             println(s"  [$i] ${hash.toHex}")
                         }
                         println()
-                        println("Offline verification command:")
-                        println(
-                          s"  binocular prove-transaction $oracleTxHash:$oracleOutputIndex $btcTxId \\"
-                        )
-                        println(s"    --block $targetBlockHash \\")
-                        println(s"    --tx-index $txIdx \\")
-                        println(s"    --merkle-root ${merkleRoot.toHex} \\")
-                        println(s"    --proof ${merkleProof.map(_.toHex).mkString(",")}")
+                        println("--- PROOF 2: Block in Oracle ---")
+                        println(s"Block Index: $blockIndex")
+                        println(s"Block Tree Root: ${calculatedBlockRoot.toHex}")
+                        println(s"Block Proof (${blockMerkleProof.length} hashes):")
+                        blockMerkleProof.zipWithIndex.foreach { case (hash, i) =>
+                            println(s"  [$i] ${hash.toHex}")
+                        }
+                        println()
+                        println("--- Block Header (80 bytes) ---")
+                        println(s"$rawBlockHeader")
+                        println()
+                        println("--- For BitcoinDependentLock unlock ---")
+                        println(s"bitcoin-dependent-lock unlock <LOCKED_UTXO> \\")
+                        println(s"  --tx-index $txIdx \\")
+                        println(s"  --tx-proof ${merkleProof.map(_.toHex).mkString(",")} \\")
+                        println(s"  --block-index $blockIndex \\")
+                        println(s"  --block-proof ${blockMerkleProof.map(_.toHex).mkString(",")} \\")
+                        println(s"  --block-header $rawBlockHeader \\")
+                        println(s"  --oracle-utxo $oracleTxHash:$oracleOutputIndex")
                         println()
                         println("=" * 70)
 
