@@ -122,7 +122,11 @@ Create a new oracle UTxO on Cardano with the initial Bitcoin block state:
 
 ```bash
 # Initialize oracle at a specific Bitcoin block height
+# Option A: Start from an older block (866970)
 sbt "runMain binocular.main init-oracle --start-block 866970"
+
+# Option B: Start from a recent block (925000 - November 2025)
+sbt "runMain binocular.main init-oracle --start-block 925000"
 ```
 
 **Expected Output:**
@@ -240,12 +244,102 @@ Note: Blocks were promoted to confirmed state!
 
 ### Step 5: Prove Bitcoin Transaction Inclusion
 
-Now you can prove that a Bitcoin transaction is included in the confirmed blockchain:
+Now you can prove that a Bitcoin transaction is included in the confirmed blockchain.
+
+#### Finding a Bitcoin Transaction ID
+
+First, you need to find a transaction ID from one of the confirmed blocks. There are several ways to do this:
+
+**Option A: Using Bitcoin RPC (if you have a local node)**
 
 ```bash
-# Find a transaction ID from one of the confirmed blocks
-# For example, from block 866970
+# Get block hash for a specific height (e.g., 866970)
+bitcoin-cli getblockhash 866970
+# Returns: 000000000000000000020aebcf64dfe45ce4d021df9ac3094116bf531f9a6209
 
+# Get block details with transaction list
+bitcoin-cli getblock 000000000000000000020aebcf64dfe45ce4d021df9ac3094116bf531f9a6209
+
+# The output includes a "tx" array with all transaction IDs in that block
+# The first transaction (index 0) is always the coinbase transaction
+```
+
+**Option B: Using Block Explorers**
+
+Visit any Bitcoin block explorer and navigate to your confirmed block:
+
+- **Blockstream.info**: `https://blockstream.info/block-height/866970`
+- **Mempool.space**: `https://mempool.space/block/866970`
+- **Blockchain.com**: `https://www.blockchain.com/explorer/blocks/btc/866970`
+
+On the block page, you'll see a list of all transactions. Click any transaction to get its full transaction ID (64 hex characters).
+
+**Option C: Using curl with Bitcoin RPC**
+
+```bash
+# Get block hash
+BLOCK_HASH=$(curl -s -u "$BITCOIN_RPC_USER:$BITCOIN_RPC_PASSWORD" \
+  --data-binary '{"jsonrpc":"1.0","method":"getblockhash","params":[866970]}' \
+  -H 'content-type: text/plain;' $BITCOIN_RPC_URL | jq -r '.result')
+
+# Get block with transactions
+curl -s -u "$BITCOIN_RPC_USER:$BITCOIN_RPC_PASSWORD" \
+  --data-binary "{\"jsonrpc\":\"1.0\",\"method\":\"getblock\",\"params\":[\"$BLOCK_HASH\"]}" \
+  -H 'content-type: text/plain;' $BITCOIN_RPC_URL | jq '.result.tx'
+```
+
+**Important Notes:**
+- The transaction must be in a **confirmed** block (one that has been promoted from the forks tree)
+- Use the `list-oracles` command to check the current confirmed block height
+- The coinbase transaction (first tx in block, index 0) is always available and easy to use for testing
+
+#### Example Transaction IDs
+
+Here are real transaction IDs from various blocks that you can use for testing:
+
+**Block 866970** (older block)
+| Index | Transaction ID | Type |
+|-------|----------------|------|
+| 0 | `f44ba1e992bc2cc4ac0da8d654600b80c8ca4f9f58fcd3e38c0dee1fae8f9ee5` | Coinbase |
+| 1 | `d4079be98efe3b266c1fffa6d03243020c321911b4b973cd5c83e1bb0a31a42a` | Regular |
+| 2 | `7fdb2aee458c6dd02c4b27e4e43452bbaedbab1f537571712949b1cacb3591b0` | Regular |
+
+[Blockstream Explorer - Block 866970](https://blockstream.info/block/000000000000000000020aebcf64dfe45ce4d021df9ac3094116bf531f9a6209)
+
+**Block 925000** (recent block - November 2025)
+| Index | Transaction ID | Type |
+|-------|----------------|------|
+| 0 | `ff67bd82c5e65d9b906cc18acc586cd8b8d9093419990e40c5136c4115c27e65` | Coinbase |
+| 1 | `d4f38073a8e5bb39d0ea192dfbbfc5a023376382ade3d5d5d588b8f216d40b35` | Regular |
+| 2 | `9b03138953d42652b6258648036d21ebbc2a04ab68d945ba8e33f4e04250552b` | Regular |
+| 3 | `0d751bfb1716814ec3233bcff532ac53d9f363af68ab193cb334843eeb34f904` | Regular |
+| 4 | `d8258deb576ac0710cc8a206e2daa34a742718f756c39f06469f7f6f9140adf1` | Regular |
+
+[Blockstream Explorer - Block 925000](https://blockstream.info/block/0000000000000000000067f9f40ca6960173ebee423f6130138762dfc40630bf)
+
+**Block 925100** (recent block)
+| Index | Transaction ID | Type |
+|-------|----------------|------|
+| 0 | `2fde926a3c7ebb9aba7b019eeb716b0760db2ad018909a5c033d77e063dae20c` | Coinbase |
+| 1 | `a187d3aa8e73d608fbeab88180e8d3a48aaa888f4b98a4a78401e044f66b8624` | Regular |
+| 2 | `aae46bd835987b97d8cadb48edef0c12dfcb14d16021238fc028e6193edd5ccd` | Regular |
+
+[Blockstream Explorer - Block 925100](https://blockstream.info/block/000000000000000000014939c0d3421925d169319f6f50b945f604dbb41e85a8)
+
+**Block 925150** (recent block)
+| Index | Transaction ID | Type |
+|-------|----------------|------|
+| 0 | `d569e3f75c677bc7daabbe780a4528d2d860e3ce39f7a1b66912ff2d217b97a3` | Coinbase |
+| 1 | `460ad4733131a58f1196039204ca37f9558474cda848538955feda24059bf4d9` | Regular |
+| 2 | `f1b04b7dd962c316df2afb299e153d13d4fb9ac35b40ce013561836f63a8b0c5` | Regular |
+
+[Blockstream Explorer - Block 925150](https://blockstream.info/block/0000000000000000000126c79e39a80e5b08720fbb0d6de3ed811179ec7c4e93)
+
+#### Proving the Transaction
+
+Once you have a transaction ID from a confirmed block:
+
+```bash
 sbt "runMain binocular.main prove-transaction promo123...:0 f44ba1e992bc2cc4ac0da8d654600b80c8ca4f9f58fcd3e38c0dee1fae8f9ee5"
 ```
 
