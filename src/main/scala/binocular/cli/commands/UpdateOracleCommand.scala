@@ -235,7 +235,7 @@ case class UpdateOracleCommand(
                             }
 
                         println(s"✓ Current oracle state:")
-                        println(s"  Block Height: ${currentChainState.blockHeight}")
+                        println(s"  Confirmed Height: ${currentChainState.blockHeight}")
                         println(s"  Block Hash: ${currentChainState.blockHash.toHex}")
                         println(s"  Fork Tree Size: ${currentChainState.forksTree.size}")
 
@@ -246,15 +246,17 @@ case class UpdateOracleCommand(
                                 (max, branch) =>
                                     math.max(max, branch.tipHeight.toLong)
                             }
-                            println(s"  Highest fork tree block: $maxForkHeight")
+                            println(s"  Fork Tree Tip: $maxForkHeight")
                             maxForkHeight
                         } else {
+                            println(s"  Fork Tree: empty (oracle at confirmed height)")
                             currentChainState.blockHeight.toLong
                         }
 
                         // Determine block range
                         val startHeight =
                             fromBlock.getOrElse(highestBlock + 1)
+                        println(s"  Will start from: $startHeight")
                         val endHeight = toBlock match {
                             case Some(h) => h
                             case None    =>
@@ -280,6 +282,82 @@ case class UpdateOracleCommand(
                         }
 
                         val numBlocks = (endHeight - startHeight + 1).toInt
+
+                        // Limit blocks per command to prevent fork tree from growing too large
+                        // (which causes transaction size to exceed Cardano's 16KB limit)
+                        // Exception: if blocks in fork tree are old enough for promotion, allow more
+                        val maxBlocksPerCommand = 100
+                        if numBlocks > maxBlocksPerCommand then {
+                            // Check if promotion will happen (blocks old enough in fork tree)
+                            val currentTime = System.currentTimeMillis() / 1000 // Unix timestamp
+                            val challengeAgingSeconds = BitcoinValidator.ChallengeAging.toLong
+
+                            // Helper to convert scalus.prelude.List to Scala List
+                            import scalus.prelude.List as ScalusList
+                            def toScalaList[A](l: ScalusList[A]): scala.List[A] = l match {
+                                case ScalusList.Nil        => scala.Nil
+                                case ScalusList.Cons(h, t) => h :: toScalaList(t)
+                            }
+
+                            // Convert to Scala List for easier manipulation
+                            val forksTreeScala = toScalaList(currentChainState.forksTree)
+
+                            // Find oldest block addedTime in the fork tree
+                            // A branch can promote if its oldest block (last in recentBlocks) is old enough
+                            val canPromote = forksTreeScala.exists { branch =>
+                                val blocksScala = toScalaList(branch.recentBlocks)
+                                blocksScala.lastOption match {
+                                    case Some(oldestBlock) =>
+                                        val age = currentTime - oldestBlock.addedTime.toLong
+                                        age >= challengeAgingSeconds
+                                    case scala.None => false
+                                }
+                            }
+
+                            if !canPromote then {
+                                System.err.println(
+                                  s"✗ Too many blocks: $numBlocks (max $maxBlocksPerCommand per command)"
+                                )
+                                System.err.println(
+                                  s"  The fork tree grows with each block until promotion,"
+                                )
+                                System.err.println(
+                                  s"  causing transactions to exceed Cardano's 16KB limit."
+                                )
+                                System.err.println()
+                                if forksTreeScala.nonEmpty then {
+                                    // Calculate time until promotion is possible
+                                    val oldestAddedTime = forksTreeScala
+                                        .flatMap(b => toScalaList(b.recentBlocks).lastOption)
+                                        .map(_.addedTime.toLong)
+                                        .minOption
+                                        .getOrElse(currentTime)
+                                    val timeUntilPromotion =
+                                        challengeAgingSeconds - (currentTime - oldestAddedTime)
+                                    if timeUntilPromotion > 0 then {
+                                        val minutes = timeUntilPromotion / 60
+                                        System.err.println(
+                                          s"  Promotion will be possible in ~$minutes minutes."
+                                        )
+                                        System.err.println(
+                                          s"  Wait for promotion, then run this command again."
+                                        )
+                                    }
+                                }
+                                System.err.println()
+                                System.err.println(s"  Or update in smaller chunks:")
+                                val suggestedEnd = startHeight + maxBlocksPerCommand - 1
+                                System.err.println(
+                                  s"    binocular update-oracle --to $suggestedEnd <utxo>"
+                                )
+                                return 1
+                            } else {
+                                println(
+                                  s"  Note: Processing $numBlocks blocks (promotion will occur)"
+                                )
+                            }
+                        }
+
                         val batchSize = oracleConf.maxHeadersPerTx
 
                         // Warn if too many blocks to fetch (likely to hit rate limits)

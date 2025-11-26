@@ -1,22 +1,11 @@
 package binocular.example
 
-import binocular.{
-    reverse,
-    BitcoinNodeConfig,
-    CardanoConfig,
-    CardanoNetwork,
-    MerkleTree,
-    OracleConfig,
-    SimpleBitcoinRpc,
-    TransactionVerifierContract,
-    TxVerifierDatum,
-    TxVerifierRedeemer,
-    WalletConfig
-}
+import binocular.{reverse, BitcoinNodeConfig, CardanoConfig, CardanoNetwork, MerkleTree, OracleConfig, SimpleBitcoinRpc, TransactionVerifierContract, TxVerifierDatum, TxVerifierRedeemer, WalletConfig}
 import com.bloxbean.cardano.client.address.{Address, AddressProvider}
 import com.bloxbean.cardano.client.common.model.Networks
 import com.bloxbean.cardano.client.quicktx.{QuickTxBuilder, ScriptTx, Tx}
 import com.bloxbean.cardano.client.api.model.Amount
+import com.bloxbean.cardano.client.backend.api.DefaultUtxoSupplier
 import com.bloxbean.cardano.client.function.helper.SignerProviders
 import com.monovore.decline.*
 import cats.implicits.*
@@ -168,7 +157,8 @@ object BitcoinDependentLockApp {
         println()
 
         val script = getVerifierScript()
-        val scriptHash = com.bloxbean.cardano.client.util.HexUtil.encodeHexString(script.getScriptHash)
+        val scriptHash =
+            com.bloxbean.cardano.client.util.HexUtil.encodeHexString(script.getScriptHash)
 
         // Get addresses for different networks
         val mainnetAddr = AddressProvider
@@ -239,8 +229,10 @@ object BitcoinDependentLockApp {
                 println()
 
                 // Create datum
+                // Note: txHash must be reversed (Bitcoin display to internal byte order)
+                // merkleRoot is already in internal byte order from prove-transaction output
                 val txHash = ByteString.fromHex(btcTxId).reverse
-                val rootHash = ByteString.fromHex(merkleRoot).reverse
+                val rootHash = ByteString.fromHex(merkleRoot)
 
                 val datum = TxVerifierDatum(
                   expectedTxHash = txHash,
@@ -273,7 +265,9 @@ object BitcoinDependentLockApp {
                     println(s"  Locked UTxO: $txHash:0")
                     println()
                     println("To unlock, use:")
-                    println(s"  bitcoin-dependent-lock unlock $txHash:0 --tx-index <INDEX> --proof <PROOF>")
+                    println(
+                      s"  bitcoin-dependent-lock unlock $txHash:0 --tx-index <INDEX> --proof <PROOF>"
+                    )
                     0
                 } else {
                     System.err.println(s"✗ Lock transaction failed: ${result.getResponse}")
@@ -377,22 +371,57 @@ object BitcoinDependentLockApp {
                     case None =>
                         System.err.println(s"✗ UTxO not found: $utxo")
                         System.err.println("Available UTxOs at verifier address:")
-                        allUtxos.foreach(u => System.err.println(s"  ${u.getTxHash}:${u.getOutputIndex}"))
+                        allUtxos.foreach(u =>
+                            System.err.println(s"  ${u.getTxHash}:${u.getOutputIndex}")
+                        )
                         return 1
 
                     case Some(utxoToSpend) =>
                         println(s"✓ Found locked UTxO")
 
                         // Create redeemer with proof
-                        val proofList = proofHashes.map(h => ByteString.fromHex(h).reverse).toList
-                        val redeemer = TxVerifierRedeemer(
+                        // Note: proof hashes are already in internal byte order from prove-transaction output
+                        val proofList = proofHashes.map(h => ByteString.fromHex(h)).toList
+                        val redeemerValue = TxVerifierRedeemer(
                           txIndex = BigInt(txIndex),
                           merkleProof = scalus.prelude.List.from(proofList)
                         )
-                        val redeemerData = Interop.toPlutusData(redeemer.toData)
+                        val redeemerData = Interop.toPlutusData(redeemerValue.toData)
 
                         println()
                         println("Step 2: Building unlock transaction...")
+
+                        // Setup ScalusTransactionEvaluator for proper script cost estimation
+                        val protocolParamsResult =
+                            backendService.getEpochService.getProtocolParameters
+                        if !protocolParamsResult.isSuccessful then {
+                            System.err.println(
+                              s"✗ Error fetching protocol params: ${protocolParamsResult.getResponse}"
+                            )
+                            return 1
+                        }
+                        val protocolParams = protocolParamsResult.getValue
+
+                        val utxoSupplier = new DefaultUtxoSupplier(backendService.getUtxoService)
+                        val scriptHashHex = scalus.utils.Hex.bytesToHex(script.getScriptHash)
+                        val scriptSupplier = new scalus.bloxbean.ScriptSupplier {
+                            override def getScript(
+                                hash: String
+                            ): com.bloxbean.cardano.client.plutus.spec.PlutusScript =
+                                if hash == scriptHashHex then script
+                                else throw new RuntimeException(s"Unknown script hash: $hash")
+                        }
+
+                        // Retrieve slot config from the network
+                        val slotConfig =
+                            binocular.util.SlotConfigHelper.retrieveSlotConfig(backendService)
+
+                        val scalusEvaluator = new scalus.bloxbean.ScalusTransactionEvaluator(
+                          slotConfig,
+                          protocolParams,
+                          utxoSupplier,
+                          scriptSupplier
+                        )
 
                         // Build unlock transaction
                         val unlockTx = new ScriptTx()
@@ -406,6 +435,7 @@ object BitcoinDependentLockApp {
                             .compose(unlockTx)
                             .feePayer(account.baseAddress())
                             .withSigner(SignerProviders.signerFrom(account))
+                            .withTxEvaluator(scalusEvaluator)
                             .completeAndWait()
 
                         if result.isSuccessful then {
@@ -419,13 +449,21 @@ object BitcoinDependentLockApp {
                             0
                         } else {
                             System.err.println()
-                            System.err.println(s"✗ Unlock transaction failed: ${result.getResponse}")
+                            System.err.println(
+                              s"✗ Unlock transaction failed: ${result.getResponse}"
+                            )
                             System.err.println()
                             System.err.println("This usually means the Merkle proof is invalid.")
                             System.err.println("Verify that:")
-                            System.err.println("  - tx-index matches the transaction's position in the block")
-                            System.err.println("  - proof contains correct sibling hashes from leaf to root")
-                            System.err.println("  - the datum's merkle-root matches the block's merkle root")
+                            System.err.println(
+                              "  - tx-index matches the transaction's position in the block"
+                            )
+                            System.err.println(
+                              "  - proof contains correct sibling hashes from leaf to root"
+                            )
+                            System.err.println(
+                              "  - the datum's merkle-root matches the block's merkle root"
+                            )
                             1
                         }
                 }

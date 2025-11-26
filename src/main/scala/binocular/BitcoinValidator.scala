@@ -250,7 +250,7 @@ object BitcoinValidator extends Validator {
     // Binocular protocol parameters
     val MaturationConfirmations: BigInt = 100 // Blocks needed for promotion to confirmed state
     val TimeToleranceSeconds: BigInt =
-        36 * 60 * 60 // Maximum difference between redeemer time and validity interval time (shoukd be the time of cardano consesnus)
+        1 * 60 * 60 // Maximum difference between redeemer time and validity interval time
     // val ChallengeAging: BigInt = 200 * 60 // 200 minutes in seconds (challenge period)
     val ChallengeAging: BigInt =
         20 * 60 // 20 minutes in seconds (challenge period) to speedup testing

@@ -18,32 +18,19 @@ resolvers += Resolver.sonatypeCentralSnapshots
 
 addCompilerPlugin("org.scalus" %% "scalus-plugin" % scalusVersion)
 
-// Generate TestConfig.scala with different TestMode values for main vs test
-Compile / sourceGenerators += Def.task {
-    val file = (Compile / sourceManaged).value / "binocular" / "TestConfig.scala"
-    IO.write(
-      file,
-      """package binocular
-object TestConfig {
-  inline def TestMode: Boolean = false
-}
-"""
-    )
-    Seq(file)
-}.taskValue
+// TestConfig is now a static file: src/main/scala/binocular/TestConfig.scala
+// This ensures deterministic compilation when the project is used as a dependency
 
-Test / sourceGenerators += Def.task {
-    val file = (Test / sourceManaged).value / "binocular" / "TestConfig.scala"
-    IO.write(
-      file,
-      """package binocular
-object TestConfig {
-  inline def TestMode: Boolean = true
-}
-"""
+// Define example as a subproject
+lazy val example = (project in file("example"))
+    .dependsOn(LocalProject("binocular"))
+    .settings(
+      name := "binocular-example",
+      scalaVersion := "3.3.7",
+      resolvers += Resolver.sonatypeCentralSnapshots,
+      addCompilerPlugin("org.scalus" %% "scalus-plugin" % scalusVersion),
+      Compile / mainClass := Some("binocular.example.bitcoinDependentLock")
     )
-    Seq(file)
-}.taskValue
 
 libraryDependencies ++= Seq(
   "org.scalus" %% "scalus" % scalusVersion,

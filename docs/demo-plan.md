@@ -298,6 +298,8 @@ curl -s -u "$BITCOIN_RPC_USER:$BITCOIN_RPC_PASSWORD" \
 Here are real transaction IDs from various blocks that you can use for testing:
 
 **Block 866970** (older block)
+- Block Hash: `000000000000000000020aebcf64dfe45ce4d021df9ac3094116bf531f9a6209`
+
 | Index | Transaction ID | Type |
 |-------|----------------|------|
 | 0 | `f44ba1e992bc2cc4ac0da8d654600b80c8ca4f9f58fcd3e38c0dee1fae8f9ee5` | Coinbase |
@@ -307,6 +309,9 @@ Here are real transaction IDs from various blocks that you can use for testing:
 [Blockstream Explorer - Block 866970](https://blockstream.info/block/000000000000000000020aebcf64dfe45ce4d021df9ac3094116bf531f9a6209)
 
 **Block 925000** (recent block - November 2025)
+- Block Hash: `0000000000000000000067f9f40ca6960173ebee423f6130138762dfc40630bf`
+- Merkle Root: `40d416f2b888d5d5d5e3ad82633723a0c5fbbf2d19eae039bbf5e5a87380f3d4`
+
 | Index | Transaction ID | Type |
 |-------|----------------|------|
 | 0 | `ff67bd82c5e65d9b906cc18acc586cd8b8d9093419990e40c5136c4115c27e65` | Coinbase |
@@ -318,6 +323,8 @@ Here are real transaction IDs from various blocks that you can use for testing:
 [Blockstream Explorer - Block 925000](https://blockstream.info/block/0000000000000000000067f9f40ca6960173ebee423f6130138762dfc40630bf)
 
 **Block 925100** (recent block)
+- Block Hash: `000000000000000000014939c0d3421925d169319f6f50b945f604dbb41e85a8`
+
 | Index | Transaction ID | Type |
 |-------|----------------|------|
 | 0 | `2fde926a3c7ebb9aba7b019eeb716b0760db2ad018909a5c033d77e063dae20c` | Coinbase |
@@ -327,6 +334,8 @@ Here are real transaction IDs from various blocks that you can use for testing:
 [Blockstream Explorer - Block 925100](https://blockstream.info/block/000000000000000000014939c0d3421925d169319f6f50b945f604dbb41e85a8)
 
 **Block 925150** (recent block)
+- Block Hash: `0000000000000000000126c79e39a80e5b08720fbb0d6de3ed811179ec7c4e93`
+
 | Index | Transaction ID | Type |
 |-------|----------------|------|
 | 0 | `d569e3f75c677bc7daabbe780a4528d2d860e3ce39f7a1b66912ff2d217b97a3` | Coinbase |
@@ -340,7 +349,47 @@ Here are real transaction IDs from various blocks that you can use for testing:
 Once you have a transaction ID from a confirmed block:
 
 ```bash
+# Basic usage - looks up transaction to find its block
 sbt "runMain binocular.main prove-transaction promo123...:0 f44ba1e992bc2cc4ac0da8d654600b80c8ca4f9f58fcd3e38c0dee1fae8f9ee5"
+
+# With --block option - skip transaction lookup (useful for checking non-existent tx)
+sbt "runMain binocular.main prove-transaction promo123...:0 f44ba1e992bc2cc4ac0da8d654600b80c8ca4f9f58fcd3e38c0dee1fae8f9ee5 --block 000000000000000000020aebcf64dfe45ce4d021df9ac3094116bf531f9a6209"
+```
+
+**Note:** The `--block` option takes a **block hash** (64 hex characters), not a block height.
+
+#### Offline Verification (No Bitcoin RPC)
+
+For fully offline verification without any Bitcoin RPC calls, provide all four options:
+
+```bash
+# Offline mode - verifies locally without Bitcoin RPC
+sbt "runMain binocular.main prove-transaction <ORACLE_UTXO> <TX_ID> \
+  --block <BLOCK_HASH> \
+  --tx-index <TX_INDEX> \
+  --merkle-root <MERKLE_ROOT> \
+  --proof <HASH1,HASH2,...>"
+```
+
+**Tip:** Run online verification first - it outputs a ready-to-use offline command with all parameters.
+
+#### Complete Example: Block 925000 Transaction Verification
+
+```bash
+# Step 1: Online verification (fetches data from Bitcoin RPC)
+sbt "runMain binocular.main prove-transaction <ORACLE_UTXO> \
+  ff67bd82c5e65d9b906cc18acc586cd8b8d9093419990e40c5136c4115c27e65"
+
+# The output will include something like:
+# Offline verification command:
+#   binocular prove-transaction <ORACLE_UTXO> ff67bd82c5e65d9b906cc18acc586cd8b8d9093419990e40c5136c4115c27e65 \
+#     --block 0000000000000000000067f9f40ca6960173ebee423f6130138762dfc40630bf \
+#     --tx-index 0 \
+#     --merkle-root <MERKLE_ROOT_FROM_BLOCK> \
+#     --proof <PROOF_HASHES>
+
+# Step 2: Copy and run the offline command (no Bitcoin RPC needed)
+# This can be run anywhere without Bitcoin node access
 ```
 
 **Expected Output:**

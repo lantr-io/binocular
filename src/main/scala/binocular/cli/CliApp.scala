@@ -19,7 +19,14 @@ object CliApp {
         case VerifyOracle(utxo: String)
         case InitOracle(startBlock: Option[Long])
         case UpdateOracle(utxo: String, fromBlock: Option[Long], toBlock: Option[Long])
-        case ProveTransaction(utxo: String, btcTxId: String)
+        case ProveTransaction(
+            utxo: String,
+            btcTxId: String,
+            blockHash: Option[String],
+            txIndex: Option[Int],
+            proof: Option[String],
+            merkleRoot: Option[String]
+        )
 
     /** CLI argument parsers */
     object CliParsers {
@@ -63,6 +70,38 @@ object CliApp {
         val btcTxIdArg: Opts[String] = Opts.argument[String](
           metavar = "BTC_TX_ID"
         )
+
+        val blockHashOpt: Opts[Option[String]] = Opts
+            .option[String](
+              "block",
+              help = "Bitcoin block hash (64 hex chars)",
+              short = "b"
+            )
+            .orNone
+
+        val txIndexOpt: Opts[Option[Int]] = Opts
+            .option[Int](
+              "tx-index",
+              help = "Transaction index in block (for offline verification)",
+              short = "i"
+            )
+            .orNone
+
+        val proofOpt: Opts[Option[String]] = Opts
+            .option[String](
+              "proof",
+              help = "Merkle proof hashes (comma-separated, for offline verification)",
+              short = "p"
+            )
+            .orNone
+
+        val merkleRootOpt: Opts[Option[String]] = Opts
+            .option[String](
+              "merkle-root",
+              help = "Expected merkle root (64 hex chars, for offline verification)",
+              short = "m"
+            )
+            .orNone
     }
 
     /** Main CLI command parser */
@@ -95,7 +134,9 @@ object CliApp {
 
         val proveCommand =
             Opts.subcommand("prove-transaction", "Prove Bitcoin transaction inclusion") {
-                (utxoArg, btcTxIdArg).mapN(Cmd.ProveTransaction.apply)
+                (utxoArg, btcTxIdArg, blockHashOpt, txIndexOpt, proofOpt, merkleRootOpt).mapN(
+                  Cmd.ProveTransaction.apply
+                )
             }
 
         com.monovore.decline.Command(
@@ -143,8 +184,22 @@ object CliApp {
                             InitOracleCommand(startBlock)
                         case Cmd.UpdateOracle(utxo, from, to) =>
                             UpdateOracleCommand(utxo, from, to)
-                        case Cmd.ProveTransaction(utxo, btcTxId) =>
-                            ProveTransactionCommand(utxo, btcTxId)
+                        case Cmd.ProveTransaction(
+                              utxo,
+                              btcTxId,
+                              blockHash,
+                              txIndex,
+                              proof,
+                              merkleRoot
+                            ) =>
+                            ProveTransactionCommand(
+                              utxo,
+                              btcTxId,
+                              blockHash,
+                              txIndex,
+                              proof,
+                              merkleRoot
+                            )
                     }
 
                     // Execute command and return exit code

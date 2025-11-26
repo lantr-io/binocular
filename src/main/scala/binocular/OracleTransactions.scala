@@ -406,7 +406,7 @@ object OracleTransactions {
 
             // Verify that provided time is within tolerance of what validator will see from tx.validRange
             // This ensures the on-chain time tolerance check passes
-            val TimeToleranceSeconds = 5 // Must match validator's tolerance
+            val TimeToleranceSeconds = BitcoinValidator.TimeToleranceSeconds.toLong
             val timeDiff =
                 if validityIntervalTimeSeconds > validatorWillSeeTime then
                     validityIntervalTimeSeconds - validatorWillSeeTime
