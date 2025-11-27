@@ -18,8 +18,8 @@ resolvers += Resolver.sonatypeCentralSnapshots
 
 addCompilerPlugin("org.scalus" %% "scalus-plugin" % scalusVersion)
 
-// TestConfig is now a static file: src/main/scala/binocular/TestConfig.scala
-// This ensures deterministic compilation when the project is used as a dependency
+// Time tolerance check is always enforced in the validator (no TestMode bypass)
+// Tests use time advancement within the 1-hour tolerance (e.g., +25 min for promotion)
 
 // Define example as a subproject
 lazy val example = (project in file("example"))

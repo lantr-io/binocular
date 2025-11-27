@@ -335,11 +335,12 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
                 val headersList = scalus.prelude.List.from(batch.toList)
 
                 // Use current time for all batches except the last one
-                // For the last batch, use time + 210 minutes to trigger promotion
+                // For the last batch, use time + 25 minutes to trigger promotion
+                // (ChallengeAging is 20 minutes, TimeToleranceSeconds is 1 hour, so 25 min works)
                 val validityTime: BigInt = if batchIndex == batches.size - 1 then {
                     val currentTime = System.currentTimeMillis() / 1000
-                    val advancedTime = BigInt(currentTime) + BigInt(210 * 60) // 210 minutes ahead
-                    println(s"  Final batch: using advanced time to trigger promotion (+210 min)")
+                    val advancedTime = BigInt(currentTime) + BigInt(25 * 60) // 25 minutes ahead
+                    println(s"  Final batch: using advanced time to trigger promotion (+25 min)")
                     advancedTime
                 } else {
                     OracleTransactions.computeValidityIntervalTime(devKit.getBackendService)

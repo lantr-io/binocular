@@ -1322,12 +1322,10 @@ object BitcoinValidator extends Validator {
                         redeemerTime - intervalStartInSeconds
                     else intervalStartInSeconds - redeemerTime
 
-                // Skip time tolerance check in test mode to allow simulated time advancement
-                inline if !TestConfig.TestMode then
-                    require(
-                      timeDiff <= TimeToleranceSeconds,
-                      "Redeemer time too far from validity interval"
-                    )
+                require(
+                  timeDiff <= TimeToleranceSeconds,
+                  "Redeemer time too far from validity interval"
+                )
 
                 // Compute the new state using time from redeemer (ensures offline/online consistency)
                 val computedState = computeUpdateOracleState(prevState, blockHeaders, redeemerTime)
