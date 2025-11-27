@@ -66,15 +66,15 @@ case class OracleConfig(
 
 object OracleConfig {
 
-    /** Get the script CBOR hex, either from env/file or by compiling.
-      * Priority: ORACLE_SCRIPT_CBOR env var > oracle-script.cbor file > compile
+    /** Get the script CBOR hex, either from env/file or by compiling. Priority: ORACLE_SCRIPT_CBOR
+      * env var > oracle-script.cbor file > compile
       */
     def getScriptCborHex(): String = {
         // First check environment variable
         sys.env.get("ORACLE_SCRIPT_CBOR").filter(_.nonEmpty).getOrElse {
             // Then check for cbor file
             val cborFile = new java.io.File("oracle-script.cbor")
-            if (cborFile.exists()) {
+            if cborFile.exists() then {
                 scala.io.Source.fromFile(cborFile).mkString.trim
             } else {
                 // Fall back to compiling
@@ -83,14 +83,14 @@ object OracleConfig {
         }
     }
 
-    /** Derive script address from compiled BitcoinValidator for given network.
-      * Can be overridden via ORACLE_SCRIPT_ADDRESS env var.
+    /** Derive script address from compiled BitcoinValidator for given network. Can be overridden
+      * via ORACLE_SCRIPT_ADDRESS env var.
       */
     def deriveScriptAddress(network: CardanoNetwork): String = {
         // First check if address is explicitly provided
         sys.env.get("ORACLE_SCRIPT_ADDRESS").filter(_.nonEmpty) match {
             case Some(addr) => addr
-            case None =>
+            case None       =>
                 // Get script CBOR (from env, file, or compile)
                 val scriptCborHex = getScriptCborHex()
 

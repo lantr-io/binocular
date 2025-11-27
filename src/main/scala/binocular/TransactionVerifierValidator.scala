@@ -65,7 +65,8 @@ object TxVerifierRedeemer
   *   3. Verifies the block header hashes to the expected block hash
   *   4. Verifies the transaction is in the block via merkle proof
   *
-  * This ensures the transaction actually exists in the Bitcoin blockchain as attested by the Oracle.
+  * This ensures the transaction actually exists in the Bitcoin blockchain as attested by the
+  * Oracle.
   */
 @Compile
 object TransactionVerifierValidator {
@@ -96,7 +97,7 @@ object TransactionVerifierValidator {
     def getOracleState(oracleOutput: TxOut): ChainState = {
         oracleOutput.datum match
             case OutputDatum.OutputDatum(datum) => datum.to[ChainState]
-            case _ => fail("Oracle must have inline datum")
+            case _                              => fail("Oracle must have inline datum")
     }
 
     /** Main validator entry point - spending validator function */

@@ -555,10 +555,10 @@ case class ProveTransactionCommand(
                             var count = 0
                             var power = 1 // 2^level
                             var current = tree
-                            while (current != scalus.prelude.List.Nil) {
+                            while current != scalus.prelude.List.Nil do {
                                 current match {
                                     case scalus.prelude.List.Cons(hash, tail) =>
-                                        if (hash != emptyHash) count += power
+                                        if hash != emptyHash then count += power
                                         power *= 2
                                         current = tail
                                     case _ => current = scalus.prelude.List.Nil
@@ -575,7 +575,9 @@ case class ProveTransactionCommand(
 
                         println(s"  Oracle confirmed height: $confirmedHeight")
                         println(s"  Blocks in tree: $numConfirmedBlocks")
-                        println(s"  Block ${blockHeader.height} is $distanceFromTip blocks from tip")
+                        println(
+                          s"  Block ${blockHeader.height} is $distanceFromTip blocks from tip"
+                        )
                         println(s"  Target block index: $blockIndex")
 
                         // Fetch block hashes for all confirmed blocks
@@ -588,7 +590,9 @@ case class ProveTransactionCommand(
                                 }.toList
                             } catch {
                                 case e: Exception =>
-                                    System.err.println(s"✗ Error fetching confirmed block hashes: ${e.getMessage}")
+                                    System.err.println(
+                                      s"✗ Error fetching confirmed block hashes: ${e.getMessage}"
+                                    )
                                     return 1
                             }
 
@@ -600,18 +604,27 @@ case class ProveTransactionCommand(
                         // Verify block proof locally
                         val targetBlockHashBytes = ByteString.fromHex(targetBlockHash).reverse
                         val calculatedBlockRoot =
-                            MerkleTree.calculateMerkleRootFromProof(blockIndex, targetBlockHashBytes, blockMerkleProof)
+                            MerkleTree.calculateMerkleRootFromProof(
+                              blockIndex,
+                              targetBlockHashBytes,
+                              blockMerkleProof
+                            )
 
                         // Compare with Oracle's confirmedBlocksTree root
-                        val oracleTreeRoot = BitcoinValidator.getMerkleRoot(chainState.confirmedBlocksTree)
+                        val oracleTreeRoot =
+                            BitcoinValidator.getMerkleRoot(chainState.confirmedBlocksTree)
 
                         println(s"  Calculated block tree root: ${calculatedBlockRoot.toHex}")
                         println(s"  Oracle tree root: ${oracleTreeRoot.toHex}")
 
                         if calculatedBlockRoot != oracleTreeRoot then {
                             println()
-                            println("⚠ Block tree root mismatch - this may be due to rolling tree differences")
-                            println("  The proof structure may need adjustment for the rolling merkle tree")
+                            println(
+                              "⚠ Block tree root mismatch - this may be due to rolling tree differences"
+                            )
+                            println(
+                              "  The proof structure may need adjustment for the rolling merkle tree"
+                            )
                         } else {
                             println(s"✓ Block proof verified!")
                         }
@@ -622,7 +635,9 @@ case class ProveTransactionCommand(
                                 Await.result(rpc.getBlockHeaderRaw(targetBlockHash), 30.seconds)
                             } catch {
                                 case e: Exception =>
-                                    System.err.println(s"✗ Error fetching raw block header: ${e.getMessage}")
+                                    System.err.println(
+                                      s"✗ Error fetching raw block header: ${e.getMessage}"
+                                    )
                                     return 1
                             }
 
@@ -666,7 +681,9 @@ case class ProveTransactionCommand(
                         println(s"  --tx-index $txIdx \\")
                         println(s"  --tx-proof ${merkleProof.map(_.toHex).mkString(",")} \\")
                         println(s"  --block-index $blockIndex \\")
-                        println(s"  --block-proof ${blockMerkleProof.map(_.toHex).mkString(",")} \\")
+                        println(
+                          s"  --block-proof ${blockMerkleProof.map(_.toHex).mkString(",")} \\"
+                        )
                         println(s"  --block-header $rawBlockHeader \\")
                         println(s"  --oracle-utxo $oracleTxHash:$oracleOutputIndex")
                         println()

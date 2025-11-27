@@ -135,7 +135,15 @@ object BitcoinDependentLockApp {
           "unlock",
           "Unlock funds by providing Merkle proofs (requires Oracle reference)"
         ) {
-            (utxoArg, txIndexOpt, txProofOpt, blockIndexOpt, blockProofOpt, blockHeaderOpt, oracleUtxoOpt)
+            (
+              utxoArg,
+              txIndexOpt,
+              txProofOpt,
+              blockIndexOpt,
+              blockProofOpt,
+              blockHeaderOpt,
+              oracleUtxoOpt
+            )
                 .mapN(Cmd.Unlock.apply)
         }
 
@@ -148,7 +156,8 @@ object BitcoinDependentLockApp {
 
         Command(
           name = "bitcoin-dependent-lock",
-          header = "Lock and unlock Cardano funds based on Bitcoin transaction proofs verified against the Binocular Oracle"
+          header =
+              "Lock and unlock Cardano funds based on Bitcoin transaction proofs verified against the Binocular Oracle"
         )(lockCommand orElse unlockCommand orElse infoCommand)
     }
 
@@ -168,7 +177,15 @@ object BitcoinDependentLockApp {
         cmd match {
             case Cmd.Lock(btcTxId, blockHash, amount) =>
                 lockFunds(btcTxId, blockHash, amount)
-            case Cmd.Unlock(utxo, txIndex, txProof, blockIndex, blockProof, blockHeader, oracleUtxo) =>
+            case Cmd.Unlock(
+                  utxo,
+                  txIndex,
+                  txProof,
+                  blockIndex,
+                  blockProof,
+                  blockHeader,
+                  oracleUtxo
+                ) =>
                 unlockFunds(utxo, txIndex, txProof, blockIndex, blockProof, blockHeader, oracleUtxo)
             case Cmd.Info =>
                 showInfo()
@@ -187,14 +204,14 @@ object BitcoinDependentLockApp {
             .asInstanceOf[com.bloxbean.cardano.client.plutus.spec.PlutusV3Script]
     }
 
-    /** Get the Oracle (BitcoinValidator) script hash.
-      * Can be overridden via ORACLE_SCRIPT_HASH env var, or derived from ORACLE_SCRIPT_ADDRESS.
+    /** Get the Oracle (BitcoinValidator) script hash. Can be overridden via ORACLE_SCRIPT_HASH env
+      * var, or derived from ORACLE_SCRIPT_ADDRESS.
       */
     private def getOracleScriptHash(): ByteString = {
         // First check for explicit script hash
         sys.env.get("ORACLE_SCRIPT_HASH").filter(_.nonEmpty) match {
             case Some(hash) => ByteString.fromHex(hash)
-            case None =>
+            case None       =>
                 // Try to derive from script address
                 sys.env.get("ORACLE_SCRIPT_ADDRESS").filter(_.nonEmpty) match {
                     case Some(addr) =>
@@ -306,7 +323,9 @@ object BitcoinDependentLockApp {
                 val oracleScriptHash = getOracleScriptHash()
 
                 println(s"Verifier address: $verifierAddress")
-                println(s"Oracle script hash: ${scalus.utils.Hex.bytesToHex(oracleScriptHash.bytes)}")
+                println(
+                  s"Oracle script hash: ${scalus.utils.Hex.bytesToHex(oracleScriptHash.bytes)}"
+                )
                 println()
 
                 // Create datum
@@ -403,7 +422,9 @@ object BitcoinDependentLockApp {
 
         // Validate block header
         if blockHeaderHex.length != 160 then {
-            System.err.println(s"Block header must be 80 bytes (160 hex chars), got ${blockHeaderHex.length / 2} bytes")
+            System.err.println(
+              s"Block header must be 80 bytes (160 hex chars), got ${blockHeaderHex.length / 2} bytes"
+            )
             return 1
         }
         println()
