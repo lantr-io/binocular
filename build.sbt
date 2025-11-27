@@ -2,7 +2,7 @@ scalaVersion := "3.3.7"
 
 //val scalusVersion = "0.13.0"
 //val scalusVersion = "0.13.0+207-58f4bcc1+20251113-0824-SNAPSHOT"
-val scalusVersion = "0.13.0+311-59cd1724-SNAPSHOT"
+val scalusVersion = "0.13.0+411-8f5422a9-SNAPSHOT"
 
 scalacOptions ++= Seq("-deprecation", "-feature")
 

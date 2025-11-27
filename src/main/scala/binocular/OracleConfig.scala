@@ -66,59 +66,39 @@ case class OracleConfig(
 
 object OracleConfig {
 
-    /** Get the script CBOR hex, either from env/file or by compiling. Priority: ORACLE_SCRIPT_CBOR
-      * env var > oracle-script.cbor file > compile
-      */
+    /** Get the script CBOR hex from compiled script. */
     def getScriptCborHex(): String = {
-        // First check environment variable
-        sys.env.get("ORACLE_SCRIPT_CBOR").filter(_.nonEmpty).getOrElse {
-            // Then check for cbor file
-            val cborFile = new java.io.File("oracle-script.cbor")
-            if cborFile.exists() then {
-                scala.io.Source.fromFile(cborFile).mkString.trim
-            } else {
-                // Fall back to compiling
-                BitcoinContract.bitcoinProgram.doubleCborHex
-            }
-        }
+        BitcoinContract.bitcoinProgram.doubleCborHex
     }
 
-    /** Derive script address from compiled BitcoinValidator for given network. Can be overridden
-      * via ORACLE_SCRIPT_ADDRESS env var.
-      */
+    /** Derive script address from compiled BitcoinValidator for given network. */
     def deriveScriptAddress(network: CardanoNetwork): String = {
-        // First check if address is explicitly provided
-        sys.env.get("ORACLE_SCRIPT_ADDRESS").filter(_.nonEmpty) match {
-            case Some(addr) => addr
-            case None       =>
-                // Get script CBOR (from env, file, or compile)
-                val scriptCborHex = getScriptCborHex()
+        val scriptCborHex = getScriptCborHex()
 
-                // Create PlutusV3Script
-                val plutusScript = PlutusV3Script
-                    .builder()
-                    .`type`("PlutusScriptV3")
-                    .cborHex(scriptCborHex)
-                    .build()
-                    .asInstanceOf[PlutusV3Script]
+        // Create PlutusV3Script
+        val plutusScript = PlutusV3Script
+            .builder()
+            .`type`("PlutusScriptV3")
+            .cborHex(scriptCborHex)
+            .build()
+            .asInstanceOf[PlutusV3Script]
 
-                // Get CCL Network
-                val cclNetwork = network match {
-                    case CardanoNetwork.Mainnet =>
-                        com.bloxbean.cardano.client.common.model.Networks.mainnet()
-                    case CardanoNetwork.Preprod =>
-                        com.bloxbean.cardano.client.common.model.Networks.preprod()
-                    case CardanoNetwork.Preview =>
-                        com.bloxbean.cardano.client.common.model.Networks.preview()
-                    case CardanoNetwork.Testnet =>
-                        com.bloxbean.cardano.client.common.model.Networks.testnet()
-                }
-
-                // Derive script address using AddressProvider
-                val address = com.bloxbean.cardano.client.address.AddressProvider
-                    .getEntAddress(plutusScript, cclNetwork)
-                address.toBech32()
+        // Get CCL Network
+        val cclNetwork = network match {
+            case CardanoNetwork.Mainnet =>
+                com.bloxbean.cardano.client.common.model.Networks.mainnet()
+            case CardanoNetwork.Preprod =>
+                com.bloxbean.cardano.client.common.model.Networks.preprod()
+            case CardanoNetwork.Preview =>
+                com.bloxbean.cardano.client.common.model.Networks.preview()
+            case CardanoNetwork.Testnet =>
+                com.bloxbean.cardano.client.common.model.Networks.testnet()
         }
+
+        // Derive script address using AddressProvider
+        val address = com.bloxbean.cardano.client.address.AddressProvider
+            .getEntAddress(plutusScript, cclNetwork)
+        address.toBech32()
     }
 
     /** Load from environment variables
