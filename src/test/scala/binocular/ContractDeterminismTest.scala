@@ -3,7 +3,7 @@ package binocular
 import munit.FunSuite
 import scalus.Compiler
 import scalus.compiler.sir.TargetLoweringBackend
-import scalus.{toUplc, toUplcOptimized, show, plutusV3}
+import scalus.{plutusV3, show, toUplc, toUplcOptimized}
 
 import java.io.{File, PrintWriter}
 import java.security.MessageDigest
