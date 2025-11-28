@@ -38,14 +38,23 @@ jobs:
       - name: Check formatting and run tests
         run: sbt "scalafmtCheckAll;scalafmtSbtCheck;test"
 
+      - name: List contract debug files
+        if: failure()
+        run: |
+          echo "Current directory: $(pwd)"
+          echo "Looking for .contract-debug:"
+          find . -name ".contract-debug" -type d 2>/dev/null || echo "Not found with find"
+          ls -la .contract-debug/ 2>/dev/null || echo ".contract-debug/ not found in current dir"
+          ls -la ${{ github.workspace }}/.contract-debug/ 2>/dev/null || echo "Not found in workspace"
+
       - name: Upload contract debug artifacts
         uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: contract-debug-${{ github.sha }}
-          path: .contract-debug/
+          path: ${{ github.workspace }}/.contract-debug/
           retention-days: 30
-          if-no-files-found: ignore
+          if-no-files-found: warn
 
       - name: Report build status
         uses: sarisia/actions-status-discord@v1

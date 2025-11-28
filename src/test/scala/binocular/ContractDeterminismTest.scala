@@ -86,21 +86,26 @@ class ContractDeterminismTest extends FunSuite {
         val cborHex = program.doubleCborHex
         val actualHash = computeContractHash(cborHex)
 
-        val debugFilesWritten = if actualHash != EXPECTED_CONTRACT_HASH then {
-            // Dump debug files before failing the test
-            dumpDebugFiles(actualHash, program)
-            // Verify files were created
-            val debugDir = new File(".contract-debug")
-            val files = Option(debugDir.listFiles()).map(_.toList).getOrElse(Nil)
-            println(s"[ContractDeterminismTest] Debug directory contents: ${files.map(_.getName)}")
-            files.nonEmpty
-        } else false
+        val (debugFilesWritten, debugPath, debugFileList) =
+            if actualHash != EXPECTED_CONTRACT_HASH then {
+                // Dump debug files before failing the test
+                dumpDebugFiles(actualHash, program)
+                // Verify files were created
+                val debugDir = new File(".contract-debug")
+                val files = Option(debugDir.listFiles()).map(_.toList).getOrElse(Nil)
+                println(
+                  s"[ContractDeterminismTest] Debug directory contents: ${files.map(_.getName)}"
+                )
+                (files.nonEmpty, debugDir.getAbsolutePath, files.map(_.getName).mkString(", "))
+            } else (false, "N/A", "N/A")
 
         assertEquals(
           actualHash,
           EXPECTED_CONTRACT_HASH,
           s"""Contract hash mismatch!
 Debug files written: $debugFilesWritten
+Debug path: $debugPath
+Debug files: $debugFileList
 
 If you intentionally modified BitcoinValidator.scala:
   Update EXPECTED_CONTRACT_HASH in ContractDeterminismTest.scala to: "$actualHash"
