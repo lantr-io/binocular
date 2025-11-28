@@ -1,9 +1,8 @@
 package binocular
 
 import munit.FunSuite
-import scalus.Compiler
-import scalus.compiler.sir.TargetLoweringBackend
-import scalus.{plutusV3, show, toUplc, toUplcOptimized}
+import scalus.uplc.Program
+import scalus.show
 
 import java.io.{File, PrintWriter}
 import java.security.MessageDigest
@@ -43,58 +42,24 @@ class ContractDeterminismTest extends FunSuite {
         hashBytes.take(8).map("%02x".format(_)).mkString
     }
 
-    /** Dump SIR and UPLC files for debugging when hash mismatch is detected */
-    private def dumpDebugFiles(actualHash: String): Unit = {
+    /** Dump UPLC files for debugging when hash mismatch is detected. Uses the already-compiled
+      * program from BitcoinContract.
+      */
+    private def dumpDebugFiles(actualHash: String, program: Program): Unit = {
         val debugDir = new File(".contract-debug")
         if !debugDir.exists() then debugDir.mkdirs()
 
-        given Compiler.Options = Compiler.Options(
-          optimizeUplc = true,
-          generateErrorTraces = true,
-          targetLoweringBackend = TargetLoweringBackend.SirToUplcV3Lowering
-        )
-
         println(s"[ContractDeterminismTest] Dumping debug files for hash: $actualHash")
-
-        val sir = Compiler.compileWithOptions(summon[Compiler.Options], BitcoinValidator.validate)
-        val unoptimizedProgram = sir.toUplc().plutusV3
-        val optimizedProgram = sir.toUplcOptimized().plutusV3
-
-        // Write SIR
-        val sirWriter = new PrintWriter(new File(debugDir, s"contract-$actualHash.sir"))
-        try {
-            sirWriter.println(s"# Contract hash: $actualHash")
-            sirWriter.println(s"# Generated at: ${java.time.Instant.now()}")
-            sirWriter.println()
-            sirWriter.println(sir.show)
-        } finally sirWriter.close()
-
-        // Write unoptimized UPLC (named)
-        val uplcWriter = new PrintWriter(new File(debugDir, s"contract-$actualHash.uplc"))
-        try {
-            uplcWriter.println(s"# Contract hash: $actualHash")
-            uplcWriter.println(s"# Unoptimized UPLC (named)")
-            uplcWriter.println()
-            uplcWriter.println(unoptimizedProgram.show)
-        } finally uplcWriter.close()
 
         // Write optimized UPLC (named)
         val uplcOptWriter = new PrintWriter(new File(debugDir, s"contract-$actualHash.uplc-opt"))
         try {
             uplcOptWriter.println(s"# Contract hash: $actualHash")
             uplcOptWriter.println(s"# Optimized UPLC (named)")
+            uplcOptWriter.println(s"# Generated at: ${java.time.Instant.now()}")
             uplcOptWriter.println()
-            uplcOptWriter.println(optimizedProgram.show)
+            uplcOptWriter.println(program.show)
         } finally uplcOptWriter.close()
-
-        // Write unoptimized UPLC (de Bruijn)
-        val uplcDbWriter = new PrintWriter(new File(debugDir, s"contract-$actualHash.uplc-db"))
-        try {
-            uplcDbWriter.println(s"# Contract hash: $actualHash")
-            uplcDbWriter.println(s"# Unoptimized UPLC (de Bruijn)")
-            uplcDbWriter.println()
-            uplcDbWriter.println(unoptimizedProgram.deBruijnedProgram.show)
-        } finally uplcDbWriter.close()
 
         // Write optimized UPLC (de Bruijn)
         val uplcOptDbWriter =
@@ -102,14 +67,15 @@ class ContractDeterminismTest extends FunSuite {
         try {
             uplcOptDbWriter.println(s"# Contract hash: $actualHash")
             uplcOptDbWriter.println(s"# Optimized UPLC (de Bruijn)")
+            uplcOptDbWriter.println(s"# Generated at: ${java.time.Instant.now()}")
             uplcOptDbWriter.println()
-            uplcOptDbWriter.println(optimizedProgram.deBruijnedProgram.show)
+            uplcOptDbWriter.println(program.deBruijnedProgram.show)
         } finally uplcOptDbWriter.close()
 
         // Write CBOR hex
         val cborWriter = new PrintWriter(new File(debugDir, s"contract-$actualHash.cbor"))
         try {
-            cborWriter.print(optimizedProgram.doubleCborHex)
+            cborWriter.print(program.doubleCborHex)
         } finally cborWriter.close()
 
         println(s"[ContractDeterminismTest] Debug files written to ${debugDir.getPath}/")
@@ -120,15 +86,21 @@ class ContractDeterminismTest extends FunSuite {
         val cborHex = program.doubleCborHex
         val actualHash = computeContractHash(cborHex)
 
-        if actualHash != EXPECTED_CONTRACT_HASH then {
+        val debugFilesWritten = if actualHash != EXPECTED_CONTRACT_HASH then {
             // Dump debug files before failing the test
-            dumpDebugFiles(actualHash)
-        }
+            dumpDebugFiles(actualHash, program)
+            // Verify files were created
+            val debugDir = new File(".contract-debug")
+            val files = Option(debugDir.listFiles()).map(_.toList).getOrElse(Nil)
+            println(s"[ContractDeterminismTest] Debug directory contents: ${files.map(_.getName)}")
+            files.nonEmpty
+        } else false
 
         assertEquals(
           actualHash,
           EXPECTED_CONTRACT_HASH,
           s"""Contract hash mismatch!
+Debug files written: $debugFilesWritten
 
 If you intentionally modified BitcoinValidator.scala:
   Update EXPECTED_CONTRACT_HASH in ContractDeterminismTest.scala to: "$actualHash"
