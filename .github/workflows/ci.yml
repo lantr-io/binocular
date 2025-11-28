@@ -55,6 +55,7 @@ jobs:
           path: ${{ github.workspace }}/.contract-debug/
           retention-days: 30
           if-no-files-found: warn
+          include-hidden-files: true
 
       - name: Report build status
         uses: sarisia/actions-status-discord@v1
