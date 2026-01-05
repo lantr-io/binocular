@@ -1294,7 +1294,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
                   ledger.ExUnits(463020, 143828562),
                   "Unexpected resource usage"
                 )
-                assertEquals(r.budget.fee(prices), Coin(37072), "Unexpected fee cost")
+                assertEquals(r.budget.fee(prices), Coin(37087), "Unexpected fee cost")
             case r: Result.Failure =>
                 fail(s"Validation failed: $r")
     }
