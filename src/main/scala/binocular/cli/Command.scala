@@ -2,9 +2,9 @@ package binocular.cli
 
 import binocular.ChainState
 import com.bloxbean.cardano.client.api.model.Utxo
-import scalus.builtin.{ByteString, Data}
-import scalus.builtin.Data.fromData
-import scalus.prelude.List as ScalusList
+import scalus.uplc.builtin.{ByteString, Data}
+import scalus.uplc.builtin.Data.fromData
+import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 
 import scala.util.Try
 

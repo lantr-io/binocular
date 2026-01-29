@@ -4,8 +4,9 @@ import binocular.{reverse, BitcoinNodeConfig, BitcoinValidator, CardanoConfig, C
 import binocular.cli.{Command, CommandHelpers}
 import com.bloxbean.cardano.client.address.Address
 import scalus.bloxbean.Interop.toScalusData
-import scalus.builtin.Data.fromData
-import scalus.builtin.ByteString
+import scalus.uplc.builtin.Data.fromData
+import scalus.uplc.builtin.ByteString
+import scalus.cardano.onchain.plutus.prelude.{List => ScalusList}
 
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration.*
@@ -551,17 +552,17 @@ case class ProveTransactionCommand(
                         // Count blocks in the rolling merkle tree by checking which levels are occupied
                         // In a rolling merkle tree, each non-empty level i represents 2^i blocks
                         val emptyHash = ByteString.unsafeFromArray(new Array[Byte](32))
-                        def countBlocksInTree(tree: scalus.prelude.List[ByteString]): Int = {
+                        def countBlocksInTree(tree: ScalusList[ByteString]): Int = {
                             var count = 0
                             var power = 1 // 2^level
                             var current = tree
-                            while current != scalus.prelude.List.Nil do {
+                            while current != ScalusList.Nil do {
                                 current match {
-                                    case scalus.prelude.List.Cons(hash, tail) =>
+                                    case ScalusList.Cons(hash, tail) =>
                                         if hash != emptyHash then count += power
                                         power *= 2
                                         current = tail
-                                    case _ => current = scalus.prelude.List.Nil
+                                    case _ => current = ScalusList.Nil
                                 }
                             }
                             count

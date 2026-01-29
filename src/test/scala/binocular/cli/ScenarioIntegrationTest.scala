@@ -3,9 +3,10 @@ package cli
 
 import binocular.{reverse, BitcoinChainState, BitcoinValidator, MerkleTree, OracleTransactions}
 import com.bloxbean.cardano.client.address.Address
-import scalus.builtin.{ByteString, Data}
-import scalus.builtin.Data.fromData
-import scalus.builtin.ToData.toData
+import scalus.uplc.builtin.{ByteString, Data}
+import scalus.uplc.builtin.Data.fromData
+import scalus.uplc.builtin.ToData.toData
+import scalus.cardano.onchain.plutus.prelude.{List => ScalusList}
 import scalus.utils.Hex.hexToBytes
 
 import scala.concurrent.duration.*
@@ -91,7 +92,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
             )
 
             val headers = Await.result(headersFuture, 30.seconds)
-            val headersList = scalus.prelude.List.from(headers.toList)
+            val headersList = ScalusList.from(headers.toList)
 
             println(s"[Test] ✓ Fetched ${headers.length} headers")
             println(s"[test]  headers: ${headers.map(h => h.bytes.toHex).mkString(", ")}")
@@ -220,7 +221,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
             println(s"[Test] Attempting update with empty header list")
 
             // Try to update with empty list - should fail validation
-            val emptyHeaders = scalus.prelude.List.empty[BlockHeader]
+            val emptyHeaders = ScalusList.empty[BlockHeader]
 
             // This should fail because validator requires non-empty headers
             println(s"[Test] ✓ Test with empty headers skipped (validator rejects empty list)")
@@ -332,7 +333,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
                 println(s"    forksTree size: ${currentState.forksTree.size}")
                 println(s"    confirmedBlocksTree size: ${currentState.confirmedBlocksTree.size}")
 
-                val headersList = scalus.prelude.List.from(batch.toList)
+                val headersList = ScalusList.from(batch.toList)
 
                 // Use current time for all batches except the last one
                 // For the last batch, use time + 25 minutes to trigger promotion

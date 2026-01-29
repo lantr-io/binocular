@@ -10,8 +10,9 @@ import com.bloxbean.cardano.client.function.helper.SignerProviders
 import com.bloxbean.cardano.client.plutus.spec.{PlutusV3Script, Redeemer}
 import com.bloxbean.cardano.client.quicktx.{QuickTxBuilder, ScriptTx, Tx}
 import scalus.bloxbean.Interop.toPlutusData
-import scalus.builtin.{ByteString, Data}
-import scalus.builtin.Data.toData
+import scalus.uplc.builtin.{ByteString, Data}
+import scalus.uplc.builtin.Data.toData
+import scalus.cardano.onchain.plutus.prelude.{List => ScalusList}
 
 import scala.jdk.CollectionConverters.*
 import scala.util.{Failure, Success, Try}
@@ -208,7 +209,7 @@ object OracleTransactions {
     /** Apply Bitcoin headers to ChainState to calculate new state */
     def applyHeaders(
         currentState: ChainState,
-        headers: scalus.prelude.List[BlockHeader],
+        headers: ScalusList[BlockHeader],
         currentTime: BigInt
     ): ChainState = {
         headers.foldLeft(currentState) { (state, header) =>
@@ -218,7 +219,7 @@ object OracleTransactions {
 
     /** Create UpdateOracle redeemer */
     def createUpdateOracleRedeemer(
-        blockHeaders: scalus.prelude.List[BlockHeader],
+        blockHeaders: ScalusList[BlockHeader],
         currentTime: BigInt,
         inputDatumHash: ByteString
     ): Redeemer = {
@@ -329,7 +330,7 @@ object OracleTransactions {
         oracleOutputIndex: Int,
         currentChainState: ChainState,
         newChainState: ChainState,
-        blockHeaders: scalus.prelude.List[BlockHeader],
+        blockHeaders: ScalusList[BlockHeader],
         validityIntervalTimeSeconds: BigInt,
         referenceScriptUtxo: Option[(String, Int)] =
             None, // Optional: (txHash, outputIndex) of reference script UTxO
@@ -430,8 +431,8 @@ object OracleTransactions {
                 validityIntervalTimeSeconds // Use the time that was used to compute the state
 
             // Compute input datum hash for redeemer
-            val inputDatumHash = scalus.builtin.Builtins.blake2b_256(
-              scalus.builtin.Builtins.serialiseData(currentChainState.toData)
+            val inputDatumHash = scalus.uplc.builtin.Builtins.blake2b_256(
+              scalus.uplc.builtin.Builtins.serialiseData(currentChainState.toData)
             )
 
             // Create UpdateOracle redeemer with the time that was used to compute the state

@@ -11,7 +11,8 @@ import com.bloxbean.cardano.client.plutus.spec.{PlutusData, PlutusV3Script, Rede
 import com.bloxbean.cardano.client.quicktx.{QuickTxBuilder, ScriptTx, Tx}
 import com.bloxbean.cardano.client.transaction.spec.{Transaction, TransactionOutput}
 import com.bloxbean.cardano.client.util.HexUtil
-import scalus.builtin.{ByteString, Data, FromData, ToData}
+import scalus.uplc.builtin.{ByteString, Data, FromData, ToData}
+import scalus.cardano.onchain.plutus.prelude.{List => ScalusList}
 
 import scala.jdk.CollectionConverters.*
 
@@ -99,14 +100,14 @@ object TransactionBuilders {
       *   Redeemer with UpdateOracle action
       */
     def createUpdateOracleRedeemer(
-        blockHeaders: scalus.prelude.List[BlockHeader],
+        blockHeaders: ScalusList[BlockHeader],
         currentTime: BigInt = BigInt(System.currentTimeMillis() / 1000)
     ): Redeemer = {
         // Dummy hash for tests (real implementation computes actual hash)
-        val dummyHash = scalus.builtin.ByteString.empty
+        val dummyHash = ByteString.empty
         val action = Action.UpdateOracle(blockHeaders, currentTime, dummyHash)
         // Action derives ToData, so we can use the derived instance
-        val actionData = ToData.toData(action)(using Action.derived$ToData)
+        val actionData = Data.toData(action)(using Action.derived$ToData)
         val redeemerData = scalusDataToPlutusData(actionData)
 
         Redeemer
@@ -155,7 +156,7 @@ object TransactionBuilders {
         scriptAddress: Address,
         prevChainState: ChainState,
         newChainState: ChainState,
-        blockHeaders: scalus.prelude.List[BlockHeader],
+        blockHeaders: ScalusList[BlockHeader],
         script: PlutusV3Script
     ): Either[String, String] = {
         try {
@@ -178,7 +179,7 @@ object TransactionBuilders {
 
             // 2. Parse current datum from UTXO
             val currentDatum = scalusDataToPlutusData(
-              ToData.toData(prevChainState)(using ChainState.derived$ToData)
+              Data.toData(prevChainState)(using ChainState.derived$ToData)
             )
 
             // 3. Create UpdateOracle redeemer
@@ -188,7 +189,7 @@ object TransactionBuilders {
 
             // 4. Convert new ChainState to PlutusData for new datum
             val newStateData =
-                ToData.toData(newChainState)(using ChainState.derived$ToData)
+                Data.toData(newChainState)(using ChainState.derived$ToData)
             val newDatum = scalusDataToPlutusData(newStateData)
 
             // 5. Calculate amount to lock (same as input)
@@ -254,7 +255,7 @@ object TransactionBuilders {
         try {
             // Convert ChainState to PlutusData for inline datum
             val stateData =
-                ToData.toData(genesisState)(using ChainState.derived$ToData)
+                Data.toData(genesisState)(using ChainState.derived$ToData)
             val plutusDatum = scalusDataToPlutusData(stateData)
 
             // Create amount
@@ -327,7 +328,7 @@ object TransactionBuilders {
       */
     def applyHeaders(
         currentState: ChainState,
-        headers: scalus.prelude.List[BlockHeader],
+        headers: ScalusList[BlockHeader],
         currentTime: BigInt
     ): ChainState = {
         headers.foldLeft(currentState) { (state, header) =>

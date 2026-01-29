@@ -2,7 +2,8 @@ package binocular.cli
 
 import binocular.*
 import com.bloxbean.cardano.client.address.Address
-import scalus.builtin.{ByteString, Data}
+import scalus.uplc.builtin.{ByteString, Data}
+import scalus.cardano.onchain.plutus.prelude.{List => ScalusList}
 import scalus.utils.Hex.hexToBytes
 
 import scala.concurrent.duration.*
@@ -102,7 +103,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
             )
 
             val headers = Await.result(headersFuture, 30.seconds)
-            val headersList = scalus.prelude.List.from(headers.toList)
+            val headersList = ScalusList.from(headers.toList)
 
             println(s"[Test] ✓ Fetched ${headers.length} headers")
 
@@ -236,11 +237,11 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
     }
 
     /** Helper to count non-empty levels in the Merkle tree */
-    private def countTreeLevels(tree: scalus.prelude.List[ByteString]): Int = {
-        def count(list: scalus.prelude.List[ByteString], acc: Int): Int = {
+    private def countTreeLevels(tree: ScalusList[ByteString]): Int = {
+        def count(list: ScalusList[ByteString], acc: Int): Int = {
             list match {
-                case scalus.prelude.List.Nil              => acc
-                case scalus.prelude.List.Cons(head, tail) =>
+                case ScalusList.Nil              => acc
+                case ScalusList.Cons(head, tail) =>
                     // Count this level if it's not all zeros (empty)
                     val isEmpty = head.bytes.forall(_ == 0)
                     count(tail, if isEmpty then acc else acc + 1)

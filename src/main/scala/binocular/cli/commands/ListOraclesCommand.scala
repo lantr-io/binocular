@@ -2,9 +2,9 @@ package binocular.cli.commands
 
 import binocular.{CardanoConfig, ChainState, OracleConfig}
 import binocular.cli.{Command, CommandHelpers}
-import scalus.builtin.Data
-import scalus.builtin.Data.fromData
-import scalus.builtin.ByteString.given
+import scalus.uplc.builtin.Data
+import scalus.uplc.builtin.Data.fromData
+import scalus.uplc.builtin.ByteString.given
 
 import scala.jdk.CollectionConverters.*
 import scala.util.{Failure, Success, Try}

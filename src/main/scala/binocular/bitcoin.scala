@@ -2,10 +2,10 @@ package binocular
 import binocular.BitcoinValidator.*
 import org.apache.pekko.actor.ActorSystem
 import scalus.bloxbean.Interop.??
-import scalus.builtin.Builtins.*
-import scalus.builtin.ByteString
-import scalus.ledger.api.v2.TxOutRef
-import scalus.prelude
+import scalus.uplc.builtin.Builtins.*
+import scalus.uplc.builtin.ByteString
+import scalus.cardano.onchain.plutus.v1.TxOutRef
+import scalus.cardano.onchain.plutus.prelude
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration.*

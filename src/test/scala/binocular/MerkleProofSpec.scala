@@ -1,9 +1,9 @@
 package binocular
 
 import munit.FunSuite
-import scalus.builtin.ByteString
-import scalus.builtin.ByteString.hex
-import scalus.builtin.Builtins.sha2_256
+import scalus.uplc.builtin.ByteString
+import scalus.uplc.builtin.ByteString.hex
+import scalus.uplc.builtin.Builtins.sha2_256
 
 import scala.collection.mutable.ArrayBuffer
 

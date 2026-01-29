@@ -1,8 +1,8 @@
 package binocular
 
 import binocular.BitcoinValidator.*
-import scalus.builtin.ByteString
-import scalus.prelude
+import scalus.uplc.builtin.ByteString
+import scalus.cardano.onchain.plutus.prelude
 import scalus.utils.Hex.hexToBytes
 
 import scala.concurrent.{ExecutionContext, Future}

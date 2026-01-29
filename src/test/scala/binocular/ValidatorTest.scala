@@ -12,12 +12,14 @@ import org.scalacheck.Prop.forAll
 import scalus.*
 import scalus.bloxbean.Interop
 import scalus.bloxbean.Interop.{getScriptInfoV3, getTxInfoV3, toScalusData}
-import scalus.builtin.ByteString.hex
-import scalus.builtin.Data.toData
-import scalus.builtin.{Builtins, ByteString, Data}
+import scalus.uplc.builtin.ByteString.hex
+import scalus.uplc.builtin.Data.toData
+import scalus.uplc.builtin.{Builtins, ByteString, Data}
+import scalus.cardano.onchain.plutus.prelude
 import scalus.cardano.ledger
 import scalus.cardano.ledger.{CardanoInfo, Coin}
-import scalus.ledger.api.v3.{PubKeyHash, ScriptContext}
+import scalus.cardano.onchain.plutus.v1.PubKeyHash
+import scalus.cardano.onchain.plutus.v3.ScriptContext
 import scalus.uplc.eval
 import scalus.uplc.eval.*
 import upickle.default.*
@@ -488,7 +490,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
               .scriptRef(script)
               .build()
         )
-        val slot = posixTimeToSlot(intervalStartMs * 1000, ledger.SlotConfig.Mainnet)
+        val slot = posixTimeToSlot(intervalStartMs * 1000, ledger.SlotConfig.mainnet)
         val tx = Transaction
             .builder()
             .body(
@@ -525,7 +527,7 @@ class ValidatorTest extends munit.ScalaCheckSuite {
           tx,
           TransactionUtil.getTxHash(tx),
           utxo,
-          ledger.SlotConfig.Mainnet,
+          ledger.SlotConfig.mainnet,
           protocolVersion = 10
         )
         (scriptContext, tx)
@@ -1289,12 +1291,13 @@ class ValidatorTest extends munit.ScalaCheckSuite {
                 // Resource usage with ForkBranch implementation (optimized findBranch)
                 // and debug logging enabled
                 // Updated for correct chainwork calculation using 2^256 / (target + 1)
+                // Updated for Scalus 0.14.2 with new package imports
                 assertEquals(
                   r.budget,
-                  ledger.ExUnits(463020, 143828562),
+                  ledger.ExUnits(433946, 135136413),
                   "Unexpected resource usage"
                 )
-                assertEquals(r.budget.fee(prices), Coin(37087), "Unexpected fee cost")
+                assertEquals(r.budget.fee(prices), Coin(34783), "Unexpected fee cost")
             case r: Result.Failure =>
                 fail(s"Validation failed: $r")
     }

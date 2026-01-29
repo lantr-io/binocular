@@ -1,8 +1,8 @@
 package binocular
 
 import munit.FunSuite
-import scalus.builtin.ByteString
-import scalus.prelude.List
+import scalus.uplc.builtin.ByteString
+import scalus.cardano.onchain.plutus.prelude.List
 
 class ForksTreeStructureTest extends FunSuite {
 

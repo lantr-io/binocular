@@ -2,9 +2,10 @@ package binocular.cli.commands
 
 import binocular.{CardanoConfig, ChainState, OracleConfig}
 import binocular.cli.{Command, CommandHelpers}
-import scalus.builtin.Data
-import scalus.builtin.Data.{fromData, FromData}
-import scalus.builtin.ByteString.given
+import scalus.uplc.builtin.Data
+import scalus.uplc.builtin.Data.{fromData, FromData}
+import scalus.uplc.builtin.ByteString.given
+import scalus.cardano.onchain.plutus.prelude.{List => ScalusList}
 
 import scala.jdk.CollectionConverters.*
 import scala.util.{Failure, Success, Try}
@@ -75,7 +76,7 @@ case class VerifyOracleCommand(utxo: String) extends Command {
 
                                     // Parse ChainState from datum
                                     Try {
-                                        import scalus.builtin.ByteString
+                                        import scalus.uplc.builtin.ByteString
                                         val bs = ByteString.fromHex(datumHex)
                                         val data = Data.fromCbor(bs)
                                         val chainState = fromData[ChainState](data)
@@ -96,7 +97,6 @@ case class VerifyOracleCommand(utxo: String) extends Command {
                                               s"  Recent Timestamps: ${chainState.recentTimestamps.size} entries"
                                             )
                                             // Show actual timestamp values for debugging
-                                            import scalus.prelude.List as ScalusList
                                             def toScalaList(
                                                 l: ScalusList[BigInt]
                                             ): scala.List[BigInt] = l match {

@@ -3,8 +3,8 @@ package binocular
 import org.apache.pekko.actor.ActorSystem
 import org.bitcoins.core.protocol.blockchain.BlockHeader as BtcHeader
 import org.bitcoins.rpc.client.v27.BitcoindV27RpcClient
-import scalus.builtin.ByteString
-import scalus.prelude
+import scalus.uplc.builtin.ByteString
+import scalus.cardano.onchain.plutus.prelude
 import upickle.default.*
 
 import java.io.File
@@ -178,7 +178,7 @@ object BitcoinHeaderFixtures {
           blockTimestamp = timestamp,
           recentTimestamps = prelude.List.single(timestamp),
           previousDifficultyAdjustmentTimestamp = estimatedPrevAdjustmentTime,
-          confirmedBlocksTree = scalus.prelude.List(blockHash),
+          confirmedBlocksTree = prelude.List(blockHash),
           forksTree = prelude.List.Nil
         )
     }

@@ -3,8 +3,8 @@ package binocular
 import com.bloxbean.cardano.client.address.Address
 import com.bloxbean.cardano.client.plutus.spec.PlutusV3Script
 import com.bloxbean.cardano.client.util.HexUtil
-import scalus.builtin.ByteString
-import scalus.prelude
+import scalus.uplc.builtin.ByteString
+import scalus.cardano.onchain.plutus.prelude
 
 import scala.jdk.CollectionConverters.*
 
@@ -162,7 +162,7 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
                 println(s"\n--- Submitting header ${idx + 1}/${remainingHeaders.length} ---")
 
                 // Calculate expected new state
-                val headerList = scalus.prelude.List.single(header)
+                val headerList = prelude.List.single(header)
                 val newState =
                     TransactionBuilders.applyHeaders(currentState, headerList, currentTime)
                 println(s"  Expected new height: ${newState.blockHeight}")
@@ -209,7 +209,7 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
             .reverse
         val genesisTarget = ByteString.fromHex("17030ecd").reverse
         val genesisTimestamp = BigInt(1736701001)
-        val genesisRecentTimestamps = scalus.prelude.List.single(genesisTimestamp)
+        val genesisRecentTimestamps = prelude.List.single(genesisTimestamp)
 
         ChainState(
           blockHeight = genesisHeight,
@@ -220,7 +220,7 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
           previousDifficultyAdjustmentTimestamp =
               genesisTimestamp - 600 * BitcoinValidator.DifficultyAdjustmentInterval,
           confirmedBlocksTree = prelude.List(genesisHash),
-          forksTree = scalus.prelude.List.Nil
+          forksTree = prelude.List.Nil
         )
     }
 }

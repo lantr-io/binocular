@@ -8,8 +8,9 @@ import com.bloxbean.cardano.client.function.helper.SignerProviders
 import com.bloxbean.cardano.client.quicktx.{QuickTxBuilder, Tx}
 import scalus.utils.Hex.hexToBytes
 import scalus.bloxbean.Interop.toScalusData
-import scalus.builtin.Data.fromData
-import scalus.builtin.{ByteString, Data}
+import scalus.uplc.builtin.Data.fromData
+import scalus.uplc.builtin.{ByteString, Data}
+import scalus.cardano.onchain.plutus.prelude.{List => ScalusList}
 
 import scala.concurrent.duration.*
 import scala.concurrent.{Await, ExecutionContext, Future}
@@ -292,8 +293,7 @@ case class UpdateOracleCommand(
                             val currentTime = System.currentTimeMillis() / 1000 // Unix timestamp
                             val challengeAgingSeconds = BitcoinValidator.ChallengeAging.toLong
 
-                            // Helper to convert scalus.prelude.List to Scala List
-                            import scalus.prelude.List as ScalusList
+                            // Helper to convert ScalusList to Scala List
                             def toScalaList[A](l: ScalusList[A]): scala.List[A] = l match {
                                 case ScalusList.Nil        => scala.Nil
                                 case ScalusList.Cons(h, t) => h :: toScalaList(t)
@@ -447,7 +447,7 @@ case class UpdateOracleCommand(
                             }
 
                             // Convert to Scalus list
-                            val headersList = scalus.prelude.List.from(headers.toList)
+                            val headersList = ScalusList.from(headers.toList)
 
                             // Calculate new ChainState using shared validator logic
                             val validityTime =

@@ -1,11 +1,12 @@
 package binocular
 
-import scalus.builtin.*
-import scalus.builtin.Builtins.*
-import scalus.builtin.Data.{toData, FromData, ToData}
-import scalus.ledger.api.v2.OutputDatum
-import scalus.ledger.api.v3.*
-import scalus.prelude.{List, *}
+import scalus.uplc.builtin.*
+import scalus.uplc.builtin.Builtins.*
+import scalus.uplc.builtin.Data.{toData, FromData, ToData}
+import scalus.cardano.onchain.plutus.v1.{Address, Credential}
+import scalus.cardano.onchain.plutus.v2.OutputDatum
+import scalus.cardano.onchain.plutus.v3.{TxInfo, TxInInfo, TxOut, TxOutRef, Datum}
+import scalus.cardano.onchain.plutus.prelude.{List, *}
 import scalus.{Compile, Compiler, *}
 import scalus.compiler.sir.TargetLoweringBackend
 import scalus.uplc.Program
@@ -102,15 +103,15 @@ object TransactionVerifierValidator {
 
     /** Main validator entry point - spending validator function */
     inline def spend(
-        datumOpt: scalus.prelude.Option[Datum],
+        datumOpt: Option[Datum],
         redeemer: Datum,
         tx: TxInfo,
         outRef: TxOutRef
     ): Unit = {
         // Extract datum
         val datum = datumOpt match {
-            case scalus.prelude.Option.Some(d) => d.to[TxVerifierDatum]
-            case scalus.prelude.Option.None    => fail("Missing datum")
+            case Option.Some(d) => d.to[TxVerifierDatum]
+            case Option.None    => fail("Missing datum")
         }
 
         // Extract redeemer
@@ -164,7 +165,7 @@ object TransactionVerifierValidator {
         val scriptInfo = unConstrData(sc.tail.tail.head)
         if scriptInfo.fst == BigInt(1) then
             val txOutRef = scriptInfo.snd.head.to[TxOutRef]
-            val datum = scriptInfo.snd.tail.head.to[scalus.prelude.Option[Datum]]
+            val datum = scriptInfo.snd.tail.head.to[Option[Datum]]
             val txInfo = txInfoData.to[TxInfo]
             spend(datum, redeemer, txInfo, txOutRef)
         else fail("Invalid script context")

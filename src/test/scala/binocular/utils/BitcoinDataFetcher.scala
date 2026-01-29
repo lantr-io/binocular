@@ -2,7 +2,7 @@ package binocular.utils
 
 import binocular.{BitcoinNodeConfig, MerkleTree, SimpleBitcoinRpc}
 import org.apache.pekko.actor.ActorSystem
-import scalus.builtin.ByteString
+import scalus.uplc.builtin.ByteString
 import upickle.default.*
 
 import java.nio.file.{Files, Paths}

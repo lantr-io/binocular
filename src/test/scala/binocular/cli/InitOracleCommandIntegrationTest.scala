@@ -3,7 +3,7 @@ package binocular.cli
 import binocular.cli.commands.InitOracleCommand
 import binocular.{BitcoinChainState, BitcoinValidator, ChainState, OracleTransactions}
 import com.bloxbean.cardano.client.address.Address
-import scalus.builtin.Data
+import scalus.uplc.builtin.Data
 import scalus.utils.Hex.hexToBytes
 
 import scala.concurrent.duration.*

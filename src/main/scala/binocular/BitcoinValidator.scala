@@ -1,13 +1,14 @@
 package binocular
 
-import scalus.builtin.*
-import scalus.builtin.Builtins.*
-import scalus.builtin.ByteString.*
-import scalus.builtin.Data.{toData, FromData, ToData}
-import scalus.ledger.api.v2.OutputDatum
-import scalus.ledger.api.v3.*
-import scalus.prelude.{List, Math, *}
-import scalus.prelude.Math.pow
+import scalus.uplc.builtin.*
+import scalus.uplc.builtin.Builtins.*
+import scalus.uplc.builtin.ByteString.*
+import scalus.uplc.builtin.Data.{toData, FromData, ToData}
+import scalus.cardano.onchain.plutus.v1.{Address, Credential, PubKeyHash}
+import scalus.cardano.onchain.plutus.v2.{OutputDatum, Interval, IntervalBoundType}
+import scalus.cardano.onchain.plutus.v3.{TxInfo, TxInInfo, TxOut, TxOutRef, Datum, Validator, ScriptContext}
+import scalus.cardano.onchain.plutus.prelude.{List, Math, *}
+import scalus.cardano.onchain.plutus.prelude.Math.pow
 import scalus.{show as _, *}
 
 import scala.annotation.tailrec
@@ -142,9 +143,9 @@ object BitcoinValidator extends Validator {
     ): Option[ForkBranch] = {
         def search(remaining: List[ForkBranch]): Option[ForkBranch] = {
             remaining match
-                case List.Nil => scalus.prelude.Option.None
+                case List.Nil => Option.None
                 case List.Cons(branch, tail) =>
-                    if branch.tipHash == blockHash then scalus.prelude.Option.Some(branch)
+                    if branch.tipHash == blockHash then Option.Some(branch)
                     else search(tail)
         }
         search(forksTree)
@@ -169,9 +170,9 @@ object BitcoinValidator extends Validator {
     ): Option[BlockSummary] = {
         def search(remaining: List[BlockSummary]): Option[BlockSummary] = {
             remaining match
-                case List.Nil => scalus.prelude.Option.None
+                case List.Nil => Option.None
                 case List.Cons(block, tail) =>
-                    if block.hash == hash then scalus.prelude.Option.Some(block)
+                    if block.hash == hash then Option.Some(block)
                     else search(tail)
         }
         search(blocks)
@@ -631,15 +632,15 @@ object BitcoinValidator extends Validator {
                 case List.Nil => currentBest
                 case List.Cons(branch, tail) =>
                     val newBest = currentBest match
-                        case scalus.prelude.Option.None =>
-                            scalus.prelude.Option.Some(branch)
-                        case scalus.prelude.Option.Some(best) =>
+                        case Option.None =>
+                            Option.Some(branch)
+                        case Option.Some(best) =>
                             if branch.tipChainwork > best.tipChainwork then
-                                scalus.prelude.Option.Some(branch)
+                                Option.Some(branch)
                             else currentBest
                     findMaxChainworkBranch(tail, newBest)
 
-        findMaxChainworkBranch(forksTree, scalus.prelude.Option.None)
+        findMaxChainworkBranch(forksTree, Option.None)
 
     // Add block to forks tree - matches Transition 1 in Whitepaper
     def addBlockToForksTree(
@@ -676,14 +677,14 @@ object BitcoinValidator extends Validator {
                 )
             else
                 parentBranchOpt match
-                    case scalus.prelude.Option.Some(branch) =>
+                    case Option.Some(branch) =>
                         (
                           branch.tipHeight,
                           branch.tipChainwork,
                           branch.recentBlocks.head.timestamp,
                           branch.recentBlocks.head.bits
                         )
-                    case scalus.prelude.Option.None =>
+                    case Option.None =>
                         fail("Parent branch not found")
 
         val blockHeight = parentHeight + 1
@@ -720,12 +721,12 @@ object BitcoinValidator extends Validator {
             else
                 // For fork blocks, use branch's recentBlocks + confirmed timestamps for median-time-past
                 parentBranchOpt match
-                    case scalus.prelude.Option.Some(branch) =>
+                    case Option.Some(branch) =>
                         getMedianTimePastFromBlocks(
                           branch.recentBlocks,
                           confirmedState.recentTimestamps
                         )
-                    case scalus.prelude.Option.None => fail("Parent branch not found")
+                    case Option.None => fail("Parent branch not found")
 
         require(blockTime > medianTimePast, "Block timestamp not greater than median time past")
         require(blockTime <= currentTime + MaxFutureBlockTime, "Block timestamp too far in future")
@@ -753,12 +754,12 @@ object BitcoinValidator extends Validator {
         // Determine how to update forksTree based on parent location
         // Parent is always at the tip of its branch (forks create new branches)
         parentBranchOpt match
-            case scalus.prelude.Option.Some(parentBranch) =>
+            case Option.Some(parentBranch) =>
                 // Parent is branch tip - extend the branch
                 // log("Extending existing branch")
                 val extendedBranch = extendBranch(parentBranch, newBlock)
                 updateBranch(forksTree, parentBranch, extendedBranch)
-            case scalus.prelude.Option.None =>
+            case Option.None =>
                 // Parent is confirmed tip - create new branch
                 // log("Creating new branch from confirmed tip")
                 val newBranch = ForkBranch(
@@ -779,10 +780,10 @@ object BitcoinValidator extends Validator {
     ): (List[BlockSummary], List[ForkBranch]) =
         // Find canonical branch
         selectCanonicalChain(forksTree) match
-            case scalus.prelude.Option.None =>
+            case Option.None =>
                 // No blocks in forks tree
                 (List.Nil, forksTree)
-            case scalus.prelude.Option.Some(canonicalBranch) =>
+            case Option.Some(canonicalBranch) =>
                 // Split blocks into (remainingReverse, promoted) in a single pass
                 // recentBlocks is newest-first, so we traverse from newest to oldest
                 // Once we find a promotable block, all older blocks (rest of list) are also promotable
@@ -852,8 +853,8 @@ object BitcoinValidator extends Validator {
 
         // Find current canonical tip hash
         val canonicalTipHash = selectCanonicalChain(forksTree) match
-            case scalus.prelude.Option.Some(branch) => branch.tipHash
-            case scalus.prelude.Option.None         => confirmedTip
+            case Option.Some(branch) => branch.tipHash
+            case Option.None         => confirmedTip
 
         // RULE 2: Classify blocks: canonical extensions vs others (forks)
         def classifyBlocks(
@@ -896,10 +897,10 @@ object BitcoinValidator extends Validator {
         else
             // Find canonical branch
             selectCanonicalChain(forksTree) match
-                case scalus.prelude.Option.None =>
+                case Option.None =>
                     // No blocks in forks tree
                     forksTree
-                case scalus.prelude.Option.Some(canonicalBranch) =>
+                case Option.Some(canonicalBranch) =>
                     val canonicalTipHeight = canonicalBranch.tipHeight
                     val canonicalTipChainwork = canonicalBranch.tipChainwork
 
@@ -1180,10 +1181,10 @@ object BitcoinValidator extends Validator {
         // scalus.prelude.log("selecting canonical chain")
         val canonicalBranchOpt = selectCanonicalChain(forksTreeAfterAddition)
         val canonicalTipHash = canonicalBranchOpt match
-            case scalus.prelude.Option.Some(branch) =>
+            case Option.Some(branch) =>
                 // scalus.prelude.log("canonical tip found")
                 branch.tipHash
-            case scalus.prelude.Option.None =>
+            case Option.None =>
                 // scalus.prelude.log("canonical tip is prev hash")
                 prevState.blockHash
 

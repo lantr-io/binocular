@@ -5,6 +5,7 @@ import binocular.cli.Command
 
 import scala.concurrent.{Await, ExecutionContext}
 import scala.concurrent.duration.*
+import scala.util.boundary, boundary.break
 
 /** Initialize new oracle from Bitcoin block */
 case class InitOracleCommand(startBlock: Option[Long]) extends Command {
@@ -43,12 +44,12 @@ case class InitOracleCommand(startBlock: Option[Long]) extends Command {
         cardanoConf: CardanoConfig,
         oracleConf: OracleConfig,
         walletConf: WalletConfig
-    ): Int = {
+    ): Int = boundary {
         // Determine start block height
         val blockHeight = startBlock.orElse(oracleConf.startHeight).getOrElse {
             System.err.println("Error: No start block height specified")
             System.err.println("  Use --start-block <HEIGHT> or configure ORACLE_START_HEIGHT")
-            return 1
+            break(1)
         }
 
         println(s"Start Block Height: $blockHeight")
@@ -64,7 +65,7 @@ case class InitOracleCommand(startBlock: Option[Long]) extends Command {
                 acc
             case Left(err) =>
                 System.err.println(s"Error creating wallet account: $err")
-                return 1
+                break(1)
         }
 
         // Create Cardano backend service
@@ -74,7 +75,7 @@ case class InitOracleCommand(startBlock: Option[Long]) extends Command {
                 service
             case Left(err) =>
                 System.err.println(s"Error creating backend service: $err")
-                return 1
+                break(1)
         }
 
         println()
@@ -103,7 +104,7 @@ case class InitOracleCommand(startBlock: Option[Long]) extends Command {
                     println("  1. Bitcoin node is running and accessible")
                     println("  2. RPC credentials are correct")
                     println("  3. Block height $blockHeight exists")
-                    return 1
+                    break(1)
             }
 
         println(s"✓ Fetched initial state:")
@@ -121,7 +122,7 @@ case class InitOracleCommand(startBlock: Option[Long]) extends Command {
               s"  Got ${initialState.recentTimestamps.size}, need $requiredTimestamps"
             )
             System.err.println(s"  This is a bug - please report it")
-            return 1
+            break(1)
         }
         println(s"✓ Validated: All $requiredTimestamps timestamps present for median-time-past")
 

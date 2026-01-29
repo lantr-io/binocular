@@ -33,7 +33,7 @@ class ContractDeterminismTest extends FunSuite {
       * UPDATE THIS VALUE when BitcoinValidator.scala is intentionally modified. The new hash will
       * be printed by BitcoinContract when a new variant is detected.
       */
-    private val EXPECTED_CONTRACT_HASH = "bccdcc82a2c13311"
+    private val EXPECTED_CONTRACT_HASH = "67c470e711ea18fe"
 
     /** Compute the contract hash the same way BitcoinContract does */
     private def computeContractHash(cborHex: String): String = {
