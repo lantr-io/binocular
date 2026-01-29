@@ -5,7 +5,7 @@ import scalus.uplc.builtin.Builtins.*
 import scalus.uplc.builtin.Data.{toData, FromData, ToData}
 import scalus.cardano.onchain.plutus.v1.{Address, Credential}
 import scalus.cardano.onchain.plutus.v2.OutputDatum
-import scalus.cardano.onchain.plutus.v3.{TxInfo, TxInInfo, TxOut, TxOutRef, Datum}
+import scalus.cardano.onchain.plutus.v3.{Datum, TxInInfo, TxInfo, TxOut, TxOutRef}
 import scalus.cardano.onchain.plutus.prelude.{List, *}
 import scalus.{Compile, Compiler, *}
 import scalus.compiler.sir.TargetLoweringBackend

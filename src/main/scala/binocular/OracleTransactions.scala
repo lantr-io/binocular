@@ -1,124 +1,78 @@
 package binocular
 
 import binocular.util.SlotConfigHelper
-import com.bloxbean.cardano.client.account.Account
-import com.bloxbean.cardano.client.address.Address
-import com.bloxbean.cardano.client.api.model.Amount
-import com.bloxbean.cardano.client.backend.api.{BackendService, DefaultUtxoSupplier}
-import scalus.utils.Hex
-import com.bloxbean.cardano.client.function.helper.SignerProviders
-import com.bloxbean.cardano.client.plutus.spec.{PlutusV3Script, Redeemer}
-import com.bloxbean.cardano.client.quicktx.{QuickTxBuilder, ScriptTx, Tx}
-import scalus.bloxbean.Interop.toPlutusData
+import scalus.cardano.address.Address
+import scalus.cardano.ledger.{CardanoInfo, DatumOption, PlutusScript, Script, ScriptRef, Transaction, TransactionHash, TransactionInput, TransactionOutput, Utxo, Utxos, Value}
+import scalus.cardano.node.{BlockchainProvider, SubmitError, UtxoQuery, UtxoSource}
+import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}
 import scalus.uplc.builtin.{ByteString, Data}
 import scalus.uplc.builtin.Data.toData
-import scalus.cardano.onchain.plutus.prelude.{List => ScalusList}
+import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 
-import scala.jdk.CollectionConverters.*
+import java.time.Instant
+import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.concurrent.duration.*
 import scala.util.{Failure, Success, Try}
 
 /** Helper functions for building oracle transactions */
 object OracleTransactions {
 
     /** Get compiled PlutusV3 script */
-    def getCompiledScript(): PlutusV3Script = {
-        val scriptCborHex = OracleConfig.getScriptCborHex()
-
-        PlutusV3Script
-            .builder()
-            .`type`("PlutusScriptV3")
-            .cborHex(scriptCborHex)
-            .build()
-            .asInstanceOf[PlutusV3Script]
+    def getPlutusScript(): Script.PlutusV3 = {
+        Script.PlutusV3(BitcoinContract.bitcoinProgram.cborByteString)
     }
 
     /** Deploy the oracle script to a UTxO as a reference script. This allows subsequent
       * transactions to use the script without including it in the tx body, significantly reducing
       * transaction size.
       *
-      * @param account
-      *   Account to fund the reference script UTxO
-      * @param backendService
-      *   Backend service
+      * @param signer
+      *   TransactionSigner to sign the transaction
+      * @param provider
+      *   BlockchainProvider for querying and submitting
+      * @param sponsorAddress
+      *   Address to pay fees from
       * @param destinationAddress
       *   Address to deploy reference script to
-      * @param consumeOldRefScript
-      *   Optional (txHash, outputIndex) of old reference script UTxO to consume
+      * @param timeout
+      *   Transaction timeout
       * @return
-      *   Either error message or (txHash, outputIndex) of the reference script UTxO
+      *   Either error message or (txHash, outputIndex, savedOutput) of the reference script UTxO.
+      *   The savedOutput is the TransactionOutput we constructed, which includes scriptRef. Use it
+      *   to build the Utxo locally after tx confirmation, since chain queries may not return the
+      *   scriptRef field.
       */
     def deployReferenceScript(
-        account: Account,
-        backendService: BackendService,
-        destinationAddress: String,
-        consumeOldRefScript: Option[(String, Int)] = None
-    ): Either[String, (String, Int)] = {
+        signer: TransactionSigner,
+        provider: BlockchainProvider,
+        sponsorAddress: Address,
+        destinationAddress: Address,
+        timeout: Duration = 120.seconds
+    ): Either[String, (String, Int, TransactionOutput)] = {
+        given ec: ExecutionContext = provider.executionContext
         Try {
-            val script = getCompiledScript()
-            val quickTxBuilder = new QuickTxBuilder(backendService)
+            val script = getPlutusScript()
 
-            // Create a UTxO that holds the script as a reference script
-            // Large scripts require significant minimum ADA (~47 ADA for our 10KB script)
-            // Using 50 ADA to be safe
-            // IMPORTANT: Must pass scriptRefBytes(), not the script object itself!
-            val txBase = new Tx()
-                .payToAddress(
-                  destinationAddress,
-                  java.util.List.of(
-                    Amount.lovelace(java.math.BigInteger.valueOf(50000000))
-                  ), // 50 ADA
-                  script.scriptRefBytes() // Get the CBOR bytes!
+            val output = TransactionOutput.Babbage(
+              address = destinationAddress,
+              value = Value.lovelace(50_000_000), // 50 ADA
+              datumOption = None,
+              scriptRef = Some(ScriptRef(script))
+            )
+
+            val tx = Await
+                .result(
+                  TxBuilder(provider.cardanoInfo)
+                      .output(output)
+                      .complete(provider, sponsorAddress),
+                  timeout
                 )
+                .sign(signer)
+                .transaction
 
-            // If consuming old reference script, add it as input
-            val tx = consumeOldRefScript match {
-                case Some((oldTxHash, oldOutputIndex)) =>
-                    println(s"[DEBUG] Consuming old reference script: $oldTxHash:$oldOutputIndex")
-                    // Fetch the UTxO to consume
-                    val utxoService = backendService.getUtxoService
-                    val oldUtxo = utxoService.getTxOutput(oldTxHash, oldOutputIndex)
-                    if !oldUtxo.isSuccessful || oldUtxo.getValue == null then {
-                        throw new RuntimeException(
-                          s"Failed to fetch old reference script UTxO: ${oldUtxo.getResponse}"
-                        )
-                    }
-                    txBase.collectFrom(java.util.List.of(oldUtxo.getValue))
-                case None =>
-                    txBase.from(account.baseAddress())
-            }
-
-            // Build and submit the transaction
-            // QuickTxBuilder underestimates the fee when deploying reference scripts because it doesn't
-            // account for the ~10KB script bytes in the output. We adjust both fee and change output.
-            // The actual fee should be ~755,000 lovelace based on real network feedback.
-            import com.bloxbean.cardano.client.function.TxBuilder
-            val adjustFeeAndChange: TxBuilder = (context, txn) => {
-                val currentFee = txn.getBody.getFee
-                val feeIncrease = java.math.BigInteger.valueOf(200000) // Add 0.2 ADA
-                val newFee = currentFee.add(feeIncrease)
-                txn.getBody.setFee(newFee)
-
-                // Reduce the change output (last output) by the fee increase
-                val outputs = txn.getBody.getOutputs
-                if outputs.size() >= 2 then {
-                    val changeOutput = outputs.get(outputs.size() - 1) // Last output is change
-                    val currentAmount = changeOutput.getValue.getCoin
-                    val newAmount = currentAmount.subtract(feeIncrease)
-                    changeOutput.getValue.setCoin(newAmount)
-                }
-            }
-
-            val result = quickTxBuilder
-                .compose(tx)
-                .withSigner(SignerProviders.signerFrom(account))
-                .postBalanceTx(adjustFeeAndChange) // Adjust fee AND change output after balance
-                .completeAndWait()
-
-            if result.isSuccessful then {
-                // The reference script UTxO is at output index 0
-                Right((result.getValue, 0))
-            } else {
-                Left(s"Failed to deploy reference script: ${result.getResponse}")
+            submitTx(provider, tx, timeout) match {
+                case Right(txHash) => Right((txHash, 0, output))
+                case Left(err)     => Left(err)
             }
         } match {
             case Success(result) => result
@@ -131,79 +85,65 @@ object OracleTransactions {
       *
       * Searches for UTxOs that contain the oracle script as a reference script.
       *
-      * @param backendService
-      *   Backend service
+      * @param provider
+      *   BlockchainProvider
       * @param searchAddress
       *   Address to search for reference scripts
+      * @param timeout
+      *   Query timeout
       * @return
-      *   List of (txHash, outputIndex) tuples for UTxOs with matching reference script. Returns
-      *   empty list if none found (not an error). Throws exception on query failures.
+      *   List of (txHash, outputIndex) tuples for UTxOs with matching reference script.
       */
     def findReferenceScriptUtxos(
-        backendService: BackendService,
-        searchAddress: String
+        provider: BlockchainProvider,
+        searchAddress: Address,
+        timeout: Duration = 30.seconds
     ): List[(String, Int)] = {
-        val script = getCompiledScript()
-        val expectedScriptHash = Hex.bytesToHex(script.getScriptHash)
+        given ec: ExecutionContext = provider.executionContext
+        val script = getPlutusScript()
+        val expectedScriptHash = script.scriptHash
 
-        println(s"Searching for reference script UTxOs at address: $searchAddress")
-        println(s"Expected script hash: $expectedScriptHash")
+        println(
+          s"Searching for reference script UTxOs at address: ${searchAddress.encode.getOrElse("?")}"
+        )
+        println(s"Expected script hash: ${expectedScriptHash.toHex}")
 
-        // Query UTxOs at the address
-        val utxoService = backendService.getUtxoService
-        val utxos = utxoService.getUtxos(searchAddress, 100, 1)
+        val utxosResult = Await.result(
+          provider.findUtxos(searchAddress),
+          timeout
+        )
 
-        if !utxos.isSuccessful then {
-            throw new RuntimeException(s"Failed to fetch UTxOs: ${utxos.getResponse}")
+        val utxos: Utxos = utxosResult match {
+            case Right(u)  => u
+            case Left(err) => throw new RuntimeException(s"Failed to fetch UTxOs: $err")
         }
 
-        val allUtxos = utxos.getValue.asScala.toList
-
-        // Filter UTxOs that have a reference script matching our script hash
-        val matchingUtxos = allUtxos
-            .filter { utxo =>
-                val refScriptHash = Option(utxo.getReferenceScriptHash)
-                // Exclude the known broken UTxO with 0 script bytes
-                val isBroken =
-                    utxo.getTxHash == "95d13b561f1b6056018b6eb113da05ee6e5d4c8d0de9f4ddbedfe2be1fd66284" && utxo.getOutputIndex == 0
-                refScriptHash.exists(hash =>
-                    hash == expectedScriptHash && hash != null && !hash.isEmpty
-                ) && !isBroken
+        val matchingUtxos = utxos.toList
+            .filter { case (input, output) =>
+                output.scriptRef.exists { ref =>
+                    ref.script match {
+                        case ps: PlutusScript => ps.scriptHash == expectedScriptHash
+                        case _                => false
+                    }
+                }
             }
-            .map(utxo => (utxo.getTxHash, utxo.getOutputIndex))
+            .map { case (input, _) =>
+                (input.transactionId.toHex, input.index)
+            }
 
         println(s"Found ${matchingUtxos.size} matching reference script UTxO(s)")
         matchingUtxos
     }
 
-    /** Compute the validity interval start time that will be used on-chain. This matches the
-      * computation in buildAndSubmitUpdateTransaction.
+    /** Compute the validity interval start time that will be used on-chain.
       *
-      * The on-chain validator reads time from tx.validRange.from, which is set using
-      * .validFrom(slot). The slot is computed from System.currentTimeMillis(). To ensure offline
-      * computation matches on-chain validation, we must use the same time derivation.
-      *
-      * @param backendService
-      *   Backend service to retrieve slot configuration
+      * @param cardanoInfo
+      *   CardanoInfo from BlockchainProvider
       * @return
-      *   The validity interval start time in seconds (POSIX time)
+      *   (validityInstant, timeInSeconds)
       */
-    def computeValidityIntervalTime(backendService: BackendService): BigInt = {
-        val slotConfig = SlotConfigHelper.retrieveSlotConfig(backendService)
-        val currentPosixTimeMs = System.currentTimeMillis()
-        val currentSlot = slotConfig.timeToSlot(currentPosixTimeMs)
-        // Manually compute the slot start time: zeroTime + (slot - zeroSlot) * slotLength
-        val intervalStartMs =
-            slotConfig.zeroTime + (currentSlot - slotConfig.zeroSlot) * slotConfig.slotLength
-        val intervalStartSeconds = BigInt(intervalStartMs / 1000)
-
-        println(s"[DEBUG computeValidityIntervalTime]")
-        println(s"  currentPosixTimeMs: $currentPosixTimeMs")
-        println(s"  currentSlot: $currentSlot")
-        println(s"  intervalStartMs: $intervalStartMs")
-        println(s"  intervalStartSeconds: $intervalStartSeconds")
-
-        intervalStartSeconds
+    def computeValidityIntervalTime(cardanoInfo: CardanoInfo): (Instant, BigInt) = {
+        SlotConfigHelper.computeValidityIntervalTime(cardanoInfo)
     }
 
     /** Apply Bitcoin headers to ChainState to calculate new state */
@@ -217,77 +157,52 @@ object OracleTransactions {
         }
     }
 
-    /** Create UpdateOracle redeemer */
-    def createUpdateOracleRedeemer(
-        blockHeaders: ScalusList[BlockHeader],
-        currentTime: BigInt,
-        inputDatumHash: ByteString
-    ): Redeemer = {
-        val action = Action.UpdateOracle(blockHeaders, currentTime, inputDatumHash)
-        val actionData = action.toData
-        val redeemerData = toPlutusData(actionData)
-
-        Redeemer
-            .builder()
-            .data(redeemerData)
-            .build()
-    }
-
     /** Build and submit initialization transaction
       *
       * Creates a new oracle UTxO with initial ChainState datum.
       *
-      * @param account
-      *   Account for signing the transaction
-      * @param backendService
-      *   Backend service for querying and submitting
+      * @param signer
+      *   TransactionSigner for signing the transaction
+      * @param provider
+      *   BlockchainProvider for querying and submitting
       * @param scriptAddress
       *   Oracle script address
+      * @param sponsorAddress
+      *   Address to pay fees from
       * @param initialState
       *   Initial ChainState datum
       * @param lovelaceAmount
       *   Amount of ADA to lock (default: 5 ADA)
+      * @param timeout
+      *   Transaction timeout
       * @return
       *   Either error message or transaction hash
       */
     def buildAndSubmitInitTransaction(
-        account: Account,
-        backendService: BackendService,
+        signer: TransactionSigner,
+        provider: BlockchainProvider,
         scriptAddress: Address,
+        sponsorAddress: Address,
         initialState: ChainState,
-        lovelaceAmount: Long = 5000000L // 5 ADA in lovelace
+        lovelaceAmount: Long = 5_000_000L,
+        timeout: Duration = 120.seconds
     ): Either[String, String] = {
+        given ec: ExecutionContext = provider.executionContext
         Try {
-            // Convert ChainState to PlutusData
-            val chainStateData = initialState.toData
-            val plutusDatum = toPlutusData(chainStateData)
+            val tx = Await
+                .result(
+                  TxBuilder(provider.cardanoInfo)
+                      .payTo(scriptAddress, Value.lovelace(lovelaceAmount), initialState)
+                      .complete(provider, sponsorAddress),
+                  timeout
+                )
+                .sign(signer)
+                .transaction
 
-            // Get script
-            val script = getCompiledScript()
-
-            // Build transaction using QuickTxBuilder
-            val quickTxBuilder = new QuickTxBuilder(backendService)
-
-            val amount = Amount.lovelace(java.math.BigInteger.valueOf(lovelaceAmount))
-
-            val tx = new Tx()
-                .payToContract(scriptAddress.getAddress, amount, plutusDatum)
-                .from(account.baseAddress())
-
-            val result = quickTxBuilder
-                .compose(tx)
-                .withSigner(SignerProviders.signerFrom(account))
-                .completeAndWait()
-
-            if result.isSuccessful then {
-                Right(result.getValue)
-            } else {
-                Left(s"Transaction failed: ${result.getResponse}")
-            }
+            submitTx(provider, tx, timeout)
         } match {
             case Success(result) => result
-            case Failure(ex)     =>
-                // Print stack trace for debugging
+            case Failure(ex) =>
                 ex.printStackTrace()
                 Left(
                   s"Error building transaction: ${ex.getMessage}\nCause: ${Option(ex.getCause).map(_.getMessage).getOrElse("none")}"
@@ -299,113 +214,74 @@ object OracleTransactions {
       *
       * Updates the oracle with new Bitcoin block headers.
       *
-      * @param account
-      *   Account for signing the transaction
-      * @param backendService
-      *   Backend service for querying and submitting
+      * @param signer
+      *   TransactionSigner for signing the transaction
+      * @param provider
+      *   BlockchainProvider for querying and submitting
       * @param scriptAddress
       *   Oracle script address
-      * @param oracleTxHash
-      *   Transaction hash of the current oracle UTxO
-      * @param oracleOutputIndex
-      *   Output index of the current oracle UTxO
+      * @param sponsorAddress
+      *   Address to pay fees from
+      * @param oracleUtxo
+      *   Current oracle UTxO (input, output)
       * @param currentChainState
       *   Current ChainState datum
       * @param newChainState
-      *   New ChainState datum (pre-computed using computeUpdateOracleState with
-      *   validityIntervalTimeSeconds)
+      *   New ChainState datum (pre-computed)
       * @param blockHeaders
       *   Bitcoin block headers to submit
       * @param validityIntervalTimeSeconds
-      *   The time (in seconds) that was used to compute newChainState. Must be obtained from
-      *   computeValidityIntervalTime()
+      *   The time (in seconds) used to compute newChainState
+      * @param referenceScriptUtxo
+      *   Optional reference script UTxO
+      * @param timeout
+      *   Transaction timeout
       * @return
       *   Either error message or transaction hash
       */
     def buildAndSubmitUpdateTransaction(
-        account: Account,
-        backendService: BackendService,
+        signer: TransactionSigner,
+        provider: BlockchainProvider,
         scriptAddress: Address,
-        oracleTxHash: String,
-        oracleOutputIndex: Int,
+        sponsorAddress: Address,
+        oracleUtxo: Utxo,
         currentChainState: ChainState,
         newChainState: ChainState,
         blockHeaders: ScalusList[BlockHeader],
         validityIntervalTimeSeconds: BigInt,
-        referenceScriptUtxo: Option[(String, Int)] =
-            None, // Optional: (txHash, outputIndex) of reference script UTxO
-        inTestMode: Boolean = false // Skip time tolerance check in test mode
+        referenceScriptUtxo: Option[Utxo] = None,
+        timeout: Duration = 120.seconds
     ): Either[String, String] = {
+        given ec: ExecutionContext = provider.executionContext
         Try {
-            // Get the script
-            val script = getCompiledScript()
+            val script = getPlutusScript()
 
-            // Fetch the specific UTxO
-            val utxoService = backendService.getUtxoService
-            val utxos = utxoService.getUtxos(scriptAddress.getAddress, 100, 1)
-
-            if !utxos.isSuccessful then {
-                throw new RuntimeException(s"Failed to fetch UTxOs: ${utxos.getResponse}")
-            }
-
-            val allUtxos = utxos.getValue.asScala.toList
-            val targetUtxo = allUtxos
-                .find(u => u.getTxHash == oracleTxHash && u.getOutputIndex == oracleOutputIndex)
-                .getOrElse {
-                    throw new RuntimeException(s"UTxO not found: $oracleTxHash:$oracleOutputIndex")
-                }
-
-            // CRITICAL: Verify that the input UTXO's datum matches currentChainState
-            // This ensures we're computing the new state from the correct starting point
-            val inputDatum = targetUtxo.getInlineDatum
-            if inputDatum == null || inputDatum.isEmpty then {
-                throw new RuntimeException(
-                  s"Input UTxO has no inline datum: $oracleTxHash:$oracleOutputIndex"
-                )
-            }
-            val inputState = Data.fromCbor(scalus.utils.Hex.hexToBytes(inputDatum)).to[ChainState]
+            // Verify that the input UTxO's datum matches currentChainState
+            val inputData = oracleUtxo.output.requireInlineDatum
+            val inputState = inputData.to[ChainState]
 
             if inputState.blockHeight != currentChainState.blockHeight ||
                 inputState.blockHash != currentChainState.blockHash
             then {
                 throw new RuntimeException(
                   s"Input UTxO state does not match provided currentChainState!\n" +
-                      s"  This means currentChainState is stale or wrong UTXO was selected.\n" +
                       s"  Provided currentChainState: height=${currentChainState.blockHeight}, hash=${currentChainState.blockHash.toHex}\n" +
-                      s"  Input UTxO state: height=${inputState.blockHeight}, hash=${inputState.blockHash.toHex}\n" +
-                      s"  Input UTxO: $oracleTxHash:$oracleOutputIndex"
+                      s"  Input UTxO state: height=${inputState.blockHeight}, hash=${inputState.blockHash.toHex}"
                 )
             }
 
             println(s"[DEBUG] Verified input UTXO datum matches currentChainState")
 
-            // Retrieve slot config that will be used for all time conversions
-            val slotConfig = SlotConfigHelper.retrieveSlotConfig(backendService)
-            println(
-              s"[DEBUG] SlotConfig: zeroTime=${slotConfig.zeroTime}, zeroSlot=${slotConfig.zeroSlot}, slotLength=${slotConfig.slotLength}"
-            )
+            val cardanoInfo = provider.cardanoInfo
+            val slotConfig = cardanoInfo.slotConfig
 
-            // Get the current blockchain slot that will be used for validFrom
-            val currentBlockchainSlot =
-                backendService.getBlockService.getLatestBlock.getValue.getSlot
-
-            // Compute what time the validator will see based on validFrom slot
-            // This is: slotToTime(validFrom) which equals zeroTime + (slot - zeroSlot) * slotLength
-            val intervalMs =
-                slotConfig.zeroTime + (currentBlockchainSlot - slotConfig.zeroSlot) * slotConfig.slotLength
-            val validatorWillSeeTime = BigInt(intervalMs / 1000)
+            // Compute validity interval time from current time
+            val (validityInstant, validatorWillSeeTime) = computeValidityIntervalTime(cardanoInfo)
 
             println(s"[DEBUG] Computing time that validator will see:")
-            println(s"  currentBlockchainSlot (for validFrom): $currentBlockchainSlot")
-            println(s"  intervalMs: $intervalMs")
             println(s"  validatorWillSeeTime (seconds): $validatorWillSeeTime")
 
-            // The redeemer time must be the SAME time used to compute the provided newChainState
-            // The validator will compute state using redeemerTime and compare with the datum
-            // So we must use validityIntervalTimeSeconds in the redeemer to ensure consistency
-
-            // Verify that provided time is within tolerance of what validator will see from tx.validRange
-            // This ensures the on-chain time tolerance check passes
+            // Verify time tolerance
             val TimeToleranceSeconds = BitcoinValidator.TimeToleranceSeconds.toLong
             val timeDiff =
                 if validityIntervalTimeSeconds > validatorWillSeeTime then
@@ -413,128 +289,93 @@ object OracleTransactions {
                 else validatorWillSeeTime - validityIntervalTimeSeconds
 
             println(
-              s"[DEBUG] Provided time: $validityIntervalTimeSeconds, Validator will see from tx.validRange: $validatorWillSeeTime"
+              s"[DEBUG] Provided time: $validityIntervalTimeSeconds, Validator will see: $validatorWillSeeTime"
             )
             println(s"  Time difference: $timeDiff seconds")
 
-            // Skip time tolerance check in test mode to allow simulated time advancement
-            if !inTestMode && timeDiff > TimeToleranceSeconds then {
+            if timeDiff > TimeToleranceSeconds then {
                 throw new RuntimeException(
-                  s"Time mismatch: provided time ($validityIntervalTimeSeconds) differs from tx.validRange time ($validatorWillSeeTime) by $timeDiff seconds (tolerance: $TimeToleranceSeconds s). " +
-                      s"This will cause on-chain validation failure. " +
-                      s"The on-chain time tolerance check will fail."
+                  s"Time mismatch: provided time ($validityIntervalTimeSeconds) differs from tx.validRange time ($validatorWillSeeTime) by $timeDiff seconds (tolerance: $TimeToleranceSeconds s)."
                 )
             }
             println(s"  Time difference within tolerance - using provided time for redeemer")
 
-            val redeemerTime =
-                validityIntervalTimeSeconds // Use the time that was used to compute the state
+            val redeemerTime = validityIntervalTimeSeconds
 
             // Compute input datum hash for redeemer
             val inputDatumHash = scalus.uplc.builtin.Builtins.blake2b_256(
               scalus.uplc.builtin.Builtins.serialiseData(currentChainState.toData)
             )
 
-            // Create UpdateOracle redeemer with the time that was used to compute the state
-            val redeemer = createUpdateOracleRedeemer(blockHeaders, redeemerTime, inputDatumHash)
-
-            // Convert new ChainState to PlutusData for output
-            val newStateData = newChainState.toData
-            val newDatum = toPlutusData(newStateData)
+            // Create UpdateOracle action as redeemer
+            val action = Action.UpdateOracle(blockHeaders, redeemerTime, inputDatumHash)
 
             println(s"[DEBUG] New state forksTree size: ${newChainState.forksTree.size}")
 
-            // Calculate amount (same as input)
-            val lovelaceAmount = targetUtxo.getAmount.asScala.head.getQuantity
-            val amount = Amount.lovelace(lovelaceAmount)
+            // Build the transaction
+            var builder = TxBuilder(cardanoInfo)
 
-            // Build transaction using ScriptTx
-            // Configure ScalusEvaluator for this transaction to use PlutusVM instead of default Rust evaluator
-            val protocolParamsResult = backendService.getEpochService.getProtocolParameters
-            if !protocolParamsResult.isSuccessful then {
-                throw new RuntimeException(
-                  s"Error fetching protocol params: ${protocolParamsResult.getResponse} (code: ${protocolParamsResult.code()})"
+            // Check if reference script UTxO actually contains the script
+            val useRefScript = referenceScriptUtxo.exists(_.output.scriptRef.isDefined)
+
+            // Add reference script if available and valid
+            if useRefScript then {
+                val refUtxo = referenceScriptUtxo.get
+                println(
+                  s"[DEBUG] Using reference script from UTxO: ${refUtxo.input.transactionId.toHex}:${refUtxo.input.index}"
                 )
-            }
-            val protocolParams = protocolParamsResult.getValue
-
-            // Wrap UtxoService as UtxoSupplier
-            val utxoSupplier = new DefaultUtxoSupplier(backendService.getUtxoService)
-
-            // Create ScriptSupplier if using reference script
-            val scriptHashHex = Hex.bytesToHex(script.getScriptHash)
-            val scriptSupplier: scalus.bloxbean.ScriptSupplier = referenceScriptUtxo match {
-                case Some(_) =>
-                    // Provide our script when asked for it
-                    new scalus.bloxbean.ScriptSupplier {
-                        override def getScript(
-                            hash: String
-                        ): com.bloxbean.cardano.client.plutus.spec.PlutusScript =
-                            if hash == scriptHashHex then script
-                            else throw new RuntimeException(s"Unknown script hash: $hash")
-                    }
-                case None =>
-                    // No reference script, use empty supplier
-                    scalus.bloxbean.NoScriptSupplier()
-            }
-
-            val scalusEvaluator =
-                new scalus.bloxbean.ScalusTransactionEvaluator(
-                  slotConfig,
-                  protocolParams,
-                  utxoSupplier,
-                  scriptSupplier
-                )
-            println("[DEBUG] Using ScalusEvaluator (PlutusVM) for script cost evaluation")
-
-            val quickTxBuilder = new QuickTxBuilder(backendService)
-
-            // Build ScriptTx - use reference script if provided, otherwise attach script directly
-            val scriptTx = referenceScriptUtxo match {
-                case Some((refTxHash, refOutputIndex)) =>
-                    println(s"[DEBUG] Using reference script from UTxO: $refTxHash:$refOutputIndex")
-                    new ScriptTx()
-                        .collectFrom(targetUtxo, redeemer.getData)
-                        .readFrom(refTxHash, refOutputIndex)
-                        .payToContract(scriptAddress.getAddress, amount, newDatum)
-                case None =>
-                    println(s"[DEBUG] Attaching script directly to transaction")
-                    new ScriptTx()
-                        .collectFrom(targetUtxo, redeemer.getData)
-                        .payToContract(scriptAddress.getAddress, amount, newDatum)
-                        .attachSpendingValidator(script)
-            }
-
-            // Build, sign, and submit using the current blockchain slot for validFrom
-            // This ensures tx.validRange.from corresponds to the time we used in the redeemer
-            println(s"[DEBUG] Using validFrom slot: $currentBlockchainSlot")
-
-            // Build TxContext - use automatic collateral selection
-            // The reference script is at the script address (not wallet), so it won't be
-            // selected as collateral. No need for manual collateral selection.
-            val txContext = quickTxBuilder
-                .compose(scriptTx)
-                .feePayer(account.baseAddress())
-                .withSigner(SignerProviders.signerFrom(account))
-                .withTxEvaluator(scalusEvaluator)
-                .validFrom(currentBlockchainSlot)
-
-            val result = referenceScriptUtxo match {
-                case Some(_) => txContext.withReferenceScripts(script).completeAndWait()
-                case None    => txContext.completeAndWait()
-            }
-
-            if result.isSuccessful then {
-                Right(result.getValue)
+                builder = builder.references(refUtxo)
             } else {
-                Left(s"Transaction failed: ${result.getResponse}")
+                if referenceScriptUtxo.isDefined then
+                    println(
+                      s"[DEBUG] Reference UTxO has no scriptRef, falling back to attached script"
+                    )
+                else println(s"[DEBUG] No reference script UTxO, attaching script directly")
             }
+
+            // Spend oracle UTxO with redeemer
+            builder = if useRefScript then {
+                // Script resolved from references
+                builder.spend(oracleUtxo, action)
+            } else {
+                // Attach script directly
+                builder.spend(oracleUtxo, action, script)
+            }
+
+            // Output new state with same value
+            builder = builder
+                .payTo(scriptAddress, oracleUtxo.output.value, newChainState)
+                .validFrom(validityInstant)
+
+            val tx = Await
+                .result(
+                  builder.complete(provider, sponsorAddress),
+                  timeout
+                )
+                .sign(signer)
+                .transaction
+
+            submitTx(provider, tx, timeout)
         } match {
             case Success(result) => result
             case Failure(ex) =>
                 Left(
                   s"Error building UpdateOracle transaction: ${ex.getMessage}\n${ex.getStackTrace.take(5).mkString("\n")}"
                 )
+        }
+    }
+
+    /** Submit a transaction and return the hash */
+    def submitTx(
+        provider: BlockchainProvider,
+        tx: Transaction,
+        timeout: Duration = 120.seconds
+    ): Either[String, String] = {
+        given ec: ExecutionContext = provider.executionContext
+        val result = Await.result(provider.submit(tx), timeout)
+        result match {
+            case Left(err)     => Left(s"Submission failed: $err")
+            case Right(txHash) => Right(txHash.toHex)
         }
     }
 }

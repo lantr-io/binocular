@@ -1,8 +1,7 @@
 package binocular
 
-import com.bloxbean.cardano.client.address.Address
-import com.bloxbean.cardano.client.plutus.spec.PlutusV3Script
-import com.bloxbean.cardano.client.util.HexUtil
+import scalus.cardano.address.{Address, Network}
+import scalus.cardano.ledger.{Credential, Script, ScriptHash}
 import com.typesafe.config.{Config, ConfigFactory}
 import scala.util.{Failure, Success, Try}
 
@@ -32,7 +31,8 @@ case class OracleConfig(
     network: CardanoNetwork,
     startHeight: Option[Long] = None,
     maxHeadersPerTx: Int = 10,
-    pollInterval: Int = 60
+    pollInterval: Int = 60,
+    transactionTimeout: Int = 120 // seconds - used for tx building, submission, UTxO polling
 ) {
 
     /** Get the script address derived from BitcoinValidator script hash */
@@ -40,9 +40,8 @@ case class OracleConfig(
 
     /** Validate configuration */
     def validate(): Either[String, Unit] = {
-        // Validate that script address can be derived
         Try {
-            new Address(scriptAddress)
+            Address.fromBech32(scriptAddress)
         } match {
             case Success(_)  => Right(())
             case Failure(ex) => Left(s"Failed to derive oracle script address: ${ex.getMessage}")
@@ -52,7 +51,7 @@ case class OracleConfig(
     /** Get Address object for the oracle script */
     def getAddress(): Either[String, Address] = {
         Try {
-            new Address(scriptAddress)
+            Address.fromBech32(scriptAddress)
         } match {
             case Success(addr) => Right(addr)
             case Failure(ex)   => Left(s"Failed to parse oracle address: ${ex.getMessage}")
@@ -60,7 +59,7 @@ case class OracleConfig(
     }
 
     override def toString: String = {
-        s"OracleConfig(scriptAddress=$scriptAddress, network=$network, startHeight=$startHeight, maxHeadersPerTx=$maxHeadersPerTx)"
+        s"OracleConfig(scriptAddress=$scriptAddress, network=$network, startHeight=$startHeight, maxHeadersPerTx=$maxHeadersPerTx, transactionTimeout=$transactionTimeout)"
     }
 }
 
@@ -71,34 +70,30 @@ object OracleConfig {
         BitcoinContract.bitcoinProgram.doubleCborHex
     }
 
+    /** Get the PlutusScript from the compiled BitcoinValidator */
+    def getPlutusScript(): Script.PlutusV3 = {
+        Script.PlutusV3(BitcoinContract.bitcoinProgram.cborByteString)
+    }
+
+    /** Get the script hash */
+    def getScriptHash(): ScriptHash = {
+        getPlutusScript().scriptHash
+    }
+
     /** Derive script address from compiled BitcoinValidator for given network. */
     def deriveScriptAddress(network: CardanoNetwork): String = {
-        val scriptCborHex = getScriptCborHex()
+        val scriptHash = getScriptHash()
 
-        // Create PlutusV3Script
-        val plutusScript = PlutusV3Script
-            .builder()
-            .`type`("PlutusScriptV3")
-            .cborHex(scriptCborHex)
-            .build()
-            .asInstanceOf[PlutusV3Script]
-
-        // Get CCL Network
-        val cclNetwork = network match {
-            case CardanoNetwork.Mainnet =>
-                com.bloxbean.cardano.client.common.model.Networks.mainnet()
-            case CardanoNetwork.Preprod =>
-                com.bloxbean.cardano.client.common.model.Networks.preprod()
-            case CardanoNetwork.Preview =>
-                com.bloxbean.cardano.client.common.model.Networks.preview()
-            case CardanoNetwork.Testnet =>
-                com.bloxbean.cardano.client.common.model.Networks.testnet()
+        val scalusNetwork = network match {
+            case CardanoNetwork.Mainnet => Network.Mainnet
+            case CardanoNetwork.Preprod => Network.Testnet
+            case CardanoNetwork.Preview => Network.Testnet
+            case CardanoNetwork.Testnet => Network.Testnet
         }
 
-        // Derive script address using AddressProvider
-        val address = com.bloxbean.cardano.client.address.AddressProvider
-            .getEntAddress(plutusScript, cclNetwork)
-        address.toBech32()
+        // Create enterprise address with script credential
+        val address = Address(scalusNetwork, Credential.ScriptHash(scriptHash))
+        address.asInstanceOf[scalus.cardano.address.ShelleyAddress].toBech32.get
     }
 
     /** Load from environment variables
@@ -107,6 +102,7 @@ object OracleConfig {
       *   - ORACLE_START_HEIGHT: Optional starting block height
       *   - ORACLE_MAX_HEADERS_PER_TX: Maximum headers per transaction (default: 10)
       *   - ORACLE_POLL_INTERVAL: Poll interval in seconds (default: 60)
+      *   - ORACLE_TRANSACTION_TIMEOUT: Transaction timeout in seconds (default: 120)
       *   - CARDANO_NETWORK: mainnet, preprod, preview, or testnet
       *
       * @param useDefaults
@@ -131,10 +127,20 @@ object OracleConfig {
             .get("ORACLE_POLL_INTERVAL")
             .flatMap(s => Try(s.toInt).toOption)
             .getOrElse(60)
+        val transactionTimeout = sys.env
+            .get("ORACLE_TRANSACTION_TIMEOUT")
+            .flatMap(s => Try(s.toInt).toOption)
+            .getOrElse(120)
 
         for {
             network <- CardanoNetwork.fromString(networkStr)
-            config = OracleConfig(network, startHeight, maxHeadersPerTx, pollInterval)
+            config = OracleConfig(
+              network,
+              startHeight,
+              maxHeadersPerTx,
+              pollInterval,
+              transactionTimeout
+            )
             _ <- config.validate()
         } yield config
     }
@@ -148,6 +154,7 @@ object OracleConfig {
       *     start-height = 800000  # optional
       *     max-headers-per-tx = 10
       *     poll-interval = 60
+      *     transaction-timeout = 120
       *   }
       *   cardano {
       *     network = "mainnet"
@@ -179,10 +186,21 @@ object OracleConfig {
             } else {
                 60
             }
+            val transactionTimeout = if oracleConfig.hasPath("transaction-timeout") then {
+                oracleConfig.getInt("transaction-timeout")
+            } else {
+                120
+            }
 
             for {
                 network <- CardanoNetwork.fromString(cardanoNetwork)
-                oracleConf = OracleConfig(network, startHeight, maxHeadersPerTx, pollInterval)
+                oracleConf = OracleConfig(
+                  network,
+                  startHeight,
+                  maxHeadersPerTx,
+                  pollInterval,
+                  transactionTimeout
+                )
                 _ <- oracleConf.validate()
             } yield oracleConf
         } match {

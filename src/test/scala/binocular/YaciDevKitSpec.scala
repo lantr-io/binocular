@@ -1,33 +1,23 @@
 package binocular
 
-import com.bloxbean.cardano.client.account.Account
-import com.bloxbean.cardano.client.api.UtxoSupplier
-import com.bloxbean.cardano.client.api.model.{ProtocolParams, Utxo}
-import com.bloxbean.cardano.client.backend.api.{BackendService, TransactionService}
-import com.bloxbean.cardano.client.common.model.Networks
-import com.bloxbean.cardano.yaci.test.{Funding, YaciCardanoContainer}
+import scalus.cardano.address.{Address, Network}
+import scalus.cardano.ledger.{SlotConfig, TransactionHash, TransactionInput, Utxo, Utxos, Value}
+import scalus.cardano.node.{BlockchainProvider, BlockfrostProvider}
+import scalus.cardano.txbuilder.TransactionSigner
+import scalus.cardano.wallet.hd.HdAccount
+import scalus.crypto.ed25519.given
+import com.bloxbean.cardano.yaci.test.YaciCardanoContainer
 import munit.FunSuite
 
-import scala.jdk.CollectionConverters.*
-import scala.util.Using
+import java.net.URI
+import java.net.http.{HttpClient, HttpRequest, HttpResponse}
+import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.concurrent.duration.*
 
 /** Base trait for integration tests using Yaci DevKit
   *
   * Provides a local Cardano devnet via Docker container for testing smart contracts and
   * transactions in a controlled environment.
-  *
-  * Usage:
-  * {{{
-  * class MyIntegrationTest extends YaciDevKitSpec {
-  *   test("submit transaction to devnet") {
-  *     withYaciDevKit { devKit =>
-  *       // Use devKit.container, devKit.account, etc.
-  *       val utxos = devKit.getUtxos(devKit.account.baseAddress())
-  *       assert(utxos.nonEmpty)
-  *     }
-  *   }
-  * }
-  * }}}
   */
 trait YaciDevKitSpec extends FunSuite {
 
@@ -37,37 +27,56 @@ trait YaciDevKitSpec extends FunSuite {
         enableLogs: Boolean = false
     )
 
-    /** Wrapper for Yaci DevKit container with helper methods */
+    /** Wrapper for Yaci DevKit container with Scalus provider */
     class YaciDevKit(
         val container: YaciCardanoContainer,
-        val account: Account,
+        val hdAccount: HdAccount,
         val config: YaciDevKitConfig
     ) {
+        given ec: ExecutionContext = ExecutionContext.global
 
-        /** Get backend service for transaction operations */
-        def getBackendService: BackendService = container.getBackendService
+        private val yaciUrl =
+            s"http://${container.getHost}:${container.getMappedPort(8080)}/api/v1"
 
-        /** Get UTXO supplier for querying available UTXOs */
-        def getUtxoSupplier: UtxoSupplier = container.getUtxoSupplier
+        /** Get BlockchainProvider connected to Yaci DevKit.
+          *
+          * Computes the correct SlotConfig by querying the devnet's latest block to determine
+          * genesis time, so that Instant.now() maps to a valid devnet slot.
+          */
+        lazy val provider: BlockchainProvider = {
+            val slotConfig = fetchYaciSlotConfig(yaciUrl)
+            println(
+              s"[YaciDevKit] SlotConfig: zeroTime=${slotConfig.zeroTime}, zeroSlot=${slotConfig.zeroSlot}, slotLength=${slotConfig.slotLength}"
+            )
+            Await.result(
+              BlockfrostProvider.localYaci(baseUrl = yaciUrl, slotConfig = slotConfig),
+              30.seconds
+            )
+        }
 
-        /** Get protocol parameters supplier */
-        def getProtocolParams: ProtocolParams =
-            container.getBackendService.getEpochService.getProtocolParameters().getValue
+        /** Get TransactionSigner */
+        lazy val signer: TransactionSigner = new TransactionSigner(Set(hdAccount.paymentKeyPair))
 
-        /** Get transaction service for submitting transactions */
-        def getTransactionService: TransactionService =
-            container.getBackendService.getTransactionService
+        /** Get sponsor address */
+        lazy val sponsorAddress: Address = hdAccount.baseAddress(Network.Testnet)
+
+        /** Get address as bech32 string */
+        def baseAddress: String =
+            sponsorAddress.asInstanceOf[scalus.cardano.address.ShelleyAddress].toBech32.get
 
         /** Get UTXOs for an address */
-        def getUtxos(address: String): List[Utxo] = {
-            val utxos = getUtxoSupplier.getAll(address)
-            utxos.asScala.toList
+        def getUtxos(address: Address): List[Utxo] = {
+            val result = Await.result(provider.findUtxos(address), 30.seconds)
+            result match {
+                case Right(u) => u.map { case (input, output) => Utxo(input, output) }.toList
+                case Left(_)  => List.empty
+            }
         }
 
         /** Get total lovelace balance for an address */
-        def getLovelaceBalance(address: String): BigInt = {
+        def getLovelaceBalance(address: Address): BigInt = {
             val utxos = getUtxos(address)
-            utxos.map(u => BigInt(u.getAmount.asScala.head.getQuantity)).sum
+            utxos.map(u => BigInt(u.output.value.coin.value)).sum
         }
 
         /** Wait for transaction to be confirmed
@@ -86,92 +95,103 @@ trait YaciDevKitSpec extends FunSuite {
             maxAttempts: Int = 30,
             delayMs: Long = 1000
         ): Boolean = {
-            def checkTx(attempts: Int): Boolean = {
-                if attempts >= maxAttempts then {
-                    false
-                } else {
-                    try {
-                        val tx = getTransactionService.getTransaction(txHash)
-                        tx.isSuccessful && tx.getResponse != null
-                    } catch {
-                        case _: Exception =>
+            val input = TransactionInput(TransactionHash.fromHex(txHash), 0)
+            var attempts = 0
+            while attempts < maxAttempts do {
+                try {
+                    val result = Await.result(provider.findUtxo(input), 10.seconds)
+                    result match {
+                        case Right(_) => return true
+                        case Left(_) =>
                             Thread.sleep(delayMs)
-                            checkTx(attempts + 1)
+                            attempts += 1
                     }
+                } catch {
+                    case _: Exception =>
+                        Thread.sleep(delayMs)
+                        attempts += 1
                 }
             }
-            checkTx(0)
-        }
-
-        /** Submit transaction and wait for confirmation
-          *
-          * @param txBytes
-          *   transaction bytes to submit
-          * @return
-          *   transaction hash if successful
-          */
-        def submitAndWait(txBytes: Array[Byte]): Either[String, String] = {
-            try {
-                val result = getTransactionService.submitTransaction(txBytes)
-                if result.isSuccessful then {
-                    val txHash = result.getValue
-                    if waitForTransaction(txHash) then {
-                        Right(txHash)
-                    } else {
-                        Left(s"Transaction $txHash did not confirm in time")
-                    }
-                } else {
-                    Left(s"Transaction submission failed: ${result.getResponse}")
-                }
-            } catch {
-                case e: Exception =>
-                    Left(s"Transaction submission error: ${e.getMessage}")
-            }
+            false
         }
 
         /** Stop the container */
         def stop(): Unit = container.stop()
     }
 
-    /** Create and start a Yaci DevKit container
+    /** Fetch the latest block from the Yaci devnet and compute a SlotConfig whose zeroTime maps
+      * wall-clock Instant.now() to the devnet's current slot range.
       *
-      * @param config
-      *   configuration for the container
-      * @return
-      *   YaciDevKit instance with running container
+      * The default SlotConfig(0, 0, 1000) sets zeroTime=epoch (1970), which makes Instant.now() map
+      * to slot ~1.77 billion — far beyond the devnet's ~1800-slot range. By querying /blocks/latest
+      * for the tip's slot and Unix timestamp, we compute zeroTime = (blockTime - blockSlot) * 1000,
+      * anchoring the mapping correctly.
       */
+    private def fetchYaciSlotConfig(yaciUrl: String): SlotConfig = {
+        val slotLength = 1000L // 1 second per slot (Yaci default)
+        try {
+            val client = HttpClient.newHttpClient()
+            val request = HttpRequest
+                .newBuilder()
+                .uri(URI.create(s"$yaciUrl/blocks/latest"))
+                .GET()
+                .build()
+            val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+            val body = response.body()
+
+            // Parse "slot" and "time" from JSON response using simple regex
+            // Blockfrost returns: { "slot": 630, "time": 1769705300, ... }
+            val slotPattern = """"slot"\s*:\s*(\d+)""".r
+            val timePattern = """"time"\s*:\s*(\d+)""".r
+
+            val slot = slotPattern.findFirstMatchIn(body).map(_.group(1).toLong).getOrElse(0L)
+            val time = timePattern.findFirstMatchIn(body).map(_.group(1).toLong).getOrElse(0L)
+
+            if slot > 0 && time > 0 then {
+                // zeroTime = block's Unix time (ms) minus slot * slotLength
+                val zeroTimeMs = time * 1000L - slot * slotLength
+                println(
+                  s"[YaciDevKit] Latest block: slot=$slot, time=$time -> zeroTime=$zeroTimeMs"
+                )
+                SlotConfig(zeroTimeMs, 0L, slotLength)
+            } else {
+                println(
+                  s"[YaciDevKit] Could not parse tip block (slot=$slot, time=$time), falling back to wall-clock estimate"
+                )
+                // Fallback: assume genesis was ~30s before now (typical container startup)
+                val zeroTimeMs = System.currentTimeMillis() - 30 * slotLength
+                SlotConfig(zeroTimeMs, 0L, slotLength)
+            }
+        } catch {
+            case e: Exception =>
+                println(
+                  s"[YaciDevKit] Error fetching tip block: ${e.getMessage}, falling back to wall-clock estimate"
+                )
+                val zeroTimeMs = System.currentTimeMillis() - 30 * slotLength
+                SlotConfig(zeroTimeMs, 0L, slotLength)
+        }
+    }
+
+    /** Create and start a Yaci DevKit container */
     def createYaciDevKit(config: YaciDevKitConfig = YaciDevKitConfig()): YaciDevKit = {
-        // Use Yaci DevKit's default mnemonic for pre-funded accounts
-        // This matches the mnemonic used by Yaci CLI for generating default accounts
         val mnemonic =
             "test test test test test test test test test test test test test test test test test test test test test test test sauce"
-        val account = new Account(Networks.testnet(), mnemonic)
+        val hdAccount = HdAccount.fromMnemonic(mnemonic, "", accountIndex = 0)
 
-        // Create container and give it a fixed name for reuse
         val container = new YaciCardanoContainer()
         container.withCreateContainerCmdModifier(cmd => cmd.withName("binocular-yaci-devkit"))
         container.withReuse(true)
 
-        // Add log consumer if enabled
         if config.enableLogs then {
             container.withLogConsumer(frame => println(s"[Yaci] ${frame.getUtf8String}"))
         }
 
-        // Start the container
         container.start()
 
-        new YaciDevKit(container, account, config)
+        new YaciDevKit(container, hdAccount, config)
     }
 
-    /** Execute test with Yaci DevKit container
-      *
-      * Automatically starts and stops the container around the test.
-      *
-      * @param config
-      *   configuration for the container
-      * @param testFn
-      *   test function to execute with the devkit
-      */
+    /** Execute test with Yaci DevKit container */
     def withYaciDevKit[T](
         config: YaciDevKitConfig = YaciDevKitConfig()
     )(testFn: YaciDevKit => T): T = {

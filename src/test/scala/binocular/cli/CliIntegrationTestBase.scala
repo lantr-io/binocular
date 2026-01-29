@@ -1,8 +1,6 @@
 package binocular.cli
 
 import binocular.{BitcoinNodeConfig, BlockHeaderInfo, BlockInfo, BlockchainInfo, CardanoConfig, OracleConfig, RawTransactionInfo, SimpleBitcoinRpc, TransactionInfo, WalletConfig, YaciDevKitSpec}
-import com.bloxbean.cardano.client.backend.api.BackendService
-import com.bloxbean.cardano.client.account.Account
 import scala.concurrent.{ExecutionContext, Future}
 import scala.io.Source
 import upickle.default.*
@@ -222,9 +220,7 @@ trait CliIntegrationTestBase extends YaciDevKitSpec {
         val cardanoConfig = CardanoConfig(
           backend = binocular.CardanoBackend.Blockfrost,
           network = binocular.CardanoNetwork.Testnet,
-          blockfrost = binocular.BlockfrostConfig(apiUrl = "", projectId = ""),
-          koios = binocular.KoiosConfig(apiUrl = ""),
-          ogmios = binocular.OgmiosConfig(url = "")
+          blockfrost = binocular.BlockfrostConfig(projectId = "")
         )
 
         val oracleConfig = binocular.OracleConfig(

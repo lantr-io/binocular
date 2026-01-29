@@ -2,6 +2,8 @@ package binocular.cli.commands
 
 import binocular.{BitcoinChainState, BitcoinNodeConfig, CardanoConfig, OracleConfig, OracleTransactions, SimpleBitcoinRpc, WalletConfig}
 import binocular.cli.Command
+import scalus.cardano.address.Address
+import scalus.cardano.txbuilder.TransactionSigner
 
 import scala.concurrent.{Await, ExecutionContext}
 import scala.concurrent.duration.*
@@ -58,36 +60,39 @@ case class InitOracleCommand(startBlock: Option[Long]) extends Command {
         println(s"Oracle Address: ${oracleConf.scriptAddress}")
         println()
 
-        // Create account for signing
-        val account = walletConf.createAccount() match {
+        // Set up execution context
+        given ec: ExecutionContext = ExecutionContext.global
+
+        // Create HD account and signer
+        val hdAccount = walletConf.createHdAccount() match {
             case Right(acc) =>
-                println(s"✓ Wallet loaded: ${acc.baseAddress()}")
+                val addr = acc.baseAddress(cardanoConf.scalusNetwork).toBech32.getOrElse("?")
+                println(s"Wallet loaded: $addr")
                 acc
             case Left(err) =>
                 System.err.println(s"Error creating wallet account: $err")
                 break(1)
         }
+        val signer = new TransactionSigner(Set(hdAccount.paymentKeyPair))
+        val sponsorAddress = hdAccount.baseAddress(cardanoConf.scalusNetwork)
 
-        // Create Cardano backend service
-        val backendService = cardanoConf.createBackendService() match {
-            case Right(service) =>
-                println(s"✓ Connected to Cardano backend (${cardanoConf.backend})")
-                service
+        // Create Cardano blockchain provider
+        val provider = cardanoConf.createBlockchainProvider() match {
+            case Right(p) =>
+                println(s"Connected to Cardano backend (${cardanoConf.backend})")
+                p
             case Left(err) =>
-                System.err.println(s"Error creating backend service: $err")
+                System.err.println(s"Error creating blockchain provider: $err")
                 break(1)
         }
 
         println()
         println("Step 1: Connecting to Bitcoin RPC...")
 
-        // Set up execution context for async operations
-        given ec: ExecutionContext = ExecutionContext.global
-
         // Create Bitcoin RPC client
         val rpc = new SimpleBitcoinRpc(btcConf)
 
-        println(s"✓ Connected to Bitcoin node at ${btcConf.url}")
+        println(s"Connected to Bitcoin node at ${btcConf.url}")
         println()
         println(s"Step 2: Fetching initial chain state from block $blockHeight...")
 
@@ -98,7 +103,7 @@ case class InitOracleCommand(startBlock: Option[Long]) extends Command {
                 Await.result(initialStateFuture, 30.seconds)
             } catch {
                 case e: Exception =>
-                    System.err.println(s"✗ Error fetching Bitcoin block: ${e.getMessage}")
+                    System.err.println(s"Error fetching Bitcoin block: ${e.getMessage}")
                     println()
                     println("Make sure:")
                     println("  1. Bitcoin node is running and accessible")
@@ -107,42 +112,42 @@ case class InitOracleCommand(startBlock: Option[Long]) extends Command {
                     break(1)
             }
 
-        println(s"✓ Fetched initial state:")
+        println(s"Fetched initial state:")
         println(s"  Block Height: ${initialState.blockHeight}")
         println(s"  Block Hash: ${initialState.blockHash.toHex}")
         println(s"  Block Timestamp: ${initialState.blockTimestamp}")
         println(s"  Current Target: ${initialState.currentTarget.toHex}")
         println(s"  Recent Timestamps: ${initialState.recentTimestamps.size} entries")
 
-        // Validate that we have enough timestamps for median-time-past validation
-        val requiredTimestamps = 11 // MedianTimeSpan
+        // Validate timestamps
+        val requiredTimestamps = 11
         if initialState.recentTimestamps.size < requiredTimestamps then {
-            System.err.println(s"✗ Error: Insufficient timestamps for median-time-past validation")
+            System.err.println(s"Error: Insufficient timestamps for median-time-past validation")
             System.err.println(
               s"  Got ${initialState.recentTimestamps.size}, need $requiredTimestamps"
             )
-            System.err.println(s"  This is a bug - please report it")
             break(1)
         }
-        println(s"✓ Validated: All $requiredTimestamps timestamps present for median-time-past")
+        println(s"Validated: All $requiredTimestamps timestamps present for median-time-past")
 
         println()
         println("Step 3: Building and submitting Cardano transaction...")
 
         // Build and submit transaction
-        val scriptAddress =
-            new com.bloxbean.cardano.client.address.Address(oracleConf.scriptAddress)
+        val scriptAddress = Address.fromBech32(oracleConf.scriptAddress)
         val txResult = OracleTransactions.buildAndSubmitInitTransaction(
-          account,
-          backendService,
+          signer,
+          provider,
           scriptAddress,
-          initialState
+          sponsorAddress,
+          initialState,
+          timeout = oracleConf.transactionTimeout.seconds
         )
 
         txResult match {
             case Right(txHash) =>
                 println()
-                println("✓ Oracle initialized successfully!")
+                println("Oracle initialized successfully!")
                 println(s"  Transaction Hash: $txHash")
                 println(s"  Oracle Address: ${oracleConf.scriptAddress}")
                 println()
@@ -153,7 +158,7 @@ case class InitOracleCommand(startBlock: Option[Long]) extends Command {
                 0
             case Left(err) =>
                 println()
-                System.err.println(s"✗ Error submitting transaction: $err")
+                System.err.println(s"Error submitting transaction: $err")
                 1
         }
     }

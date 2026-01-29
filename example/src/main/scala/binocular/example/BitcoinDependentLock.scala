@@ -1,25 +1,19 @@
 package binocular.example
 
 import binocular.{reverse, BitcoinContract, BitcoinNodeConfig, BlockHeader, CardanoConfig, CardanoNetwork, MerkleTree, OracleConfig, SimpleBitcoinRpc, TransactionVerifierContract, TxVerifierDatum, TxVerifierRedeemer, WalletConfig}
-import com.bloxbean.cardano.client.address.{Address, AddressProvider}
-import com.bloxbean.cardano.client.common.model.Networks
-import com.bloxbean.cardano.client.quicktx.{QuickTxBuilder, ScriptTx, Tx}
-import com.bloxbean.cardano.client.api.model.Amount
-import com.bloxbean.cardano.client.backend.api.DefaultUtxoSupplier
-import com.bloxbean.cardano.client.function.helper.SignerProviders
-import com.bloxbean.cardano.client.transaction.spec.TransactionInput
+import scalus.cardano.address.{Address, Network}
+import scalus.cardano.ledger.{Credential, Script, ScriptRef, TransactionHash, TransactionInput, TransactionOutput, Utxo, Utxos, Value}
+import scalus.cardano.node.{BlockchainProvider, UtxoSource}
+import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}
+import scalus.cardano.wallet.hd.HdAccount
+import scalus.crypto.ed25519.given
+import scalus.uplc.builtin.{ByteString, Data}
+import scalus.uplc.builtin.Data.{fromData, toData}
 import com.monovore.decline.*
 import cats.implicits.*
-import scalus.bloxbean.Interop
-import scalus.builtin.{ByteString, Data}
-import scalus.builtin.Data.fromData
-import scalus.builtin.ToData.toData
-import scalus.utils.Hex.hexToBytes
 
-import java.math.BigInteger
-import scala.concurrent.{Await, ExecutionContext}
+import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration.*
-import scala.jdk.CollectionConverters.*
 
 /** BitcoinDependentLock - Lock and unlock funds based on Bitcoin transaction proofs
   *
@@ -27,11 +21,6 @@ import scala.jdk.CollectionConverters.*
   * Cardano. Funds can be locked requiring a specific Bitcoin transaction to exist in a block
   * confirmed by the Oracle, and unlocked by providing valid Merkle proofs for both the transaction
   * and block inclusion.
-  *
-  * SECURITY: This validator requires:
-  *   1. The Oracle UTxO as a reference input
-  *   2. Proof that the block is in the Oracle's confirmed blocks tree
-  *   3. Proof that the transaction is in the block
   */
 @main def bitcoinDependentLock(args: String*): Unit = {
     val exitCode = BitcoinDependentLockApp.run(args)
@@ -40,13 +29,8 @@ import scala.jdk.CollectionConverters.*
 
 object BitcoinDependentLockApp {
 
-    /** CLI command enum */
     enum Cmd:
-        case Lock(
-            btcTxId: String,
-            blockHash: String,
-            amountLovelace: Long
-        )
+        case Lock(btcTxId: String, blockHash: String, amountLovelace: Long)
         case Unlock(
             utxo: String,
             txIndex: Int,
@@ -58,61 +42,39 @@ object BitcoinDependentLockApp {
         )
         case Info
 
-    /** CLI argument parsers */
     object CliParsers {
-
-        val btcTxIdArg: Opts[String] = Opts.argument[String](
-          metavar = "BTC_TX_ID"
-        )
-
+        val btcTxIdArg: Opts[String] = Opts.argument[String](metavar = "BTC_TX_ID")
         val blockHashOpt: Opts[String] = Opts.option[String](
           "block-hash",
           help = "Bitcoin block hash containing the transaction (hex, display order)",
           short = "b"
         )
-
         val amountOpt: Opts[Long] = Opts
-            .option[Long](
-              "amount",
-              help = "Amount in lovelace to lock",
-              short = "a"
-            )
-            .withDefault(2000000L) // 2 ADA default
-
-        val utxoArg: Opts[String] = Opts.argument[String](
-          metavar = "UTXO"
-        )
-
-        val txIndexOpt: Opts[Int] = Opts.option[Int](
-          "tx-index",
-          help = "Transaction index in block (0-based)",
-          short = "i"
-        )
-
+            .option[Long]("amount", help = "Amount in lovelace to lock", short = "a")
+            .withDefault(2000000L)
+        val utxoArg: Opts[String] = Opts.argument[String](metavar = "UTXO")
+        val txIndexOpt: Opts[Int] =
+            Opts.option[Int]("tx-index", help = "Transaction index in block (0-based)", short = "i")
         val txProofOpt: Opts[String] = Opts.option[String](
           "tx-proof",
           help = "Transaction Merkle proof (comma-separated hex hashes)",
           short = "t"
         )
-
         val blockIndexOpt: Opts[Int] = Opts.option[Int](
           "block-index",
           help = "Block index in Oracle's confirmed tree (0-based)",
           short = "n"
         )
-
         val blockProofOpt: Opts[String] = Opts.option[String](
           "block-proof",
           help = "Block Merkle proof (comma-separated hex hashes)",
           short = "p"
         )
-
         val blockHeaderOpt: Opts[String] = Opts.option[String](
           "block-header",
           help = "80-byte Bitcoin block header (hex)",
           short = "h"
         )
-
         val oracleUtxoOpt: Opts[String] = Opts.option[String](
           "oracle-utxo",
           help = "Oracle UTxO reference (txHash:index)",
@@ -120,21 +82,15 @@ object BitcoinDependentLockApp {
         )
     }
 
-    /** Main CLI command parser */
     val command: Command[Cmd] = {
         import CliParsers.*
 
-        val lockCommand = Opts.subcommand(
-          "lock",
-          "Lock funds requiring Bitcoin transaction proof (with Oracle verification) to unlock"
-        ) {
-            (btcTxIdArg, blockHashOpt, amountOpt).mapN(Cmd.Lock.apply)
-        }
+        val lockCommand =
+            Opts.subcommand("lock", "Lock funds requiring Bitcoin transaction proof") {
+                (btcTxIdArg, blockHashOpt, amountOpt).mapN(Cmd.Lock.apply)
+            }
 
-        val unlockCommand = Opts.subcommand(
-          "unlock",
-          "Unlock funds by providing Merkle proofs (requires Oracle reference)"
-        ) {
+        val unlockCommand = Opts.subcommand("unlock", "Unlock funds by providing Merkle proofs") {
             (
               utxoArg,
               txIndexOpt,
@@ -147,10 +103,7 @@ object BitcoinDependentLockApp {
                 .mapN(Cmd.Unlock.apply)
         }
 
-        val infoCommand = Opts.subcommand(
-          "info",
-          "Show verifier contract and Oracle information"
-        ) {
+        val infoCommand = Opts.subcommand("info", "Show verifier contract and Oracle information") {
             Opts(Cmd.Info)
         }
 
@@ -161,100 +114,77 @@ object BitcoinDependentLockApp {
         )(lockCommand orElse unlockCommand orElse infoCommand)
     }
 
-    /** Run the CLI application */
     def run(args: Seq[String]): Int = {
         command.parse(args) match {
             case Left(help) =>
                 System.err.println(help)
                 1
-            case Right(cmd) =>
-                executeCommand(cmd)
+            case Right(cmd) => executeCommand(cmd)
         }
     }
 
-    /** Execute a CLI command */
-    def executeCommand(cmd: Cmd): Int = {
-        cmd match {
-            case Cmd.Lock(btcTxId, blockHash, amount) =>
-                lockFunds(btcTxId, blockHash, amount)
-            case Cmd.Unlock(
-                  utxo,
-                  txIndex,
-                  txProof,
-                  blockIndex,
-                  blockProof,
-                  blockHeader,
-                  oracleUtxo
-                ) =>
-                unlockFunds(utxo, txIndex, txProof, blockIndex, blockProof, blockHeader, oracleUtxo)
-            case Cmd.Info =>
-                showInfo()
-        }
+    def executeCommand(cmd: Cmd): Int = cmd match {
+        case Cmd.Lock(btcTxId, blockHash, amount) => lockFunds(btcTxId, blockHash, amount)
+        case Cmd.Unlock(utxo, txIndex, txProof, blockIndex, blockProof, blockHeader, oracleUtxo) =>
+            unlockFunds(utxo, txIndex, txProof, blockIndex, blockProof, blockHeader, oracleUtxo)
+        case Cmd.Info => showInfo()
     }
 
-    /** Get the TransactionVerifier script */
-    private def getVerifierScript(): com.bloxbean.cardano.client.plutus.spec.PlutusV3Script = {
+    /** Get the TransactionVerifier as a PlutusV3 script */
+    private def getVerifierScript(): Script.PlutusV3 = {
         val program = TransactionVerifierContract.validator
-        val scriptCborHex = program.doubleCborHex
-        com.bloxbean.cardano.client.plutus.spec.PlutusV3Script
-            .builder()
-            .`type`("PlutusScriptV3")
-            .cborHex(scriptCborHex)
-            .build()
-            .asInstanceOf[com.bloxbean.cardano.client.plutus.spec.PlutusV3Script]
+        Script.PlutusV3(program.cborByteString)
     }
 
-    /** Get the Oracle (BitcoinValidator) script hash. Can be overridden via ORACLE_SCRIPT_HASH env
-      * var, or derived from ORACLE_SCRIPT_ADDRESS.
-      */
+    /** Get the verifier script address for a given network */
+    private def getVerifierAddress(network: Network): Address = {
+        val script = getVerifierScript()
+        Address(network, Credential.ScriptHash(script.scriptHash))
+    }
+
+    /** Get the Oracle script hash */
     private def getOracleScriptHash(): ByteString = {
-        // First check for explicit script hash
         sys.env.get("ORACLE_SCRIPT_HASH").filter(_.nonEmpty) match {
             case Some(hash) => ByteString.fromHex(hash)
-            case None       =>
-                // Try to derive from script address
+            case None =>
                 sys.env.get("ORACLE_SCRIPT_ADDRESS").filter(_.nonEmpty) match {
                     case Some(addr) =>
-                        // Extract script hash from bech32 address
-                        val address = new Address(addr)
-                        val credential = address.getPaymentCredentialHash.orElse(null)
-                        if credential != null then ByteString.fromArray(credential)
-                        else computeOracleScriptHashFromScript()
+                        val address = Address.fromBech32(addr)
+                        address match {
+                            case shelley: scalus.cardano.address.ShelleyAddress =>
+                                shelley.payment match {
+                                    case scalus.cardano.address.ShelleyPaymentPart.Script(hash) =>
+                                        hash
+                                    case _ => computeOracleScriptHashFromScript()
+                                }
+                            case _ => computeOracleScriptHashFromScript()
+                        }
                     case None => computeOracleScriptHashFromScript()
                 }
         }
     }
 
     private def computeOracleScriptHashFromScript(): ByteString = {
-        val scriptCborHex = OracleConfig.getScriptCborHex()
-        val plutusScript = com.bloxbean.cardano.client.plutus.spec.PlutusV3Script
-            .builder()
-            .`type`("PlutusScriptV3")
-            .cborHex(scriptCborHex)
-            .build()
-            .asInstanceOf[com.bloxbean.cardano.client.plutus.spec.PlutusV3Script]
-        ByteString.fromArray(plutusScript.getScriptHash)
+        OracleConfig.getScriptHash()
     }
 
-    /** Show verifier contract information */
     def showInfo(): Int = {
         println("BitcoinDependentLock - TransactionVerifier Contract Info")
         println()
 
         val script = getVerifierScript()
-        val scriptHash =
-            com.bloxbean.cardano.client.util.HexUtil.encodeHexString(script.getScriptHash)
-
+        val scriptHash = script.scriptHash.toHex
         val oracleScriptHash = getOracleScriptHash()
-        val oracleScriptHashHex = scalus.utils.Hex.bytesToHex(oracleScriptHash.bytes)
+        val oracleScriptHashHex = oracleScriptHash.toHex
 
-        // Get addresses for different networks
-        val mainnetAddr = AddressProvider
-            .getEntAddress(script, Networks.mainnet())
-            .getAddress
-        val testnetAddr = AddressProvider
-            .getEntAddress(script, Networks.testnet())
-            .getAddress
+        val mainnetAddr = getVerifierAddress(Network.Mainnet)
+            .asInstanceOf[scalus.cardano.address.ShelleyAddress]
+            .toBech32
+            .get
+        val testnetAddr = getVerifierAddress(Network.Testnet)
+            .asInstanceOf[scalus.cardano.address.ShelleyAddress]
+            .toBech32
+            .get
 
         println(s"Verifier Script Hash: $scriptHash")
         println(s"Oracle Script Hash:   $oracleScriptHashHex")
@@ -275,7 +205,6 @@ object BitcoinDependentLockApp {
         0
     }
 
-    /** Lock funds at the verifier contract */
     def lockFunds(btcTxId: String, blockHash: String, amountLovelace: Long): Int = {
         println("Locking funds with Bitcoin transaction requirement...")
         println()
@@ -284,52 +213,51 @@ object BitcoinDependentLockApp {
         println(s"  Amount:       $amountLovelace lovelace (${amountLovelace / 1000000.0} ADA)")
         println()
 
-        // Load configurations
         val cardanoConfig = CardanoConfig.load()
         val walletConfig = WalletConfig.load()
 
         (cardanoConfig, walletConfig) match {
             case (Right(cardanoConf), Right(walletConf)) =>
-                // Create account
-                val account = walletConf.createAccount() match {
+                given ec: ExecutionContext = ExecutionContext.global
+
+                val hdAccount = walletConf.createHdAccount() match {
                     case Right(acc) =>
-                        println(s"Wallet loaded: ${acc.baseAddress()}")
+                        val addr = acc
+                            .baseAddress(cardanoConf.scalusNetwork)
+                            .asInstanceOf[scalus.cardano.address.ShelleyAddress]
+                            .toBech32
+                            .get
+                        println(s"Wallet loaded: $addr")
                         acc
                     case Left(err) =>
                         System.err.println(s"Error creating wallet: $err")
                         return 1
                 }
+                val signer = new TransactionSigner(Set(hdAccount.paymentKeyPair))
+                val sponsorAddress = hdAccount.baseAddress(cardanoConf.scalusNetwork)
 
-                // Create backend service
-                val backendService = cardanoConf.createBackendService() match {
-                    case Right(service) =>
+                val provider = cardanoConf.createBlockchainProvider() match {
+                    case Right(p) =>
                         println(s"Connected to Cardano backend")
-                        service
+                        p
                     case Left(err) =>
                         System.err.println(s"Error creating backend: $err")
                         return 1
                 }
 
-                // Get script and address
-                val script = getVerifierScript()
-                val network =
-                    if cardanoConf.network == CardanoNetwork.Mainnet then Networks.mainnet()
-                    else Networks.testnet()
-                val verifierAddress = AddressProvider
-                    .getEntAddress(script, network)
-                    .getAddress
+                val verifierAddress = getVerifierAddress(cardanoConf.scalusNetwork)
+                val verifierAddressBech32 = verifierAddress
+                    .asInstanceOf[scalus.cardano.address.ShelleyAddress]
+                    .toBech32
+                    .get
 
-                // Get oracle script hash
                 val oracleScriptHash = getOracleScriptHash()
 
-                println(s"Verifier address: $verifierAddress")
-                println(
-                  s"Oracle script hash: ${scalus.utils.Hex.bytesToHex(oracleScriptHash.bytes)}"
-                )
+                println(s"Verifier address: $verifierAddressBech32")
+                println(s"Oracle script hash: ${oracleScriptHash.toHex}")
                 println()
 
                 // Create datum
-                // Note: Both txHash and blockHash must be reversed (Bitcoin display to internal byte order)
                 val txHash = ByteString.fromHex(btcTxId).reverse
                 val blockHashBytes = ByteString.fromHex(blockHash).reverse
 
@@ -338,35 +266,37 @@ object BitcoinDependentLockApp {
                   expectedBlockHash = blockHashBytes,
                   oracleScriptHash = oracleScriptHash
                 )
-                val datumData = Interop.toPlutusData(datum.toData)
 
                 println("Building lock transaction...")
 
-                // Build transaction
-                val lockTx = new Tx()
-                    .payToContract(
-                      verifierAddress,
-                      Amount.lovelace(BigInteger.valueOf(amountLovelace)),
-                      datumData
-                    )
-                    .from(account.baseAddress())
+                try {
+                    val tx = Await
+                        .result(
+                          TxBuilder(provider.cardanoInfo)
+                              .payTo(verifierAddress, Value.lovelace(amountLovelace), datum)
+                              .complete(provider, sponsorAddress),
+                          60.seconds
+                        )
+                        .sign(signer)
+                        .transaction
 
-                val txBuilder = new QuickTxBuilder(backendService)
-                val result = txBuilder
-                    .compose(lockTx)
-                    .withSigner(SignerProviders.signerFrom(account))
-                    .completeAndWait()
-
-                if result.isSuccessful then {
-                    val resultTxHash = result.getValue
-                    println()
-                    println("Funds locked successfully!")
-                    println(s"  Transaction: $resultTxHash")
-                    println(s"  Locked UTxO: $resultTxHash:0")
-                    0
-                } else {
-                    System.err.println(s"Lock transaction failed: ${result.getResponse}")
-                    1
+                    val result = Await.result(provider.submit(tx), 30.seconds)
+                    result match {
+                        case Right(resultTxHash) =>
+                            val hash = resultTxHash.toHex
+                            println()
+                            println("Funds locked successfully!")
+                            println(s"  Transaction: $hash")
+                            println(s"  Locked UTxO: $hash:0")
+                            0
+                        case Left(err) =>
+                            System.err.println(s"Lock transaction failed: $err")
+                            1
+                    }
+                } catch {
+                    case e: Exception =>
+                        System.err.println(s"Error building transaction: ${e.getMessage}")
+                        1
                 }
 
             case (Left(err), _) =>
@@ -378,7 +308,6 @@ object BitcoinDependentLockApp {
         }
     }
 
-    /** Unlock funds by providing Merkle proofs with Oracle verification */
     def unlockFunds(
         utxo: String,
         txIndex: Int,
@@ -396,7 +325,6 @@ object BitcoinDependentLockApp {
         println(s"  Oracle UTxO:  $oracleUtxoStr")
         println()
 
-        // Parse UTxO
         val (txHash, outputIndex) = utxo.split(":") match {
             case Array(hash, idx) => (hash, idx.toInt)
             case _ =>
@@ -404,7 +332,6 @@ object BitcoinDependentLockApp {
                 return 1
         }
 
-        // Parse Oracle UTxO
         val (oracleTxHash, oracleOutputIndex) = oracleUtxoStr.split(":") match {
             case Array(hash, idx) => (hash, idx.toInt)
             case _ =>
@@ -412,15 +339,12 @@ object BitcoinDependentLockApp {
                 return 1
         }
 
-        // Parse tx proof
         val txProofHashes = txProofStr.split(",").map(_.trim).filter(_.nonEmpty)
         println(s"  TX Proof size: ${txProofHashes.length} hashes")
 
-        // Parse block proof
         val blockProofHashes = blockProofStr.split(",").map(_.trim).filter(_.nonEmpty)
         println(s"  Block Proof size: ${blockProofHashes.length} hashes")
 
-        // Validate block header
         if blockHeaderHex.length != 160 then {
             System.err.println(
               s"Block header must be 80 bytes (160 hex chars), got ${blockHeaderHex.length / 2} bytes"
@@ -429,63 +353,55 @@ object BitcoinDependentLockApp {
         }
         println()
 
-        // Load configurations
         val cardanoConfig = CardanoConfig.load()
         val walletConfig = WalletConfig.load()
 
         (cardanoConfig, walletConfig) match {
             case (Right(cardanoConf), Right(walletConf)) =>
-                // Create account
-                val account = walletConf.createAccount() match {
+                given ec: ExecutionContext = ExecutionContext.global
+
+                val hdAccount = walletConf.createHdAccount() match {
                     case Right(acc) =>
-                        println(s"Wallet loaded: ${acc.baseAddress()}")
+                        val addr = acc
+                            .baseAddress(cardanoConf.scalusNetwork)
+                            .asInstanceOf[scalus.cardano.address.ShelleyAddress]
+                            .toBech32
+                            .get
+                        println(s"Wallet loaded: $addr")
                         acc
                     case Left(err) =>
                         System.err.println(s"Error creating wallet: $err")
                         return 1
                 }
+                val signer = new TransactionSigner(Set(hdAccount.paymentKeyPair))
+                val sponsorAddress = hdAccount.baseAddress(cardanoConf.scalusNetwork)
 
-                // Create backend service
-                val backendService = cardanoConf.createBackendService() match {
-                    case Right(service) =>
+                val provider = cardanoConf.createBlockchainProvider() match {
+                    case Right(p) =>
                         println(s"Connected to Cardano backend")
-                        service
+                        p
                     case Left(err) =>
                         System.err.println(s"Error creating backend: $err")
                         return 1
                 }
 
-                // Get scripts
                 val script = getVerifierScript()
-                val network =
-                    if cardanoConf.network == CardanoNetwork.Mainnet then Networks.mainnet()
-                    else Networks.testnet()
-                val verifierAddress = AddressProvider
-                    .getEntAddress(script, network)
-                    .getAddress
+                val verifierAddress = getVerifierAddress(cardanoConf.scalusNetwork)
 
                 println()
                 println("Fetching locked UTxO...")
 
-                // Fetch verifier UTxOs
-                val utxoService = backendService.getUtxoService
-                val utxos =
-                    try {
-                        utxoService.getUtxos(verifierAddress, 100, 1)
-                    } catch {
-                        case e: Exception =>
-                            System.err.println(s"Error fetching UTxOs: ${e.getMessage}")
-                            return 1
-                    }
-
-                if !utxos.isSuccessful then {
-                    System.err.println(s"Error fetching UTxOs: ${utxos.getResponse}")
-                    return 1
+                val utxosResult = Await.result(provider.findUtxos(verifierAddress), 30.seconds)
+                val allUtxos: List[Utxo] = utxosResult match {
+                    case Right(u) => u.map { case (input, output) => Utxo(input, output) }.toList
+                    case Left(err) =>
+                        System.err.println(s"Error fetching UTxOs: $err")
+                        return 1
                 }
 
-                val allUtxos = utxos.getValue.asScala.toList
-                val lockedUtxo =
-                    allUtxos.find(u => u.getTxHash == txHash && u.getOutputIndex == outputIndex)
+                val lockedUtxo = allUtxos.find(u =>
+                    u.input.transactionId.toHex == txHash && u.input.index == outputIndex
+                )
 
                 lockedUtxo match {
                     case None =>
@@ -495,90 +411,76 @@ object BitcoinDependentLockApp {
                     case Some(utxoToSpend) =>
                         println(s"Found locked UTxO")
 
-                        // Create redeemer with both proofs
+                        // Create redeemer
                         val txProofList = txProofHashes.map(h => ByteString.fromHex(h)).toList
                         val blockProofList = blockProofHashes.map(h => ByteString.fromHex(h)).toList
                         val blockHeader = BlockHeader(ByteString.fromHex(blockHeaderHex))
 
                         val redeemerValue = TxVerifierRedeemer(
                           txIndex = BigInt(txIndex),
-                          txMerkleProof = scalus.prelude.List.from(txProofList),
+                          txMerkleProof =
+                              scalus.cardano.onchain.plutus.prelude.List.from(txProofList),
                           blockIndex = BigInt(blockIndex),
-                          blockMerkleProof = scalus.prelude.List.from(blockProofList),
+                          blockMerkleProof =
+                              scalus.cardano.onchain.plutus.prelude.List.from(blockProofList),
                           blockHeader = blockHeader
                         )
-                        val redeemerData = Interop.toPlutusData(redeemerValue.toData)
 
                         println()
                         println("Building unlock transaction with Oracle reference...")
 
-                        // Setup ScalusTransactionEvaluator
-                        val protocolParamsResult =
-                            backendService.getEpochService.getProtocolParameters
-                        if !protocolParamsResult.isSuccessful then {
-                            System.err.println(
-                              s"Error fetching protocol params: ${protocolParamsResult.getResponse}"
-                            )
-                            return 1
-                        }
-                        val protocolParams = protocolParamsResult.getValue
-
-                        val utxoSupplier = new DefaultUtxoSupplier(backendService.getUtxoService)
-                        val scriptHashHex = scalus.utils.Hex.bytesToHex(script.getScriptHash)
-                        val scriptSupplier = new scalus.bloxbean.ScriptSupplier {
-                            override def getScript(
-                                hash: String
-                            ): com.bloxbean.cardano.client.plutus.spec.PlutusScript =
-                                if hash == scriptHashHex then script
-                                else throw new RuntimeException(s"Unknown script hash: $hash")
-                        }
-
-                        val slotConfig =
-                            binocular.util.SlotConfigHelper.retrieveSlotConfig(backendService)
-
-                        val scalusEvaluator = new scalus.bloxbean.ScalusTransactionEvaluator(
-                          slotConfig,
-                          protocolParams,
-                          utxoSupplier,
-                          scriptSupplier
+                        // Create Oracle reference input UTxO
+                        val oracleInput = TransactionInput(
+                          TransactionHash.fromHex(oracleTxHash),
+                          oracleOutputIndex
                         )
+                        val oracleUtxoResult =
+                            Await.result(provider.findUtxo(oracleInput), 30.seconds)
+                        val oracleUtxo: Utxo = oracleUtxoResult match {
+                            case Right(u) => u
+                            case Left(_) =>
+                                System.err.println(s"Oracle UTxO not found: $oracleUtxoStr")
+                                return 1
+                        }
 
-                        // Create Oracle reference input
-                        val oracleRefInput = new TransactionInput(oracleTxHash, oracleOutputIndex)
+                        try {
+                            val tx = Await
+                                .result(
+                                  TxBuilder(provider.cardanoInfo)
+                                      .references(oracleUtxo)
+                                      .spend(utxoToSpend, redeemerValue, script)
+                                      .payTo(sponsorAddress, utxoToSpend.output.value)
+                                      .complete(provider, sponsorAddress),
+                                  60.seconds
+                                )
+                                .sign(signer)
+                                .transaction
 
-                        // Build unlock transaction with Oracle as reference input
-                        val unlockTx = new ScriptTx()
-                            .collectFrom(utxoToSpend, redeemerData)
-                            .readFrom(oracleRefInput)
-                            .payToAddress(account.baseAddress(), utxoToSpend.getAmount)
-                            .attachSpendingValidator(script)
-                            .withChangeAddress(account.baseAddress())
-
-                        val txBuilder = new QuickTxBuilder(backendService)
-                        val result = txBuilder
-                            .compose(unlockTx)
-                            .feePayer(account.baseAddress())
-                            .withSigner(SignerProviders.signerFrom(account))
-                            .withTxEvaluator(scalusEvaluator)
-                            .completeAndWait()
-
-                        if result.isSuccessful then {
-                            val resultTxHash = result.getValue
-                            println()
-                            println("Funds unlocked successfully!")
-                            println(s"  Transaction: $resultTxHash")
-                            println()
-                            println("The on-chain validator verified:")
-                            println("  1. The block is confirmed in the Binocular Oracle")
-                            println("  2. The block header hashes to the expected block hash")
-                            println("  3. The transaction is included in the block")
-                            0
-                        } else {
-                            System.err.println()
-                            System.err.println(
-                              s"Unlock transaction failed: ${result.getResponse}"
-                            )
-                            1
+                            val result = Await.result(provider.submit(tx), 30.seconds)
+                            result match {
+                                case Right(resultTxHash) =>
+                                    val hash = resultTxHash.toHex
+                                    println()
+                                    println("Funds unlocked successfully!")
+                                    println(s"  Transaction: $hash")
+                                    println()
+                                    println("The on-chain validator verified:")
+                                    println("  1. The block is confirmed in the Binocular Oracle")
+                                    println(
+                                      "  2. The block header hashes to the expected block hash"
+                                    )
+                                    println("  3. The transaction is included in the block")
+                                    0
+                                case Left(err) =>
+                                    System.err.println()
+                                    System.err.println(s"Unlock transaction failed: $err")
+                                    1
+                            }
+                        } catch {
+                            case e: Exception =>
+                                System.err.println(s"Error building transaction: ${e.getMessage}")
+                                e.printStackTrace()
+                                1
                         }
                 }
 

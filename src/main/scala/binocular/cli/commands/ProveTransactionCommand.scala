@@ -2,23 +2,16 @@ package binocular.cli.commands
 
 import binocular.{reverse, BitcoinNodeConfig, BitcoinValidator, CardanoConfig, ChainState, MerkleTree, OracleConfig, OracleTransactions, SimpleBitcoinRpc}
 import binocular.cli.{Command, CommandHelpers}
-import com.bloxbean.cardano.client.address.Address
-import scalus.bloxbean.Interop.toScalusData
+import scalus.cardano.address.Address
+import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo, Utxos}
 import scalus.uplc.builtin.Data.fromData
 import scalus.uplc.builtin.ByteString
-import scalus.cardano.onchain.plutus.prelude.{List => ScalusList}
+import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration.*
-import scala.jdk.CollectionConverters.*
 
-/** Prove Bitcoin transaction inclusion via oracle
-  *
-  * Supports two modes:
-  *   1. Online mode (default): Fetches transaction and block data from Bitcoin RPC
-  *   2. Offline mode: When --block, --tx-index, and --proof are all provided, verifies locally
-  *      without any Bitcoin RPC calls
-  */
+/** Prove Bitcoin transaction inclusion via oracle */
 case class ProveTransactionCommand(
     utxo: String,
     btcTxId: String,
@@ -28,7 +21,6 @@ case class ProveTransactionCommand(
     merkleRoot: Option[String] = None
 ) extends Command {
 
-    // Check if we have all required params for offline verification
     private def isOfflineMode: Boolean =
         blockHash.isDefined && txIndex.isDefined && proof.isDefined && merkleRoot.isDefined
 
@@ -50,41 +42,32 @@ case class ProveTransactionCommand(
                   s"Error: --block must be a 64-character block hash, not a block height"
                 )
                 System.err.println(s"  Received: $hash (${hash.length} characters)")
-                System.err.println()
-                System.err.println(
-                  s"  Use a block hash like: 0000000000000000000067f9f40ca6960173ebee423f6130138762dfc40630bf"
-                )
                 return 1
             case Some(hash) if !hash.forall(c => c.isDigit || ('a' to 'f').contains(c.toLower)) =>
                 System.err.println(s"Error: --block must be a valid hexadecimal block hash")
-                System.err.println(s"  Received: $hash")
                 return 1
-            case _ => // valid or not provided
+            case _ =>
         }
 
-        // Validate that if any offline param is provided, all must be provided
         val offlineParams = List(blockHash, txIndex, proof, merkleRoot)
         val providedCount = offlineParams.count(_.isDefined)
         if providedCount > 0 && providedCount < 4 then {
+            System.err.println(s"Error: For offline verification, all four options are required:")
             System.err.println(
-              s"Error: For offline verification, all four options are required:"
+              s"  --block <hash>       : ${if blockHash.isDefined then "provided" else "missing"}"
             )
             System.err.println(
-              s"  --block <hash>       : ${if blockHash.isDefined then "✓" else "missing"}"
+              s"  --tx-index <n>       : ${if txIndex.isDefined then "provided" else "missing"}"
             )
             System.err.println(
-              s"  --tx-index <n>       : ${if txIndex.isDefined then "✓" else "missing"}"
+              s"  --proof <hashes>     : ${if proof.isDefined then "provided" else "missing"}"
             )
             System.err.println(
-              s"  --proof <hashes>     : ${if proof.isDefined then "✓" else "missing"}"
-            )
-            System.err.println(
-              s"  --merkle-root <hash> : ${if merkleRoot.isDefined then "✓" else "missing"}"
+              s"  --merkle-root <hash> : ${if merkleRoot.isDefined then "provided" else "missing"}"
             )
             return 1
         }
 
-        // Parse UTxO string
         CommandHelpers.parseUtxo(utxo) match {
             case Left(err) =>
                 System.err.println(s"Error: $err")
@@ -95,14 +78,64 @@ case class ProveTransactionCommand(
         }
     }
 
-    /** Offline verification - no Bitcoin RPC calls */
+    private def fetchOracleUtxo(
+        oracleTxHash: String,
+        oracleOutputIndex: Int
+    ): Either[Int, (scalus.cardano.node.BlockchainProvider, Utxo, ChainState, OracleConfig)] = {
+        val cardanoConfig = CardanoConfig.load()
+        val oracleConfig = OracleConfig.load()
+
+        (cardanoConfig, oracleConfig) match {
+            case (Right(cardanoConf), Right(oracleConf)) =>
+                given ec: ExecutionContext = ExecutionContext.global
+
+                val provider = cardanoConf.createBlockchainProvider() match {
+                    case Right(p) => p
+                    case Left(err) =>
+                        System.err.println(s"Error creating blockchain provider: $err")
+                        return Left(1)
+                }
+
+                val input =
+                    TransactionInput(TransactionHash.fromHex(oracleTxHash), oracleOutputIndex)
+                val utxoResult = Await.result(provider.findUtxo(input), 30.seconds)
+
+                val utxo = utxoResult match {
+                    case Right(u) => u
+                    case Left(_) =>
+                        System.err.println(
+                          s"Oracle UTxO not found: $oracleTxHash:$oracleOutputIndex"
+                        )
+                        return Left(1)
+                }
+
+                val chainState =
+                    try {
+                        val data = utxo.output.requireInlineDatum
+                        data.to[ChainState]
+                    } catch {
+                        case e: Exception =>
+                            System.err.println(s"Error parsing ChainState datum: ${e.getMessage}")
+                            return Left(1)
+                    }
+
+                Right((provider, utxo, chainState, oracleConf))
+
+            case (Left(err), _) =>
+                System.err.println(s"Error loading Cardano config: $err")
+                Left(1)
+            case (_, Left(err)) =>
+                System.err.println(s"Error loading Oracle config: $err")
+                Left(1)
+        }
+    }
+
     private def proveTransactionOffline(oracleTxHash: String, oracleOutputIndex: Int): Int = {
         val targetBlockHash = blockHash.get
         val targetTxIndex = txIndex.get
         val proofHashes = proof.get
         val expectedMerkleRoot = merkleRoot.get
 
-        // Parse proof hashes
         val merkleProof =
             try {
                 proofHashes
@@ -123,585 +156,333 @@ case class ProveTransactionCommand(
                     return 1
             }
 
-        // Load Cardano config only
-        val cardanoConfig = CardanoConfig.load()
-        val oracleConfig = OracleConfig.load()
+        println("Step 1: Loading Cardano configuration...")
 
-        (cardanoConfig, oracleConfig) match {
-            case (Right(cardanoConf), Right(oracleConf)) =>
-                println("Step 1: Loading Cardano configuration...")
-                println(s"✓ Cardano Network: ${cardanoConf.network}")
-                println(s"✓ Oracle Address: ${oracleConf.scriptAddress}")
-                println()
-
-                // Create Cardano backend service
-                val backendService = cardanoConf.createBackendService() match {
-                    case Right(service) =>
-                        println(s"✓ Connected to Cardano backend")
-                        service
-                    case Left(err) =>
-                        System.err.println(s"Error creating backend service: $err")
-                        return 1
-                }
+        fetchOracleUtxo(oracleTxHash, oracleOutputIndex) match {
+            case Left(exitCode) => exitCode
+            case Right((_, _, chainState, _)) =>
+                println(s"Oracle state:")
+                println(s"  Block Height: ${chainState.blockHeight}")
+                println(s"  Block Hash: ${chainState.blockHash.toHex}")
 
                 println()
-                println("Step 2: Fetching oracle UTxO from Cardano...")
+                println("Step 4: Verifying Merkle proof...")
 
-                // Fetch the oracle UTxO
-                val scriptAddress = new Address(oracleConf.scriptAddress)
-                val utxoService = backendService.getUtxoService
-                val utxos =
-                    try {
-                        utxoService.getUtxos(scriptAddress.getAddress, 100, 1)
-                    } catch {
-                        case e: Exception =>
-                            System.err.println(s"✗ Error fetching UTxOs: ${e.getMessage}")
-                            return 1
-                    }
+                val txHash = ByteString.fromHex(btcTxId).reverse
+                val calculatedRoot =
+                    MerkleTree.calculateMerkleRootFromProof(targetTxIndex, txHash, merkleProof)
+                val expectedRootBytes = ByteString.fromHex(expectedMerkleRoot)
 
-                if !utxos.isSuccessful then {
-                    System.err.println(s"✗ Error fetching UTxOs: ${utxos.getResponse}")
+                println(s"  Calculated Root: ${calculatedRoot.toHex}")
+                println(s"  Expected Root:   ${expectedRootBytes.toHex}")
+
+                if calculatedRoot != expectedRootBytes then {
+                    println()
+                    println("=" * 70)
+                    println("VERIFICATION FAILED")
+                    println("=" * 70)
+                    println()
+                    println(s"The merkle proof does NOT verify the transaction inclusion.")
                     return 1
                 }
 
-                val allUtxos = utxos.getValue.asScala.toList
-                val targetUtxo = allUtxos.find(u =>
-                    u.getTxHash == oracleTxHash && u.getOutputIndex == oracleOutputIndex
-                )
-
-                targetUtxo match {
-                    case None =>
-                        System.err.println(
-                          s"✗ Oracle UTxO not found: $oracleTxHash:$oracleOutputIndex"
-                        )
-                        return 1
-
-                    case Some(utxo) =>
-                        println(s"✓ Found oracle UTxO")
-
-                        // Parse ChainState datum
-                        println()
-                        println("Step 3: Parsing ChainState datum...")
-
-                        val inlineDatumHex = utxo.getInlineDatum
-                        if inlineDatumHex == null || inlineDatumHex.isEmpty then {
-                            System.err.println("✗ UTxO has no inline datum")
-                            return 1
-                        }
-
-                        val chainState =
-                            try {
-                                val plutusData =
-                                    com.bloxbean.cardano.client.plutus.spec.PlutusData.deserialize(
-                                      com.bloxbean.cardano.client.util.HexUtil
-                                          .decodeHexString(inlineDatumHex)
-                                    )
-                                val data = plutusData.toScalusData
-                                data.to[ChainState]
-                            } catch {
-                                case e: Exception =>
-                                    System.err.println(
-                                      s"✗ Error parsing ChainState datum: ${e.getMessage}"
-                                    )
-                                    return 1
-                            }
-
-                        println(s"✓ Oracle state:")
-                        println(s"  Block Height: ${chainState.blockHeight}")
-                        println(s"  Block Hash: ${chainState.blockHash.toHex}")
-
-                        // Verify merkle proof locally
-                        println()
-                        println("Step 4: Verifying Merkle proof...")
-
-                        val txHash = ByteString.fromHex(btcTxId).reverse
-                        val calculatedRoot =
-                            MerkleTree.calculateMerkleRootFromProof(
-                              targetTxIndex,
-                              txHash,
-                              merkleProof
-                            )
-
-                        val expectedRootBytes = ByteString.fromHex(expectedMerkleRoot)
-
-                        println(s"  Calculated Root: ${calculatedRoot.toHex}")
-                        println(s"  Expected Root:   ${expectedRootBytes.toHex}")
-
-                        // Verify the calculated root matches expected
-                        if calculatedRoot != expectedRootBytes then {
-                            println()
-                            println("=" * 70)
-                            println("VERIFICATION FAILED")
-                            println("=" * 70)
-                            println()
-                            println(s"Transaction ID: $btcTxId")
-                            println(s"Block Hash: $targetBlockHash")
-                            println(s"Transaction Index: $targetTxIndex")
-                            println()
-                            println(s"Calculated Merkle Root: ${calculatedRoot.toHex}")
-                            println(s"Expected Merkle Root:   ${expectedRootBytes.toHex}")
-                            println()
-                            println("The merkle proof does NOT verify the transaction inclusion.")
-                            println("Possible causes:")
-                            println("  - Wrong transaction ID")
-                            println("  - Wrong transaction index")
-                            println("  - Invalid proof hashes")
-                            println("  - Wrong merkle root")
-                            println("=" * 70)
-                            return 1
-                        }
-
-                        println(s"✓ Merkle proof verified!")
-
-                        // Output result
-                        println()
-                        println("=" * 70)
-                        println("TRANSACTION INCLUSION VERIFIED")
-                        println("=" * 70)
-                        println()
-                        println(s"Transaction ID: $btcTxId")
-                        println(s"Block Hash: $targetBlockHash")
-                        println(s"Transaction Index: $targetTxIndex")
-                        println()
-                        println(s"Oracle UTxO: $oracleTxHash:$oracleOutputIndex")
-                        println(s"Oracle Height: ${chainState.blockHeight}")
-                        println()
-                        println(s"Merkle Root: ${calculatedRoot.toHex}")
-                        println()
-                        println("Merkle Proof:")
-                        merkleProof.zipWithIndex.foreach { case (hash, i) =>
-                            println(s"  [$i] ${hash.toHex}")
-                        }
-                        println()
-                        println("The transaction is cryptographically proven to be in the block.")
-                        println("=" * 70)
-
-                        0
+                println(s"Merkle proof verified!")
+                println()
+                println("=" * 70)
+                println("TRANSACTION INCLUSION VERIFIED")
+                println("=" * 70)
+                println()
+                println(s"Transaction ID: $btcTxId")
+                println(s"Block Hash: $targetBlockHash")
+                println(s"Transaction Index: $targetTxIndex")
+                println()
+                println(s"Merkle Root: ${calculatedRoot.toHex}")
+                println()
+                println("Merkle Proof:")
+                merkleProof.zipWithIndex.foreach { case (hash, i) =>
+                    println(s"  [$i] ${hash.toHex}")
                 }
-
-            case (Left(err), _) =>
-                System.err.println(s"Error loading Cardano config: $err")
-                1
-            case (_, Left(err)) =>
-                System.err.println(s"Error loading Oracle config: $err")
-                1
+                println()
+                println("The transaction is cryptographically proven to be in the block.")
+                println("=" * 70)
+                0
         }
     }
 
-    /** Online verification - uses Bitcoin RPC */
     private def proveTransactionOnline(oracleTxHash: String, oracleOutputIndex: Int): Int = {
-        // Load configurations
         val bitcoinConfig = BitcoinNodeConfig.load()
-        val cardanoConfig = CardanoConfig.load()
-        val oracleConfig = OracleConfig.load()
 
-        (bitcoinConfig, cardanoConfig, oracleConfig) match {
-            case (Right(btcConf), Right(cardanoConf), Right(oracleConf)) =>
-                println("Step 1: Loading configurations...")
-                println(s"✓ Bitcoin Node: ${btcConf.url}")
-                println(s"✓ Cardano Network: ${cardanoConf.network}")
-                println(s"✓ Oracle Address: ${oracleConf.scriptAddress}")
+        bitcoinConfig match {
+            case Left(err) =>
+                System.err.println(s"Error loading Bitcoin config: $err")
+                return 1
+            case _ =>
+        }
+        val btcConf = bitcoinConfig.toOption.get
+
+        println("Step 1: Loading configurations...")
+        println(s"  Bitcoin Node: ${btcConf.url}")
+
+        fetchOracleUtxo(oracleTxHash, oracleOutputIndex) match {
+            case Left(exitCode) => exitCode
+            case Right((_, _, chainState, oracleConf)) =>
+                println(s"  Oracle Address: ${oracleConf.scriptAddress}")
                 println()
+                println(s"Oracle state:")
+                println(s"  Block Height: ${chainState.blockHeight}")
+                println(s"  Block Hash: ${chainState.blockHash.toHex}")
 
-                // Create Cardano backend service
-                val backendService = cardanoConf.createBackendService() match {
-                    case Right(service) =>
-                        println(s"✓ Connected to Cardano backend")
-                        service
-                    case Left(err) =>
-                        System.err.println(s"Error creating backend service: $err")
-                        return 1
-                }
+                given ec: ExecutionContext = ExecutionContext.global
+                val rpc = new SimpleBitcoinRpc(btcConf)
 
                 println()
-                println("Step 2: Fetching oracle UTxO from Cardano...")
+                val (targetBlockHash, confirmations): (String, Option[Int]) =
+                    blockHash match {
+                        case Some(hash) =>
+                            println(s"Step 4: Using provided block hash...")
+                            println(s"  Block hash: $hash")
+                            (hash, None)
 
-                // Fetch the oracle UTxO
-                val scriptAddress = new Address(oracleConf.scriptAddress)
-                val utxoService = backendService.getUtxoService
-                val utxos =
-                    try {
-                        utxoService.getUtxos(scriptAddress.getAddress, 100, 1)
-                    } catch {
-                        case e: Exception =>
-                            System.err.println(s"✗ Error fetching UTxOs: ${e.getMessage}")
-                            return 1
+                        case None =>
+                            println(s"Step 4: Fetching Bitcoin transaction $btcTxId...")
+                            val txInfo =
+                                try {
+                                    Await.result(rpc.getRawTransaction(btcTxId), 30.seconds)
+                                } catch {
+                                    case e: Exception =>
+                                        val msg = e.getMessage
+                                        if msg.contains("No such mempool or blockchain transaction")
+                                        then {
+                                            System.err.println(
+                                              s"Transaction not found on Bitcoin blockchain"
+                                            )
+                                            System.err.println(s"  TX ID: $btcTxId")
+                                        } else {
+                                            System.err.println(s"Error fetching transaction: $msg")
+                                        }
+                                        return 1
+                                }
+
+                            txInfo.blockhash match {
+                                case Some(hash) =>
+                                    println(s"  Transaction found in block: $hash")
+                                    println(s"  Confirmations: ${txInfo.confirmations}")
+                                    (hash, Some(txInfo.confirmations))
+                                case None =>
+                                    System.err.println(s"Transaction not confirmed (no blockhash)")
+                                    return 1
+                            }
                     }
 
-                if !utxos.isSuccessful then {
-                    System.err.println(s"✗ Error fetching UTxOs: ${utxos.getResponse}")
+                println()
+                println("Step 5: Verifying block is in oracle's confirmed state...")
+
+                val blockHashBytes = ByteString.fromHex(targetBlockHash).reverse
+
+                val blockInForksTree = chainState.forksTree.exists { branch =>
+                    branch.tipHash == blockHashBytes ||
+                    BitcoinValidator.existsHash(branch.recentBlocks, blockHashBytes)
+                }
+
+                if blockInForksTree then {
+                    System.err.println(s"Block is still in fork tree (not yet confirmed)")
                     return 1
                 }
 
-                val allUtxos = utxos.getValue.asScala.toList
-                val targetUtxo = allUtxos.find(u =>
-                    u.getTxHash == oracleTxHash && u.getOutputIndex == oracleOutputIndex
-                )
-
-                targetUtxo match {
-                    case None =>
-                        System.err.println(
-                          s"✗ Oracle UTxO not found: $oracleTxHash:$oracleOutputIndex"
-                        )
-                        return 1
-
-                    case Some(utxo) =>
-                        println(s"✓ Found oracle UTxO")
-
-                        // Parse ChainState datum
-                        println()
-                        println("Step 3: Parsing ChainState datum...")
-
-                        val inlineDatumHex = utxo.getInlineDatum
-                        if inlineDatumHex == null || inlineDatumHex.isEmpty then {
-                            System.err.println("✗ UTxO has no inline datum")
+                val blockHeader =
+                    try {
+                        Await.result(rpc.getBlockHeader(targetBlockHash), 30.seconds)
+                    } catch {
+                        case e: Exception =>
+                            System.err.println(s"Error fetching block header: ${e.getMessage}")
                             return 1
-                        }
+                    }
 
-                        val chainState =
-                            try {
-                                val plutusData =
-                                    com.bloxbean.cardano.client.plutus.spec.PlutusData.deserialize(
-                                      com.bloxbean.cardano.client.util.HexUtil
-                                          .decodeHexString(inlineDatumHex)
-                                    )
-                                val data = plutusData.toScalusData
-                                data.to[ChainState]
-                            } catch {
-                                case e: Exception =>
-                                    System.err.println(
-                                      s"✗ Error parsing ChainState datum: ${e.getMessage}"
-                                    )
-                                    return 1
-                            }
-
-                        println(s"✓ Oracle state:")
-                        println(s"  Block Height: ${chainState.blockHeight}")
-                        println(s"  Block Hash: ${chainState.blockHash.toHex}")
-
-                        given ec: ExecutionContext = ExecutionContext.global
-                        val rpc = new SimpleBitcoinRpc(btcConf)
-
-                        // Get block hash - either from parameter or by fetching transaction
-                        println()
-                        val (targetBlockHash, confirmations): (String, Option[Int]) =
-                            blockHash match {
-                                case Some(hash) =>
-                                    println(s"Step 4: Using provided block hash...")
-                                    println(s"✓ Block hash: $hash")
-                                    (hash, None)
-
-                                case None =>
-                                    println(s"Step 4: Fetching Bitcoin transaction $btcTxId...")
-                                    val txInfo =
-                                        try {
-                                            Await.result(rpc.getRawTransaction(btcTxId), 30.seconds)
-                                        } catch {
-                                            case e: Exception =>
-                                                val msg = e.getMessage
-                                                if msg.contains(
-                                                      "No such mempool or blockchain transaction"
-                                                    )
-                                                then {
-                                                    System.err.println(
-                                                      s"✗ Transaction not found on Bitcoin blockchain"
-                                                    )
-                                                    System.err.println(s"  TX ID: $btcTxId")
-                                                    System.err.println()
-                                                    System.err.println(
-                                                      s"  For offline verification, provide:"
-                                                    )
-                                                    System.err.println(
-                                                      s"    --block <hash> --tx-index <n> --proof <hash1,hash2,...>"
-                                                    )
-                                                } else {
-                                                    System.err.println(
-                                                      s"✗ Error fetching transaction: $msg"
-                                                    )
-                                                }
-                                                return 1
-                                        }
-
-                                    txInfo.blockhash match {
-                                        case Some(hash) =>
-                                            println(s"✓ Transaction found in block: $hash")
-                                            println(s"  Confirmations: ${txInfo.confirmations}")
-                                            (hash, Some(txInfo.confirmations))
-                                        case None =>
-                                            System.err.println(
-                                              s"✗ Transaction not confirmed (no blockhash)"
-                                            )
-                                            return 1
-                                    }
-                            }
-
-                        // Verify block is in oracle's confirmed state
-                        println()
-                        println("Step 5: Verifying block is in oracle's confirmed state...")
-
-                        val blockHashBytes = ByteString.fromHex(targetBlockHash).reverse
-
-                        // Check if block is in confirmed state (not in forks tree)
-                        // With ForkBranch, need to check if block is in any branch
-                        val blockInForksTree = chainState.forksTree.exists { branch =>
-                            branch.tipHash == blockHashBytes ||
-                            BitcoinValidator.existsHash(branch.recentBlocks, blockHashBytes)
-                        }
-
-                        if blockInForksTree then {
-                            System.err.println(s"✗ Block is still in fork tree (not yet confirmed)")
-                            println(s"  The oracle needs to be updated to confirm this block")
-                            return 1
-                        }
-
-                        // For a simple check, verify the block height is <= oracle height
-                        val blockHeader =
-                            try {
-                                Await.result(rpc.getBlockHeader(targetBlockHash), 30.seconds)
-                            } catch {
-                                case e: Exception =>
-                                    System.err.println(
-                                      s"✗ Error fetching block header: ${e.getMessage}"
-                                    )
-                                    return 1
-                            }
-
-                        if blockHeader.height > chainState.blockHeight.toInt then {
-                            System.err.println(
-                              s"✗ Block height ${blockHeader.height} > oracle height ${chainState.blockHeight}"
-                            )
-                            println(s"  Oracle needs to be updated to include this block")
-                            return 1
-                        }
-
-                        println(s"✓ Block is confirmed by oracle")
-                        println(s"  Block Height: ${blockHeader.height}")
-
-                        // Fetch full block with transactions
-                        println()
-                        println("Step 6: Fetching block transactions to build Merkle proof...")
-
-                        val blockInfo =
-                            try {
-                                Await.result(rpc.getBlock(targetBlockHash), 60.seconds)
-                            } catch {
-                                case e: Exception =>
-                                    System.err.println(s"✗ Error fetching block: ${e.getMessage}")
-                                    return 1
-                            }
-
-                        println(s"✓ Block has ${blockInfo.tx.length} transactions")
-
-                        // Find transaction index in block
-                        val txIdx = blockInfo.tx.indexWhere(_.txid == btcTxId)
-                        if txIdx < 0 then {
-                            println()
-                            println("=" * 70)
-                            println("TRANSACTION NOT FOUND IN BLOCK")
-                            println("=" * 70)
-                            println()
-                            println(s"Transaction ID: $btcTxId")
-                            println(s"Block Hash: $targetBlockHash")
-                            println(s"Block Height: ${blockHeader.height}")
-                            println(s"Block TX Count: ${blockInfo.tx.length}")
-                            println()
-                            println("The transaction is NOT included in this block.")
-                            if blockHash.isDefined then {
-                                println(
-                                  "This confirms the transaction does not exist in the specified block."
-                                )
-                            }
-                            println("=" * 70)
-                            return 1
-                        }
-
-                        println(s"✓ Transaction found at index $txIdx")
-
-                        // Build Merkle proof
-                        println()
-                        println("Step 7: Building Merkle proof...")
-
-                        val txHashes = blockInfo.tx.map { tx =>
-                            ByteString.fromHex(tx.txid).reverse
-                        }
-
-                        val merkleTree = MerkleTree.fromHashes(txHashes)
-                        val merkleRoot = merkleTree.getMerkleRoot
-                        val merkleProof = merkleTree.makeMerkleProof(txIdx)
-
-                        println(s"✓ Merkle proof generated")
-                        println(s"  Merkle Root: ${merkleRoot.toHex}")
-                        println(s"  Proof Size: ${merkleProof.length} hashes")
-
-                        // Verify the proof locally
-                        val txHash = ByteString.fromHex(btcTxId).reverse
-                        val calculatedRoot =
-                            MerkleTree.calculateMerkleRootFromProof(txIdx, txHash, merkleProof)
-
-                        if calculatedRoot != merkleRoot then {
-                            System.err.println(s"✗ Merkle proof verification failed!")
-                            return 1
-                        }
-
-                        println(s"✓ Merkle proof verified locally")
-
-                        // Step 8: Build block proof (block in Oracle's confirmed tree)
-                        println()
-                        println("Step 8: Building block proof for Oracle's confirmed tree...")
-
-                        // Count blocks in the rolling merkle tree by checking which levels are occupied
-                        // In a rolling merkle tree, each non-empty level i represents 2^i blocks
-                        val emptyHash = ByteString.unsafeFromArray(new Array[Byte](32))
-                        def countBlocksInTree(tree: ScalusList[ByteString]): Int = {
-                            var count = 0
-                            var power = 1 // 2^level
-                            var current = tree
-                            while current != ScalusList.Nil do {
-                                current match {
-                                    case ScalusList.Cons(hash, tail) =>
-                                        if hash != emptyHash then count += power
-                                        power *= 2
-                                        current = tail
-                                    case _ => current = ScalusList.Nil
-                                }
-                            }
-                            count
-                        }
-
-                        // Derive block index from Oracle state
-                        val confirmedHeight = chainState.blockHeight.toInt
-                        val numConfirmedBlocks = countBlocksInTree(chainState.confirmedBlocksTree)
-                        val distanceFromTip = confirmedHeight - blockHeader.height
-                        val blockIndex = numConfirmedBlocks - 1 - distanceFromTip
-
-                        println(s"  Oracle confirmed height: $confirmedHeight")
-                        println(s"  Blocks in tree: $numConfirmedBlocks")
-                        println(
-                          s"  Block ${blockHeader.height} is $distanceFromTip blocks from tip"
-                        )
-                        println(s"  Target block index: $blockIndex")
-
-                        // Fetch block hashes for all confirmed blocks
-                        val firstBlockHeight = confirmedHeight - numConfirmedBlocks + 1
-                        val confirmedBlockHashes =
-                            try {
-                                (firstBlockHeight to confirmedHeight).map { height =>
-                                    val hash = Await.result(rpc.getBlockHash(height), 30.seconds)
-                                    ByteString.fromHex(hash).reverse
-                                }.toList
-                            } catch {
-                                case e: Exception =>
-                                    System.err.println(
-                                      s"✗ Error fetching confirmed block hashes: ${e.getMessage}"
-                                    )
-                                    return 1
-                            }
-
-                        // Build merkle tree from confirmed blocks and generate proof
-                        val blockTree = MerkleTree.fromHashes(confirmedBlockHashes)
-                        val blockTreeRoot = blockTree.getMerkleRoot
-                        val blockMerkleProof = blockTree.makeMerkleProof(blockIndex)
-
-                        // Verify block proof locally
-                        val targetBlockHashBytes = ByteString.fromHex(targetBlockHash).reverse
-                        val calculatedBlockRoot =
-                            MerkleTree.calculateMerkleRootFromProof(
-                              blockIndex,
-                              targetBlockHashBytes,
-                              blockMerkleProof
-                            )
-
-                        // Compare with Oracle's confirmedBlocksTree root
-                        val oracleTreeRoot =
-                            BitcoinValidator.getMerkleRoot(chainState.confirmedBlocksTree)
-
-                        println(s"  Calculated block tree root: ${calculatedBlockRoot.toHex}")
-                        println(s"  Oracle tree root: ${oracleTreeRoot.toHex}")
-
-                        if calculatedBlockRoot != oracleTreeRoot then {
-                            println()
-                            println(
-                              "⚠ Block tree root mismatch - this may be due to rolling tree differences"
-                            )
-                            println(
-                              "  The proof structure may need adjustment for the rolling merkle tree"
-                            )
-                        } else {
-                            println(s"✓ Block proof verified!")
-                        }
-
-                        // Get raw block header (80 bytes)
-                        val rawBlockHeader =
-                            try {
-                                Await.result(rpc.getBlockHeaderRaw(targetBlockHash), 30.seconds)
-                            } catch {
-                                case e: Exception =>
-                                    System.err.println(
-                                      s"✗ Error fetching raw block header: ${e.getMessage}"
-                                    )
-                                    return 1
-                            }
-
-                        // Output both proofs
-                        println()
-                        println("=" * 70)
-                        println("TWO-PROOF TRANSACTION VERIFICATION")
-                        println("=" * 70)
-                        println()
-                        println("--- Transaction Details ---")
-                        println(s"Transaction ID: $btcTxId")
-                        println(s"Block Hash: $targetBlockHash")
-                        println(s"Block Height: ${blockHeader.height}")
-                        confirmations.foreach(c => println(s"Confirmations: $c"))
-                        println()
-                        println("--- Oracle State ---")
-                        println(s"Oracle UTxO: $oracleTxHash:$oracleOutputIndex")
-                        println(s"Oracle Height: ${chainState.blockHeight}")
-                        println()
-                        println("--- PROOF 1: Transaction in Block ---")
-                        println(s"TX Index: $txIdx")
-                        println(s"TX Merkle Root: ${merkleRoot.toHex}")
-                        println(s"TX Proof (${merkleProof.length} hashes):")
-                        merkleProof.zipWithIndex.foreach { case (hash, i) =>
-                            println(s"  [$i] ${hash.toHex}")
-                        }
-                        println()
-                        println("--- PROOF 2: Block in Oracle ---")
-                        println(s"Block Index: $blockIndex")
-                        println(s"Block Tree Root: ${calculatedBlockRoot.toHex}")
-                        println(s"Block Proof (${blockMerkleProof.length} hashes):")
-                        blockMerkleProof.zipWithIndex.foreach { case (hash, i) =>
-                            println(s"  [$i] ${hash.toHex}")
-                        }
-                        println()
-                        println("--- Block Header (80 bytes) ---")
-                        println(s"$rawBlockHeader")
-                        println()
-                        println("--- For BitcoinDependentLock unlock ---")
-                        println(s"bitcoin-dependent-lock unlock <LOCKED_UTXO> \\")
-                        println(s"  --tx-index $txIdx \\")
-                        println(s"  --tx-proof ${merkleProof.map(_.toHex).mkString(",")} \\")
-                        println(s"  --block-index $blockIndex \\")
-                        println(
-                          s"  --block-proof ${blockMerkleProof.map(_.toHex).mkString(",")} \\"
-                        )
-                        println(s"  --block-header $rawBlockHeader \\")
-                        println(s"  --oracle-utxo $oracleTxHash:$oracleOutputIndex")
-                        println()
-                        println("=" * 70)
-
-                        0
+                if blockHeader.height > chainState.blockHeight.toInt then {
+                    System.err.println(
+                      s"Block height ${blockHeader.height} > oracle height ${chainState.blockHeight}"
+                    )
+                    return 1
                 }
 
-            case (Left(err), _, _) =>
-                System.err.println(s"Error loading Bitcoin config: $err")
-                1
-            case (_, Left(err), _) =>
-                System.err.println(s"Error loading Cardano config: $err")
-                1
-            case (_, _, Left(err)) =>
-                System.err.println(s"Error loading Oracle config: $err")
-                1
+                println(s"  Block is confirmed by oracle")
+                println(s"  Block Height: ${blockHeader.height}")
+
+                println()
+                println("Step 6: Fetching block transactions to build Merkle proof...")
+
+                val blockInfo =
+                    try {
+                        Await.result(rpc.getBlock(targetBlockHash), 60.seconds)
+                    } catch {
+                        case e: Exception =>
+                            System.err.println(s"Error fetching block: ${e.getMessage}")
+                            return 1
+                    }
+
+                println(s"  Block has ${blockInfo.tx.length} transactions")
+
+                val txIdx = blockInfo.tx.indexWhere(_.txid == btcTxId)
+                if txIdx < 0 then {
+                    println()
+                    println("TRANSACTION NOT FOUND IN BLOCK")
+                    return 1
+                }
+
+                println(s"  Transaction found at index $txIdx")
+
+                println()
+                println("Step 7: Building Merkle proof...")
+
+                val txHashes = blockInfo.tx.map { tx =>
+                    ByteString.fromHex(tx.txid).reverse
+                }
+
+                val merkleTree = MerkleTree.fromHashes(txHashes)
+                val merkleRootVal = merkleTree.getMerkleRoot
+                val merkleProof = merkleTree.makeMerkleProof(txIdx)
+
+                println(s"  Merkle proof generated")
+                println(s"  Merkle Root: ${merkleRootVal.toHex}")
+                println(s"  Proof Size: ${merkleProof.length} hashes")
+
+                val txHash = ByteString.fromHex(btcTxId).reverse
+                val calculatedRoot =
+                    MerkleTree.calculateMerkleRootFromProof(txIdx, txHash, merkleProof)
+
+                if calculatedRoot != merkleRootVal then {
+                    System.err.println(s"Merkle proof verification failed!")
+                    return 1
+                }
+
+                println(s"  Merkle proof verified locally")
+
+                // Step 8: Build block proof
+                println()
+                println("Step 8: Building block proof for Oracle's confirmed tree...")
+
+                val emptyHash = ByteString.unsafeFromArray(new Array[Byte](32))
+                def countBlocksInTree(tree: ScalusList[ByteString]): Int = {
+                    var count = 0
+                    var power = 1
+                    var current = tree
+                    while current != ScalusList.Nil do {
+                        current match {
+                            case ScalusList.Cons(hash, tail) =>
+                                if hash != emptyHash then count += power
+                                power *= 2
+                                current = tail
+                            case _ => current = ScalusList.Nil
+                        }
+                    }
+                    count
+                }
+
+                val confirmedHeight = chainState.blockHeight.toInt
+                val numConfirmedBlocks = countBlocksInTree(chainState.confirmedBlocksTree)
+                val distanceFromTip = confirmedHeight - blockHeader.height
+                val blockIndex = numConfirmedBlocks - 1 - distanceFromTip
+
+                println(s"  Oracle confirmed height: $confirmedHeight")
+                println(s"  Blocks in tree: $numConfirmedBlocks")
+                println(s"  Block ${blockHeader.height} is $distanceFromTip blocks from tip")
+                println(s"  Target block index: $blockIndex")
+
+                val firstBlockHeight = confirmedHeight - numConfirmedBlocks + 1
+                val confirmedBlockHashes =
+                    try {
+                        (firstBlockHeight to confirmedHeight).map { height =>
+                            val hash = Await.result(rpc.getBlockHash(height), 30.seconds)
+                            ByteString.fromHex(hash).reverse
+                        }.toList
+                    } catch {
+                        case e: Exception =>
+                            System.err.println(
+                              s"Error fetching confirmed block hashes: ${e.getMessage}"
+                            )
+                            return 1
+                    }
+
+                val blockTree = MerkleTree.fromHashes(confirmedBlockHashes)
+                val blockMerkleProof = blockTree.makeMerkleProof(blockIndex)
+
+                val targetBlockHashBytes = ByteString.fromHex(targetBlockHash).reverse
+                val calculatedBlockRoot =
+                    MerkleTree.calculateMerkleRootFromProof(
+                      blockIndex,
+                      targetBlockHashBytes,
+                      blockMerkleProof
+                    )
+
+                val oracleTreeRoot = BitcoinValidator.getMerkleRoot(chainState.confirmedBlocksTree)
+
+                println(s"  Calculated block tree root: ${calculatedBlockRoot.toHex}")
+                println(s"  Oracle tree root: ${oracleTreeRoot.toHex}")
+
+                if calculatedBlockRoot != oracleTreeRoot then {
+                    println()
+                    println(
+                      "Block tree root mismatch - this may be due to rolling tree differences"
+                    )
+                } else {
+                    println(s"  Block proof verified!")
+                }
+
+                val rawBlockHeader =
+                    try {
+                        Await.result(rpc.getBlockHeaderRaw(targetBlockHash), 30.seconds)
+                    } catch {
+                        case e: Exception =>
+                            System.err.println(s"Error fetching raw block header: ${e.getMessage}")
+                            return 1
+                    }
+
+                // Output both proofs
+                println()
+                println("=" * 70)
+                println("TWO-PROOF TRANSACTION VERIFICATION")
+                println("=" * 70)
+                println()
+                println("--- Transaction Details ---")
+                println(s"Transaction ID: $btcTxId")
+                println(s"Block Hash: $targetBlockHash")
+                println(s"Block Height: ${blockHeader.height}")
+                confirmations.foreach(c => println(s"Confirmations: $c"))
+                println()
+                println("--- Oracle State ---")
+                println(s"Oracle UTxO: $oracleTxHash:$oracleOutputIndex")
+                println(s"Oracle Height: ${chainState.blockHeight}")
+                println()
+                println("--- PROOF 1: Transaction in Block ---")
+                println(s"TX Index: $txIdx")
+                println(s"TX Merkle Root: ${merkleRootVal.toHex}")
+                println(s"TX Proof (${merkleProof.length} hashes):")
+                merkleProof.zipWithIndex.foreach { case (hash, i) =>
+                    println(s"  [$i] ${hash.toHex}")
+                }
+                println()
+                println("--- PROOF 2: Block in Oracle ---")
+                println(s"Block Index: $blockIndex")
+                println(s"Block Tree Root: ${calculatedBlockRoot.toHex}")
+                println(s"Block Proof (${blockMerkleProof.length} hashes):")
+                blockMerkleProof.zipWithIndex.foreach { case (hash, i) =>
+                    println(s"  [$i] ${hash.toHex}")
+                }
+                println()
+                println("--- Block Header (80 bytes) ---")
+                println(s"$rawBlockHeader")
+                println()
+                println("--- For BitcoinDependentLock unlock ---")
+                println(s"bitcoin-dependent-lock unlock <LOCKED_UTXO> \\")
+                println(s"  --tx-index $txIdx \\")
+                println(s"  --tx-proof ${merkleProof.map(_.toHex).mkString(",")} \\")
+                println(s"  --block-index $blockIndex \\")
+                println(s"  --block-proof ${blockMerkleProof.map(_.toHex).mkString(",")} \\")
+                println(s"  --block-header $rawBlockHeader \\")
+                println(s"  --oracle-utxo $oracleTxHash:$oracleOutputIndex")
+                println()
+                println("=" * 70)
+                0
         }
     }
 }

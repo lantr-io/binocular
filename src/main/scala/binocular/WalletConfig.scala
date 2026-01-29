@@ -1,6 +1,9 @@
 package binocular
 
-import com.bloxbean.cardano.client.account.Account
+import scalus.cardano.address.{Address, Network}
+import scalus.cardano.txbuilder.TransactionSigner
+import scalus.cardano.wallet.hd.HdAccount
+import scalus.crypto.ed25519.given
 import com.typesafe.config.{Config, ConfigFactory}
 import scala.util.{Failure, Success, Try}
 
@@ -23,8 +26,8 @@ import scala.util.{Failure, Success, Try}
   *   network = CardanoNetwork.Preprod
   * )
   *
-  * // Create account for transactions
-  * val account = wallet.createAccount() match {
+  * // Create HD account for transactions
+  * val account = wallet.createHdAccount() match {
   *   case Right(acc) => acc
   *   case Left(error) => sys.error(s"Failed to create account: $error")
   * }
@@ -41,11 +44,11 @@ case class WalletConfig(
     network: CardanoNetwork
 ) {
 
-    /** Create Account from mnemonic phrase
+    /** Create HdAccount from mnemonic phrase
       *
-      * The Account object can be used to sign transactions.
+      * The HdAccount can be used to derive addresses and sign transactions.
       */
-    def createAccount(): Either[String, Account] = {
+    def createHdAccount(): Either[String, HdAccount] = {
         Try {
             val mnemonicWords = mnemonic.trim.split("\\s+").toList
 
@@ -57,28 +60,36 @@ case class WalletConfig(
                 )
             }
 
-            // Create Account from mnemonic
-            val cclNetwork = network match {
-                case CardanoNetwork.Mainnet =>
-                    com.bloxbean.cardano.client.common.model.Networks.mainnet()
-                case CardanoNetwork.Preprod =>
-                    com.bloxbean.cardano.client.common.model.Networks.preprod()
-                case CardanoNetwork.Preview =>
-                    com.bloxbean.cardano.client.common.model.Networks.preview()
-                case CardanoNetwork.Testnet =>
-                    com.bloxbean.cardano.client.common.model.Networks.testnet()
-            }
-
-            new Account(cclNetwork, mnemonic)
+            HdAccount.fromMnemonic(mnemonic.trim, "", accountIndex = 0)
         } match {
             case Success(account) => Right(account)
             case Failure(ex) => Left(s"Failed to create account from mnemonic: ${ex.getMessage}")
         }
     }
 
-    /** Get payment address (Bech32 format) */
+    /** Create TransactionSigner from mnemonic phrase */
+    def createTransactionSigner(): Either[String, TransactionSigner] = {
+        createHdAccount().map(acc => new TransactionSigner(Set(acc.paymentKeyPair)))
+    }
+
+    /** Get Scalus Network for this configuration */
+    private def scalusNetwork: Network = network match {
+        case CardanoNetwork.Mainnet => Network.Mainnet
+        case CardanoNetwork.Preprod => Network.Testnet
+        case CardanoNetwork.Preview => Network.Testnet
+        case CardanoNetwork.Testnet => Network.Testnet
+    }
+
+    /** Get base address (Bech32 format) */
     def getAddress(): Either[String, String] = {
-        createAccount().map(_.baseAddress())
+        createHdAccount().flatMap { acc =>
+            acc.baseAddress(scalusNetwork).toBech32.toEither.left.map(_.getMessage)
+        }
+    }
+
+    /** Get base address as Scalus Address */
+    def getBaseAddress(): Either[String, Address] = {
+        createHdAccount().map(_.baseAddress(scalusNetwork))
     }
 
     /** Validate configuration */
@@ -93,7 +104,7 @@ case class WalletConfig(
                 Left(s"Invalid mnemonic: expected 12, 15, 18, 21, or 24 words, got ${words.length}")
             } else {
                 // Try to create account to validate mnemonic
-                createAccount().map(_ => ())
+                createHdAccount().map(_ => ())
             }
         }
     }

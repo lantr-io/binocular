@@ -2,12 +2,12 @@ package binocular
 package cli
 
 import binocular.{reverse, BitcoinChainState, BitcoinValidator, MerkleTree, OracleTransactions}
-import com.bloxbean.cardano.client.address.Address
+import scalus.cardano.address.Address
+import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.uplc.builtin.{ByteString, Data}
 import scalus.uplc.builtin.Data.fromData
 import scalus.uplc.builtin.ToData.toData
-import scalus.cardano.onchain.plutus.prelude.{List => ScalusList}
-import scalus.utils.Hex.hexToBytes
+import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 
 import scala.concurrent.duration.*
 import scala.concurrent.{Await, ExecutionContext, Future}
@@ -55,24 +55,30 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
 
             val initialState = Await.result(initialStateFuture, 30.seconds)
 
-            val scriptAddress = new Address(
+            val scriptAddress = Address.fromBech32(
               binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
             )
 
             // Submit init transaction
             val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
-              devKit.account,
-              devKit.getBackendService,
+              devKit.signer,
+              devKit.provider,
               scriptAddress,
+              devKit.sponsorAddress,
               initialState
             )
 
-            val (oracleTxHash, oracleOutputIndex) = initTxResult match {
+            val oracleUtxo = initTxResult match {
                 case Right(txHash) =>
-                    println(s"[Test] ✓ Oracle initialized: $txHash")
+                    println(s"[Test] Oracle initialized: $txHash")
                     devKit.waitForTransaction(txHash, maxAttempts = 30)
                     Thread.sleep(2000) // Wait for indexing
-                    (txHash, 0)
+                    // Fetch the oracle UTxO
+                    val utxos = devKit.getUtxos(scriptAddress)
+                    require(utxos.nonEmpty, "No UTxOs found at script address after init")
+                    utxos.find(_.output.inlineDatum.isDefined).getOrElse {
+                        fail("No oracle UTxO with inline datum found after init")
+                    }
                 case Left(err) =>
                     fail(s"Failed to initialize oracle: $err")
             }
@@ -94,14 +100,14 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
             val headers = Await.result(headersFuture, 30.seconds)
             val headersList = ScalusList.from(headers.toList)
 
-            println(s"[Test] ✓ Fetched ${headers.length} headers")
+            println(s"[Test] Fetched ${headers.length} headers")
             println(s"[test]  headers: ${headers.map(h => h.bytes.toHex).mkString(", ")}")
 
             println(s"[Test] Step 3: Computing new state")
 
             // Compute validity interval time to ensure offline and on-chain use the same value
-            val validityTime =
-                OracleTransactions.computeValidityIntervalTime(devKit.getBackendService)
+            val (_, validityTime) =
+                OracleTransactions.computeValidityIntervalTime(devKit.provider.cardanoInfo)
             println(s"  Using validity interval time: $validityTime")
 
             // Compute new state using the shared validator logic
@@ -116,11 +122,11 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
 
             // Submit update transaction with pre-computed state and validity time
             val updateTxResult = OracleTransactions.buildAndSubmitUpdateTransaction(
-              devKit.account,
-              devKit.getBackendService,
+              devKit.signer,
+              devKit.provider,
               scriptAddress,
-              oracleTxHash,
-              oracleOutputIndex,
+              devKit.sponsorAddress,
+              oracleUtxo,
               initialState,
               newState,
               headersList,
@@ -129,7 +135,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
 
             updateTxResult match {
                 case Right(txHash) =>
-                    println(s"[Test] ✓ Oracle updated: $txHash")
+                    println(s"[Test] Oracle updated: $txHash")
 
                     // Wait for confirmation
                     val confirmed = devKit.waitForTransaction(txHash, maxAttempts = 30)
@@ -140,17 +146,18 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
                     println(s"[Test] Step 5: Verifying updated oracle state")
 
                     // Verify new oracle state
-                    val utxos = devKit.getUtxos(scriptAddress.getAddress)
+                    val utxos = devKit.getUtxos(scriptAddress)
                     assert(utxos.nonEmpty, "No UTxOs found at oracle address after update")
 
                     // Find the latest UTxO (should be from update tx)
-                    val latestUtxo = utxos.head
-                    val inlineDatum = latestUtxo.getInlineDatum
+                    val latestUtxo = utxos.find(_.output.inlineDatum.isDefined).getOrElse {
+                        fail("No oracle UTxO with inline datum found after update")
+                    }
+                    val inlineDatum = latestUtxo.output.inlineDatum.get
 
-                    val data = Data.fromCbor(inlineDatum.hexToBytes)
-                    val actualState = data.to[ChainState]
+                    val actualState = inlineDatum.to[ChainState]
 
-                    println(s"[Test] ✓ Updated ChainState verified:")
+                    println(s"[Test] Updated ChainState verified:")
                     println(s"    Height: ${actualState.blockHeight}")
                     println(s"    Hash: ${actualState.blockHash.toHex}")
                     println(s"    Forks tree size: ${actualState.forksTree.size}")
@@ -198,22 +205,22 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
 
             val initialState = Await.result(initialStateFuture, 30.seconds)
 
-            val scriptAddress = new Address(
+            val scriptAddress = Address.fromBech32(
               binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
             )
 
             val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
-              devKit.account,
-              devKit.getBackendService,
+              devKit.signer,
+              devKit.provider,
               scriptAddress,
+              devKit.sponsorAddress,
               initialState
             )
 
-            val (oracleTxHash, oracleOutputIndex) = initTxResult match {
+            initTxResult match {
                 case Right(txHash) =>
                     devKit.waitForTransaction(txHash, maxAttempts = 30)
                     Thread.sleep(2000)
-                    (txHash, 0)
                 case Left(err) =>
                     fail(s"Failed to initialize oracle: $err")
             }
@@ -224,7 +231,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
             val emptyHeaders = ScalusList.empty[BlockHeader]
 
             // This should fail because validator requires non-empty headers
-            println(s"[Test] ✓ Test with empty headers skipped (validator rejects empty list)")
+            println(s"[Test] Test with empty headers skipped (validator rejects empty list)")
         }
     }
 
@@ -261,24 +268,29 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
 
             val initialState = Await.result(initialStateFuture, 30.seconds)
 
-            val scriptAddress = new Address(
+            val scriptAddress = Address.fromBech32(
               binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
             )
 
             // Submit init transaction
             val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
-              devKit.account,
-              devKit.getBackendService,
+              devKit.signer,
+              devKit.provider,
               scriptAddress,
+              devKit.sponsorAddress,
               initialState
             )
 
-            val (initialTxHash, initialOutputIndex) = initTxResult match {
+            var currentOracleUtxo: Utxo = initTxResult match {
                 case Right(txHash) =>
-                    println(s"[Test] ✓ Oracle initialized: $txHash")
+                    println(s"[Test] Oracle initialized: $txHash")
                     devKit.waitForTransaction(txHash, maxAttempts = 30)
                     Thread.sleep(2000)
-                    (txHash, 0)
+                    val utxos = devKit.getUtxos(scriptAddress)
+                    require(utxos.nonEmpty, "No UTxOs found at script address after init")
+                    utxos.find(_.output.inlineDatum.isDefined).getOrElse {
+                        fail("No oracle UTxO with inline datum found after init")
+                    }
                 case Left(err) =>
                     fail(s"Failed to initialize oracle: $err")
             }
@@ -287,17 +299,20 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
             // Deploy to script address to avoid collateral conflicts with account's UTxOs
             println(s"[Test] Step 1b: Deploying reference script")
             val refScriptResult = OracleTransactions.deployReferenceScript(
-              devKit.account,
-              devKit.getBackendService,
-              scriptAddress.getAddress // Deploy to script address
+              devKit.signer,
+              devKit.provider,
+              devKit.sponsorAddress,
+              scriptAddress // Deploy to script address
             )
 
-            val referenceScriptUtxo = refScriptResult match {
-                case Right((txHash, outputIndex)) =>
-                    println(s"[Test] ✓ Reference script deployed: $txHash:$outputIndex")
+            val referenceScriptUtxo: Option[Utxo] = refScriptResult match {
+                case Right((txHash, outputIndex, savedOutput)) =>
+                    println(s"[Test] Reference script deployed: $txHash:$outputIndex")
                     devKit.waitForTransaction(txHash, maxAttempts = 30)
                     Thread.sleep(2000)
-                    Some((txHash, outputIndex))
+                    // Construct Utxo from saved output (which has scriptRef populated)
+                    val refInput = TransactionInput(TransactionHash.fromHex(txHash), outputIndex)
+                    Some(Utxo(refInput, savedOutput))
                 case Left(err) =>
                     fail(s"Failed to deploy reference script: $err")
             }
@@ -315,13 +330,11 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
             )
 
             val allHeaders = Await.result(allHeadersFuture, 120.seconds)
-            println(s"[Test] ✓ Fetched ${allHeaders.length} headers total")
+            println(s"[Test] Fetched ${allHeaders.length} headers total")
 
             // Process in batches
             val batches = allHeaders.grouped(batchSize).toSeq
             var currentState = initialState
-            var currentTxHash = initialTxHash
-            var currentOutputIndex = initialOutputIndex
 
             batches.zipWithIndex.foreach { case (batch, batchIndex) =>
                 println(
@@ -344,7 +357,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
                     println(s"  Final batch: using advanced time to trigger promotion (+25 min)")
                     advancedTime
                 } else {
-                    OracleTransactions.computeValidityIntervalTime(devKit.getBackendService)
+                    OracleTransactions.computeValidityIntervalTime(devKit.provider.cardanoInfo)._2
                 }
 
                 // Compute new state
@@ -370,35 +383,34 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
 
                 // Submit update transaction (using reference script to reduce tx size)
                 val updateTxResult = OracleTransactions.buildAndSubmitUpdateTransaction(
-                  devKit.account,
-                  devKit.getBackendService,
+                  devKit.signer,
+                  devKit.provider,
                   scriptAddress,
-                  currentTxHash,
-                  currentOutputIndex,
+                  devKit.sponsorAddress,
+                  currentOracleUtxo,
                   currentState,
                   newState,
                   headersList,
                   validityTime,
-                  referenceScriptUtxo,
-                  inTestMode = true // Skip off-chain time tolerance check
+                  referenceScriptUtxo
                 )
 
                 updateTxResult match {
                     case Right(resultTxHash) =>
-                        println(s"  ✓ Batch ${batchIndex + 1} submitted: $resultTxHash")
+                        println(s"  Batch ${batchIndex + 1} submitted: $resultTxHash")
                         devKit.waitForTransaction(resultTxHash, maxAttempts = 30)
                         Thread.sleep(2000)
 
                         // Read actual on-chain state and verify it matches what we sent
                         // Since validator only validates (can't modify), on-chain state MUST match newState
-                        val utxos = devKit.getUtxos(scriptAddress.getAddress)
+                        val utxos = devKit.getUtxos(scriptAddress)
                         require(utxos.nonEmpty, "No UTxOs found after batch update")
                         // Filter for UTxO with inline datum (oracle UTxO, not reference script UTxO)
-                        val oracleUtxo = utxos.find(_.getInlineDatum != null).getOrElse {
+                        val oracleUtxo = utxos.find(_.output.inlineDatum.isDefined).getOrElse {
                             fail("No oracle UTxO with inline datum found after batch update")
                         }
                         val actualOnChainState =
-                            Data.fromCbor(oracleUtxo.getInlineDatum.hexToBytes).to[ChainState]
+                            oracleUtxo.output.inlineDatum.get.to[ChainState]
 
                         println(s"  On-chain state after batch ${batchIndex + 1}:")
                         println(s"    blockHeight: ${actualOnChainState.blockHeight}")
@@ -424,8 +436,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
 
                         // Update for next iteration
                         currentState = newState
-                        currentTxHash = oracleUtxo.getTxHash
-                        currentOutputIndex = oracleUtxo.getOutputIndex
+                        currentOracleUtxo = oracleUtxo
 
                     case Left(errorMsg) =>
                         fail(s"Failed to update oracle with batch ${batchIndex + 1}: $errorMsg")
@@ -445,7 +456,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
               s"Expected promotion to increase confirmed height, but got: initial=${initialState.blockHeight}, final=${currentState.blockHeight}"
             )
 
-            println(s"  ✓ Promotion detected: height increased by $heightIncrease blocks")
+            println(s"  Promotion detected: height increased by $heightIncrease blocks")
 
             // Verify confirmed blocks tree was updated
             assert(
@@ -456,19 +467,18 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
             println(s"[Test] Step 4: Verifying on-chain state after promotion")
 
             // Verify final on-chain state
-            val utxos = devKit.getUtxos(scriptAddress.getAddress)
+            val utxos = devKit.getUtxos(scriptAddress)
             assert(utxos.nonEmpty, "No UTxOs found at oracle address after promotion")
 
             // Filter for UTxO with inline datum (oracle UTxO, not reference script UTxO)
-            val latestUtxo = utxos.find(_.getInlineDatum != null).getOrElse {
+            val latestUtxo = utxos.find(_.output.inlineDatum.isDefined).getOrElse {
                 fail("No oracle UTxO with inline datum found after promotion")
             }
-            val inlineDatum = latestUtxo.getInlineDatum
+            val inlineDatum = latestUtxo.output.inlineDatum.get
 
-            val data = Data.fromCbor(inlineDatum.hexToBytes)
-            val actualState = data.to[ChainState]
+            val actualState = inlineDatum.to[ChainState]
 
-            println(s"[Test] ✓ On-chain state after forced promotion:")
+            println(s"[Test] On-chain state after forced promotion:")
             println(s"    Height: ${actualState.blockHeight}")
             println(s"    Hash: ${actualState.blockHash.toHex}")
             println(s"    Forks tree size: ${actualState.forksTree.size}")
@@ -484,7 +494,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
               s"Hash mismatch"
             )
 
-            println(s"[Test] ✓ Phase 1 completed: Promotion successful")
+            println(s"[Test] Phase 1 completed: Promotion successful")
             println(s"  Total blocks added: $totalBlocks")
             println(s"  Blocks promoted: $heightIncrease")
             println(s"  Batches processed: ${batches.size}")
@@ -509,7 +519,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
             val btcTxId = blockInfo.tx.head.txid
             val txIndex = 0
 
-            println(s"[Test] ✓ Testing with transaction: $btcTxId")
+            println(s"[Test] Testing with transaction: $btcTxId")
             println(s"[Test]   Block has ${blockInfo.tx.length} transactions")
 
             println(s"[Test] Step 6: Building Merkle proof")
@@ -523,7 +533,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
             val merkleRoot = merkleTree.getMerkleRoot
             val merkleProof = merkleTree.makeMerkleProof(txIndex)
 
-            println(s"[Test] ✓ Merkle proof generated:")
+            println(s"[Test] Merkle proof generated:")
             println(s"    Merkle Root: ${merkleRoot.toHex}")
             println(s"    Proof Size: ${merkleProof.length} hashes")
 
@@ -535,7 +545,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
                 MerkleTree.calculateMerkleRootFromProof(txIndex, txHash, merkleProof)
 
             assert(calculatedRoot == merkleRoot, "Merkle proof verification failed")
-            println(s"[Test] ✓ Merkle proof verified")
+            println(s"[Test] Merkle proof verified")
             println(s"    Calculated root: ${calculatedRoot.toHex}")
             println(s"    Expected root:   ${merkleRoot.toHex}")
 
@@ -555,11 +565,11 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
             }
             assert(!blockInForksTree, "Block should not be in forks tree after promotion")
 
-            println(s"[Test] ✓ Transaction is in confirmed block")
+            println(s"[Test] Transaction is in confirmed block")
             println(s"    Block Height: $proofBlockHeight")
             println(s"    Oracle Confirmed Height: ${actualState.blockHeight}")
 
-            println(s"\n[Test] ✓ Phase 2 completed: Transaction proof verified")
+            println(s"\n[Test] Phase 2 completed: Transaction proof verified")
 
             // ========== Phase 3: Verify proofs at different indices ==========
             println(s"\n[Test] Phase 3: Testing Merkle proofs for multiple transaction indices")
@@ -579,12 +589,12 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
                   testCalculatedRoot == merkleRoot,
                   s"Proof failed for tx at index $testTxIndex"
                 )
-                println(s"[Test] ✓ Verified proof for transaction at index $testTxIndex")
+                println(s"[Test] Verified proof for transaction at index $testTxIndex")
             }
 
-            println(s"[Test] ✓ All $testCount Merkle proofs verified")
+            println(s"[Test] All $testCount Merkle proofs verified")
 
-            println(s"\n[Test] ✓ Phase 3 completed: Multiple proof indices verified")
+            println(s"\n[Test] Phase 3 completed: Multiple proof indices verified")
 
             // ========== Phase 4: On-chain transaction verification ==========
             // SKIPPED: The TransactionVerifier now requires Oracle verification with two proofs:
@@ -598,7 +608,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
               s"    The validator now verifies blocks against the Oracle's confirmed blocks tree"
             )
 
-            println(s"\n[Test] ✓ Full lifecycle test completed successfully (Phases 1-3)")
+            println(s"\n[Test] Full lifecycle test completed successfully (Phases 1-3)")
         }
     }
 
@@ -639,10 +649,10 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
                     MerkleTree.calculateMerkleRootFromProof(txIndex, txHash, merkleProof)
 
                 assert(calculatedRoot == merkleRoot, s"Proof failed for tx at index $txIndex")
-                println(s"[Test] ✓ Verified proof for transaction at index $txIndex")
+                println(s"[Test] Verified proof for transaction at index $txIndex")
             }
 
-            println(s"[Test] ✓ All $testCount Merkle proofs verified")
+            println(s"[Test] All $testCount Merkle proofs verified")
         }
     }
 
@@ -666,7 +676,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
             val txIndex = blockInfo.tx.indexWhere(_.txid == fakeTxId)
             assert(txIndex < 0, "Fake transaction should not be found in block")
 
-            println(s"[Test] ✓ Correctly identified transaction not in block")
+            println(s"[Test] Correctly identified transaction not in block")
         }
     }
 }

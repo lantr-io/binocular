@@ -1,7 +1,6 @@
 package binocular
 import binocular.BitcoinValidator.*
 import org.apache.pekko.actor.ActorSystem
-import scalus.bloxbean.Interop.??
 import scalus.uplc.builtin.Builtins.*
 import scalus.uplc.builtin.ByteString
 import scalus.cardano.onchain.plutus.v1.TxOutRef

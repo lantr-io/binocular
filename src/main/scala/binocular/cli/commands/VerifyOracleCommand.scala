@@ -2,12 +2,15 @@ package binocular.cli.commands
 
 import binocular.{CardanoConfig, ChainState, OracleConfig}
 import binocular.cli.{Command, CommandHelpers}
+import scalus.cardano.address.Address
+import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.uplc.builtin.Data
 import scalus.uplc.builtin.Data.{fromData, FromData}
 import scalus.uplc.builtin.ByteString.given
-import scalus.cardano.onchain.plutus.prelude.{List => ScalusList}
+import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 
-import scala.jdk.CollectionConverters.*
+import scala.concurrent.{Await, ExecutionContext}
+import scala.concurrent.duration.*
 import scala.util.{Failure, Success, Try}
 
 /** Verify oracle UTxO and validate state */
@@ -34,57 +37,57 @@ case class VerifyOracleCommand(utxo: String) extends Command {
 
         (oracleConfig, cardanoConfig) match {
             case (Right(oracle), Right(cardano)) =>
-                cardano.createBackendService() match {
-                    case Right(backendService) =>
+                given ec: ExecutionContext = ExecutionContext.global
+
+                cardano.createBlockchainProvider() match {
+                    case Right(provider) =>
                         try {
-                            import scala.jdk.CollectionConverters.*
-
                             // Fetch specific UTxO
-                            val utxoService = backendService.getUtxoService
-                            val utxos = utxoService.getTxOutput(txHash, outputIndex)
+                            val input =
+                                TransactionInput(TransactionHash.fromHex(txHash), outputIndex)
+                            val utxoResult = Await.result(
+                              provider.findUtxo(input),
+                              30.seconds
+                            )
 
-                            if !utxos.isSuccessful || utxos.getValue == null then {
-                                System.err.println(s"Error: UTxO not found at $txHash:$outputIndex")
-                                return 1
+                            val foundUtxo: Utxo = utxoResult match {
+                                case Right(u) => u
+                                case Left(_) =>
+                                    System.err.println(
+                                      s"Error: UTxO not found at $txHash:$outputIndex"
+                                    )
+                                    return 1
                             }
 
-                            val foundUtxo = utxos.getValue
-                            println(s"✓ UTxO found")
-                            println(s"  Address: ${foundUtxo.getAddress}")
+                            println(s"UTxO found")
+                            val addr = foundUtxo.output.address.encode.getOrElse("?")
+                            println(s"  Address: $addr")
 
-                            val lovelace = foundUtxo.getAmount.asScala.headOption
-                                .map(_.getQuantity)
-                                .getOrElse("0")
+                            val lovelace = foundUtxo.output.value.coin.value
                             println(s"  Lovelace: $lovelace")
 
                             // Verify it's at the oracle script address
-                            if foundUtxo.getAddress != oracle.scriptAddress then {
+                            if addr != oracle.scriptAddress then {
                                 println()
-                                println(s"⚠ Warning: UTxO is not at the oracle script address")
+                                println(s"Warning: UTxO is not at the oracle script address")
                                 println(s"  Expected: ${oracle.scriptAddress}")
-                                println(s"  Found:    ${foundUtxo.getAddress}")
+                                println(s"  Found:    $addr")
                             } else {
-                                println(s"✓ UTxO is at correct oracle script address")
+                                println(s"UTxO is at correct oracle script address")
                             }
 
                             // Try to parse datum
-                            val datumCbor = Option(foundUtxo.getInlineDatum)
-                            datumCbor match {
-                                case Some(datumHex) =>
+                            foundUtxo.output.inlineDatum match {
+                                case Some(data) =>
                                     println()
-                                    println(s"✓ Inline datum found")
+                                    println(s"Inline datum found")
 
-                                    // Parse ChainState from datum
                                     Try {
-                                        import scalus.uplc.builtin.ByteString
-                                        val bs = ByteString.fromHex(datumHex)
-                                        val data = Data.fromCbor(bs)
-                                        val chainState = fromData[ChainState](data)
-                                        chainState
+                                        fromData[ChainState](data)
                                     } match {
                                         case Success(chainState) =>
                                             println()
-                                            println("✓ ChainState parsed successfully:")
+                                            println("ChainState parsed successfully:")
                                             println(s"  Block Height: ${chainState.blockHeight}")
                                             println(s"  Block Hash: ${chainState.blockHash.toHex}")
                                             println(
@@ -96,7 +99,7 @@ case class VerifyOracleCommand(utxo: String) extends Command {
                                             println(
                                               s"  Recent Timestamps: ${chainState.recentTimestamps.size} entries"
                                             )
-                                            // Show actual timestamp values for debugging
+
                                             def toScalaList(
                                                 l: ScalusList[BigInt]
                                             ): scala.List[BigInt] = l match {
@@ -143,14 +146,13 @@ case class VerifyOracleCommand(utxo: String) extends Command {
 
                                         case Failure(ex) =>
                                             println()
-                                            println(s"✗ Error parsing ChainState: ${ex.getMessage}")
-                                            println(s"  CBOR (truncated): ${datumHex.take(100)}...")
+                                            println(s"Error parsing ChainState: ${ex.getMessage}")
                                             ex.printStackTrace()
                                     }
 
                                 case None =>
                                     println()
-                                    println(s"⚠ Warning: No inline datum found")
+                                    println(s"Warning: No inline datum found")
                                     println("  Oracle UTxOs should have inline datums")
                             }
 
@@ -162,7 +164,7 @@ case class VerifyOracleCommand(utxo: String) extends Command {
                                 1
                         }
                     case Left(err) =>
-                        System.err.println(s"Error creating backend service: $err")
+                        System.err.println(s"Error creating blockchain provider: $err")
                         1
                 }
             case (Left(err), _) =>

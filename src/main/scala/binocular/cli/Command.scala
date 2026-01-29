@@ -1,7 +1,7 @@
 package binocular.cli
 
 import binocular.ChainState
-import com.bloxbean.cardano.client.api.model.Utxo
+import scalus.cardano.ledger.{TransactionInput, TransactionOutput, Utxo}
 import scalus.uplc.builtin.{ByteString, Data}
 import scalus.uplc.builtin.Data.fromData
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
@@ -28,8 +28,8 @@ case class ValidOracleUtxo(
     utxo: Utxo,
     chainState: ChainState
 ) {
-    def txHash: String = utxo.getTxHash
-    def outputIndex: Int = utxo.getOutputIndex
+    def txHash: String = utxo.input.transactionId.toHex
+    def outputIndex: Int = utxo.input.index
     def utxoRef: String = s"$txHash:$outputIndex"
 }
 
@@ -70,16 +70,12 @@ object CommandHelpers {
 
     /** Check if a UTxO is an oracle UTxO (has inline datum, no reference script) */
     def isOracleUtxo(utxo: Utxo): Boolean =
-        utxo.getInlineDatum != null &&
-            utxo.getInlineDatum.nonEmpty &&
-            utxo.getReferenceScriptHash == null
+        utxo.output.inlineDatum.isDefined && utxo.output.scriptRef.isEmpty
 
     /** Try to parse ChainState from UTxO's inline datum */
     def parseChainState(utxo: Utxo): Option[ChainState] =
-        Option(utxo.getInlineDatum).filter(_.nonEmpty).flatMap { datumHex =>
+        utxo.output.inlineDatum.flatMap { data =>
             Try {
-                val bs = ByteString.fromHex(datumHex)
-                val data = Data.fromCbor(bs)
                 fromData[ChainState](data)
             }.toOption
         }
@@ -97,9 +93,7 @@ object CommandHelpers {
         }
     }
 
-    /** Try to get a valid oracle UTxO from a raw UTxO Returns Some(ValidOracleUtxo) if UTxO has
-      * valid datum with valid ChainState
-      */
+    /** Try to get a valid oracle UTxO from a raw UTxO */
     def tryValidateOracleUtxo(utxo: Utxo): Option[ValidOracleUtxo] =
         if !isOracleUtxo(utxo) then None
         else

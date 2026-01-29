@@ -1,10 +1,10 @@
 package binocular.cli
 
 import binocular.*
-import com.bloxbean.cardano.client.address.Address
+import scalus.cardano.address.Address
+import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.uplc.builtin.{ByteString, Data}
-import scalus.cardano.onchain.plutus.prelude.{List => ScalusList}
-import scalus.utils.Hex.hexToBytes
+import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 
 import scala.concurrent.duration.*
 import scala.concurrent.{Await, ExecutionContext, Future}
@@ -51,35 +51,38 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
 
             val initialState = Await.result(initialStateFuture, 30.seconds)
 
-            val scriptAddress = new Address(
+            val scriptAddress = Address.fromBech32(
               binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
             )
 
             // Submit init transaction
             val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
-              devKit.account,
-              devKit.getBackendService,
+              devKit.signer,
+              devKit.provider,
               scriptAddress,
+              devKit.sponsorAddress,
               initialState
             )
 
-            val (oracleTxHash, oracleOutputIndex) = initTxResult match {
+            val oracleUtxo: Utxo = initTxResult match {
                 case Right(txHash) =>
-                    println(s"[Test] ✓ Oracle initialized: $txHash")
+                    println(s"[Test] Oracle initialized: $txHash")
                     devKit.waitForTransaction(txHash, maxAttempts = 30)
                     Thread.sleep(2000) // Wait for indexing
-                    (txHash, 0)
+                    // Fetch the oracle UTxO
+                    val utxos = devKit.getUtxos(scriptAddress)
+                    require(utxos.nonEmpty, "No UTxOs found at script address after init")
+                    utxos.find(_.output.inlineDatum.isDefined).getOrElse {
+                        fail("No oracle UTxO with inline datum found after init")
+                    }
                 case Left(err) =>
                     fail(s"Failed to initialize oracle: $err")
             }
 
             // Verify initial Merkle tree state
-            val initialUtxos = devKit.getUtxos(scriptAddress.getAddress)
-            val initialUtxo = initialUtxos.head
-            val initialData = Data.fromCbor(initialUtxo.getInlineDatum.hexToBytes)
-            val initialChainState = initialData.to[ChainState]
+            val initialChainState = oracleUtxo.output.inlineDatum.get.to[ChainState]
 
-            println(s"[Test] ✓ Initial Merkle tree:")
+            println(s"[Test] Initial Merkle tree:")
             println(s"    Tree size: ${countTreeLevels(initialChainState.confirmedBlocksTree)}")
             println(s"    Initial block: ${initialState.blockHash.toHex}")
 
@@ -105,17 +108,17 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
             val headers = Await.result(headersFuture, 30.seconds)
             val headersList = ScalusList.from(headers.toList)
 
-            println(s"[Test] ✓ Fetched ${headers.length} headers")
+            println(s"[Test] Fetched ${headers.length} headers")
 
             println(s"[Test] Step 3: Calculating new ChainState")
 
             // Calculate new state using shared validator logic
-            val validityTime =
-                OracleTransactions.computeValidityIntervalTime(devKit.getBackendService)
+            val (_, validityTime) =
+                OracleTransactions.computeValidityIntervalTime(devKit.provider.cardanoInfo)
             val newState =
                 BitcoinValidator.computeUpdateOracleState(initialState, headersList, validityTime)
 
-            println(s"[Test] ✓ New state calculated:")
+            println(s"[Test] New state calculated:")
             println(s"    Old height: ${initialState.blockHeight}")
             println(s"    New height: ${newState.blockHeight}")
 
@@ -123,11 +126,11 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
 
             // Submit update transaction with pre-computed state and validity time
             val updateTxResult = OracleTransactions.buildAndSubmitUpdateTransaction(
-              devKit.account,
-              devKit.getBackendService,
+              devKit.signer,
+              devKit.provider,
               scriptAddress,
-              oracleTxHash,
-              oracleOutputIndex,
+              devKit.sponsorAddress,
+              oracleUtxo,
               initialState,
               newState,
               headersList,
@@ -136,7 +139,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
 
             updateTxResult match {
                 case Right(txHash) =>
-                    println(s"[Test] ✓ Oracle updated: $txHash")
+                    println(s"[Test] Oracle updated: $txHash")
 
                     // Wait for confirmation
                     val confirmed = devKit.waitForTransaction(txHash, maxAttempts = 30)
@@ -147,17 +150,16 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                     println(s"[Test] Step 5: Verifying Merkle tree was updated")
 
                     // Verify new oracle state
-                    val utxos = devKit.getUtxos(scriptAddress.getAddress)
+                    val utxos = devKit.getUtxos(scriptAddress)
                     assert(utxos.nonEmpty, "No UTxOs found at oracle address after update")
 
                     // Find the latest UTxO (should be from update tx)
-                    val latestUtxo = utxos.head
-                    val inlineDatum = latestUtxo.getInlineDatum
+                    val latestUtxo = utxos.find(_.output.inlineDatum.isDefined).getOrElse {
+                        fail("No oracle UTxO with inline datum found after update")
+                    }
+                    val chainState = latestUtxo.output.inlineDatum.get.to[ChainState]
 
-                    val data = Data.fromCbor(inlineDatum.hexToBytes)
-                    val chainState = data.to[ChainState]
-
-                    println(s"[Test] ✓ Updated ChainState verified:")
+                    println(s"[Test] Updated ChainState verified:")
                     println(s"    Height: ${chainState.blockHeight}")
                     println(s"    Hash: ${chainState.blockHash.toHex}")
 
@@ -180,7 +182,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                       s"Forks tree should contain ${headers.size} new blocks, but has $totalBlocks"
                     )
 
-                    println(s"[Test] ✓ Forks tree has grown correctly")
+                    println(s"[Test] Forks tree has grown correctly")
 
                     println(s"[Test] Step 7: Verifying we can compute Merkle root")
 
@@ -192,7 +194,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
 
                     assert(computedRoot.bytes.length == 32, "Merkle root should be 32 bytes")
 
-                    println(s"[Test] ✓ Successfully computed Merkle root from tree")
+                    println(s"[Test] Successfully computed Merkle root from tree")
 
                     println(s"[Test] Step 8: Verifying tree represents all blocks")
 
@@ -228,7 +230,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                   * computedRoot == referenceRoot, s"Rolling Merkle root doesn't match reference!\n
                   * Computed: ${computedRoot.toHex}\n Reference: ${referenceRoot.toHex}" )
                   *
-                  * println(s"[Test] ✓✓✓ Rolling Merkle tree matches reference implementation!")
+                  * println(s"[Test] Rolling Merkle tree matches reference implementation!")
                   */
                 case Left(err) =>
                     fail(s"Failed to update oracle: $err")

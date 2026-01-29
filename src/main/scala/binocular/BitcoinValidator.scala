@@ -5,8 +5,8 @@ import scalus.uplc.builtin.Builtins.*
 import scalus.uplc.builtin.ByteString.*
 import scalus.uplc.builtin.Data.{toData, FromData, ToData}
 import scalus.cardano.onchain.plutus.v1.{Address, Credential, PubKeyHash}
-import scalus.cardano.onchain.plutus.v2.{OutputDatum, Interval, IntervalBoundType}
-import scalus.cardano.onchain.plutus.v3.{TxInfo, TxInInfo, TxOut, TxOutRef, Datum, Validator, ScriptContext}
+import scalus.cardano.onchain.plutus.v2.{Interval, IntervalBoundType, OutputDatum}
+import scalus.cardano.onchain.plutus.v3.{Datum, ScriptContext, TxInInfo, TxInfo, TxOut, TxOutRef, Validator}
 import scalus.cardano.onchain.plutus.prelude.{List, Math, *}
 import scalus.cardano.onchain.plutus.prelude.Math.pow
 import scalus.{show as _, *}
@@ -635,8 +635,7 @@ object BitcoinValidator extends Validator {
                         case Option.None =>
                             Option.Some(branch)
                         case Option.Some(best) =>
-                            if branch.tipChainwork > best.tipChainwork then
-                                Option.Some(branch)
+                            if branch.tipChainwork > best.tipChainwork then Option.Some(branch)
                             else currentBest
                     findMaxChainworkBranch(tail, newBest)
 

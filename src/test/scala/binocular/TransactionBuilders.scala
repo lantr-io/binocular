@@ -1,20 +1,15 @@
 package binocular
 
-import com.bloxbean.cardano.client.account.Account
-import com.bloxbean.cardano.client.address.{Address, AddressProvider}
-import com.bloxbean.cardano.client.api.model.Amount
-import com.bloxbean.cardano.client.backend.api.BackendService
-import com.bloxbean.cardano.client.common.ADAConversionUtil
-import com.bloxbean.cardano.client.common.model.Networks
-import com.bloxbean.cardano.client.function.helper.SignerProviders
-import com.bloxbean.cardano.client.plutus.spec.{PlutusData, PlutusV3Script, Redeemer, RedeemerTag}
-import com.bloxbean.cardano.client.quicktx.{QuickTxBuilder, ScriptTx, Tx}
-import com.bloxbean.cardano.client.transaction.spec.{Transaction, TransactionOutput}
-import com.bloxbean.cardano.client.util.HexUtil
-import scalus.uplc.builtin.{ByteString, Data, FromData, ToData}
-import scalus.cardano.onchain.plutus.prelude.{List => ScalusList}
+import scalus.cardano.address.Address
+import scalus.cardano.ledger.{CardanoInfo, DatumOption, PlutusScript, Script, ScriptRef, Transaction, TransactionOutput, Utxo, Utxos, Value}
+import scalus.cardano.node.BlockchainProvider
+import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}
+import scalus.uplc.builtin.{ByteString, Data}
+import scalus.uplc.builtin.Data.toData
+import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 
-import scala.jdk.CollectionConverters.*
+import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.concurrent.duration.*
 
 /** Helper functions for building Binocular Oracle transactions on Yaci DevKit
   *
@@ -22,202 +17,114 @@ import scala.jdk.CollectionConverters.*
   *   - Creating script UTXOs with ChainState datum
   *   - Building UpdateOracle redeemer
   *   - Constructing and signing transactions
-  *   - Working with the Cardano transaction builder API
+  *   - Working with the Scalus TxBuilder API
   */
 object TransactionBuilders {
 
-    /** Compile BitcoinValidator to PlutusV3Script
+    /** Get the compiled BitcoinValidator as PlutusV3 script */
+    def compiledBitcoinScript(): Script.PlutusV3 = {
+        Script.PlutusV3(BitcoinContract.bitcoinProgram.cborByteString)
+    }
+
+    /** Create a script address from the PlutusV3 script
       *
-      * Uses the pre-compiled bitcoinProgram from BitcoinContract and converts it to a
-      * PlutusV3Script that can be used with cardano-client-lib.
-      *
-      * @return
-      *   PlutusV3Script compiled from BitcoinValidator
+      * @param network
+      *   Scalus network (Testnet/Mainnet)
       */
-    def compiledBitcoinScript(): PlutusV3Script = {
-        PlutusV3Script
-            .builder()
-            .`type`("PlutusScriptV3")
-            .cborHex(BitcoinContract.bitcoinProgram.doubleCborHex)
-            .build()
-            .asInstanceOf[PlutusV3Script]
-    }
-
-    /** Convert Scalus Data to Cardano PlutusData */
-    def scalusDataToPlutusData(data: Data): PlutusData = {
-        val cborBytes = data.toCbor // Array[Byte]
-        val hexString = ByteString.fromArray(cborBytes).toHex
-        PlutusData.deserialize(HexUtil.decodeHexString(hexString))
-    }
-
-    /** Convert Cardano PlutusData to Scalus Data */
-    def plutusDataToScalusData(plutusData: PlutusData): Data = {
-        val hexString = plutusData.serializeToHex
-        Data.fromCbor(ByteString.fromHex(hexString))
-    }
-
-    /** Create a script address from a PlutusV3Script */
-    def getScriptAddress(script: PlutusV3Script): Address = {
-        AddressProvider.getEntAddress(script, Networks.testnet())
-    }
-
-    /** Build a transaction output at script address with datum
-      *
-      * @param scriptAddress
-      *   the script address to send funds to
-      * @param lovelaceAmount
-      *   amount of lovelace to lock at the script
-      * @param datum
-      *   the datum to attach (as Scalus Data)
-      * @return
-      *   TransactionOutput
-      */
-    def buildScriptOutput(
-        scriptAddress: Address,
-        lovelaceAmount: Long,
-        datum: Data
-    ): TransactionOutput = {
-        val plutusDatum = scalusDataToPlutusData(datum)
-
-        TransactionOutput
-            .builder()
-            .address(scriptAddress.getAddress)
-            .value(
-              new com.bloxbean.cardano.client.transaction.spec.Value(
-                java.math.BigInteger.valueOf(lovelaceAmount),
-                List.empty.asJava
-              )
-            )
-            .inlineDatum(plutusDatum)
-            .build()
-    }
-
-    /** Create UpdateOracle redeemer
-      *
-      * @param blockHeaders
-      *   list of Bitcoin block headers to include
-      * @return
-      *   Redeemer with UpdateOracle action
-      */
-    def createUpdateOracleRedeemer(
-        blockHeaders: ScalusList[BlockHeader],
-        currentTime: BigInt = BigInt(System.currentTimeMillis() / 1000)
-    ): Redeemer = {
-        // Dummy hash for tests (real implementation computes actual hash)
-        val dummyHash = ByteString.empty
-        val action = Action.UpdateOracle(blockHeaders, currentTime, dummyHash)
-        // Action derives ToData, so we can use the derived instance
-        val actionData = Data.toData(action)(using Action.derived$ToData)
-        val redeemerData = scalusDataToPlutusData(actionData)
-
-        Redeemer
-            .builder()
-            .data(redeemerData)
-            .build()
+    def getScriptAddress(network: scalus.cardano.address.Network): Address = {
+        val script = compiledBitcoinScript()
+        val credential = scalus.cardano.ledger.Credential.ScriptHash(script.scriptHash)
+        Address(network, credential)
     }
 
     /** Build UpdateOracle transaction
       *
-      * NOTE: This is a simplified stub. Full implementation requires understanding the
-      * cardano-client-lib TxBuilder API which varies by version.
-      *
-      * For actual usage, construct the transaction manually using:
-      *   1. Query script UTXO with backendService.getUtxoService
-      *   2. createUpdateOracleRedeemer() to build the redeemer
-      *   3. buildScriptOutput() to create the new output with updated datum
-      *   4. Use QuickTxBuilder or TxBuilder to construct the transaction with:
-      *      - Script input with redeemer
-      *      - Script reference or script witness
-      *      - New script output
-      *      - Collateral input
-      *      - Balance and fees
-      *   5. account.sign() to sign
-      *
-      * @param account
-      *   the account to sign the transaction
-      * @param backendService
-      *   backend service for querying chain state
+      * @param signer
+      *   TransactionSigner to sign the transaction
+      * @param provider
+      *   BlockchainProvider for querying and submitting
       * @param scriptAddress
       *   the Binocular script address
+      * @param sponsorAddress
+      *   Address to pay fees from
       * @param prevChainState
       *   the previous ChainState datum
       * @param newChainState
       *   the new ChainState datum after update
       * @param blockHeaders
       *   the Bitcoin block headers to submit
-      * @param script
-      *   the Binocular PlutusV3 script
       * @return
-      *   Either error message or signed transaction
+      *   Either error message or transaction hash
       */
     def buildUpdateOracleTransaction(
-        account: Account,
-        backendService: BackendService,
+        signer: TransactionSigner,
+        provider: BlockchainProvider,
         scriptAddress: Address,
+        sponsorAddress: Address,
         prevChainState: ChainState,
         newChainState: ChainState,
-        blockHeaders: ScalusList[BlockHeader],
-        script: PlutusV3Script
+        blockHeaders: ScalusList[BlockHeader]
     ): Either[String, String] = {
+        given ec: ExecutionContext = provider.executionContext
         try {
-            // 1. Query script UTXOs to find the oracle UTXO
-            val scriptUtxos = backendService.getUtxoService
-                .getUtxos(scriptAddress.getAddress, 100, 1)
-                .getValue
-                .asScala
-                .toList
+            val script = compiledBitcoinScript()
+            val cardanoInfo = provider.cardanoInfo
 
-            if scriptUtxos.isEmpty then {
-                return Left(s"No UTXOs found at script address ${scriptAddress.getAddress}")
+            // 1. Query script UTXOs to find the oracle UTXO
+            val utxosResult = Await.result(
+              provider.findUtxos(scriptAddress),
+              30.seconds
+            )
+
+            val scriptUtxos: List[Utxo] = utxosResult match {
+                case Right(u) =>
+                    u.map { case (input, output) => Utxo(input, output) }
+                        .toList
+                        .filter(_.output.inlineDatum.isDefined)
+                case Left(err) =>
+                    return Left(s"No UTXOs found at script address: $err")
             }
 
-            // Use the first UTXO (should be the oracle UTXO)
+            if scriptUtxos.isEmpty then {
+                return Left(s"No UTXOs with inline datum found at script address")
+            }
+
             val scriptUtxo = scriptUtxos.head
             println(
-              s"[UpdateOracle] Found script UTXO: ${scriptUtxo.getTxHash}#${scriptUtxo.getOutputIndex}"
+              s"[UpdateOracle] Found script UTXO: ${scriptUtxo.input.transactionId.toHex}#${scriptUtxo.input.index}"
             )
 
-            // 2. Parse current datum from UTXO
-            val currentDatum = scalusDataToPlutusData(
-              Data.toData(prevChainState)(using ChainState.derived$ToData)
-            )
-
-            // 3. Create UpdateOracle redeemer
-            val redeemer = createUpdateOracleRedeemer(blockHeaders)
-            val redeemerData = redeemer.getData
+            // 2. Create UpdateOracle action as redeemer
+            val dummyHash = ByteString.empty
+            val currentTime = BigInt(System.currentTimeMillis() / 1000)
+            val action = Action.UpdateOracle(blockHeaders, currentTime, dummyHash)
             println(s"[UpdateOracle] Created redeemer with ${blockHeaders.length} headers")
 
-            // 4. Convert new ChainState to PlutusData for new datum
-            val newStateData =
-                Data.toData(newChainState)(using ChainState.derived$ToData)
-            val newDatum = scalusDataToPlutusData(newStateData)
-
-            // 5. Calculate amount to lock (same as input)
-            val lovelaceAmount = scriptUtxo.getAmount.asScala.head.getQuantity
-            val amount = Amount.lovelace(lovelaceAmount)
+            // 3. Calculate amount to lock (same as input)
+            val lovelaceAmount = scriptUtxo.output.value.coin.value
             println(s"[UpdateOracle] Locking $lovelaceAmount lovelace at script")
 
-            // 6. Build transaction using ScriptTx
-            val quickTxBuilder = new QuickTxBuilder(backendService)
+            // 4. Build transaction using TxBuilder
+            val tx = Await
+                .result(
+                  TxBuilder(cardanoInfo)
+                      .spend(scriptUtxo, action, script)
+                      .payTo(scriptAddress, scriptUtxo.output.value, newChainState)
+                      .complete(provider, sponsorAddress),
+                  60.seconds
+                )
+                .sign(signer)
+                .transaction
 
-            val scriptTx = new ScriptTx()
-                .collectFrom(scriptUtxo, currentDatum, redeemerData)
-                .payToContract(scriptAddress.getAddress, amount, newDatum)
-                .attachSpendingValidator(script)
-
-            // 7. Build, sign, and submit
-            val result = quickTxBuilder
-                .compose(scriptTx)
-                .feePayer(account.baseAddress())
-                .withSigner(SignerProviders.signerFrom(account))
-                .completeAndWait((msg: String) => println(s"[UpdateOracle] $msg"))
-
-            if result.isSuccessful then {
-                val txHash = result.getValue
-                println(s"[UpdateOracle] Transaction submitted: $txHash")
-                Right(txHash)
-            } else {
-                Left(s"Transaction failed: ${result.getResponse}")
+            // 5. Submit
+            val result = Await.result(provider.submit(tx), 30.seconds)
+            result match {
+                case Right(txHash) =>
+                    val hash = txHash.toHex
+                    println(s"[UpdateOracle] Transaction submitted: $hash")
+                    Right(hash)
+                case Left(err) =>
+                    Left(s"Transaction failed: $err")
             }
         } catch {
             case e: Exception =>
@@ -229,15 +136,14 @@ object TransactionBuilders {
 
     /** Create initial script UTXO with genesis ChainState
       *
-      * Uses QuickTx API to create a transaction that locks funds at the script address with the
-      * genesis ChainState as an inline datum.
-      *
-      * @param account
-      *   the account to send funds from
-      * @param backendService
-      *   backend service for submitting transaction
+      * @param signer
+      *   TransactionSigner to sign
+      * @param provider
+      *   BlockchainProvider for querying and submitting
       * @param scriptAddress
       *   the Binocular script address
+      * @param sponsorAddress
+      *   Address to pay fees from
       * @param genesisState
       *   the initial ChainState
       * @param lovelaceAmount
@@ -246,37 +152,29 @@ object TransactionBuilders {
       *   Either error message or transaction hash
       */
     def createInitialScriptUtxo(
-        account: Account,
-        backendService: BackendService,
+        signer: TransactionSigner,
+        provider: BlockchainProvider,
         scriptAddress: Address,
+        sponsorAddress: Address,
         genesisState: ChainState,
         lovelaceAmount: Long = 5_000_000L
     ): Either[String, String] = {
+        given ec: ExecutionContext = provider.executionContext
         try {
-            // Convert ChainState to PlutusData for inline datum
-            val stateData =
-                Data.toData(genesisState)(using ChainState.derived$ToData)
-            val plutusDatum = scalusDataToPlutusData(stateData)
+            val tx = Await
+                .result(
+                  TxBuilder(provider.cardanoInfo)
+                      .payTo(scriptAddress, Value.lovelace(lovelaceAmount), genesisState)
+                      .complete(provider, sponsorAddress),
+                  30.seconds
+                )
+                .sign(signer)
+                .transaction
 
-            // Create amount
-            val amount = Amount.lovelace(java.math.BigInteger.valueOf(lovelaceAmount))
-
-            // Build transaction using QuickTx API
-            val quickTxBuilder = new QuickTxBuilder(backendService)
-
-            val tx = new Tx()
-                .payToContract(scriptAddress.getAddress, amount, plutusDatum)
-                .from(account.baseAddress())
-
-            val result = quickTxBuilder
-                .compose(tx)
-                .withSigner(SignerProviders.signerFrom(account))
-                .completeAndWait((msg: String) => println(s"[QuickTx] $msg"))
-
-            if result.isSuccessful then {
-                Right(result.getValue)
-            } else {
-                Left(s"Transaction failed: ${result.getResponse}")
+            val result = Await.result(provider.submit(tx), 30.seconds)
+            result match {
+                case Right(txHash) => Right(txHash.toHex)
+                case Left(err)     => Left(s"Transaction failed: $err")
             }
         } catch {
             case e: Exception =>
@@ -286,46 +184,7 @@ object TransactionBuilders {
         }
     }
 
-    /** Helper to get protocol parameters as Scalus values for testing */
-    def getProtocolParamsHelper(
-        backendService: BackendService
-    ): Either[String, ProtocolParamsInfo] = {
-        try {
-            val params = backendService.getEpochService.getProtocolParameters().getValue
-            Right(
-              ProtocolParamsInfo(
-                minFeeA = params.getMinFeeA,
-                minFeeB = params.getMinFeeB,
-                maxTxSize = params.getMaxTxSize,
-                maxBlockHeaderSize = params.getMaxBlockHeaderSize
-              )
-            )
-        } catch {
-            case e: Exception =>
-                Left(s"Failed to fetch protocol params: ${e.getMessage}")
-        }
-    }
-
-    case class ProtocolParamsInfo(
-        minFeeA: Int,
-        minFeeB: Int,
-        maxTxSize: Int,
-        maxBlockHeaderSize: Int
-    )
-
-    /** Apply block headers to ChainState to calculate new state
-      *
-      * Uses BitcoinValidator.updateTip to process each header sequentially.
-      *
-      * @param currentState
-      *   the current ChainState
-      * @param headers
-      *   the Bitcoin block headers to apply
-      * @param currentTime
-      *   the current Cardano time (Unix timestamp in seconds)
-      * @return
-      *   new ChainState after applying all headers
-      */
+    /** Apply block headers to ChainState to calculate new state */
     def applyHeaders(
         currentState: ChainState,
         headers: ScalusList[BlockHeader],

@@ -34,7 +34,6 @@ lazy val example = (project in file("example"))
 
 libraryDependencies ++= Seq(
   "org.scalus" %% "scalus" % scalusVersion,
-  "org.scalus" %% "scalus-bloxbean-cardano-client-lib" % scalusVersion,
   "com.lihaoyi" %% "upickle" % "4.4.2",
   "com.lihaoyi" %% "os-lib" % "0.11.6" % Test,
   "com.typesafe" % "config" % "1.4.5", // Configuration library
@@ -48,14 +47,7 @@ libraryDependencies ++= Seq(
     ExclusionRule(organization = "com.lihaoyi", name = "upickle-implicits_2.13"),
     ExclusionRule(organization = "com.lihaoyi", name = "geny_2.13")
   ),
-  // Exclude eddsa to avoid conflict with version bundled in cardano-client-lib
-  ("com.bloxbean.cardano" % "cardano-client-lib" % "0.7.1").excludeAll(
-    ExclusionRule(organization = "net.i2p.crypto", name = "eddsa")
-  ),
-  "com.bloxbean.cardano" % "cardano-client-backend-blockfrost" % "0.7.1",
-  "com.bloxbean.cardano" % "cardano-client-backend-koios" % "0.7.1",
-  "com.bloxbean.cardano" % "cardano-client-backend-ogmios" % "0.7.1",
-  "com.bloxbean.cardano" % "cardano-client-quicktx" % "0.7.1" % Test,
+  "org.scalus" %% "scalus-bloxbean-cardano-client-lib" % scalusVersion % Test,
   "org.scalus" %% "scalus-testkit" % scalusVersion,
   "com.monovore" %% "decline" % "2.5.0",
   "org.scalameta" %% "munit" % "1.2.1" % Test,
@@ -70,15 +62,14 @@ libraryDependencies ++= Seq(
 
 // Assembly configuration
 assembly / assemblyMergeStrategy := {
-    case PathList("META-INF", "MANIFEST.MF")                => MergeStrategy.discard
-    case PathList("META-INF", xs @ _*)                      => MergeStrategy.discard
-    case PathList("module-info.class")                      => MergeStrategy.discard
-    case PathList("net", "i2p", "crypto", "eddsa", xs @ _*) => MergeStrategy.first
-    case x if x.endsWith(".proto")                          => MergeStrategy.first
-    case x if x.contains("bouncycastle")                    => MergeStrategy.first
-    case "reference.conf"                                   => MergeStrategy.concat
-    case "application.conf"                                 => MergeStrategy.concat
-    case _                                                  => MergeStrategy.first
+    case PathList("META-INF", "MANIFEST.MF") => MergeStrategy.discard
+    case PathList("META-INF", xs @ _*)       => MergeStrategy.discard
+    case PathList("module-info.class")       => MergeStrategy.discard
+    case x if x.endsWith(".proto")           => MergeStrategy.first
+    case x if x.contains("bouncycastle")     => MergeStrategy.first
+    case "reference.conf"                    => MergeStrategy.concat
+    case "application.conf"                  => MergeStrategy.concat
+    case _                                   => MergeStrategy.first
 }
 
 // Specify main class for assembly

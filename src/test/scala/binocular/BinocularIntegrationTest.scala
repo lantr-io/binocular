@@ -1,12 +1,9 @@
 package binocular
 
-import com.bloxbean.cardano.client.address.Address
-import com.bloxbean.cardano.client.plutus.spec.PlutusV3Script
-import com.bloxbean.cardano.client.util.HexUtil
+import scalus.cardano.address.{Address, Network}
+import scalus.cardano.ledger.Script
 import scalus.uplc.builtin.ByteString
 import scalus.cardano.onchain.plutus.prelude
-
-import scala.jdk.CollectionConverters.*
 
 /** Integration tests for Binocular Oracle on Yaci DevKit
   *
@@ -22,25 +19,25 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
     override val munitTimeout = scala.concurrent.duration.Duration(3, "min")
 
     // Get the actual script address from compiled BitcoinValidator
-    lazy val bitcoinScript: PlutusV3Script = TransactionBuilders.compiledBitcoinScript()
+    lazy val bitcoinScript: Script.PlutusV3 = TransactionBuilders.compiledBitcoinScript()
 
-    lazy val scriptAddress: Address = TransactionBuilders.getScriptAddress(bitcoinScript)
+    lazy val scriptAddress: Address = TransactionBuilders.getScriptAddress(Network.Testnet)
 
     test("Bitcoin script compiles and has valid address") {
         // Verify script compiles
         assert(bitcoinScript != null, "Script should compile")
 
         // Verify address is valid testnet script address
-        val addr = scriptAddress.getAddress
+        val addr = scriptAddress.encode.getOrElse("?")
         assert(addr.startsWith("addr_test1"), s"Should be testnet address, got: $addr")
-        println(s"✓ Compiled Bitcoin validator script address: $addr")
-        println(s"✓ Script size: ${BitcoinContract.bitcoinProgram.flatEncoded.length} bytes")
+        println(s"Compiled Bitcoin validator script address: $addr")
+        println(s"Script size: ${BitcoinContract.bitcoinProgram.flatEncoded.length} bytes")
     }
 
     test("Yaci DevKit container starts and has funded account".ignore) {
         withYaciDevKit(YaciDevKitConfig(enableLogs = true)) { devKit =>
             // Verify account was funded
-            val balance = devKit.getLovelaceBalance(devKit.account.baseAddress())
+            val balance = devKit.getLovelaceBalance(devKit.sponsorAddress)
             println(s"Account balance: $balance lovelace")
 
             assert(balance > 0, "Account should have been funded with initial lovelace")
@@ -54,19 +51,20 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
             val genesisState = createGenesisState()
 
             // Use actual compiled script address
-            println(s"[Test] Script address: ${scriptAddress.getAddress}")
-            println(s"[Test] Account address: ${devKit.account.baseAddress()}")
+            println(s"[Test] Script address: ${scriptAddress.encode.getOrElse("?")}")
+            println(s"[Test] Account address: ${devKit.baseAddress}")
 
             // Check account balance before
-            val balanceBefore = devKit.getLovelaceBalance(devKit.account.baseAddress())
+            val balanceBefore = devKit.getLovelaceBalance(devKit.sponsorAddress)
             println(s"[Test] Account balance: $balanceBefore lovelace")
 
             // Create initial UTXO at script address
             println(s"[Test] Creating initial script UTXO...")
             val result = TransactionBuilders.createInitialScriptUtxo(
-              devKit.account,
-              devKit.getBackendService,
+              devKit.signer,
+              devKit.provider,
               scriptAddress,
+              devKit.sponsorAddress,
               genesisState,
               lovelaceAmount = 5_000_000L
             )
@@ -82,39 +80,17 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
 
                     // Verify UTXO exists at script address
                     Thread.sleep(2000) // Give indexer time to catch up
-                    val scriptUtxos = devKit.getUtxos(scriptAddress.getAddress)
+                    val scriptUtxos = devKit.getUtxos(scriptAddress)
                     assert(scriptUtxos.nonEmpty, "Script should have at least one UTXO")
 
                     val scriptUtxo = scriptUtxos.head
                     assert(
-                      scriptUtxo.getAmount.asScala.head.getQuantity.longValue() == 5_000_000L,
+                      scriptUtxo.output.value.coin.value == 5_000_000L,
                       "Script UTXO should have correct amount"
                     )
 
                 case Left(error) =>
                     fail(s"Failed to create initial UTXO: $error")
-            }
-        }
-    }
-
-    test("Can query protocol parameters".ignore) {
-        withYaciDevKit() { devKit =>
-            val paramsResult = TransactionBuilders.getProtocolParamsHelper(devKit.getBackendService)
-
-            paramsResult match {
-                case Right(params) =>
-                    println(s"Protocol parameters:")
-                    println(s"  Min fee A: ${params.minFeeA}")
-                    println(s"  Min fee B: ${params.minFeeB}")
-                    println(s"  Max TX size: ${params.maxTxSize}")
-                    println(s"  Max block header size: ${params.maxBlockHeaderSize}")
-
-                    assert(params.minFeeA > 0, "Min fee A should be positive")
-                    assert(params.minFeeB > 0, "Min fee B should be positive")
-                    assert(params.maxTxSize > 0, "Max TX size should be positive")
-
-                case Left(error) =>
-                    fail(s"Failed to get protocol params: $error")
             }
         }
     }
@@ -126,23 +102,24 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
             // 1. Load fixture headers
             val fixture = BitcoinHeaderFixtures.loadFixture("bitcoin-headers-small-3")
             val headers = BitcoinHeaderFixtures.loadHeaders("bitcoin-headers-small-3")
-            println(s"✓ Loaded ${headers.length} headers from fixture")
+            println(s"Loaded ${headers.length} headers from fixture")
 
             // 2. Create initial script UTXO with genesis state from first header
             val genesisState = BitcoinHeaderFixtures.createGenesisState(fixture)
-            println(s"✓ Created genesis state at height ${genesisState.blockHeight}")
+            println(s"Created genesis state at height ${genesisState.blockHeight}")
 
             val createResult = TransactionBuilders.createInitialScriptUtxo(
-              devKit.account,
-              devKit.getBackendService,
+              devKit.signer,
+              devKit.provider,
               scriptAddress,
+              devKit.sponsorAddress,
               genesisState,
               lovelaceAmount = 5_000_000L
             )
 
             val initialTxHash = createResult match {
                 case Right(txHash) =>
-                    println(s"✓ Created initial UTXO, tx: $txHash")
+                    println(s"Created initial UTXO, tx: $txHash")
                     val confirmed =
                         devKit.waitForTransaction(txHash, maxAttempts = 30, delayMs = 2000)
                     assert(confirmed, s"Initial transaction $txHash should confirm")
@@ -153,7 +130,7 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
 
             // 3. Submit remaining headers sequentially (skip first, it's already in genesis)
             val remainingHeaders = headers.tail
-            println(s"\n✓ Submitting ${remainingHeaders.length} headers sequentially...")
+            println(s"\nSubmitting ${remainingHeaders.length} headers sequentially...")
 
             var currentState = genesisState
             val currentTime = BigInt(System.currentTimeMillis() / 1000)
@@ -169,18 +146,18 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
 
                 // Submit UpdateOracle transaction
                 val updateResult = TransactionBuilders.buildUpdateOracleTransaction(
-                  devKit.account,
-                  devKit.getBackendService,
+                  devKit.signer,
+                  devKit.provider,
                   scriptAddress,
+                  devKit.sponsorAddress,
                   currentState,
                   newState,
-                  headerList,
-                  bitcoinScript
+                  headerList
                 )
 
                 updateResult match {
                     case Right(txHash) =>
-                        println(s"  ✓ UpdateOracle tx: $txHash")
+                        println(s"  UpdateOracle tx: $txHash")
                         val confirmed =
                             devKit.waitForTransaction(txHash, maxAttempts = 30, delayMs = 2000)
                         assert(confirmed, s"UpdateOracle transaction $txHash should confirm")
@@ -193,8 +170,8 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
                 }
             }
 
-            println(s"\n✓ Successfully submitted all ${remainingHeaders.length} headers!")
-            println(s"✓ Final oracle height: ${currentState.blockHeight}")
+            println(s"\nSuccessfully submitted all ${remainingHeaders.length} headers!")
+            println(s"Final oracle height: ${currentState.blockHeight}")
         }
     }
 

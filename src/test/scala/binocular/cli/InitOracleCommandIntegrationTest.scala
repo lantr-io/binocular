@@ -2,9 +2,8 @@ package binocular.cli
 
 import binocular.cli.commands.InitOracleCommand
 import binocular.{BitcoinChainState, BitcoinValidator, ChainState, OracleTransactions}
-import com.bloxbean.cardano.client.address.Address
+import scalus.cardano.address.Address
 import scalus.uplc.builtin.Data
-import scalus.utils.Hex.hexToBytes
 
 import scala.concurrent.duration.*
 import scala.concurrent.{Await, ExecutionContext}
@@ -54,48 +53,48 @@ class InitOracleCommandIntegrationTest extends CliIntegrationTestBase {
             println(s"  Hash: ${initialState.blockHash.toHex}")
 
             // Build and submit init transaction
-            val scriptAddress = new Address(
+            val scriptAddress = Address.fromBech32(
               binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
             )
 
             val txResult = OracleTransactions.buildAndSubmitInitTransaction(
-              devKit.account,
-              devKit.getBackendService,
+              devKit.signer,
+              devKit.provider,
               scriptAddress,
+              devKit.sponsorAddress,
               initialState,
               5_000_000L
             )
 
             txResult match {
                 case Right(txHash) =>
-                    println(s"[Test] ✓ Oracle initialized: $txHash")
+                    println(s"[Test] Oracle initialized: $txHash")
 
                     // Wait for transaction confirmation
                     val confirmed =
                         devKit.waitForTransaction(txHash, maxAttempts = 30, delayMs = 1000)
                     assert(confirmed, s"Transaction $txHash did not confirm")
-                    println(s"[Test] ✓ Transaction confirmed")
+                    println(s"[Test] Transaction confirmed")
 
                     // Verify oracle UTxO exists
                     Thread.sleep(2000) // Give some time for UTxO to be indexed
-                    val utxos = devKit.getUtxos(scriptAddress.getAddress)
+                    val utxos = devKit.getUtxos(scriptAddress)
                     assert(utxos.nonEmpty, "No UTxOs found at oracle address")
                     println(
-                      s"[Test] ✓ Oracle UTxO created: ${utxos.size} UTxO(s) at script address"
+                      s"[Test] Oracle UTxO created: ${utxos.size} UTxO(s) at script address"
                     )
 
                     // Verify datum
                     val oracleUtxo = utxos.head
-                    val inlineDatum = oracleUtxo.getInlineDatum
-                    assert(inlineDatum != null && inlineDatum.nonEmpty, "Oracle UTxO has no datum")
-                    val data = Data.fromCbor(inlineDatum.hexToBytes)
-                    val chainState = data.to[ChainState]
+                    val inlineDatum = oracleUtxo.output.inlineDatum
+                    assert(inlineDatum.isDefined, "Oracle UTxO has no datum")
+                    val chainState = inlineDatum.get.to[ChainState]
 
                     assert(
                       chainState.blockHeight == startHeight,
                       s"Block height mismatch: ${chainState.blockHeight} != $startHeight"
                     )
-                    println(s"[Test] ✓ ChainState verified:")
+                    println(s"[Test] ChainState verified:")
                     println(s"    Height: ${chainState.blockHeight}")
                     println(s"    Hash: ${chainState.blockHash.toHex}")
 
@@ -135,7 +134,7 @@ class InitOracleCommandIntegrationTest extends CliIntegrationTestBase {
                     fail("Should have thrown exception for invalid height")
                 } catch {
                     case e: Exception =>
-                        println(s"[Test] ✓ Correctly failed with: ${e.getMessage}")
+                        println(s"[Test] Correctly failed with: ${e.getMessage}")
                         assert(
                           e.getMessage.contains("No such file") || e.getMessage.contains(
                             "not found"
