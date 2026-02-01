@@ -1,15 +1,14 @@
 package binocular
 
-import scalus.cardano.address.Address
-import scalus.cardano.ledger.{CardanoInfo, DatumOption, PlutusScript, Script, ScriptRef, Transaction, TransactionOutput, Utxo, Utxos, Value}
+import scalus.cardano.address.{Address, Network}
+import scalus.cardano.ledger.{Credential, Script, Utxo, Value}
 import scalus.cardano.node.BlockchainProvider
-import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}
-import scalus.uplc.builtin.{ByteString, Data}
-import scalus.uplc.builtin.Data.toData
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
+import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}
+import scalus.uplc.builtin.ByteString
 
-import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration.*
+import scala.concurrent.{Await, ExecutionContext}
 
 /** Helper functions for building Binocular Oracle transactions on Yaci DevKit
   *
@@ -23,7 +22,7 @@ object TransactionBuilders {
 
     /** Get the compiled BitcoinValidator as PlutusV3 script */
     def compiledBitcoinScript(): Script.PlutusV3 = {
-        Script.PlutusV3(BitcoinContract.bitcoinProgram.cborByteString)
+        BitcoinContract.contract.script
     }
 
     /** Create a script address from the PlutusV3 script
@@ -31,9 +30,9 @@ object TransactionBuilders {
       * @param network
       *   Scalus network (Testnet/Mainnet)
       */
-    def getScriptAddress(network: scalus.cardano.address.Network): Address = {
+    def getScriptAddress(network: Network): Address = {
         val script = compiledBitcoinScript()
-        val credential = scalus.cardano.ledger.Credential.ScriptHash(script.scriptHash)
+        val credential = Credential.ScriptHash(script.scriptHash)
         Address(network, credential)
     }
 
