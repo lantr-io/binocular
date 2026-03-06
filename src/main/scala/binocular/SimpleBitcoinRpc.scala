@@ -1,9 +1,8 @@
 package binocular
 
 import scala.concurrent.{ExecutionContext, Future}
-import scala.concurrent.duration.*
 import java.net.URI
-import java.net.http.{HttpClient, HttpRequest, HttpResponse}
+import java.net.http.{HttpClient, HttpRequest}
 import java.net.http.HttpRequest.BodyPublishers
 import java.net.http.HttpResponse.BodyHandlers
 import java.time.Duration as JavaDuration

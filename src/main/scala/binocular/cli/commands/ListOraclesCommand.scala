@@ -1,16 +1,12 @@
 package binocular.cli.commands
 
-import binocular.{CardanoConfig, ChainState, OracleConfig}
+import binocular.{CardanoConfig, OracleConfig}
 import binocular.cli.{Command, CommandHelpers}
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{Utxo, Utxos}
-import scalus.uplc.builtin.Data
-import scalus.uplc.builtin.Data.fromData
-import scalus.uplc.builtin.ByteString.given
+import scalus.cardano.ledger.Utxo
 
 import scala.concurrent.{Await, ExecutionContext}
 import scala.concurrent.duration.*
-import scala.util.{Failure, Success, Try}
 
 /** List oracle UTxOs on Cardano */
 case class ListOraclesCommand(limit: Int) extends Command {

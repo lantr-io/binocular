@@ -5,8 +5,6 @@ import scalus.uplc.builtin.ByteString
 import scalus.uplc.builtin.ByteString.hex
 import scalus.uplc.builtin.Builtins.sha2_256
 
-import scala.collection.mutable.ArrayBuffer
-
 /** Unit tests for Bitcoin Merkle tree transaction inclusion proofs.
   *
   * This test suite demonstrates:

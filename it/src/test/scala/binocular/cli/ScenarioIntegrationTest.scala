@@ -4,10 +4,8 @@ package cli
 import binocular.{reverse, BitcoinChainState, BitcoinValidator, MerkleTree, OracleTransactions}
 import scalus.cardano.address.Address
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
-import scalus.uplc.builtin.{ByteString, Data}
-import scalus.uplc.builtin.Data.fromData
-import scalus.uplc.builtin.ToData.toData
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
+import scalus.uplc.builtin.{ByteString, Data}
 
 import scala.concurrent.duration.*
 import scala.concurrent.{Await, ExecutionContext, Future}

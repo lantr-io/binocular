@@ -2,15 +2,15 @@ package binocular
 
 import binocular.util.SlotConfigHelper
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{CardanoInfo, DatumOption, PlutusScript, Script, ScriptRef, Transaction, TransactionHash, TransactionInput, TransactionOutput, Utxo, Utxos, Value}
-import scalus.cardano.node.{BlockchainProvider, SubmitError, UtxoQuery, UtxoSource}
+import scalus.cardano.ledger.{CardanoInfo, PlutusScript, Script, ScriptRef, Transaction, TransactionOutput, Utxo, Utxos, Value}
+import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}
-import scalus.uplc.builtin.{ByteString, Data}
+import scalus.uplc.builtin.Data
 import scalus.uplc.builtin.Data.toData
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 
 import java.time.Instant
-import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.concurrent.{Await, ExecutionContext}
 import scala.concurrent.duration.*
 import scala.util.{Failure, Success, Try}
 

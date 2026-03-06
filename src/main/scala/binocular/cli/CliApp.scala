@@ -143,12 +143,12 @@ object CliApp {
           name = "binocular",
           header = "Binocular - Bitcoin Oracle for Cardano"
         )(
-          infoCommand orElse
-              configCommand orElse
-              listCommand orElse
-              verifyCommand orElse
-              initCommand orElse
-              updateCommand orElse
+          infoCommand `orElse`
+              configCommand `orElse`
+              listCommand `orElse`
+              verifyCommand `orElse`
+              initCommand `orElse`
+              updateCommand `orElse`
               proveCommand
         )
     }

@@ -4,9 +4,9 @@ import scalus.uplc.builtin.*
 import scalus.uplc.builtin.Builtins.*
 import scalus.uplc.builtin.ByteString.*
 import scalus.uplc.builtin.Data.{toData, FromData, ToData}
-import scalus.cardano.onchain.plutus.v1.{Address, Credential, PubKeyHash}
+import scalus.cardano.onchain.plutus.v1.{Address, Credential}
 import scalus.cardano.onchain.plutus.v2.{Interval, IntervalBoundType, OutputDatum}
-import scalus.cardano.onchain.plutus.v3.{Datum, ScriptContext, TxInInfo, TxInfo, TxOut, TxOutRef, Validator}
+import scalus.cardano.onchain.plutus.v3.{Datum, TxInInfo, TxInfo, TxOut, TxOutRef, Validator}
 import scalus.cardano.onchain.plutus.prelude.{List, Math, *}
 import scalus.cardano.onchain.plutus.prelude.Math.pow
 import scalus.{show as _, *}

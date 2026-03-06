@@ -1,14 +1,12 @@
 package binocular.cli.commands
 
-import binocular.{reverse, BitcoinNodeConfig, BitcoinValidator, CardanoConfig, ChainState, MerkleTree, OracleConfig, OracleTransactions, SimpleBitcoinRpc}
+import binocular.{reverse, BitcoinNodeConfig, BitcoinValidator, CardanoConfig, ChainState, MerkleTree, OracleConfig, SimpleBitcoinRpc}
 import binocular.cli.{Command, CommandHelpers}
-import scalus.cardano.address.Address
-import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo, Utxos}
-import scalus.uplc.builtin.Data.fromData
+import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.uplc.builtin.ByteString
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 
-import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.concurrent.{Await, ExecutionContext}
 import scala.concurrent.duration.*
 
 /** Prove Bitcoin transaction inclusion via oracle */
