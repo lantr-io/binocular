@@ -61,8 +61,8 @@ lazy val example = (project in file("example"))
 // Core dependencies
 lazy val coreDependencies = Seq(
   "org.scalus" %% "scalus" % scalusVersion,
-  "com.lihaoyi" %% "upickle" % "4.4.2",
-  "com.typesafe" % "config" % "1.4.5", // Configuration library
+  "com.lihaoyi" %% "upickle" % "4.4.3",
+  "com.typesafe" % "config" % "1.4.6", // Configuration library
   "org.slf4j" % "slf4j-simple" % "2.0.17",
   "org.bouncycastle" % "bcprov-jdk18on" % "1.83",
   ("org.bitcoin-s" % "bitcoin-s-bitcoind-rpc_2.13" % "1.9.11").excludeAll(
@@ -74,12 +74,12 @@ lazy val coreDependencies = Seq(
     ExclusionRule(organization = "com.lihaoyi", name = "geny_2.13")
   ),
   "org.scalus" %% "scalus-testkit" % scalusVersion,
-  "com.monovore" %% "decline" % "2.5.0"
+  "com.monovore" %% "decline" % "2.6.0"
 )
 
 // Unit test dependencies
 lazy val testDependencies = Seq(
-  "com.lihaoyi" %% "os-lib" % "0.11.6" % Test,
+  "com.lihaoyi" %% "os-lib" % "0.11.8" % Test,
   "org.scalus" %% "scalus-bloxbean-cardano-client-lib" % scalusVersion % Test,
   "org.scalatest" %% "scalatest" % "3.2.19" % Test,
   "org.scalatestplus" %% "scalacheck-1-18" % "3.2.19.0" % Test,
