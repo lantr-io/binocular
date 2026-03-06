@@ -1,6 +1,6 @@
 package binocular.cli
 
-import binocular.{BitcoinNodeConfig, BlockHeaderInfo, BlockInfo, BlockchainInfo, CardanoConfig, OracleConfig, RawTransactionInfo, SimpleBitcoinRpc, TransactionInfo, WalletConfig, YaciDevKitSpec}
+import binocular.{BitcoinNodeConfig, BlockHeaderInfo, BlockInfo, BlockchainInfo, CardanoConfig, OracleConfig, RawTransactionInfo, TransactionInfo, WalletConfig, YaciDevKitSpec}
 import scala.concurrent.{ExecutionContext, Future}
 import scala.io.Source
 import upickle.default.*

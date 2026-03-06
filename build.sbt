@@ -15,7 +15,6 @@ Global / onChangedBuildSource := ReloadOnSourceChanges
 lazy val binocular = (project in file("."))
     .settings(
       name := "binocular",
-      testFrameworks += new TestFramework("munit.Framework"),
       Test / parallelExecution := false,
       Test / javaOptions ++= Seq("-Xmx2g"),
       addCompilerPlugin("org.scalus" %% "scalus-plugin" % scalusVersion),
@@ -39,7 +38,6 @@ lazy val it = (project in file("it"))
     .dependsOn(binocular, binocular % "compile->compile;test->test")
     .settings(
       name := "binocular-it",
-      testFrameworks += new TestFramework("munit.Framework"),
       Test / parallelExecution := false,
       Test / javaOptions ++= Seq("-Xmx2g"),
       addCompilerPlugin("org.scalus" %% "scalus-plugin" % scalusVersion),
@@ -83,17 +81,17 @@ lazy val coreDependencies = Seq(
 lazy val testDependencies = Seq(
   "com.lihaoyi" %% "os-lib" % "0.11.6" % Test,
   "org.scalus" %% "scalus-bloxbean-cardano-client-lib" % scalusVersion % Test,
-  "org.scalameta" %% "munit" % "1.2.1" % Test,
-  "org.scalameta" %% "munit-scalacheck" % "1.2.0" % Test,
+  "org.scalatest" %% "scalatest" % "3.2.19" % Test,
+  "org.scalatestplus" %% "scalacheck-1-18" % "3.2.19.0" % Test,
   "org.scalacheck" %% "scalacheck" % "1.19.0" % Test
 )
 
 // Integration test dependencies
 lazy val integrationTestDependencies = Seq(
-  "org.scalameta" %% "munit" % "1.2.1" % Test,
+  "org.scalatest" %% "scalatest" % "3.2.19" % Test,
   // Testcontainers for integration testing
   "com.dimafeng" %% "testcontainers-scala-core" % "0.44.1" % Test,
-  "com.dimafeng" %% "testcontainers-scala-munit" % "0.44.1" % Test,
+  "com.dimafeng" %% "testcontainers-scala-scalatest" % "0.44.1" % Test,
   // Yaci DevKit for Cardano local devnet
   "com.bloxbean.cardano" % "yaci-cardano-test" % "0.1.0" % Test
 )

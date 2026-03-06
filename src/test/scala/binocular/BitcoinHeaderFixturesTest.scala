@@ -1,26 +1,26 @@
 package binocular
 
-import munit.FunSuite
+import org.scalatest.funsuite.AnyFunSuite
 
 /** Tests for BitcoinHeaderFixtures infrastructure
   *
   * Verifies fixture loading, header conversion, and state creation.
   */
-class BitcoinHeaderFixturesTest extends FunSuite {
+class BitcoinHeaderFixturesTest extends AnyFunSuite {
 
     test("Can load fixture from JSON") {
         val fixture = BitcoinHeaderFixtures.loadFixture("bitcoin-headers-small-3")
 
-        assertEquals(fixture.name, "bitcoin-headers-small-3")
-        assertEquals(fixture.startHeight, 865493)
-        assertEquals(fixture.endHeight, 865495)
-        assertEquals(fixture.headers.length, 3)
+        assert(fixture.name == "bitcoin-headers-small-3")
+        assert(fixture.startHeight == 865493)
+        assert(fixture.endHeight == 865495)
+        assert(fixture.headers.length == 3)
     }
 
     test("Can convert fixture headers to BlockHeader") {
         val headers = BitcoinHeaderFixtures.loadHeaders("bitcoin-headers-small-3")
 
-        assertEquals(headers.length, 3)
+        assert(headers.length == 3)
 
         // Verify first header
         val firstHeader = headers.head
@@ -32,11 +32,11 @@ class BitcoinHeaderFixturesTest extends FunSuite {
         val genesisState = BitcoinHeaderFixtures.createGenesisState(fixture)
 
         // Verify genesis state properties
-        assertEquals(genesisState.blockHeight, BigInt(865493))
+        assert(genesisState.blockHeight == BigInt(865493))
         assert(genesisState.blockHash.length == 32, "Block hash should be 32 bytes")
         assert(genesisState.currentTarget.length == 4, "Compact bits should be 4 bytes")
         assert(!genesisState.recentTimestamps.isEmpty, "Should have at least one timestamp")
-        assertEquals(genesisState.blockTimestamp, BigInt(1736701001))
+        assert(genesisState.blockTimestamp == BigInt(1736701001))
     }
 
     test("Fixture headers are sequential") {
@@ -44,7 +44,7 @@ class BitcoinHeaderFixturesTest extends FunSuite {
 
         // Verify heights are consecutive
         val heights = fixture.headers.map(_.height)
-        assertEquals(heights, List(865493, 865494, 865495))
+        assert(heights == List(865493, 865494, 865495))
 
         // Verify each header's prevHash matches previous header's hash
         val headers = fixture.headers
@@ -52,9 +52,8 @@ class BitcoinHeaderFixturesTest extends FunSuite {
             val prevHeader = headers(i - 1)
             val currentHeader = headers(i)
 
-            assertEquals(
-              currentHeader.prevHash,
-              prevHeader.hash,
+            assert(
+              currentHeader.prevHash == prevHeader.hash,
               s"Block ${currentHeader.height} prevHash should match block ${prevHeader.height} hash"
             )
         }

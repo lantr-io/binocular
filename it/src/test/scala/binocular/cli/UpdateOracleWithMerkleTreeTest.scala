@@ -2,7 +2,7 @@ package binocular.cli
 
 import binocular.*
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
+import scalus.cardano.ledger.Utxo
 import scalus.uplc.builtin.{ByteString, Data}
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 
@@ -17,9 +17,6 @@ import scala.concurrent.{Await, ExecutionContext, Future}
   *      tree
   */
 class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
-
-    // Override default test timeout (30 seconds) to allow for Docker container startup
-    override val munitTimeout = scala.concurrent.duration.Duration(180, "s")
 
     test("update-oracle: Merkle tree is updated when blocks are promoted") {
         withYaciDevKit() { devKit =>

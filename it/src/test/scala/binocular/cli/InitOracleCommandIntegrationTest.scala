@@ -1,7 +1,6 @@
 package binocular.cli
 
-import binocular.cli.commands.InitOracleCommand
-import binocular.{BitcoinChainState, BitcoinValidator, ChainState, OracleTransactions}
+import binocular.{BitcoinChainState, ChainState, OracleTransactions}
 import scalus.cardano.address.Address
 import scalus.uplc.builtin.Data
 
@@ -15,9 +14,6 @@ import scala.concurrent.{Await, ExecutionContext}
   *      3. Submits transaction to Yaci DevKit 4. Verifies oracle UTxO exists with correct datum
   */
 class InitOracleCommandIntegrationTest extends CliIntegrationTestBase {
-
-    // Override default test timeout (30 seconds) to allow for Docker container startup
-    override val munitTimeout = scala.concurrent.duration.Duration(360, "s")
 
     test("init-oracle: successfully creates oracle with Bitcoin fixture data") {
         withYaciDevKit() { devKit =>

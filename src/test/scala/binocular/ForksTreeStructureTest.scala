@@ -1,10 +1,10 @@
 package binocular
 
-import munit.FunSuite
+import org.scalatest.funsuite.AnyFunSuite
 import scalus.uplc.builtin.ByteString
 import scalus.cardano.onchain.plutus.prelude.List
 
-class ForksTreeStructureTest extends FunSuite {
+class ForksTreeStructureTest extends AnyFunSuite {
 
     test("Linear chain should maintain compact forksTree structure") {
         // With the optimized ForkBranch structure, a linear chain (each block extending the previous)

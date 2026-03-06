@@ -15,9 +15,6 @@ import scalus.cardano.onchain.plutus.prelude
   *   2. Run: sbt "testOnly *BinocularIntegrationTest"
   */
 class BinocularIntegrationTest extends YaciDevKitSpec {
-    // Override default test timeout for integration tests (default is 30 seconds)
-    override val munitTimeout = scala.concurrent.duration.Duration(3, "min")
-
     // Get the actual script address from compiled BitcoinValidator
     lazy val bitcoinScript: Script.PlutusV3 = TransactionBuilders.compiledBitcoinScript()
 
@@ -34,7 +31,7 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
         println(s"Script size: ${BitcoinContract.bitcoinProgram.flatEncoded.length} bytes")
     }
 
-    test("Yaci DevKit container starts and has funded account".ignore) {
+    ignore("Yaci DevKit container starts and has funded account") {
         withYaciDevKit(YaciDevKitConfig(enableLogs = true)) { devKit =>
             // Verify account was funded
             val balance = devKit.getLovelaceBalance(devKit.sponsorAddress)
@@ -95,7 +92,7 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
         }
     }
 
-    test("Can submit sequential Bitcoin headers through Oracle".ignore) {
+    ignore("Can submit sequential Bitcoin headers through Oracle") {
         withYaciDevKit(YaciDevKitConfig(enableLogs = true)) { devKit =>
             println("\n=== Sequential Oracle Update Test ===\n")
 
