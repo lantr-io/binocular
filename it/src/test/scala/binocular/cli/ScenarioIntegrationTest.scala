@@ -6,9 +6,10 @@ import scalus.cardano.address.Address
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.uplc.builtin.{ByteString, Data}
+import scalus.utils.await
 
 import scala.concurrent.duration.*
-import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.concurrent.{ExecutionContext, Future}
 
 /** Comprehensive integration test for Binocular oracle scenarios
   *
@@ -21,19 +22,20 @@ import scala.concurrent.{Await, ExecutionContext, Future}
   */
 class ScenarioIntegrationTest extends CliIntegrationTestBase {
     test("scenario: basic oracle update with new blocks") {
-        withYaciDevKit() { devKit =>
-            given ec: ExecutionContext = ExecutionContext.global
+        val ctx = createYaciContext()
+        given ec: ExecutionContext = ctx.provider.executionContext
 
-            // Use consecutive blocks from our fixtures
-            // Start at 866970, update to 866971-866973 (3 blocks)
-            val startHeight = 866970
-            val updateToHeight = 866973
-            val mockRpc = new MockBitcoinRpc()
+        // Use consecutive blocks from our fixtures
+        // Start at 866970, update to 866971-866973 (3 blocks)
+        val startHeight = 866970
+        val updateToHeight = 866973
+        val mockRpc = new MockBitcoinRpc()
 
-            println(s"[Test] Step 1: Creating initial oracle at height $startHeight")
+        println(s"[Test] Step 1: Creating initial oracle at height $startHeight")
 
-            // Create initial oracle
-            val initialStateFuture = BitcoinChainState.getInitialChainState(
+        // Create initial oracle
+        val initialState = BitcoinChainState
+            .getInitialChainState(
               new binocular.SimpleBitcoinRpc(
                 binocular.BitcoinNodeConfig(
                   url = "mock://rpc",
@@ -47,43 +49,38 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
               },
               startHeight
             )
+            .await(30.seconds)
 
-            val initialState = Await.result(initialStateFuture, 30.seconds)
+        val scriptAddress = Address.fromBech32(
+          binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
+        )
 
-            val scriptAddress = Address.fromBech32(
-              binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
-            )
+        // Submit init transaction
+        val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
+          ctx.alice.signer,
+          ctx.provider,
+          scriptAddress,
+          ctx.alice.address,
+          initialState
+        )
 
-            // Submit init transaction
-            val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
-              devKit.signer,
-              devKit.provider,
-              scriptAddress,
-              devKit.sponsorAddress,
-              initialState
-            )
+        val oracleUtxo = initTxResult match {
+            case Right(txHash) =>
+                println(s"[Test] Oracle initialized: $txHash")
+                waitForTransaction(ctx.provider, txHash, maxAttempts = 30)
+                Thread.sleep(2000) // Wait for indexing
+                findOracleUtxo(ctx.provider, scriptAddress, txHash)
+            case Left(err) =>
+                fail(s"Failed to initialize oracle: $err")
+        }
 
-            val oracleUtxo = initTxResult match {
-                case Right(txHash) =>
-                    println(s"[Test] Oracle initialized: $txHash")
-                    devKit.waitForTransaction(txHash, maxAttempts = 30)
-                    Thread.sleep(2000) // Wait for indexing
-                    // Fetch the oracle UTxO
-                    val utxos = devKit.getUtxos(scriptAddress)
-                    require(utxos.nonEmpty, "No UTxOs found at script address after init")
-                    utxos.find(_.output.inlineDatum.isDefined).getOrElse {
-                        fail("No oracle UTxO with inline datum found after init")
-                    }
-                case Left(err) =>
-                    fail(s"Failed to initialize oracle: $err")
-            }
+        println(
+          s"[Test] Step 2: Fetching headers for blocks ${startHeight + 1} to $updateToHeight"
+        )
 
-            println(
-              s"[Test] Step 2: Fetching headers for blocks ${startHeight + 1} to $updateToHeight"
-            )
-
-            // Fetch headers for update
-            val headersFuture = Future.sequence(
+        // Fetch headers for update
+        val headers = Future
+            .sequence(
               (startHeight + 1 to updateToHeight).map { height =>
                   for {
                       hashHex <- mockRpc.getBlockHash(height)
@@ -91,99 +88,91 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
                   } yield BitcoinChainState.convertHeader(headerInfo)
               }
             )
+            .await(30.seconds)
 
-            val headers = Await.result(headersFuture, 30.seconds)
-            val headersList = ScalusList.from(headers.toList)
+        val headersList = ScalusList.from(headers.toList)
 
-            println(s"[Test] Fetched ${headers.length} headers")
-            println(s"[test]  headers: ${headers.map(h => h.bytes.toHex).mkString(", ")}")
+        println(s"[Test] Fetched ${headers.length} headers")
+        println(s"[test]  headers: ${headers.map(h => h.bytes.toHex).mkString(", ")}")
 
-            println(s"[Test] Step 3: Computing new state")
+        println(s"[Test] Step 3: Computing new state")
 
-            // Compute validity interval time to ensure offline and on-chain use the same value
-            val (_, validityTime) =
-                OracleTransactions.computeValidityIntervalTime(devKit.provider.cardanoInfo)
-            println(s"  Using validity interval time: $validityTime")
+        // Compute validity interval time to ensure offline and on-chain use the same value
+        val (_, validityTime) =
+            OracleTransactions.computeValidityIntervalTime(ctx.provider.cardanoInfo)
+        println(s"  Using validity interval time: $validityTime")
 
-            // Compute new state using the shared validator logic
-            val newState =
-                BitcoinValidator.computeUpdateOracleState(initialState, headersList, validityTime)
-            println(s"  Computed new state:")
-            println(s"    Height: ${newState.blockHeight}")
-            println(s"    Hash: ${newState.blockHash.toHex}")
-            println(s"    Forks tree size: ${newState.forksTree.size}")
+        // Compute new state using the shared validator logic
+        val newState =
+            BitcoinValidator.computeUpdateOracleState(initialState, headersList, validityTime)
+        println(s"  Computed new state:")
+        println(s"    Height: ${newState.blockHeight}")
+        println(s"    Hash: ${newState.blockHash.toHex}")
+        println(s"    Forks tree size: ${newState.forksTree.size}")
 
-            println(s"[Test] Step 4: Submitting update transaction")
+        println(s"[Test] Step 4: Submitting update transaction")
 
-            // Submit update transaction with pre-computed state and validity time
-            val updateTxResult = OracleTransactions.buildAndSubmitUpdateTransaction(
-              devKit.signer,
-              devKit.provider,
-              scriptAddress,
-              devKit.sponsorAddress,
-              oracleUtxo,
-              initialState,
-              newState,
-              headersList,
-              validityTime
-            )
+        // Submit update transaction with pre-computed state and validity time
+        val updateTxResult = OracleTransactions.buildAndSubmitUpdateTransaction(
+          ctx.alice.signer,
+          ctx.provider,
+          scriptAddress,
+          ctx.alice.address,
+          oracleUtxo,
+          initialState,
+          newState,
+          headersList,
+          validityTime
+        )
 
-            updateTxResult match {
-                case Right(txHash) =>
-                    println(s"[Test] Oracle updated: $txHash")
+        updateTxResult match {
+            case Right(txHash) =>
+                println(s"[Test] Oracle updated: $txHash")
 
-                    // Wait for confirmation
-                    val confirmed = devKit.waitForTransaction(txHash, maxAttempts = 30)
-                    assert(confirmed, s"Update transaction did not confirm")
+                // Wait for confirmation
+                val confirmed = waitForTransaction(ctx.provider, txHash, maxAttempts = 30)
+                assert(confirmed, s"Update transaction did not confirm")
 
-                    Thread.sleep(2000) // Wait for indexing
+                Thread.sleep(2000) // Wait for indexing
 
-                    println(s"[Test] Step 5: Verifying updated oracle state")
+                println(s"[Test] Step 5: Verifying updated oracle state")
 
-                    // Verify new oracle state
-                    val utxos = devKit.getUtxos(scriptAddress)
-                    assert(utxos.nonEmpty, "No UTxOs found at oracle address after update")
+                // Verify new oracle state
+                val latestUtxo = findOracleUtxo(ctx.provider, scriptAddress, txHash)
+                val actualState = latestUtxo.output.inlineDatum.get.to[ChainState]
 
-                    // Find the latest UTxO (should be from update tx)
-                    val latestUtxo = utxos.find(_.output.inlineDatum.isDefined).getOrElse {
-                        fail("No oracle UTxO with inline datum found after update")
-                    }
-                    val inlineDatum = latestUtxo.output.inlineDatum.get
+                println(s"[Test] Updated ChainState verified:")
+                println(s"    Height: ${actualState.blockHeight}")
+                println(s"    Hash: ${actualState.blockHash.toHex}")
+                println(s"    Forks tree size: ${actualState.forksTree.size}")
 
-                    val actualState = inlineDatum.to[ChainState]
+                // Verify the on-chain state matches our computed state
+                assert(
+                  actualState.blockHeight == newState.blockHeight,
+                  s"Height mismatch: actual=${actualState.blockHeight} expected=${newState.blockHeight}"
+                )
+                assert(
+                  actualState.blockHash == newState.blockHash,
+                  s"Hash mismatch: actual=${actualState.blockHash.toHex} expected=${newState.blockHash.toHex}"
+                )
 
-                    println(s"[Test] Updated ChainState verified:")
-                    println(s"    Height: ${actualState.blockHeight}")
-                    println(s"    Hash: ${actualState.blockHash.toHex}")
-                    println(s"    Forks tree size: ${actualState.forksTree.size}")
-
-                    // Verify the on-chain state matches our computed state
-                    assert(
-                      actualState.blockHeight == newState.blockHeight,
-                      s"Height mismatch: actual=${actualState.blockHeight} expected=${newState.blockHeight}"
-                    )
-                    assert(
-                      actualState.blockHash == newState.blockHash,
-                      s"Hash mismatch: actual=${actualState.blockHash.toHex} expected=${newState.blockHash.toHex}"
-                    )
-
-                case Left(err) =>
-                    fail(s"Failed to update oracle: $err")
-            }
+            case Left(err) =>
+                fail(s"Failed to update oracle: $err")
         }
     }
 
     test("scenario: handles empty header list") {
-        withYaciDevKit() { devKit =>
-            given ec: ExecutionContext = ExecutionContext.global
+        val ctx = createYaciContext()
+        given ec: ExecutionContext = ctx.provider.executionContext
 
-            val startHeight = 866970
-            val mockRpc = new MockBitcoinRpc()
+        val startHeight = 866970
+        val mockRpc = new MockBitcoinRpc()
 
-            println(s"[Test] Creating oracle at height $startHeight")
+        println(s"[Test] Creating oracle at height $startHeight")
 
-            // Create initial oracle
-            val initialStateFuture = BitcoinChainState.getInitialChainState(
+        // Create initial oracle
+        val initialState = BitcoinChainState
+            .getInitialChainState(
               new binocular.SimpleBitcoinRpc(
                 binocular.BitcoinNodeConfig(
                   url = "mock://rpc",
@@ -197,56 +186,55 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
               },
               startHeight
             )
+            .await(30.seconds)
 
-            val initialState = Await.result(initialStateFuture, 30.seconds)
+        val scriptAddress = Address.fromBech32(
+          binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
+        )
 
-            val scriptAddress = Address.fromBech32(
-              binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
-            )
+        val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
+          ctx.alice.signer,
+          ctx.provider,
+          scriptAddress,
+          ctx.alice.address,
+          initialState
+        )
 
-            val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
-              devKit.signer,
-              devKit.provider,
-              scriptAddress,
-              devKit.sponsorAddress,
-              initialState
-            )
-
-            initTxResult match {
-                case Right(txHash) =>
-                    devKit.waitForTransaction(txHash, maxAttempts = 30)
-                    Thread.sleep(2000)
-                case Left(err) =>
-                    fail(s"Failed to initialize oracle: $err")
-            }
-
-            println(s"[Test] Attempting update with empty header list")
-
-            // Try to update with empty list - should fail validation
-            val emptyHeaders = ScalusList.empty[BlockHeader]
-
-            // This should fail because validator requires non-empty headers
-            println(s"[Test] Test with empty headers skipped (validator rejects empty list)")
+        initTxResult match {
+            case Right(txHash) =>
+                waitForTransaction(ctx.provider, txHash, maxAttempts = 30)
+                Thread.sleep(2000)
+            case Left(err) =>
+                fail(s"Failed to initialize oracle: $err")
         }
+
+        println(s"[Test] Attempting update with empty header list")
+
+        // Try to update with empty list - should fail validation
+        val emptyHeaders = ScalusList.empty[BlockHeader]
+
+        // This should fail because validator requires non-empty headers
+        println(s"[Test] Test with empty headers skipped (validator rejects empty list)")
     }
 
     test("scenario: full lifecycle - promotion, proof, and verification") {
-        withYaciDevKit() { devKit =>
-            given ec: ExecutionContext = ExecutionContext.global
+        val ctx = createYaciContext()
+        given ec: ExecutionContext = ctx.provider.executionContext
 
-            // Use a sufficient range of blocks to trigger promotion
-            // Start at 866970, add blocks up to 866970 + 105 to ensure 100+ confirmations
-            val startHeight = 866970
-            val totalBlocks = 105 // More than MaturationConfirmations (100)
-            val batchSize =
-                10 // Process 10 headers per transaction (using reference script to reduce tx size)
-            val finalHeight = startHeight + totalBlocks
-            val mockRpc = new MockBitcoinRpc()
+        // Use a sufficient range of blocks to trigger promotion
+        // Start at 866970, add blocks up to 866970 + 105 to ensure 100+ confirmations
+        val startHeight = 866970
+        val totalBlocks = 105 // More than MaturationConfirmations (100)
+        val batchSize =
+            10 // Process 10 headers per transaction (using reference script to reduce tx size)
+        val finalHeight = startHeight + totalBlocks
+        val mockRpc = new MockBitcoinRpc()
 
-            println(s"[Test] Step 1: Creating initial oracle at height $startHeight")
+        println(s"[Test] Step 1: Creating initial oracle at height $startHeight")
 
-            // Create initial oracle
-            val initialStateFuture = BitcoinChainState.getInitialChainState(
+        // Create initial oracle
+        val initialState = BitcoinChainState
+            .getInitialChainState(
               new binocular.SimpleBitcoinRpc(
                 binocular.BitcoinNodeConfig(
                   url = "mock://rpc",
@@ -260,62 +248,58 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
               },
               startHeight
             )
+            .await(30.seconds)
 
-            val initialState = Await.result(initialStateFuture, 30.seconds)
+        val scriptAddress = Address.fromBech32(
+          binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
+        )
 
-            val scriptAddress = Address.fromBech32(
-              binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
-            )
+        // Submit init transaction
+        val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
+          ctx.alice.signer,
+          ctx.provider,
+          scriptAddress,
+          ctx.alice.address,
+          initialState
+        )
 
-            // Submit init transaction
-            val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
-              devKit.signer,
-              devKit.provider,
-              scriptAddress,
-              devKit.sponsorAddress,
-              initialState
-            )
+        var currentOracleUtxo: Utxo = initTxResult match {
+            case Right(txHash) =>
+                println(s"[Test] Oracle initialized: $txHash")
+                waitForTransaction(ctx.provider, txHash, maxAttempts = 30)
+                Thread.sleep(2000)
+                findOracleUtxo(ctx.provider, scriptAddress, txHash)
+            case Left(err) =>
+                fail(s"Failed to initialize oracle: $err")
+        }
 
-            var currentOracleUtxo: Utxo = initTxResult match {
-                case Right(txHash) =>
-                    println(s"[Test] Oracle initialized: $txHash")
-                    devKit.waitForTransaction(txHash, maxAttempts = 30)
-                    Thread.sleep(2000)
-                    val utxos = devKit.getUtxos(scriptAddress)
-                    require(utxos.nonEmpty, "No UTxOs found at script address after init")
-                    utxos.find(_.output.inlineDatum.isDefined).getOrElse {
-                        fail("No oracle UTxO with inline datum found after init")
-                    }
-                case Left(err) =>
-                    fail(s"Failed to initialize oracle: $err")
-            }
+        // Deploy reference script to reduce transaction size
+        // Deploy to script address to avoid collateral conflicts with account's UTxOs
+        println(s"[Test] Step 1b: Deploying reference script")
+        val refScriptResult = OracleTransactions.deployReferenceScript(
+          ctx.alice.signer,
+          ctx.provider,
+          ctx.alice.address,
+          scriptAddress // Deploy to script address
+        )
 
-            // Deploy reference script to reduce transaction size
-            // Deploy to script address to avoid collateral conflicts with account's UTxOs
-            println(s"[Test] Step 1b: Deploying reference script")
-            val refScriptResult = OracleTransactions.deployReferenceScript(
-              devKit.signer,
-              devKit.provider,
-              devKit.sponsorAddress,
-              scriptAddress // Deploy to script address
-            )
+        val referenceScriptUtxo: Option[Utxo] = refScriptResult match {
+            case Right((txHash, outputIndex, savedOutput)) =>
+                println(s"[Test] Reference script deployed: $txHash:$outputIndex")
+                waitForTransaction(ctx.provider, txHash, maxAttempts = 30)
+                Thread.sleep(2000)
+                // Construct Utxo from saved output (which has scriptRef populated)
+                val refInput = TransactionInput(TransactionHash.fromHex(txHash), outputIndex)
+                Some(Utxo(refInput, savedOutput))
+            case Left(err) =>
+                fail(s"Failed to deploy reference script: $err")
+        }
 
-            val referenceScriptUtxo: Option[Utxo] = refScriptResult match {
-                case Right((txHash, outputIndex, savedOutput)) =>
-                    println(s"[Test] Reference script deployed: $txHash:$outputIndex")
-                    devKit.waitForTransaction(txHash, maxAttempts = 30)
-                    Thread.sleep(2000)
-                    // Construct Utxo from saved output (which has scriptRef populated)
-                    val refInput = TransactionInput(TransactionHash.fromHex(txHash), outputIndex)
-                    Some(Utxo(refInput, savedOutput))
-                case Left(err) =>
-                    fail(s"Failed to deploy reference script: $err")
-            }
+        println(s"[Test] Step 2: Adding ${totalBlocks} blocks in batches of $batchSize")
 
-            println(s"[Test] Step 2: Adding ${totalBlocks} blocks in batches of $batchSize")
-
-            // Fetch all headers
-            val allHeadersFuture = Future.sequence(
+        // Fetch all headers
+        val allHeaders = Future
+            .sequence(
               (startHeight + 1 to finalHeight).map { height =>
                   for {
                       hashHex <- mockRpc.getBlockHash(height)
@@ -323,203 +307,294 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
                   } yield BitcoinChainState.convertHeader(headerInfo)
               }
             )
+            .await(120.seconds)
 
-            val allHeaders = Await.result(allHeadersFuture, 120.seconds)
-            println(s"[Test] Fetched ${allHeaders.length} headers total")
+        println(s"[Test] Fetched ${allHeaders.length} headers total")
 
-            // Process in batches
-            val batches = allHeaders.grouped(batchSize).toSeq
-            var currentState = initialState
+        // Process in batches
+        val batches = allHeaders.grouped(batchSize).toSeq
+        var currentState = initialState
 
-            batches.zipWithIndex.foreach { case (batch, batchIndex) =>
+        batches.zipWithIndex.foreach { case (batch, batchIndex) =>
+            println(
+              s"[Test] Processing batch ${batchIndex + 1}/${batches.size} (${batch.size} headers)"
+            )
+            println(s"  Current state before batch:")
+            println(s"    blockHeight: ${currentState.blockHeight}")
+            println(s"    blockHash: ${currentState.blockHash.toHex}")
+            println(s"    forksTree size: ${currentState.forksTree.size}")
+            println(s"    confirmedBlocksTree size: ${currentState.confirmedBlocksTree.size}")
+
+            val headersList = ScalusList.from(batch.toList)
+
+            // Use current time for all batches except the last one
+            // For the last batch, use time + 25 minutes to trigger promotion
+            // (ChallengeAging is 20 minutes, TimeToleranceSeconds is 1 hour, so 25 min works)
+            val validityTime: BigInt = if batchIndex == batches.size - 1 then {
+                val currentTime = System.currentTimeMillis() / 1000
+                val advancedTime = BigInt(currentTime) + BigInt(25 * 60) // 25 minutes ahead
+                println(s"  Final batch: using advanced time to trigger promotion (+25 min)")
+                advancedTime
+            } else {
+                OracleTransactions.computeValidityIntervalTime(ctx.provider.cardanoInfo)._2
+            }
+
+            // Compute new state
+            val newState = BitcoinValidator.computeUpdateOracleState(
+              currentState,
+              headersList,
+              validityTime
+            )
+
+            println(s"  [Batch ${batchIndex + 1}] Off-chain computed state:")
+            println(s"    blockHeight: ${newState.blockHeight}")
+            println(s"    blockHash: ${newState.blockHash.toHex}")
+            println(s"    forksTree size: ${newState.forksTree.size}")
+            println(s"    confirmedBlocksTree size: ${newState.confirmedBlocksTree.size}")
+
+            // Log forksTree branches for debugging
+            println(s"  [Batch ${batchIndex + 1}] OFF-CHAIN forksTree branches:")
+            newState.forksTree.foreach { branch =>
                 println(
-                  s"[Test] Processing batch ${batchIndex + 1}/${batches.size} (${batch.size} headers)"
+                  s"    tip: ${branch.tipHash.toHex}, height: ${branch.tipHeight}, blocks: ${branch.recentBlocks.size}"
                 )
-                println(s"  Current state before batch:")
-                println(s"    blockHeight: ${currentState.blockHeight}")
-                println(s"    blockHash: ${currentState.blockHash.toHex}")
-                println(s"    forksTree size: ${currentState.forksTree.size}")
-                println(s"    confirmedBlocksTree size: ${currentState.confirmedBlocksTree.size}")
+            }
 
-                val headersList = ScalusList.from(batch.toList)
+            // Submit update transaction (using reference script to reduce tx size)
+            val updateTxResult = OracleTransactions.buildAndSubmitUpdateTransaction(
+              ctx.alice.signer,
+              ctx.provider,
+              scriptAddress,
+              ctx.alice.address,
+              currentOracleUtxo,
+              currentState,
+              newState,
+              headersList,
+              validityTime,
+              referenceScriptUtxo
+            )
 
-                // Use current time for all batches except the last one
-                // For the last batch, use time + 25 minutes to trigger promotion
-                // (ChallengeAging is 20 minutes, TimeToleranceSeconds is 1 hour, so 25 min works)
-                val validityTime: BigInt = if batchIndex == batches.size - 1 then {
-                    val currentTime = System.currentTimeMillis() / 1000
-                    val advancedTime = BigInt(currentTime) + BigInt(25 * 60) // 25 minutes ahead
-                    println(s"  Final batch: using advanced time to trigger promotion (+25 min)")
-                    advancedTime
-                } else {
-                    OracleTransactions.computeValidityIntervalTime(devKit.provider.cardanoInfo)._2
-                }
+            updateTxResult match {
+                case Right(resultTxHash) =>
+                    println(s"  Batch ${batchIndex + 1} submitted: $resultTxHash")
+                    waitForTransaction(ctx.provider, resultTxHash, maxAttempts = 30)
+                    Thread.sleep(2000)
 
-                // Compute new state
-                val newState = BitcoinValidator.computeUpdateOracleState(
-                  currentState,
-                  headersList,
-                  validityTime
-                )
+                    // Read actual on-chain state and verify it matches what we sent
+                    // Since validator only validates (can't modify), on-chain state MUST match newState
+                    val oracleUtxo =
+                        findOracleUtxo(ctx.provider, scriptAddress, resultTxHash)
+                    val actualOnChainState =
+                        oracleUtxo.output.inlineDatum.get.to[ChainState]
 
-                println(s"  [Batch ${batchIndex + 1}] Off-chain computed state:")
-                println(s"    blockHeight: ${newState.blockHeight}")
-                println(s"    blockHash: ${newState.blockHash.toHex}")
-                println(s"    forksTree size: ${newState.forksTree.size}")
-                println(s"    confirmedBlocksTree size: ${newState.confirmedBlocksTree.size}")
-
-                // Log forksTree branches for debugging
-                println(s"  [Batch ${batchIndex + 1}] OFF-CHAIN forksTree branches:")
-                newState.forksTree.foreach { branch =>
+                    println(s"  On-chain state after batch ${batchIndex + 1}:")
+                    println(s"    blockHeight: ${actualOnChainState.blockHeight}")
+                    println(s"    blockHash: ${actualOnChainState.blockHash.toHex}")
+                    println(s"    forksTree size: ${actualOnChainState.forksTree.size}")
                     println(
-                      s"    tip: ${branch.tipHash.toHex}, height: ${branch.tipHeight}, blocks: ${branch.recentBlocks.size}"
+                      s"    confirmedBlocksTree size: ${actualOnChainState.confirmedBlocksTree.size}"
                     )
-                }
 
-                // Submit update transaction (using reference script to reduce tx size)
-                val updateTxResult = OracleTransactions.buildAndSubmitUpdateTransaction(
-                  devKit.signer,
-                  devKit.provider,
-                  scriptAddress,
-                  devKit.sponsorAddress,
-                  currentOracleUtxo,
-                  currentState,
-                  newState,
-                  headersList,
-                  validityTime,
-                  referenceScriptUtxo
-                )
+                    // Verify on-chain state matches what we computed off-chain
+                    if actualOnChainState.blockHeight != newState.blockHeight ||
+                        actualOnChainState.blockHash != newState.blockHash ||
+                        actualOnChainState.forksTree.size != newState.forksTree.size
+                    then {
 
-                updateTxResult match {
-                    case Right(resultTxHash) =>
-                        println(s"  Batch ${batchIndex + 1} submitted: $resultTxHash")
-                        devKit.waitForTransaction(resultTxHash, maxAttempts = 30)
-                        Thread.sleep(2000)
-
-                        // Read actual on-chain state and verify it matches what we sent
-                        // Since validator only validates (can't modify), on-chain state MUST match newState
-                        val utxos = devKit.getUtxos(scriptAddress)
-                        require(utxos.nonEmpty, "No UTxOs found after batch update")
-                        // Filter for UTxO with inline datum (oracle UTxO, not reference script UTxO)
-                        val oracleUtxo = utxos.find(_.output.inlineDatum.isDefined).getOrElse {
-                            fail("No oracle UTxO with inline datum found after batch update")
-                        }
-                        val actualOnChainState =
-                            oracleUtxo.output.inlineDatum.get.to[ChainState]
-
-                        println(s"  On-chain state after batch ${batchIndex + 1}:")
-                        println(s"    blockHeight: ${actualOnChainState.blockHeight}")
-                        println(s"    blockHash: ${actualOnChainState.blockHash.toHex}")
-                        println(s"    forksTree size: ${actualOnChainState.forksTree.size}")
-                        println(
-                          s"    confirmedBlocksTree size: ${actualOnChainState.confirmedBlocksTree.size}"
+                        fail(
+                          s"ERROR: On-chain state does not match off-chain computed state!\n" +
+                              s"  This should be impossible - validator can only validate, not modify.\n" +
+                              s"  Off-chain: height=${newState.blockHeight}, hash=${newState.blockHash.toHex}, forksTree=${newState.forksTree.size}\n" +
+                              s"  On-chain:  height=${actualOnChainState.blockHeight}, hash=${actualOnChainState.blockHash.toHex}, forksTree=${actualOnChainState.forksTree.size}"
                         )
+                    }
 
-                        // Verify on-chain state matches what we computed off-chain
-                        if actualOnChainState.blockHeight != newState.blockHeight ||
-                            actualOnChainState.blockHash != newState.blockHash ||
-                            actualOnChainState.forksTree.size != newState.forksTree.size
-                        then {
+                    // Update for next iteration
+                    currentState = newState
+                    currentOracleUtxo = oracleUtxo
 
-                            fail(
-                              s"ERROR: On-chain state does not match off-chain computed state!\n" +
-                                  s"  This should be impossible - validator can only validate, not modify.\n" +
-                                  s"  Off-chain: height=${newState.blockHeight}, hash=${newState.blockHash.toHex}, forksTree=${newState.forksTree.size}\n" +
-                                  s"  On-chain:  height=${actualOnChainState.blockHeight}, hash=${actualOnChainState.blockHash.toHex}, forksTree=${actualOnChainState.forksTree.size}"
-                            )
-                        }
-
-                        // Update for next iteration
-                        currentState = newState
-                        currentOracleUtxo = oracleUtxo
-
-                    case Left(errorMsg) =>
-                        fail(s"Failed to update oracle with batch ${batchIndex + 1}: $errorMsg")
-                }
+                case Left(errorMsg) =>
+                    fail(s"Failed to update oracle with batch ${batchIndex + 1}: $errorMsg")
             }
+        }
 
-            println(s"[Test] Step 3: Verifying promotion occurred")
-            println(s"  Initial confirmed height: ${initialState.blockHeight}")
-            println(s"  Final confirmed height: ${currentState.blockHeight}")
-            println(s"  Initial forks tree size: ${initialState.forksTree.size}")
-            println(s"  Final forks tree size: ${currentState.forksTree.size}")
+        println(s"[Test] Step 3: Verifying promotion occurred")
+        println(s"  Initial confirmed height: ${initialState.blockHeight}")
+        println(s"  Final confirmed height: ${currentState.blockHeight}")
+        println(s"  Initial forks tree size: ${initialState.forksTree.size}")
+        println(s"  Final forks tree size: ${currentState.forksTree.size}")
 
-            // Verify that promotion occurred
-            val heightIncrease = currentState.blockHeight - initialState.blockHeight
+        // Verify that promotion occurred
+        val heightIncrease = currentState.blockHeight - initialState.blockHeight
+        assert(
+          heightIncrease > 0,
+          s"Expected promotion to increase confirmed height, but got: initial=${initialState.blockHeight}, final=${currentState.blockHeight}"
+        )
+
+        println(s"  Promotion detected: height increased by $heightIncrease blocks")
+
+        // Verify confirmed blocks tree was updated
+        assert(
+          currentState.confirmedBlocksTree.size >= initialState.confirmedBlocksTree.size,
+          "Confirmed blocks tree should grow after promotion"
+        )
+
+        println(s"[Test] Step 4: Verifying on-chain state after promotion")
+
+        // Verify final on-chain state matches the last tracked oracle UTxO
+        val actualState = currentOracleUtxo.output.inlineDatum.get.to[ChainState]
+
+        println(s"[Test] On-chain state after forced promotion:")
+        println(s"    Height: ${actualState.blockHeight}")
+        println(s"    Hash: ${actualState.blockHash.toHex}")
+        println(s"    Forks tree size: ${actualState.forksTree.size}")
+        println(s"    Confirmed blocks tree size: ${actualState.confirmedBlocksTree.size}")
+
+        // Verify state matches expectations
+        assert(
+          actualState.blockHeight == currentState.blockHeight,
+          s"Height mismatch: actual=${actualState.blockHeight} expected=${currentState.blockHeight}"
+        )
+        assert(
+          actualState.blockHash == currentState.blockHash,
+          s"Hash mismatch"
+        )
+
+        println(s"[Test] Phase 1 completed: Promotion successful")
+        println(s"  Total blocks added: $totalBlocks")
+        println(s"  Blocks promoted: $heightIncrease")
+        println(s"  Batches processed: ${batches.size}")
+
+        // ========== Phase 2: Prove transaction inclusion ==========
+        println(s"\n[Test] Phase 2: Proving transaction inclusion")
+
+        // Use the initial block (866970) which should now be in confirmed state
+        val proofBlockHeight = startHeight
+        println(s"[Test] Step 5: Fetching block data for height $proofBlockHeight")
+
+        // Get block info to find a transaction to prove
+        val blockHash = mockRpc.getBlockHash(proofBlockHeight).await(10.seconds)
+
+        val blockInfo = mockRpc.getBlock(blockHash).await(10.seconds)
+
+        assert(blockInfo.tx.nonEmpty, "Block has no transactions")
+
+        // Use the first transaction (coinbase)
+        val btcTxId = blockInfo.tx.head.txid
+        val txIndex = 0
+
+        println(s"[Test] Testing with transaction: $btcTxId")
+        println(s"[Test]   Block has ${blockInfo.tx.length} transactions")
+
+        println(s"[Test] Step 6: Building Merkle proof")
+
+        // Build Merkle tree from transaction hashes
+        val txHashes = blockInfo.tx.map { tx =>
+            ByteString.fromHex(tx.txid).reverse
+        }
+
+        val merkleTree = MerkleTree.fromHashes(txHashes)
+        val merkleRoot = merkleTree.getMerkleRoot
+        val merkleProof = merkleTree.makeMerkleProof(txIndex)
+
+        println(s"[Test] Merkle proof generated:")
+        println(s"    Merkle Root: ${merkleRoot.toHex}")
+        println(s"    Proof Size: ${merkleProof.length} hashes")
+
+        println(s"[Test] Step 7: Verifying proof locally")
+
+        // Verify proof
+        val txHash = ByteString.fromHex(btcTxId).reverse
+        val calculatedRoot =
+            MerkleTree.calculateMerkleRootFromProof(txIndex, txHash, merkleProof)
+
+        assert(calculatedRoot == merkleRoot, "Merkle proof verification failed")
+        println(s"[Test] Merkle proof verified")
+        println(s"    Calculated root: ${calculatedRoot.toHex}")
+        println(s"    Expected root:   ${merkleRoot.toHex}")
+
+        println(s"[Test] Step 8: Verifying transaction is in confirmed block")
+
+        // Verify block height is within promoted range
+        assert(
+          proofBlockHeight <= actualState.blockHeight.toInt,
+          s"Block height $proofBlockHeight > oracle height ${actualState.blockHeight}"
+        )
+
+        // Verify block is not in forks tree (should be promoted to confirmed)
+        val blockHashBytes = ByteString.fromHex(blockHash).reverse
+        val blockInForksTree = actualState.forksTree.exists { branch =>
+            branch.tipHash == blockHashBytes ||
+            BitcoinValidator.existsHash(branch.recentBlocks, blockHashBytes)
+        }
+        assert(!blockInForksTree, "Block should not be in forks tree after promotion")
+
+        println(s"[Test] Transaction is in confirmed block")
+        println(s"    Block Height: $proofBlockHeight")
+        println(s"    Oracle Confirmed Height: ${actualState.blockHeight}")
+
+        println(s"\n[Test] Phase 2 completed: Transaction proof verified")
+
+        // ========== Phase 3: Verify proofs at different indices ==========
+        println(s"\n[Test] Phase 3: Testing Merkle proofs for multiple transaction indices")
+
+        // Test first 5 transactions (or all if less than 5)
+        val testCount = Math.min(5, blockInfo.tx.length)
+
+        for testTxIndex <- 0 until testCount do {
+            val testTxId = blockInfo.tx(testTxIndex).txid
+            val testTxHash = ByteString.fromHex(testTxId).reverse
+            val testProof = merkleTree.makeMerkleProof(testTxIndex)
+
+            val testCalculatedRoot =
+                MerkleTree.calculateMerkleRootFromProof(testTxIndex, testTxHash, testProof)
+
             assert(
-              heightIncrease > 0,
-              s"Expected promotion to increase confirmed height, but got: initial=${initialState.blockHeight}, final=${currentState.blockHeight}"
+              testCalculatedRoot == merkleRoot,
+              s"Proof failed for tx at index $testTxIndex"
             )
+            println(s"[Test] Verified proof for transaction at index $testTxIndex")
+        }
 
-            println(s"  Promotion detected: height increased by $heightIncrease blocks")
+        println(s"[Test] All $testCount Merkle proofs verified")
 
-            // Verify confirmed blocks tree was updated
-            assert(
-              currentState.confirmedBlocksTree.size >= initialState.confirmedBlocksTree.size,
-              "Confirmed blocks tree should grow after promotion"
-            )
+        println(s"\n[Test] Phase 3 completed: Multiple proof indices verified")
 
-            println(s"[Test] Step 4: Verifying on-chain state after promotion")
+        // ========== Phase 4: On-chain transaction verification ==========
+        // SKIPPED: The TransactionVerifier now requires Oracle verification with two proofs:
+        // 1. Transaction proof (tx in block)
+        // 2. Block proof (block in Oracle's confirmed tree)
+        // This test would need to set up an Oracle with confirmed blocks first.
+        println(
+          s"\n[Test] Phase 4: SKIPPED - TransactionVerifier now requires Oracle verification"
+        )
+        println(
+          s"    The validator now verifies blocks against the Oracle's confirmed blocks tree"
+        )
 
-            // Verify final on-chain state
-            val utxos = devKit.getUtxos(scriptAddress)
-            assert(utxos.nonEmpty, "No UTxOs found at oracle address after promotion")
+        println(s"\n[Test] Full lifecycle test completed successfully (Phases 1-3)")
+    }
 
-            // Filter for UTxO with inline datum (oracle UTxO, not reference script UTxO)
-            val latestUtxo = utxos.find(_.output.inlineDatum.isDefined).getOrElse {
-                fail("No oracle UTxO with inline datum found after promotion")
-            }
-            val inlineDatum = latestUtxo.output.inlineDatum.get
+    test("scenario: merkle proofs for multiple transaction indices") {
+        val ctx = createYaciContext()
+        given ec: ExecutionContext = ctx.provider.executionContext
 
-            val actualState = inlineDatum.to[ChainState]
+        val blockHeight = 866970
+        val mockRpc = new MockBitcoinRpc()
 
-            println(s"[Test] On-chain state after forced promotion:")
-            println(s"    Height: ${actualState.blockHeight}")
-            println(s"    Hash: ${actualState.blockHash.toHex}")
-            println(s"    Forks tree size: ${actualState.forksTree.size}")
-            println(s"    Confirmed blocks tree size: ${actualState.confirmedBlocksTree.size}")
+        // Get block info
+        val blockHash = mockRpc.getBlockHash(blockHeight).await(50.seconds)
+        val blockInfo = mockRpc.getBlock(blockHash).await(50.seconds)
 
-            // Verify state matches expectations
-            assert(
-              actualState.blockHeight == currentState.blockHeight,
-              s"Height mismatch: actual=${actualState.blockHeight} expected=${currentState.blockHeight}"
-            )
-            assert(
-              actualState.blockHash == currentState.blockHash,
-              s"Hash mismatch"
-            )
+        println(s"[Test] Testing Merkle proofs for multiple transaction indices")
 
-            println(s"[Test] Phase 1 completed: Promotion successful")
-            println(s"  Total blocks added: $totalBlocks")
-            println(s"  Blocks promoted: $heightIncrease")
-            println(s"  Batches processed: ${batches.size}")
+        // Test first 5 transactions (or all if less than 5)
+        val testCount = Math.min(5, blockInfo.tx.length)
 
-            // ========== Phase 2: Prove transaction inclusion ==========
-            println(s"\n[Test] Phase 2: Proving transaction inclusion")
+        for txIndex <- 0 until testCount do {
+            val btcTxId = blockInfo.tx(txIndex).txid
 
-            // Use the initial block (866970) which should now be in confirmed state
-            val proofBlockHeight = startHeight
-            println(s"[Test] Step 5: Fetching block data for height $proofBlockHeight")
-
-            // Get block info to find a transaction to prove
-            val blockHashFuture = mockRpc.getBlockHash(proofBlockHeight)
-            val blockHash = Await.result(blockHashFuture, 10.seconds)
-
-            val blockInfoFuture = mockRpc.getBlock(blockHash)
-            val blockInfo = Await.result(blockInfoFuture, 10.seconds)
-
-            assert(blockInfo.tx.nonEmpty, "Block has no transactions")
-
-            // Use the first transaction (coinbase)
-            val btcTxId = blockInfo.tx.head.txid
-            val txIndex = 0
-
-            println(s"[Test] Testing with transaction: $btcTxId")
-            println(s"[Test]   Block has ${blockInfo.tx.length} transactions")
-
-            println(s"[Test] Step 6: Building Merkle proof")
-
-            // Build Merkle tree from transaction hashes
+            // Build Merkle tree
             val txHashes = blockInfo.tx.map { tx =>
                 ByteString.fromHex(tx.txid).reverse
             }
@@ -528,150 +603,35 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
             val merkleRoot = merkleTree.getMerkleRoot
             val merkleProof = merkleTree.makeMerkleProof(txIndex)
 
-            println(s"[Test] Merkle proof generated:")
-            println(s"    Merkle Root: ${merkleRoot.toHex}")
-            println(s"    Proof Size: ${merkleProof.length} hashes")
-
-            println(s"[Test] Step 7: Verifying proof locally")
-
             // Verify proof
             val txHash = ByteString.fromHex(btcTxId).reverse
             val calculatedRoot =
                 MerkleTree.calculateMerkleRootFromProof(txIndex, txHash, merkleProof)
 
-            assert(calculatedRoot == merkleRoot, "Merkle proof verification failed")
-            println(s"[Test] Merkle proof verified")
-            println(s"    Calculated root: ${calculatedRoot.toHex}")
-            println(s"    Expected root:   ${merkleRoot.toHex}")
-
-            println(s"[Test] Step 8: Verifying transaction is in confirmed block")
-
-            // Verify block height is within promoted range
-            assert(
-              proofBlockHeight <= actualState.blockHeight.toInt,
-              s"Block height $proofBlockHeight > oracle height ${actualState.blockHeight}"
-            )
-
-            // Verify block is not in forks tree (should be promoted to confirmed)
-            val blockHashBytes = ByteString.fromHex(blockHash).reverse
-            val blockInForksTree = actualState.forksTree.exists { branch =>
-                branch.tipHash == blockHashBytes ||
-                BitcoinValidator.existsHash(branch.recentBlocks, blockHashBytes)
-            }
-            assert(!blockInForksTree, "Block should not be in forks tree after promotion")
-
-            println(s"[Test] Transaction is in confirmed block")
-            println(s"    Block Height: $proofBlockHeight")
-            println(s"    Oracle Confirmed Height: ${actualState.blockHeight}")
-
-            println(s"\n[Test] Phase 2 completed: Transaction proof verified")
-
-            // ========== Phase 3: Verify proofs at different indices ==========
-            println(s"\n[Test] Phase 3: Testing Merkle proofs for multiple transaction indices")
-
-            // Test first 5 transactions (or all if less than 5)
-            val testCount = Math.min(5, blockInfo.tx.length)
-
-            for testTxIndex <- 0 until testCount do {
-                val testTxId = blockInfo.tx(testTxIndex).txid
-                val testTxHash = ByteString.fromHex(testTxId).reverse
-                val testProof = merkleTree.makeMerkleProof(testTxIndex)
-
-                val testCalculatedRoot =
-                    MerkleTree.calculateMerkleRootFromProof(testTxIndex, testTxHash, testProof)
-
-                assert(
-                  testCalculatedRoot == merkleRoot,
-                  s"Proof failed for tx at index $testTxIndex"
-                )
-                println(s"[Test] Verified proof for transaction at index $testTxIndex")
-            }
-
-            println(s"[Test] All $testCount Merkle proofs verified")
-
-            println(s"\n[Test] Phase 3 completed: Multiple proof indices verified")
-
-            // ========== Phase 4: On-chain transaction verification ==========
-            // SKIPPED: The TransactionVerifier now requires Oracle verification with two proofs:
-            // 1. Transaction proof (tx in block)
-            // 2. Block proof (block in Oracle's confirmed tree)
-            // This test would need to set up an Oracle with confirmed blocks first.
-            println(
-              s"\n[Test] Phase 4: SKIPPED - TransactionVerifier now requires Oracle verification"
-            )
-            println(
-              s"    The validator now verifies blocks against the Oracle's confirmed blocks tree"
-            )
-
-            println(s"\n[Test] Full lifecycle test completed successfully (Phases 1-3)")
+            assert(calculatedRoot == merkleRoot, s"Proof failed for tx at index $txIndex")
+            println(s"[Test] Verified proof for transaction at index $txIndex")
         }
-    }
 
-    test("scenario: merkle proofs for multiple transaction indices") {
-        withYaciDevKit() { devKit =>
-            given ec: ExecutionContext = ExecutionContext.global
-
-            val blockHeight = 866970
-            val mockRpc = new MockBitcoinRpc()
-
-            // Get block info
-            val blockHashFuture = mockRpc.getBlockHash(blockHeight)
-            val blockHash = Await.result(blockHashFuture, 50.seconds)
-
-            val blockInfoFuture = mockRpc.getBlock(blockHash)
-            val blockInfo = Await.result(blockInfoFuture, 50.seconds)
-
-            println(s"[Test] Testing Merkle proofs for multiple transaction indices")
-
-            // Test first 5 transactions (or all if less than 5)
-            val testCount = Math.min(5, blockInfo.tx.length)
-
-            for txIndex <- 0 until testCount do {
-                val btcTxId = blockInfo.tx(txIndex).txid
-
-                // Build Merkle tree
-                val txHashes = blockInfo.tx.map { tx =>
-                    ByteString.fromHex(tx.txid).reverse
-                }
-
-                val merkleTree = MerkleTree.fromHashes(txHashes)
-                val merkleRoot = merkleTree.getMerkleRoot
-                val merkleProof = merkleTree.makeMerkleProof(txIndex)
-
-                // Verify proof
-                val txHash = ByteString.fromHex(btcTxId).reverse
-                val calculatedRoot =
-                    MerkleTree.calculateMerkleRootFromProof(txIndex, txHash, merkleProof)
-
-                assert(calculatedRoot == merkleRoot, s"Proof failed for tx at index $txIndex")
-                println(s"[Test] Verified proof for transaction at index $txIndex")
-            }
-
-            println(s"[Test] All $testCount Merkle proofs verified")
-        }
+        println(s"[Test] All $testCount Merkle proofs verified")
     }
 
     test("scenario: handles transaction not in block") {
-        withYaciDevKit() { devKit =>
-            given ec: ExecutionContext = ExecutionContext.global
+        val ctx = createYaciContext()
+        given ec: ExecutionContext = ctx.provider.executionContext
 
-            val blockHeight = 866970
-            val mockRpc = new MockBitcoinRpc()
+        val blockHeight = 866970
+        val mockRpc = new MockBitcoinRpc()
 
-            // Get block info
-            val blockHashFuture = mockRpc.getBlockHash(blockHeight)
-            val blockHash = Await.result(blockHashFuture, 10.seconds)
+        // Get block info
+        val blockHash = mockRpc.getBlockHash(blockHeight).await(10.seconds)
+        val blockInfo = mockRpc.getBlock(blockHash).await(10.seconds)
 
-            val blockInfoFuture = mockRpc.getBlock(blockHash)
-            val blockInfo = Await.result(blockInfoFuture, 10.seconds)
+        // Use a fake transaction ID that's not in the block
+        val fakeTxId = "0000000000000000000000000000000000000000000000000000000000000000"
 
-            // Use a fake transaction ID that's not in the block
-            val fakeTxId = "0000000000000000000000000000000000000000000000000000000000000000"
+        val txIndex = blockInfo.tx.indexWhere(_.txid == fakeTxId)
+        assert(txIndex < 0, "Fake transaction should not be found in block")
 
-            val txIndex = blockInfo.tx.indexWhere(_.txid == fakeTxId)
-            assert(txIndex < 0, "Fake transaction should not be found in block")
-
-            println(s"[Test] Correctly identified transaction not in block")
-        }
+        println(s"[Test] Correctly identified transaction not in block")
     }
 }

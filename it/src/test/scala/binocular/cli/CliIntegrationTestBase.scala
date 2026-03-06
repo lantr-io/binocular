@@ -1,6 +1,15 @@
 package binocular.cli
 
-import binocular.{BitcoinNodeConfig, BlockHeaderInfo, BlockInfo, BlockchainInfo, CardanoConfig, OracleConfig, RawTransactionInfo, TransactionInfo, WalletConfig, YaciDevKitSpec}
+import binocular.{BitcoinNodeConfig, BlockHeaderInfo, BlockInfo, BlockchainInfo, CardanoConfig, OracleConfig, RawTransactionInfo, TransactionInfo, WalletConfig}
+import org.scalatest.funsuite.AnyFunSuite
+import scalus.cardano.address.Address
+import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
+import scalus.cardano.node.BlockchainProvider
+import scalus.testing.integration.YaciTestContext
+import scalus.testing.yaci.{YaciConfig, YaciDevKit}
+import scalus.utils.await
+
+import scala.concurrent.duration.*
 import scala.concurrent.{ExecutionContext, Future}
 import scala.io.Source
 import upickle.default.*
@@ -12,7 +21,68 @@ import upickle.default.*
   *   - Yaci DevKit for Cardano interactions
   *   - Helper methods for common test scenarios
   */
-trait CliIntegrationTestBase extends YaciDevKitSpec {
+trait CliIntegrationTestBase extends AnyFunSuite with YaciDevKit {
+
+    override protected def yaciConfig: YaciConfig = YaciConfig(
+      containerName = "binocular-yaci-devkit",
+      reuseContainer = true
+    )
+
+    /** Get UTXOs for an address */
+    protected def getUtxos(provider: BlockchainProvider, address: Address): List[Utxo] = {
+        given ExecutionContext = provider.executionContext
+        val result = provider.findUtxos(address).await(30.seconds)
+        result match {
+            case Right(u) => u.map { case (input, output) => Utxo(input, output) }.toList
+            case Left(_)  => List.empty
+        }
+    }
+
+    /** Find the oracle UTxO created by a specific transaction */
+    protected def findOracleUtxo(
+        provider: BlockchainProvider,
+        scriptAddress: Address,
+        txHash: String
+    ): Utxo = {
+        val utxos = getUtxos(provider, scriptAddress)
+        utxos
+            .find(u =>
+                u.input.transactionId.toHex == txHash && u.output.inlineDatum.isDefined
+            )
+            .getOrElse {
+                throw new RuntimeException(
+                  s"No oracle UTxO with inline datum found for tx $txHash"
+                )
+            }
+    }
+
+    /** Wait for transaction to be confirmed */
+    protected def waitForTransaction(
+        provider: BlockchainProvider,
+        txHash: String,
+        maxAttempts: Int = 30,
+        delayMs: Long = 1000
+    ): Boolean = {
+        given ExecutionContext = provider.executionContext
+        val input = TransactionInput(TransactionHash.fromHex(txHash), 0)
+        var attempts = 0
+        while attempts < maxAttempts do {
+            try {
+                val result = provider.findUtxo(input).await(10.seconds)
+                result match {
+                    case Right(_) => return true
+                    case Left(_) =>
+                        Thread.sleep(delayMs)
+                        attempts += 1
+                }
+            } catch {
+                case _: Exception =>
+                    Thread.sleep(delayMs)
+                    attempts += 1
+            }
+        }
+        false
+    }
 
     /** Mock Bitcoin RPC that reads from test fixtures */
     class MockBitcoinRpc(fixtureDir: String = "src/test/resources/bitcoin_blocks")(using
@@ -205,7 +275,7 @@ trait CliIntegrationTestBase extends YaciDevKitSpec {
 
     /** Helper to create test configurations for CLI commands */
     def createTestConfigs(
-        devKit: YaciDevKit,
+        ctx: YaciTestContext,
         mockRpc: MockBitcoinRpc,
         startHeight: Option[Long] = None
     ): (BitcoinNodeConfig, CardanoConfig, OracleConfig, WalletConfig) = {

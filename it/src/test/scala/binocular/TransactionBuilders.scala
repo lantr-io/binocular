@@ -7,8 +7,10 @@ import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}
 import scalus.uplc.builtin.ByteString
 
+import scalus.utils.await
+
 import scala.concurrent.duration.*
-import scala.concurrent.{Await, ExecutionContext}
+import scala.concurrent.ExecutionContext
 
 /** Helper functions for building Binocular Oracle transactions on Yaci DevKit
   *
@@ -70,10 +72,7 @@ object TransactionBuilders {
             val cardanoInfo = provider.cardanoInfo
 
             // 1. Query script UTXOs to find the oracle UTXO
-            val utxosResult = Await.result(
-              provider.findUtxos(scriptAddress),
-              30.seconds
-            )
+            val utxosResult = provider.findUtxos(scriptAddress).await(30.seconds)
 
             val scriptUtxos: List[Utxo] = utxosResult match {
                 case Right(u) =>
@@ -104,19 +103,16 @@ object TransactionBuilders {
             println(s"[UpdateOracle] Locking $lovelaceAmount lovelace at script")
 
             // 4. Build transaction using TxBuilder
-            val tx = Await
-                .result(
-                  TxBuilder(cardanoInfo)
-                      .spend(scriptUtxo, action, script)
-                      .payTo(scriptAddress, scriptUtxo.output.value, newChainState)
-                      .complete(provider, sponsorAddress),
-                  60.seconds
-                )
+            val tx = TxBuilder(cardanoInfo)
+                .spend(scriptUtxo, action, script)
+                .payTo(scriptAddress, scriptUtxo.output.value, newChainState)
+                .complete(provider, sponsorAddress)
+                .await(60.seconds)
                 .sign(signer)
                 .transaction
 
             // 5. Submit
-            val result = Await.result(provider.submit(tx), 30.seconds)
+            val result = provider.submit(tx).await(30.seconds)
             result match {
                 case Right(txHash) =>
                     val hash = txHash.toHex
@@ -160,17 +156,14 @@ object TransactionBuilders {
     ): Either[String, String] = {
         given ec: ExecutionContext = provider.executionContext
         try {
-            val tx = Await
-                .result(
-                  TxBuilder(provider.cardanoInfo)
-                      .payTo(scriptAddress, Value.lovelace(lovelaceAmount), genesisState)
-                      .complete(provider, sponsorAddress),
-                  30.seconds
-                )
+            val tx = TxBuilder(provider.cardanoInfo)
+                .payTo(scriptAddress, Value.lovelace(lovelaceAmount), genesisState)
+                .complete(provider, sponsorAddress)
+                .await(30.seconds)
                 .sign(signer)
                 .transaction
 
-            val result = Await.result(provider.submit(tx), 30.seconds)
+            val result = provider.submit(tx).await(30.seconds)
             result match {
                 case Right(txHash) => Right(txHash.toHex)
                 case Left(err)     => Left(s"Transaction failed: $err")
