@@ -10,7 +10,7 @@ import upickle.default.*
 import java.io.File
 import java.net.URI
 import scala.concurrent.{ExecutionContext, Future}
-import scala.util.{Failure, Success, Using}
+import scala.util.{Failure, Success}
 
 /** Test fixtures for Bitcoin block headers
   *

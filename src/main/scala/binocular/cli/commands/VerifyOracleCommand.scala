@@ -2,11 +2,8 @@ package binocular.cli.commands
 
 import binocular.{CardanoConfig, ChainState, OracleConfig}
 import binocular.cli.{Command, CommandHelpers}
-import scalus.cardano.address.Address
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
-import scalus.uplc.builtin.Data
-import scalus.uplc.builtin.Data.{fromData, FromData}
-import scalus.uplc.builtin.ByteString.given
+import scalus.uplc.builtin.Data.fromData
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 
 import scala.concurrent.{Await, ExecutionContext}

@@ -1,10 +1,12 @@
-//val scalusVersion = "0.13.0"
-//val scalusVersion = "0.13.0+207-58f4bcc1+20251113-0824-SNAPSHOT"
-val scalusVersion = "0.14.2+364-2c2809cd-SNAPSHOT"
+val scalusVersion = "0.16.0"
 
 // Common settings for all projects
 ThisBuild / scalaVersion := "3.3.7"
-ThisBuild / scalacOptions ++= Seq("-deprecation", "-feature")
+ThisBuild / scalacOptions ++= Seq(
+  "-deprecation",
+  "-feature",
+  "-Wunused:imports",
+)
 ThisBuild / resolvers += Resolver.sonatypeCentralSnapshots
 
 Global / onChangedBuildSource := ReloadOnSourceChanges

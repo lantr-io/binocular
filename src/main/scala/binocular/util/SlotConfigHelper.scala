@@ -1,6 +1,6 @@
 package binocular.util
 
-import scalus.cardano.ledger.{CardanoInfo, SlotConfig}
+import scalus.cardano.ledger.CardanoInfo
 
 import java.time.Instant
 

@@ -7,8 +7,6 @@ import scalus.cardano.onchain.plutus.v1.TxOutRef
 import scalus.cardano.onchain.plutus.prelude
 
 import scala.concurrent.{ExecutionContext, Future}
-import scala.concurrent.duration.*
-import scala.concurrent.Await
 
 object Bitcoin {
     def isWitnessTransaction(rawTx: ByteString): Boolean =

@@ -1,15 +1,15 @@
 package binocular
 
+import scalus.cardano.onchain.plutus.prelude.{List, *}
+import scalus.cardano.onchain.plutus.v1.Credential
+import scalus.cardano.onchain.plutus.v2.OutputDatum
+import scalus.cardano.onchain.plutus.v3.*
+import scalus.compiler.sir.TargetLoweringBackend
+import scalus.compiler.{Compile, Options}
 import scalus.uplc.builtin.*
 import scalus.uplc.builtin.Builtins.*
-import scalus.uplc.builtin.Data.{toData, FromData, ToData}
-import scalus.cardano.onchain.plutus.v1.{Address, Credential}
-import scalus.cardano.onchain.plutus.v2.OutputDatum
-import scalus.cardano.onchain.plutus.v3.{Datum, TxInInfo, TxInfo, TxOut, TxOutRef}
-import scalus.cardano.onchain.plutus.prelude.{List, *}
-import scalus.{Compile, Compiler, *}
-import scalus.compiler.sir.TargetLoweringBackend
-import scalus.uplc.Program
+import scalus.uplc.builtin.Data.{FromData, ToData}
+import scalus.uplc.{PlutusV3, Program}
 
 /** Datum for the TransactionVerifier contract
   *
@@ -173,18 +173,14 @@ object TransactionVerifierValidator {
 }
 
 object TransactionVerifierContract {
-    given Compiler.Options = Compiler.Options(
+    given Options = Options(
       optimizeUplc = true,
       generateErrorTraces = true,
       targetLoweringBackend = TargetLoweringBackend.SirToUplcV3Lowering
     )
 
     def compileVerifierProgram(): Program = {
-        val sir = Compiler.compileWithOptions(
-          summon[Compiler.Options],
-          TransactionVerifierValidator.validate
-        )
-        sir.toUplcOptimized().plutusV3
+        PlutusV3.compile(TransactionVerifierValidator.validate).program
     }
 
     lazy val validator: Program = compileVerifierProgram()

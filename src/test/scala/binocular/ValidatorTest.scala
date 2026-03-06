@@ -1294,10 +1294,10 @@ class ValidatorTest extends munit.ScalaCheckSuite {
                 // Updated for Scalus 0.14.2 with new package imports
                 assertEquals(
                   r.budget,
-                  ledger.ExUnits(433946, 135136413),
+                  ledger.ExUnits(396160, 126856690),
                   "Unexpected resource usage"
                 )
-                assertEquals(r.budget.fee(prices), Coin(34783), "Unexpected fee cost")
+                assertEquals(r.budget.fee(prices), Coin(32005), "Unexpected fee cost")
             case r: Result.Failure =>
                 fail(s"Validation failed: $r")
     }

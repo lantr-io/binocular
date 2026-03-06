@@ -1,8 +1,7 @@
 package binocular.cli
 
 import binocular.ChainState
-import scalus.cardano.ledger.{TransactionInput, TransactionOutput, Utxo}
-import scalus.uplc.builtin.{ByteString, Data}
+import scalus.cardano.ledger.Utxo
 import scalus.uplc.builtin.Data.fromData
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 
