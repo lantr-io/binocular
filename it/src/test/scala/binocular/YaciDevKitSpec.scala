@@ -1,15 +1,15 @@
 package binocular
 
 import scalus.cardano.address.{Address, Network}
-import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo, Utxos, Value}
+import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.cardano.node.{BlockchainProvider, BlockfrostProvider}
 import scalus.cardano.txbuilder.TransactionSigner
 import scalus.cardano.wallet.hd.HdAccount
 import scalus.crypto.ed25519.given
 import com.bloxbean.cardano.yaci.test.YaciCardanoContainer
-import munit.FunSuite
+import org.scalatest.funsuite.AnyFunSuite
 
-import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.concurrent.{Await, ExecutionContext}
 import scala.concurrent.duration.*
 
 /** Base trait for integration tests using Yaci DevKit
@@ -17,7 +17,7 @@ import scala.concurrent.duration.*
   * Provides a local Cardano devnet via Docker container for testing smart contracts and
   * transactions in a controlled environment.
   */
-trait YaciDevKitSpec extends FunSuite {
+trait YaciDevKitSpec extends AnyFunSuite {
 
     /** Configuration for Yaci DevKit container */
     case class YaciDevKitConfig(
@@ -146,21 +146,5 @@ trait YaciDevKitSpec extends FunSuite {
             devKit.stop()
         }
     }
-
-    /** Fixture for Yaci DevKit that can be reused across multiple tests */
-    val yaciDevKitFixture = new Fixture[YaciDevKit]("yaci-devkit") {
-        private var devKit: YaciDevKit = _
-
-        def apply(): YaciDevKit = devKit
-
-        override def beforeAll(): Unit = {
-            devKit = createYaciDevKit(YaciDevKitConfig(enableLogs = false))
-        }
-
-        override def afterAll(): Unit = {
-            if devKit != null then {
-                devKit.stop()
-            }
-        }
-    }
 }
+

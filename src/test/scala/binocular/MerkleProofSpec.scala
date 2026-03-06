@@ -1,6 +1,6 @@
 package binocular
 
-import munit.FunSuite
+import org.scalatest.funsuite.AnyFunSuite
 import scalus.uplc.builtin.ByteString
 import scalus.uplc.builtin.ByteString.hex
 import scalus.uplc.builtin.Builtins.sha2_256
@@ -13,7 +13,7 @@ import scalus.uplc.builtin.Builtins.sha2_256
   *   3. Verifying proofs against the Merkle root
   *   4. Integration with real Bitcoin block data
   */
-class MerkleProofSpec extends FunSuite {
+class MerkleProofSpec extends AnyFunSuite {
 
     test("simple merkle tree with 2 transactions") {
         // Minimal case: 2 transactions
@@ -25,19 +25,19 @@ class MerkleProofSpec extends FunSuite {
 
         // Verify tx1 at index 0
         val proof1 = tree.makeMerkleProof(0)
-        assertEquals(proof1.length, 1)
-        assertEquals(proof1.head, tx2)
+        assert(proof1.length == 1)
+        assert(proof1.head == tx2)
 
         val computed1 = MerkleTree.calculateMerkleRootFromProof(0, tx1, proof1)
-        assertEquals(computed1, root)
+        assert(computed1 == root)
 
         // Verify tx2 at index 1
         val proof2 = tree.makeMerkleProof(1)
-        assertEquals(proof2.length, 1)
-        assertEquals(proof2.head, tx1)
+        assert(proof2.length == 1)
+        assert(proof2.head == tx1)
 
         val computed2 = MerkleTree.calculateMerkleRootFromProof(1, tx2, proof2)
-        assertEquals(computed2, root)
+        assert(computed2 == root)
     }
 
     test("merkle tree with 4 transactions") {
@@ -53,14 +53,10 @@ class MerkleProofSpec extends FunSuite {
         for i <- 0 until 4 do {
             val txHash = Seq(tx1, tx2, tx3, tx4)(i)
             val proof = tree.makeMerkleProof(i)
-            assertEquals(
-              proof.length,
-              2,
-              s"Proof length should be 2 for tx at index $i"
-            ) // log2(4) = 2 levels
+            assert(proof.length == 2, s"Proof length should be 2 for tx at index $i") // log2(4) = 2 levels
 
             val computedRoot = MerkleTree.calculateMerkleRootFromProof(i, txHash, proof)
-            assertEquals(computedRoot, root, s"Computed root should match for tx at index $i")
+            assert(computedRoot == root, s"Computed root should match for tx at index $i")
         }
     }
 
@@ -79,7 +75,7 @@ class MerkleProofSpec extends FunSuite {
             val proof = tree.makeMerkleProof(i)
 
             val computedRoot = MerkleTree.calculateMerkleRootFromProof(i, txHash, proof)
-            assertEquals(computedRoot, root, s"Computed root should match for tx at index $i")
+            assert(computedRoot == root, s"Computed root should match for tx at index $i")
         }
     }
 
@@ -96,7 +92,7 @@ class MerkleProofSpec extends FunSuite {
         txHashes.zipWithIndex.foreach { case (txHash, idx) =>
             val proof = tree.makeMerkleProof(idx)
             val computedRoot = MerkleTree.calculateMerkleRootFromProof(idx, txHash, proof)
-            assertEquals(computedRoot, root, s"Computed root should match for tx at index $idx")
+            assert(computedRoot == root, s"Computed root should match for tx at index $idx")
         }
     }
 
@@ -107,14 +103,14 @@ class MerkleProofSpec extends FunSuite {
         val root = tree.getMerkleRoot
 
         // Single transaction: root IS the transaction hash
-        assertEquals(root, tx1)
+        assert(root == tx1)
 
         // Proof should be empty for single transaction
         val proof = tree.makeMerkleProof(0)
-        assertEquals(proof.length, 0)
+        assert(proof.length == 0)
 
         val computedRoot = MerkleTree.calculateMerkleRootFromProof(0, tx1, proof)
-        assertEquals(computedRoot, root)
+        assert(computedRoot == root)
     }
 
     test("invalid proof fails verification") {
@@ -130,7 +126,7 @@ class MerkleProofSpec extends FunSuite {
 
         // Try to verify tx2 with tx1's proof - should fail
         val wrongRoot = MerkleTree.calculateMerkleRootFromProof(0, tx2, proofForTx1)
-        assertNotEquals(wrongRoot, root, "Wrong proof should not produce correct root")
+        assert(wrongRoot != root, "Wrong proof should not produce correct root")
     }
 
     test("coinbase transaction hash calculation") {
@@ -145,7 +141,7 @@ class MerkleProofSpec extends FunSuite {
         // Hash transaction: SHA256(SHA256(raw))
         val txHash = sha2_256(sha2_256(simpleCoinbaseRaw))
 
-        assertEquals(txHash.bytes.length, 32)
+        assert(txHash.bytes.length == 32)
     }
 
     test("MerkleTreeRootBuilder produces same root as MerkleTree") {
@@ -163,7 +159,7 @@ class MerkleProofSpec extends FunSuite {
         txHashes.foreach(builder.addHash)
         val builderRoot = builder.getMerkleRoot
 
-        assertEquals(builderRoot, treeRoot)
+        assert(builderRoot == treeRoot)
     }
 }
 
@@ -174,13 +170,13 @@ class MerkleProofSpec extends FunSuite {
   *   2. Extracting transaction hashes
   *   3. Verifying Merkle proofs against actual block headers
   */
-class MerkleProofRpcIntegrationSpec extends FunSuite {
+class MerkleProofRpcIntegrationSpec extends AnyFunSuite {
 
     // These tests are marked as integration tests and will be skipped in regular unit test runs
     // To run: sbt "testOnly *MerkleProofRpcIntegrationSpec"
 
     // Test will be implemented when RPC configuration is available
-    test("verify merkle proof for real Bitcoin transaction".ignore) {
+    ignore("verify merkle proof for real Bitcoin transaction") {
         // TODO: Implement with Bitcoin RPC client
         // 1. Connect to Bitcoin node
         // 2. Fetch a block (e.g., block 100,000)
@@ -191,7 +187,7 @@ class MerkleProofRpcIntegrationSpec extends FunSuite {
         // 7. Verify proof
     }
 
-    test("verify coinbase transaction in real block".ignore) {
+    ignore("verify coinbase transaction in real block") {
         // TODO: Implement coinbase-specific test
         // Coinbase is always at index 0
         // Special handling for witness commitment in coinbase

@@ -20,9 +20,6 @@ import scala.concurrent.{Await, ExecutionContext, Future}
   *   5. On-chain transaction verification
   */
 class ScenarioIntegrationTest extends CliIntegrationTestBase {
-    // Extended timeout for multi-batch promotion test
-    override val munitTimeout = scala.concurrent.duration.Duration(360, "s")
-
     test("scenario: basic oracle update with new blocks") {
         withYaciDevKit() { devKit =>
             given ec: ExecutionContext = ExecutionContext.global
