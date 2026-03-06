@@ -88,10 +88,5 @@ lazy val testDependencies = Seq(
 
 // Integration test dependencies
 lazy val integrationTestDependencies = Seq(
-  "org.scalatest" %% "scalatest" % "3.2.19" % Test,
-  // Testcontainers for integration testing
-  "com.dimafeng" %% "testcontainers-scala-core" % "0.44.1" % Test,
-  "com.dimafeng" %% "testcontainers-scala-scalatest" % "0.44.1" % Test,
-  // Yaci DevKit for Cardano local devnet
-  "com.bloxbean.cardano" % "yaci-cardano-test" % "0.1.0" % Test
+  "org.scalatest" %% "scalatest" % "3.2.19" % Test
 )

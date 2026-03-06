@@ -5,9 +5,10 @@ import scalus.cardano.address.Address
 import scalus.cardano.ledger.Utxo
 import scalus.uplc.builtin.{ByteString, Data}
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
+import scalus.utils.await
 
 import scala.concurrent.duration.*
-import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.concurrent.{ExecutionContext, Future}
 
 /** Integration test for UpdateOracle with Merkle Tree verification
   *
@@ -19,19 +20,20 @@ import scala.concurrent.{Await, ExecutionContext, Future}
 class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
 
     test("update-oracle: Merkle tree is updated when blocks are promoted") {
-        withYaciDevKit() { devKit =>
-            given ec: ExecutionContext = ExecutionContext.global
+        val ctx = createYaciContext()
+        given ec: ExecutionContext = ctx.provider.executionContext
 
-            // Use consecutive blocks from our fixtures
-            // Start at 866970, update to 866971-866972 (2 blocks)
-            val startHeight = 866970
-            val updateToHeight = 866972
-            val mockRpc = new MockBitcoinRpc()
+        // Use consecutive blocks from our fixtures
+        // Start at 866970, update to 866971-866972 (2 blocks)
+        val startHeight = 866970
+        val updateToHeight = 866972
+        val mockRpc = new MockBitcoinRpc()
 
-            println(s"[Test] Step 1: Creating initial oracle at height $startHeight")
+        println(s"[Test] Step 1: Creating initial oracle at height $startHeight")
 
-            // Create initial oracle
-            val initialStateFuture = BitcoinChainState.getInitialChainState(
+        // Create initial oracle
+        val initialState = BitcoinChainState
+            .getInitialChainState(
               new binocular.SimpleBitcoinRpc(
                 binocular.BitcoinNodeConfig(
                   url = "mock://rpc",
@@ -45,55 +47,50 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
               },
               startHeight
             )
+            .await(30.seconds)
 
-            val initialState = Await.result(initialStateFuture, 30.seconds)
+        val scriptAddress = Address.fromBech32(
+          binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
+        )
 
-            val scriptAddress = Address.fromBech32(
-              binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
-            )
+        // Submit init transaction
+        val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
+          ctx.alice.signer,
+          ctx.provider,
+          scriptAddress,
+          ctx.alice.address,
+          initialState
+        )
 
-            // Submit init transaction
-            val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
-              devKit.signer,
-              devKit.provider,
-              scriptAddress,
-              devKit.sponsorAddress,
-              initialState
-            )
+        val oracleUtxo: Utxo = initTxResult match {
+            case Right(txHash) =>
+                println(s"[Test] Oracle initialized: $txHash")
+                waitForTransaction(ctx.provider, txHash, maxAttempts = 30)
+                Thread.sleep(2000) // Wait for indexing
+                findOracleUtxo(ctx.provider, scriptAddress, txHash)
+            case Left(err) =>
+                fail(s"Failed to initialize oracle: $err")
+        }
 
-            val oracleUtxo: Utxo = initTxResult match {
-                case Right(txHash) =>
-                    println(s"[Test] Oracle initialized: $txHash")
-                    devKit.waitForTransaction(txHash, maxAttempts = 30)
-                    Thread.sleep(2000) // Wait for indexing
-                    // Fetch the oracle UTxO
-                    val utxos = devKit.getUtxos(scriptAddress)
-                    require(utxos.nonEmpty, "No UTxOs found at script address after init")
-                    utxos.find(_.output.inlineDatum.isDefined).getOrElse {
-                        fail("No oracle UTxO with inline datum found after init")
-                    }
-                case Left(err) =>
-                    fail(s"Failed to initialize oracle: $err")
-            }
+        // Verify initial Merkle tree state
+        val initialChainState = oracleUtxo.output.inlineDatum.get.to[ChainState]
 
-            // Verify initial Merkle tree state
-            val initialChainState = oracleUtxo.output.inlineDatum.get.to[ChainState]
+        println(s"[Test] Initial Merkle tree:")
+        println(s"    Tree size: ${countTreeLevels(initialChainState.confirmedBlocksTree)}")
+        println(s"    Initial block: ${initialState.blockHash.toHex}")
 
-            println(s"[Test] Initial Merkle tree:")
-            println(s"    Tree size: ${countTreeLevels(initialChainState.confirmedBlocksTree)}")
-            println(s"    Initial block: ${initialState.blockHash.toHex}")
+        assert(
+          countTreeLevels(initialChainState.confirmedBlocksTree) == 1,
+          "Initial tree should have 1 level (single block)"
+        )
 
-            assert(
-              countTreeLevels(initialChainState.confirmedBlocksTree) == 1,
-              "Initial tree should have 1 level (single block)"
-            )
+        println(
+          s"[Test] Step 2: Fetching headers for blocks ${startHeight + 1} to $updateToHeight"
+        )
 
-            println(
-              s"[Test] Step 2: Fetching headers for blocks ${startHeight + 1} to $updateToHeight"
-            )
-
-            // Fetch headers for update
-            val headersFuture = Future.sequence(
+        // Fetch headers for update
+        val headers = Future
+            .sequence(
               (startHeight + 1 to updateToHeight).map { height =>
                   for {
                       hashHex <- mockRpc.getBlockHash(height)
@@ -101,137 +98,130 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                   } yield BitcoinChainState.convertHeader(headerInfo)
               }
             )
+            .await(30.seconds)
 
-            val headers = Await.result(headersFuture, 30.seconds)
-            val headersList = ScalusList.from(headers.toList)
+        val headersList = ScalusList.from(headers.toList)
 
-            println(s"[Test] Fetched ${headers.length} headers")
+        println(s"[Test] Fetched ${headers.length} headers")
 
-            println(s"[Test] Step 3: Calculating new ChainState")
+        println(s"[Test] Step 3: Calculating new ChainState")
 
-            // Calculate new state using shared validator logic
-            val (_, validityTime) =
-                OracleTransactions.computeValidityIntervalTime(devKit.provider.cardanoInfo)
-            val newState =
-                BitcoinValidator.computeUpdateOracleState(initialState, headersList, validityTime)
+        // Calculate new state using shared validator logic
+        val (_, validityTime) =
+            OracleTransactions.computeValidityIntervalTime(ctx.provider.cardanoInfo)
+        val newState =
+            BitcoinValidator.computeUpdateOracleState(initialState, headersList, validityTime)
 
-            println(s"[Test] New state calculated:")
-            println(s"    Old height: ${initialState.blockHeight}")
-            println(s"    New height: ${newState.blockHeight}")
+        println(s"[Test] New state calculated:")
+        println(s"    Old height: ${initialState.blockHeight}")
+        println(s"    New height: ${newState.blockHeight}")
 
-            println(s"[Test] Step 4: Submitting update transaction")
+        println(s"[Test] Step 4: Submitting update transaction")
 
-            // Submit update transaction with pre-computed state and validity time
-            val updateTxResult = OracleTransactions.buildAndSubmitUpdateTransaction(
-              devKit.signer,
-              devKit.provider,
-              scriptAddress,
-              devKit.sponsorAddress,
-              oracleUtxo,
-              initialState,
-              newState,
-              headersList,
-              validityTime
-            )
+        // Submit update transaction with pre-computed state and validity time
+        val updateTxResult = OracleTransactions.buildAndSubmitUpdateTransaction(
+          ctx.alice.signer,
+          ctx.provider,
+          scriptAddress,
+          ctx.alice.address,
+          oracleUtxo,
+          initialState,
+          newState,
+          headersList,
+          validityTime
+        )
 
-            updateTxResult match {
-                case Right(txHash) =>
-                    println(s"[Test] Oracle updated: $txHash")
+        updateTxResult match {
+            case Right(txHash) =>
+                println(s"[Test] Oracle updated: $txHash")
 
-                    // Wait for confirmation
-                    val confirmed = devKit.waitForTransaction(txHash, maxAttempts = 30)
-                    assert(confirmed, s"Update transaction did not confirm")
+                // Wait for confirmation
+                val confirmed = waitForTransaction(ctx.provider, txHash, maxAttempts = 30)
+                assert(confirmed, s"Update transaction did not confirm")
 
-                    Thread.sleep(2000) // Wait for indexing
+                Thread.sleep(2000) // Wait for indexing
 
-                    println(s"[Test] Step 5: Verifying Merkle tree was updated")
+                println(s"[Test] Step 5: Verifying Merkle tree was updated")
 
-                    // Verify new oracle state
-                    val utxos = devKit.getUtxos(scriptAddress)
-                    assert(utxos.nonEmpty, "No UTxOs found at oracle address after update")
+                // Verify new oracle state
+                val latestUtxo = findOracleUtxo(ctx.provider, scriptAddress, txHash)
+                val chainState = latestUtxo.output.inlineDatum.get.to[ChainState]
 
-                    // Find the latest UTxO (should be from update tx)
-                    val latestUtxo = utxos.find(_.output.inlineDatum.isDefined).getOrElse {
-                        fail("No oracle UTxO with inline datum found after update")
-                    }
-                    val chainState = latestUtxo.output.inlineDatum.get.to[ChainState]
+                println(s"[Test] Updated ChainState verified:")
+                println(s"    Height: ${chainState.blockHeight}")
+                println(s"    Hash: ${chainState.blockHash.toHex}")
 
-                    println(s"[Test] Updated ChainState verified:")
-                    println(s"    Height: ${chainState.blockHeight}")
-                    println(s"    Hash: ${chainState.blockHash.toHex}")
+                // height should not changed, because blocks are not yet confirmed
+                assert(
+                  chainState.blockHeight == startHeight,
+                  s"Updated height mismatch: ${chainState.blockHeight} != $startHeight"
+                )
 
-                    // height should not changed, because blocks are not yet confirmed
-                    assert(
-                      chainState.blockHeight == startHeight,
-                      s"Updated height mismatch: ${chainState.blockHeight} != $startHeight"
-                    )
+                println(s"[Test] Step 6: Verifying forks tree structure")
+                val numBranches = chainState.forksTree.size
+                // Count total blocks across all branches
+                val totalBlocks = chainState.forksTree.foldLeft(BigInt(0)) { (acc, branch) =>
+                    acc + branch.recentBlocks.size
+                }
+                println(s"    Forks tree branches: $numBranches")
+                println(s"    Total blocks in forks tree: $totalBlocks")
+                assert(
+                  totalBlocks == headers.size,
+                  s"Forks tree should contain ${headers.size} new blocks, but has $totalBlocks"
+                )
 
-                    println(s"[Test] Step 6: Verifying forks tree structure")
-                    val numBranches = chainState.forksTree.size
-                    // Count total blocks across all branches
-                    val totalBlocks = chainState.forksTree.foldLeft(BigInt(0)) { (acc, branch) =>
-                        acc + branch.recentBlocks.size
-                    }
-                    println(s"    Forks tree branches: $numBranches")
-                    println(s"    Total blocks in forks tree: $totalBlocks")
-                    assert(
-                      totalBlocks == headers.size,
-                      s"Forks tree should contain ${headers.size} new blocks, but has $totalBlocks"
-                    )
+                println(s"[Test] Forks tree has grown correctly")
 
-                    println(s"[Test] Forks tree has grown correctly")
+                println(s"[Test] Step 7: Verifying we can compute Merkle root")
 
-                    println(s"[Test] Step 7: Verifying we can compute Merkle root")
+                // Try to compute the Merkle root from the tree
+                val computedRoot =
+                    BitcoinValidator.getMerkleRoot(chainState.confirmedBlocksTree)
+                println(s"    Computed Merkle root: ${computedRoot.toHex}")
+                println(s"    Root length: ${computedRoot.bytes.length} bytes")
 
-                    // Try to compute the Merkle root from the tree
-                    val computedRoot =
-                        BitcoinValidator.getMerkleRoot(chainState.confirmedBlocksTree)
-                    println(s"    Computed Merkle root: ${computedRoot.toHex}")
-                    println(s"    Root length: ${computedRoot.bytes.length} bytes")
+                assert(computedRoot.bytes.length == 32, "Merkle root should be 32 bytes")
 
-                    assert(computedRoot.bytes.length == 32, "Merkle root should be 32 bytes")
+                println(s"[Test] Successfully computed Merkle root from tree")
 
-                    println(s"[Test] Successfully computed Merkle root from tree")
+                println(s"[Test] Step 8: Verifying tree represents all blocks")
 
-                    println(s"[Test] Step 8: Verifying tree represents all blocks")
+                // Build reference Merkle tree from all block hashes
+                val allBlockHashes = scala.collection.mutable.ArrayBuffer[ByteString]()
 
-                    // Build reference Merkle tree from all block hashes
-                    val allBlockHashes = scala.collection.mutable.ArrayBuffer[ByteString]()
+                // Add initial block
+                allBlockHashes += initialState.blockHash
 
-                    // Add initial block
-                    allBlockHashes += initialState.blockHash
+                // Add updated blocks (need to fetch their hashes)
+                for height <- startHeight + 1 to updateToHeight do {
+                    val hashHex = mockRpc.getBlockHash(height).await(5.seconds)
+                    val hashBytes = ByteString.fromHex(hashHex).reverse
+                    allBlockHashes += hashBytes
+                }
 
-                    // Add updated blocks (need to fetch their hashes)
-                    for height <- startHeight + 1 to updateToHeight do {
-                        val hashHex = Await.result(mockRpc.getBlockHash(height), 5.seconds)
-                        val hashBytes = ByteString.fromHex(hashHex).reverse
-                        allBlockHashes += hashBytes
-                    }
+                println(s"    Total blocks: ${allBlockHashes.size}")
+                println(s"    Block 0: ${allBlockHashes(0).toHex}")
+                println(s"    Block 1: ${allBlockHashes(1).toHex}")
+                println(s"    Block 2: ${allBlockHashes(2).toHex}")
+            // println(s"    Block 3: ${allBlockHashes(3).toHex}")
 
-                    println(s"    Total blocks: ${allBlockHashes.size}")
-                    println(s"    Block 0: ${allBlockHashes(0).toHex}")
-                    println(s"    Block 1: ${allBlockHashes(1).toHex}")
-                    println(s"    Block 2: ${allBlockHashes(2).toHex}")
-                // println(s"    Block 3: ${allBlockHashes(3).toHex}")
-
-                /** Here nothing hase changed because blocks are not yet confirmed, so we cannot
-                  * verify the confirmedBlocksTree against allBlockHashes.
-                  *
-                  * // Build reference tree using MerkleTree (non-rolling) val referenceMerkleTree =
-                  * MerkleTree.fromHashes(allBlockHashes.toSeq) val referenceRoot =
-                  * referenceMerkleTree.getMerkleRoot
-                  *
-                  * println(s" Reference Merkle root: ${referenceRoot.toHex}")
-                  *
-                  * // The rolling tree root should match the reference tree root assert(
-                  * computedRoot == referenceRoot, s"Rolling Merkle root doesn't match reference!\n
-                  * Computed: ${computedRoot.toHex}\n Reference: ${referenceRoot.toHex}" )
-                  *
-                  * println(s"[Test] Rolling Merkle tree matches reference implementation!")
-                  */
-                case Left(err) =>
-                    fail(s"Failed to update oracle: $err")
-            }
+            /** Here nothing hase changed because blocks are not yet confirmed, so we cannot
+              * verify the confirmedBlocksTree against allBlockHashes.
+              *
+              * // Build reference tree using MerkleTree (non-rolling) val referenceMerkleTree =
+              * MerkleTree.fromHashes(allBlockHashes.toSeq) val referenceRoot =
+              * referenceMerkleTree.getMerkleRoot
+              *
+              * println(s" Reference Merkle root: ${referenceRoot.toHex}")
+              *
+              * // The rolling tree root should match the reference tree root assert(
+              * computedRoot == referenceRoot, s"Rolling Merkle root doesn't match reference!\n
+              * Computed: ${computedRoot.toHex}\n Reference: ${referenceRoot.toHex}" )
+              *
+              * println(s"[Test] Rolling Merkle tree matches reference implementation!")
+              */
+            case Left(err) =>
+                fail(s"Failed to update oracle: $err")
         }
     }
 

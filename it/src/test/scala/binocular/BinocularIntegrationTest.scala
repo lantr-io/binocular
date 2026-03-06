@@ -1,9 +1,15 @@
 package binocular
 
+import org.scalatest.funsuite.AnyFunSuite
 import scalus.cardano.address.{Address, Network}
-import scalus.cardano.ledger.Script
-import scalus.uplc.builtin.ByteString
+import scalus.cardano.ledger.{Script, Utxo}
 import scalus.cardano.onchain.plutus.prelude
+import scalus.testing.yaci.{YaciConfig, YaciDevKit}
+import scalus.uplc.builtin.ByteString
+import scalus.utils.await
+
+import scala.concurrent.ExecutionContext
+import scala.concurrent.duration.*
 
 /** Integration tests for Binocular Oracle on Yaci DevKit
   *
@@ -12,9 +18,16 @@ import scalus.cardano.onchain.plutus.prelude
   *
   * To run these tests:
   *   1. Ensure Docker is running
-  *   2. Run: sbt "testOnly *BinocularIntegrationTest"
+  *   2. Run: sbt "it/testOnly *BinocularIntegrationTest"
   */
-class BinocularIntegrationTest extends YaciDevKitSpec {
+class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
+
+    override protected def yaciConfig: YaciConfig = YaciConfig(
+      enableLogs = true,
+      containerName = "binocular-yaci-devkit",
+      reuseContainer = true
+    )
+
     // Get the actual script address from compiled BitcoinValidator
     lazy val bitcoinScript: Script.PlutusV3 = TransactionBuilders.compiledBitcoinScript()
 
@@ -32,144 +45,155 @@ class BinocularIntegrationTest extends YaciDevKitSpec {
     }
 
     ignore("Yaci DevKit container starts and has funded account") {
-        withYaciDevKit(YaciDevKitConfig(enableLogs = true)) { devKit =>
-            // Verify account was funded
-            val balance = devKit.getLovelaceBalance(devKit.sponsorAddress)
-            println(s"Account balance: $balance lovelace")
+        val ctx = createYaciContext()
+        given ExecutionContext = ctx.provider.executionContext
 
-            assert(balance > 0, "Account should have been funded with initial lovelace")
-            assert(balance >= 100_000_000_000L, "Account should have at least 100,000 ADA")
+        // Verify account was funded
+        val utxos = ctx.provider.findUtxos(ctx.alice.address).await(30.seconds)
+        val balance: Long = utxos match {
+            case Right(u) => u.map(_._2.value.coin.value).sum
+            case Left(_)  => 0L
         }
+        println(s"Account balance: $balance lovelace")
+
+        assert(balance > 0, "Account should have been funded with initial lovelace")
+        assert(balance >= 100_000_000_000L, "Account should have at least 100,000 ADA")
     }
 
     test("Can create initial script UTXO with genesis state") {
-        withYaciDevKit(YaciDevKitConfig(enableLogs = true)) { devKit =>
-            // Create genesis ChainState
-            val genesisState = createGenesisState()
+        val ctx = createYaciContext()
+        given ExecutionContext = ctx.provider.executionContext
 
-            // Use actual compiled script address
-            println(s"[Test] Script address: ${scriptAddress.encode.getOrElse("?")}")
-            println(s"[Test] Account address: ${devKit.baseAddress}")
+        // Create genesis ChainState
+        val genesisState = createGenesisState()
 
-            // Check account balance before
-            val balanceBefore = devKit.getLovelaceBalance(devKit.sponsorAddress)
-            println(s"[Test] Account balance: $balanceBefore lovelace")
+        // Use actual compiled script address
+        println(s"[Test] Script address: ${scriptAddress.encode.getOrElse("?")}")
+        println(s"[Test] Account address: ${ctx.alice.address.toBech32.getOrElse("?")}")
 
-            // Create initial UTXO at script address
-            println(s"[Test] Creating initial script UTXO...")
-            val result = TransactionBuilders.createInitialScriptUtxo(
-              devKit.signer,
-              devKit.provider,
-              scriptAddress,
-              devKit.sponsorAddress,
-              genesisState,
-              lovelaceAmount = 5_000_000L
-            )
+        // Check account balance before
+        val utxosResult = ctx.provider.findUtxos(ctx.alice.address).await(30.seconds)
+        val balanceBefore: Long = utxosResult match {
+            case Right(u) => u.map(_._2.value.coin.value).sum
+            case Left(_)  => 0L
+        }
+        println(s"[Test] Account balance: $balanceBefore lovelace")
 
-            result match {
-                case Right(txHash) =>
-                    println(s"Created initial UTXO, tx: $txHash")
+        // Create initial UTXO at script address
+        println(s"[Test] Creating initial script UTXO...")
+        val result = TransactionBuilders.createInitialScriptUtxo(
+          ctx.alice.signer,
+          ctx.provider,
+          scriptAddress,
+          ctx.alice.address,
+          genesisState,
+          lovelaceAmount = 5_000_000L
+        )
 
-                    // Wait for confirmation
-                    val confirmed =
-                        devKit.waitForTransaction(txHash, maxAttempts = 30, delayMs = 2000)
-                    assert(confirmed, s"Transaction $txHash should confirm")
+        result match {
+            case Right(txHash) =>
+                println(s"Created initial UTXO, tx: $txHash")
 
-                    // Verify UTXO exists at script address
-                    Thread.sleep(2000) // Give indexer time to catch up
-                    val scriptUtxos = devKit.getUtxos(scriptAddress)
-                    assert(scriptUtxos.nonEmpty, "Script should have at least one UTXO")
+                // Wait for confirmation
+                ctx.waitForBlock()
 
-                    val scriptUtxo = scriptUtxos.head
-                    assert(
-                      scriptUtxo.output.value.coin.value == 5_000_000L,
-                      "Script UTXO should have correct amount"
-                    )
+                // Verify UTXO exists at script address
+                Thread.sleep(2000) // Give indexer time to catch up
+                val scriptUtxosResult =
+                    ctx.provider.findUtxos(scriptAddress).await(30.seconds)
+                val scriptUtxos = scriptUtxosResult match {
+                    case Right(u) =>
+                        u.map { case (input, output) => Utxo(input, output) }.toList
+                    case Left(_) => List.empty
+                }
+                val scriptUtxo = scriptUtxos
+                    .find(_.input.transactionId.toHex == txHash)
+                    .getOrElse(fail("Script UTXO not found for our tx"))
+                assert(
+                  scriptUtxo.output.value.coin.value == 5_000_000L,
+                  "Script UTXO should have correct amount"
+                )
 
-                case Left(error) =>
-                    fail(s"Failed to create initial UTXO: $error")
-            }
+            case Left(error) =>
+                fail(s"Failed to create initial UTXO: $error")
         }
     }
 
     ignore("Can submit sequential Bitcoin headers through Oracle") {
-        withYaciDevKit(YaciDevKitConfig(enableLogs = true)) { devKit =>
-            println("\n=== Sequential Oracle Update Test ===\n")
+        val ctx = createYaciContext()
+        given ExecutionContext = ctx.provider.executionContext
 
-            // 1. Load fixture headers
-            val fixture = BitcoinHeaderFixtures.loadFixture("bitcoin-headers-small-3")
-            val headers = BitcoinHeaderFixtures.loadHeaders("bitcoin-headers-small-3")
-            println(s"Loaded ${headers.length} headers from fixture")
+        println("\n=== Sequential Oracle Update Test ===\n")
 
-            // 2. Create initial script UTXO with genesis state from first header
-            val genesisState = BitcoinHeaderFixtures.createGenesisState(fixture)
-            println(s"Created genesis state at height ${genesisState.blockHeight}")
+        // 1. Load fixture headers
+        val fixture = BitcoinHeaderFixtures.loadFixture("bitcoin-headers-small-3")
+        val headers = BitcoinHeaderFixtures.loadHeaders("bitcoin-headers-small-3")
+        println(s"Loaded ${headers.length} headers from fixture")
 
-            val createResult = TransactionBuilders.createInitialScriptUtxo(
-              devKit.signer,
-              devKit.provider,
+        // 2. Create initial script UTXO with genesis state from first header
+        val genesisState = BitcoinHeaderFixtures.createGenesisState(fixture)
+        println(s"Created genesis state at height ${genesisState.blockHeight}")
+
+        val createResult = TransactionBuilders.createInitialScriptUtxo(
+          ctx.alice.signer,
+          ctx.provider,
+          scriptAddress,
+          ctx.alice.address,
+          genesisState,
+          lovelaceAmount = 5_000_000L
+        )
+
+        val initialTxHash = createResult match {
+            case Right(txHash) =>
+                println(s"Created initial UTXO, tx: $txHash")
+                ctx.waitForBlock()
+                txHash
+            case Left(error) =>
+                fail(s"Failed to create initial UTXO: $error")
+        }
+
+        // 3. Submit remaining headers sequentially (skip first, it's already in genesis)
+        val remainingHeaders = headers.tail
+        println(s"\nSubmitting ${remainingHeaders.length} headers sequentially...")
+
+        var currentState = genesisState
+        val currentTime = BigInt(System.currentTimeMillis() / 1000)
+
+        remainingHeaders.zipWithIndex.foreach { case (header, idx) =>
+            println(s"\n--- Submitting header ${idx + 1}/${remainingHeaders.length} ---")
+
+            // Calculate expected new state
+            val headerList = prelude.List.single(header)
+            val newState =
+                TransactionBuilders.applyHeaders(currentState, headerList, currentTime)
+            println(s"  Expected new height: ${newState.blockHeight}")
+
+            // Submit UpdateOracle transaction
+            val updateResult = TransactionBuilders.buildUpdateOracleTransaction(
+              ctx.alice.signer,
+              ctx.provider,
               scriptAddress,
-              devKit.sponsorAddress,
-              genesisState,
-              lovelaceAmount = 5_000_000L
+              ctx.alice.address,
+              currentState,
+              newState,
+              headerList
             )
 
-            val initialTxHash = createResult match {
+            updateResult match {
                 case Right(txHash) =>
-                    println(s"Created initial UTXO, tx: $txHash")
-                    val confirmed =
-                        devKit.waitForTransaction(txHash, maxAttempts = 30, delayMs = 2000)
-                    assert(confirmed, s"Initial transaction $txHash should confirm")
-                    txHash
+                    println(s"  UpdateOracle tx: $txHash")
+                    ctx.waitForBlock()
+
+                    // Update current state for next iteration
+                    currentState = newState
+
                 case Left(error) =>
-                    fail(s"Failed to create initial UTXO: $error")
+                    fail(s"Failed to submit header ${idx + 1}: $error")
             }
-
-            // 3. Submit remaining headers sequentially (skip first, it's already in genesis)
-            val remainingHeaders = headers.tail
-            println(s"\nSubmitting ${remainingHeaders.length} headers sequentially...")
-
-            var currentState = genesisState
-            val currentTime = BigInt(System.currentTimeMillis() / 1000)
-
-            remainingHeaders.zipWithIndex.foreach { case (header, idx) =>
-                println(s"\n--- Submitting header ${idx + 1}/${remainingHeaders.length} ---")
-
-                // Calculate expected new state
-                val headerList = prelude.List.single(header)
-                val newState =
-                    TransactionBuilders.applyHeaders(currentState, headerList, currentTime)
-                println(s"  Expected new height: ${newState.blockHeight}")
-
-                // Submit UpdateOracle transaction
-                val updateResult = TransactionBuilders.buildUpdateOracleTransaction(
-                  devKit.signer,
-                  devKit.provider,
-                  scriptAddress,
-                  devKit.sponsorAddress,
-                  currentState,
-                  newState,
-                  headerList
-                )
-
-                updateResult match {
-                    case Right(txHash) =>
-                        println(s"  UpdateOracle tx: $txHash")
-                        val confirmed =
-                            devKit.waitForTransaction(txHash, maxAttempts = 30, delayMs = 2000)
-                        assert(confirmed, s"UpdateOracle transaction $txHash should confirm")
-
-                        // Update current state for next iteration
-                        currentState = newState
-
-                    case Left(error) =>
-                        fail(s"Failed to submit header ${idx + 1}: $error")
-                }
-            }
-
-            println(s"\nSuccessfully submitted all ${remainingHeaders.length} headers!")
-            println(s"Final oracle height: ${currentState.blockHeight}")
         }
+
+        println(s"\nSuccessfully submitted all ${remainingHeaders.length} headers!")
+        println(s"Final oracle height: ${currentState.blockHeight}")
     }
 
     /** Helper: Create a genesis ChainState for testing
