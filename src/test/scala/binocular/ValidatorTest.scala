@@ -88,7 +88,7 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
         val scriptSig = BitcoinValidator.parseCoinbaseTxScriptSig(coinbaseTx)
         assert(
           scriptSig ==
-          hex"03233708184d696e656420627920416e74506f6f6c373946205b8160a4256c0000946e0100"
+              hex"03233708184d696e656420627920416e74506f6f6c373946205b8160a4256c0000946e0100"
         )
     }
 
@@ -99,7 +99,7 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
         val txHash = BitcoinValidator.getCoinbaseTxHash(coinbase)
         assert(
           txHash ==
-          hex"31e9370f45eb48f6f52ef683b0737332f09f1cead75608021185450422ec1a71".reverse
+              hex"31e9370f45eb48f6f52ef683b0737332f09f1cead75608021185450422ec1a71".reverse
         )
     }
 
@@ -117,7 +117,7 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
         val txHash = BitcoinValidator.getTxHash(coinbaseTx)
         assert(
           txHash ==
-          hex"31e9370f45eb48f6f52ef683b0737332f09f1cead75608021185450422ec1a71".reverse
+              hex"31e9370f45eb48f6f52ef683b0737332f09f1cead75608021185450422ec1a71".reverse
         )
     }
 
@@ -125,20 +125,20 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
         // 0 exponent
         assert(
           BitcoinValidator.compactBitsToTarget(hex"0002f128".reverse) ==
-          BigInt("0", 16)
+              BigInt("0", 16)
         )
         // real bits from block 867936
         assert(
           BitcoinValidator.compactBitsToTarget(hex"0202f128".reverse) ==
-          BigInt("00000000000000000000000000000000000000000000000000000000000002f1", 16)
+              BigInt("00000000000000000000000000000000000000000000000000000000000002f1", 16)
         )
         assert(
           BitcoinValidator.compactBitsToTarget(hex"1a030ecd".reverse) ==
-          BigInt("000000000000030ecd0000000000000000000000000000000000000000000000", 16)
+              BigInt("000000000000030ecd0000000000000000000000000000000000000000000000", 16)
         )
         assert(
           BitcoinValidator.compactBitsToTarget(hex"1d00ffff".reverse) ==
-          BigInt("00000000ffff0000000000000000000000000000000000000000000000000000", 16)
+              BigInt("00000000ffff0000000000000000000000000000000000000000000000000000", 16)
         )
         // too large exponent
         intercept[RuntimeException](BitcoinValidator.compactBitsToTarget(hex"1e00ffff".reverse))
@@ -203,7 +203,8 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
         // Verify that BitcoinValidator.calculateBlockProof matches the correct formula
         assert(
           actualWork1 ==
-          correctWork1, "BitcoinValidator.calculateBlockProof should match Bitcoin Core formula: 2^256 / (target + 1)"
+              correctWork1,
+          "BitcoinValidator.calculateBlockProof should match Bitcoin Core formula: 2^256 / (target + 1)"
         )
 
         // Test case 2: Bitcoin genesis block difficulty (easiest)
@@ -216,7 +217,8 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
 
         assert(
           actualWork2 ==
-          correctWork2, "Genesis block work should match Bitcoin Core formula"
+              correctWork2,
+          "Genesis block work should match Bitcoin Core formula"
         )
 
         // Test case 3: Very high difficulty (recent blocks)
@@ -228,7 +230,8 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
 
         assert(
           actualWork3 ==
-          correctWork3, "High difficulty work should match Bitcoin Core formula"
+              correctWork3,
+          "High difficulty work should match Bitcoin Core formula"
         )
     }
 
@@ -239,7 +242,7 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
         val hash = BitcoinValidator.blockHeaderHash(blockHeader)
         assert(
           hash.reverse ==
-          hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c"
+              hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c"
         )
     }
 
@@ -252,11 +255,11 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
         val proofOfWork = Builtins.byteStringToInteger(false, hash)
         assert(
           hash ==
-          hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c".reverse
+              hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c".reverse
         )
         assert(
           target ==
-          BigInt("000000000000000000030ecd0000000000000000000000000000000000000000", 16)
+              BigInt("000000000000000000030ecd0000000000000000000000000000000000000000", 16)
         )
         assert(proofOfWork <= target, s"proofOfWork: $proofOfWork, target: $target")
     }
@@ -815,7 +818,8 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
             )
             assert(
               result ==
-              currentTarget, s"Height $height should not trigger difficulty adjustment"
+                  currentTarget,
+              s"Height $height should not trigger difficulty adjustment"
             )
 
         // Test block heights that SHOULD trigger difficulty adjustment
@@ -859,7 +863,8 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
             BitcoinValidator.getNextWorkRequired(1000, currentTarget, blockTime, firstBlockTime)
         assert(
           result1000 ==
-          currentTarget, "Height 1000 should not trigger difficulty adjustment"
+              currentTarget,
+          "Height 1000 should not trigger difficulty adjustment"
         )
     }
 
@@ -1290,7 +1295,8 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
                 // Updated for Scalus 0.14.2 with new package imports
                 assert(
                   r.budget ==
-                  ledger.ExUnits(396160, 126856690), "Unexpected resource usage"
+                      ledger.ExUnits(396160, 126856690),
+                  "Unexpected resource usage"
                 )
                 assert(r.budget.fee(prices) == Coin(32005), "Unexpected fee cost")
             case r: Result.Failure =>
@@ -1419,7 +1425,8 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
 
         assert(
           promotedBlocks.length ==
-          BigInt(0), "Should not promote block with insufficient confirmations"
+              BigInt(0),
+          "Should not promote block with insufficient confirmations"
         )
         assert(updatedTree.size == forksTree.size, "Tree should remain unchanged")
     }
@@ -1448,7 +1455,8 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
 
         assert(
           promotedBlocks.length ==
-          BigInt(0), "Should not promote block with insufficient age"
+              BigInt(0),
+          "Should not promote block with insufficient age"
         )
         assert(updatedTree.size == forksTree.size, "Tree should remain unchanged")
     }
@@ -1486,7 +1494,8 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
         // With blocks added 1 minute apart, only blocks 1001 and 1002 meet both criteria
         assert(
           promotedBlocks.length ==
-          BigInt(2), "Should promote blocks 1001-1002 (meet both criteria)"
+              BigInt(2),
+          "Should promote blocks 1001-1002 (meet both criteria)"
         )
 
         // Branch should still exist with remaining blocks
