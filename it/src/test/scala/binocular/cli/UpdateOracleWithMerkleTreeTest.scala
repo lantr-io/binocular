@@ -128,7 +128,8 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
           initialState,
           newState,
           headersList,
-          validityTime
+          validityTime,
+          BitcoinContract.testTxOutRef
         )
 
         updateTxResult match {

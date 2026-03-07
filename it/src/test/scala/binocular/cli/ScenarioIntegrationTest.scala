@@ -1,7 +1,7 @@
 package binocular
 package cli
 
-import binocular.{reverse, BitcoinChainState, BitcoinValidator, MerkleTree, OracleTransactions}
+import binocular.{reverse, BitcoinChainState, BitcoinContract, BitcoinValidator, MerkleTree, OracleTransactions}
 import scalus.cardano.address.Address
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
@@ -122,7 +122,8 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
           initialState,
           newState,
           headersList,
-          validityTime
+          validityTime,
+          BitcoinContract.testTxOutRef
         )
 
         updateTxResult match {
@@ -280,7 +281,8 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
           ctx.alice.signer,
           ctx.provider,
           ctx.alice.address,
-          scriptAddress // Deploy to script address
+          scriptAddress, // Deploy to script address
+          BitcoinContract.testTxOutRef
         )
 
         val referenceScriptUtxo: Option[Utxo] = refScriptResult match {
@@ -371,6 +373,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
               newState,
               headersList,
               validityTime,
+              BitcoinContract.testTxOutRef,
               referenceScriptUtxo
             )
 

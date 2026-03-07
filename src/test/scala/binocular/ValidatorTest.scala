@@ -410,7 +410,7 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
 
         // Try to extract computed state for debugging
         try {
-            BitcoinValidator.validate(scriptContext.toData)
+            BitcoinValidator.validate(BitcoinContract.testTxOutRef.toData)(scriptContext.toData)
         } catch {
             case e: Exception =>
                 println(s"Validation error: ${e.getMessage}")
@@ -459,7 +459,9 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
         redeemer: Data,
         signatories: Seq[PubKeyHash],
         scriptAddress: Address,
-        outputAmount: BigInteger
+        outputAmount: BigInteger,
+        inputMultiAssets: util.List[MultiAsset] = util.List.of(),
+        outputMultiAssets: util.List[MultiAsset] = util.List.of()
     ): (ScriptContext, Transaction) =
         val script = PlutusV3Script
             .builder()
@@ -496,10 +498,13 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
             .build()
         val inputs = util.List.of(input)
 
+        val inputValue =
+            if inputMultiAssets.isEmpty then spec.Value.builder().coin(outputAmount).build()
+            else spec.Value.builder().coin(outputAmount).multiAssets(inputMultiAssets).build()
         val utxo = Map(
           input -> TransactionOutput
               .builder()
-              .value(spec.Value.builder().coin(outputAmount).build())
+              .value(inputValue)
               .address(scriptAddress.getAddress)
               .inlineDatum(Interop.toPlutusData(prevState))
               .build(),
@@ -524,7 +529,16 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
                       TransactionOutput
                           .builder()
                           .address(scriptAddress.getAddress)
-                          .value(Value.builder().coin(outputAmount).build())
+                          .value(
+                            if outputMultiAssets.isEmpty then
+                                Value.builder().coin(outputAmount).build()
+                            else
+                                Value
+                                    .builder()
+                                    .coin(outputAmount)
+                                    .multiAssets(outputMultiAssets)
+                                    .build()
+                          )
                           .inlineDatum(Interop.toPlutusData(datum))
                           .build()
                     )
@@ -1449,7 +1463,7 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
         )
 
         // Validate - should succeed
-        BitcoinValidator.validate(scriptContext.toData)
+        BitcoinValidator.validate(BitcoinContract.testTxOutRef.toData)(scriptContext.toData)
 
         // Verify the computation internally matches
         val result = BitcoinContract.bitcoinProgram $ scriptContext.toData
@@ -1465,10 +1479,10 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
                 // and confirmed-state metadata advancement during promotion
                 assert(
                   r.budget ==
-                      ledger.ExUnits(406987, 130649468),
+                      ledger.ExUnits(444288, 140531721),
                   "Unexpected resource usage"
                 )
-                assert(r.budget.fee(prices) == Coin(32903), "Unexpected fee cost")
+                assert(r.budget.fee(prices) == Coin(35768), "Unexpected fee cost")
             case r: Result.Failure =>
                 fail(s"Validation failed: $r")
     }
@@ -1567,7 +1581,7 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
 
         // Should fail with "Empty block headers list"
         intercept[RuntimeException] {
-            BitcoinValidator.validate(scriptContext.toData)
+            BitcoinValidator.validate(BitcoinContract.testTxOutRef.toData)(scriptContext.toData)
         }
     }
 
@@ -1728,4 +1742,224 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
     // as they used the old BlockNode/insertInSortedList API.
     // The new ForkBranch-based tests in ForksTreeStructureTest cover similar scenarios.
 
+    // ===== NFT PRESERVATION TESTS =====
+
+    /** Helper to create bloxbean MultiAsset list with a single NFT token */
+    private def makeNftMultiAssets(policyIdHex: String): util.List[MultiAsset] = {
+        util.List.of(
+          MultiAsset
+              .builder()
+              .policyId(policyIdHex)
+              .assets(
+                util.List.of(
+                  Asset.builder().name("").value(BigInteger.ONE).build()
+                )
+              )
+              .build()
+        )
+    }
+
+    /** Helper to create bloxbean MultiAsset list with NFT plus an extra token */
+    private def makeNftPlusExtraMultiAssets(policyIdHex: String): util.List[MultiAsset] = {
+        val extraPolicyId = "aa".repeat(28) // fake 28-byte policy ID
+        util.List.of(
+          MultiAsset
+              .builder()
+              .policyId(policyIdHex)
+              .assets(
+                util.List.of(
+                  Asset.builder().name("").value(BigInteger.ONE).build()
+                )
+              )
+              .build(),
+          MultiAsset
+              .builder()
+              .policyId(extraPolicyId)
+              .assets(
+                util.List.of(
+                  Asset.builder().name("extra").value(BigInteger.valueOf(100)).build()
+                )
+              )
+              .build()
+        )
+    }
+
+    /** Build test data for NFT preservation tests (reuses UpdateOracle single block pattern) */
+    private def buildNftTestData(): (Data, Data, Data, Address, BigInteger, Long) = {
+        val block864800Hash = "0000000000000000000202c4f7f242ab864a6162b8d1e745de6a86ae979e130b"
+        val block864800Height = 864800
+        val block864800Timestamp = 1728414569L
+
+        val block864801PrevHash = block864800Hash
+        val block864801Bits = "17032f14"
+        val block864801Timestamp = 1728414644L
+        val block864801Nonce = 4254568467L
+        val block864801Version = 666378240L
+        val block864801Merkleroot =
+            "dc2ad1c7a27d394d45961c13a9c36e1d5e6cdbea928c47cb06263bb049a9cd0f"
+
+        val confirmedTip = ByteString.fromHex(block864800Hash).reverse
+        val bits = ByteString.fromHex(block864801Bits).reverse
+        val baseTime = BigInt(block864801Timestamp)
+
+        def longToLE4Bytes(n: Long): ByteString = {
+            ByteString.fromArray(
+              Array(
+                (n & 0xff).toByte,
+                ((n >> 8) & 0xff).toByte,
+                ((n >> 16) & 0xff).toByte,
+                ((n >> 24) & 0xff).toByte
+              )
+            )
+        }
+
+        val blockHeader = BlockHeader(
+          longToLE4Bytes(block864801Version) ++
+              ByteString.fromHex(block864801PrevHash).reverse ++
+              ByteString.fromHex(block864801Merkleroot).reverse ++
+              longToLE4Bytes(block864801Timestamp) ++
+              ByteString.fromHex(block864801Bits).reverse ++
+              longToLE4Bytes(block864801Nonce)
+        )
+
+        val prevState = buildTestChainState(
+          blockHeight = block864800Height,
+          blockHash = confirmedTip,
+          bits = bits,
+          baseTimestamp = BigInt(block864800Timestamp),
+          forksTreeSize = 0
+        )
+
+        val newBlockHash = BitcoinValidator.blockHeaderHash(blockHeader)
+        val target = BitcoinValidator.compactBitsToTarget(bits)
+        val parentTarget = BitcoinValidator.compactBitsToTarget(prevState.currentTarget)
+        val parentChainwork = BitcoinValidator.calculateBlockProof(parentTarget)
+        val blockWork = BitcoinValidator.calculateBlockProof(target)
+        val newChainwork = parentChainwork + blockWork
+
+        val expectedBlockSummary = BlockSummary(
+          hash = newBlockHash,
+          height = prevState.blockHeight + 1,
+          chainwork = newChainwork,
+          timestamp = baseTime,
+          bits = bits,
+          addedTime = baseTime
+        )
+
+        val expectedBranch = ForkBranch(
+          tipHash = newBlockHash,
+          tipHeight = prevState.blockHeight + 1,
+          tipChainwork = newChainwork,
+          recentBlocks = prelude.List(expectedBlockSummary)
+        )
+
+        val expectedState = ChainState(
+          blockHeight = prevState.blockHeight,
+          blockHash = prevState.blockHash,
+          currentTarget = prevState.currentTarget,
+          blockTimestamp = prevState.blockTimestamp,
+          recentTimestamps = prevState.recentTimestamps,
+          previousDifficultyAdjustmentTimestamp = prevState.previousDifficultyAdjustmentTimestamp,
+          confirmedBlocksTree = prevState.confirmedBlocksTree,
+          forksTree = prelude.List(expectedBranch)
+        )
+
+        val inputDatumHash = Builtins.blake2b_256(
+          Builtins.serialiseData(prevState.toData)
+        )
+        val redeemer = Action
+            .UpdateOracle(prelude.List(blockHeader), baseTime, inputDatumHash)
+            .toData
+
+        val scriptAddress = new Address(
+          binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
+        )
+        val outputAmount = BigInteger.valueOf(5000000) // 5 ADA
+
+        (
+          prevState.toData,
+          expectedState.toData,
+          redeemer,
+          scriptAddress,
+          outputAmount,
+          baseTime.toLong
+        )
+    }
+
+    private lazy val nftPolicyIdHex: String =
+        OracleConfig.getScriptHash(BitcoinContract.testTxOutRef).toHex
+
+    test("UpdateOracle succeeds with NFT preserved in input and output") {
+        val (prevStateData, newStateData, redeemer, scriptAddress, outputAmount, baseTime) =
+            buildNftTestData()
+        val nftAssets = makeNftMultiAssets(nftPolicyIdHex)
+
+        val (scriptContext, _) = makeScriptContextAndTransaction(
+          baseTime,
+          prevStateData,
+          newStateData,
+          redeemer,
+          Seq.empty,
+          scriptAddress,
+          outputAmount,
+          inputMultiAssets = nftAssets,
+          outputMultiAssets = nftAssets
+        )
+
+        // Should succeed - NFT preserved
+        BitcoinValidator.validate(BitcoinContract.testTxOutRef.toData)(scriptContext.toData)
+
+        val result = BitcoinContract.bitcoinProgram $ scriptContext.toData
+        result.evaluateDebug match
+            case r: Result.Success =>
+                println(s"NFT preserved test passed, budget: ${r.budget.showJson}")
+            case r: Result.Failure => fail(s"NFT preserved validation failed: $r")
+    }
+
+    test("UpdateOracle fails when NFT removed from output") {
+        val (prevStateData, newStateData, redeemer, scriptAddress, outputAmount, baseTime) =
+            buildNftTestData()
+        val nftAssets = makeNftMultiAssets(nftPolicyIdHex)
+
+        val (scriptContext, _) = makeScriptContextAndTransaction(
+          baseTime,
+          prevStateData,
+          newStateData,
+          redeemer,
+          Seq.empty,
+          scriptAddress,
+          outputAmount,
+          inputMultiAssets = nftAssets,
+          outputMultiAssets = util.List.of() // No NFT in output
+        )
+
+        // Should fail - NFT not preserved
+        intercept[RuntimeException] {
+            BitcoinValidator.validate(BitcoinContract.testTxOutRef.toData)(scriptContext.toData)
+        }
+    }
+
+    test("UpdateOracle fails when extra token added to output (value stuffing)") {
+        val (prevStateData, newStateData, redeemer, scriptAddress, outputAmount, baseTime) =
+            buildNftTestData()
+        val nftAssets = makeNftMultiAssets(nftPolicyIdHex)
+        val nftPlusExtra = makeNftPlusExtraMultiAssets(nftPolicyIdHex)
+
+        val (scriptContext, _) = makeScriptContextAndTransaction(
+          baseTime,
+          prevStateData,
+          newStateData,
+          redeemer,
+          Seq.empty,
+          scriptAddress,
+          outputAmount,
+          inputMultiAssets = nftAssets,
+          outputMultiAssets = nftPlusExtra // NFT + extra token in output
+        )
+
+        // Should fail - extra tokens added
+        intercept[RuntimeException] {
+            BitcoinValidator.validate(BitcoinContract.testTxOutRef.toData)(scriptContext.toData)
+        }
+    }
 }

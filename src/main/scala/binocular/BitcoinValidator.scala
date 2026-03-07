@@ -6,7 +6,8 @@ import scalus.uplc.builtin.ByteString.*
 import scalus.uplc.builtin.Data.{toData, FromData, ToData}
 import scalus.cardano.onchain.plutus.v1.{Address, Credential}
 import scalus.cardano.onchain.plutus.v2.{Interval, IntervalBoundType, OutputDatum}
-import scalus.cardano.onchain.plutus.v3.{Datum, TxInInfo, TxInfo, TxOut, TxOutRef, Validator}
+import scalus.cardano.onchain.plutus.v1.PolicyId
+import scalus.cardano.onchain.plutus.v3.{DataParameterizedValidator, Datum, TxInInfo, TxInfo, TxOut, TxOutRef}
 import scalus.cardano.onchain.plutus.prelude.{List, Math, *}
 import scalus.cardano.onchain.plutus.prelude.Math.pow
 import scalus.{show as _, *}
@@ -126,7 +127,7 @@ enum Action derives FromData, ToData:
 object Action
 
 @Compile
-object BitcoinValidator extends Validator {
+object BitcoinValidator extends DataParameterizedValidator {
 
     // ============================================================================
     // ForkBranch Helper Functions
@@ -535,14 +536,17 @@ object BitcoinValidator extends Validator {
       * }
       * }}}
       *
-      * Bitcoin Core collects up to 11 timestamps, sorts ascending, and returns the element
-      * at index `count / 2`. Here, `timestamps` is maintained in descending (reverse-sorted)
-      * order. For an odd-sized list (always 11 in steady state), the element at `size / 2`
-      * is the same regardless of sort direction — both yield the true median.
+      * Bitcoin Core collects up to 11 timestamps, sorts ascending, and returns the element at index
+      * `count / 2`. Here, `timestamps` is maintained in descending (reverse-sorted) order. For an
+      * odd-sized list (always 11 in steady state), the element at `size / 2` is the same regardless
+      * of sort direction — both yield the true median.
       *
-      * @param timestamps reverse-sorted list of block timestamps (newest/largest first)
-      * @param size number of elements in the list
-      * @return the median timestamp, or [[UnixEpoch]] if the list is empty
+      * @param timestamps
+      *   reverse-sorted list of block timestamps (newest/largest first)
+      * @param size
+      *   number of elements in the list
+      * @return
+      *   the median timestamp, or [[UnixEpoch]] if the list is empty
       */
     def getMedianTimePast(timestamps: List[BigInt], size: BigInt): BigInt =
         timestamps match
@@ -1476,6 +1480,12 @@ object BitcoinValidator extends Validator {
 
                 val continuingOutput = findUniqueOutputFrom(outputs, ownInput.address)
 
+                // NFT preservation check: non-ADA tokens must be preserved
+                require(
+                  ownInput.value.withoutLovelace === continuingOutput.value.withoutLovelace,
+                  "Non-ADA tokens must be preserved"
+                )
+
                 // Extract the datum from the continuing output (provided by transaction builder)
                 val providedOutputDatum = continuingOutput.datum match
                     case OutputDatum.OutputDatum(datum) => datum
@@ -1489,8 +1499,41 @@ object BitcoinValidator extends Validator {
                 )
     }
 
+    // One-shot NFT minting policy
+    // param: TxOutRef that must be consumed to mint (one-shot guarantee)
+    // redeemer: BigInt index of the oracle output in tx.outputs
+    inline override def mint(
+        param: Data,
+        redeemer: Data,
+        policyId: PolicyId,
+        tx: TxInfo
+    ): Unit = {
+        val mintedQty = tx.mint.quantityOf(policyId, ByteString.empty)
+        if mintedQty > BigInt(0) then
+            // Minting: enforce one-shot
+            val requiredUtxo = param.to[TxOutRef]
+            require(tx.inputs.exists(_.outRef === requiredUtxo), "Required UTxO not spent")
+            require(mintedQty == BigInt(1), "Must mint exactly 1 NFT")
+            // Verify oracle output contains the NFT at the specified index
+            val outputIndex = redeemer.to[BigInt]
+            val oracleOutput = tx.outputs !! outputIndex
+            require(
+              oracleOutput.value.quantityOf(policyId, ByteString.empty) == BigInt(1),
+              "Oracle output must contain NFT"
+            )
+            // Verify oracle output goes to this script's address (policyId == script hash)
+            require(
+              oracleOutput.address.credential match
+                  case Credential.ScriptCredential(hash) => hash == policyId
+                  case _                                 => false,
+              "Oracle output must go to script address"
+            )
+        // else: burning (mintedQty < 0) is always allowed
+    }
+
     // This one is for V3 lowering
     inline override def spend(
+        param: Data,
         datum: Option[Datum],
         redeemer: Datum,
         tx: TxInfo,
@@ -1507,6 +1550,7 @@ object BitcoinValidator extends Validator {
 
     // This is for Sum-of-Products lowering
     inline def spend2(
+        param: Data,
         datum: Option[Datum],
         redeemer: Datum,
         txInfoData: Data,
@@ -1521,7 +1565,7 @@ object BitcoinValidator extends Validator {
     }
 
     // This is for Sum-of-Products lowering
-    def validate2(scData: Data): Unit = {
+    def validate2(param: Data)(scData: Data): Unit = {
         val sc = unConstrData(scData).snd
         val txInfoData = sc.head
         val redeemer = sc.tail.head
@@ -1529,7 +1573,7 @@ object BitcoinValidator extends Validator {
         if scriptInfo.fst == BigInt(1) then
             val txOutRef = scriptInfo.snd.head.to[TxOutRef]
             val datum = scriptInfo.snd.tail.head.to[Option[Datum]]
-            spend2(datum, redeemer, txInfoData, txOutRef)
+            spend2(param, datum, redeemer, txInfoData, txOutRef)
         else fail("Invalid script context")
     }
 

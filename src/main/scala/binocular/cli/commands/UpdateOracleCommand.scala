@@ -86,6 +86,7 @@ case class UpdateOracleCommand(
                         val existingRefs = OracleTransactions.findReferenceScriptUtxos(
                           provider,
                           scriptAddress,
+                          oracleConf.oracleTxOutRef,
                           timeout
                         )
 
@@ -119,6 +120,7 @@ case class UpdateOracleCommand(
                                   provider,
                                   sponsorAddress,
                                   scriptAddress,
+                                  oracleConf.oracleTxOutRef,
                                   timeout
                                 ) match {
                                     case Right((deployTxHash, deployOutputIdx, savedOutput)) =>
@@ -497,6 +499,7 @@ case class UpdateOracleCommand(
                                   newChainState,
                                   headersList,
                                   validityTime,
+                                  oracleConf.oracleTxOutRef,
                                   referenceScriptUtxo,
                                   timeout
                                 )
