@@ -1,17 +1,22 @@
 package binocular
 
 import org.scalatest.funsuite.AnyFunSuite
-import scalus.*
-import scalus.uplc.builtin.ByteString
+import scalus.cardano.ledger.*
+import scalus.cardano.node.Emulator
+import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
+import scalus.cardano.txbuilder.RedeemerPurpose.ForMint
+import scalus.cardano.txbuilder.txBuilder
+import scalus.testing.kit.Party.Alice
+import scalus.testing.kit.TestUtil.getScriptContextV3
+import scalus.testing.kit.{ScalusTest, TestUtil}
 import scalus.uplc.builtin.ByteString.hex
 import scalus.uplc.builtin.Data.toData
-import scalus.cardano.onchain.plutus.prelude
-import scalus.cardano.onchain.plutus.prelude.List as ScalusList
-import scalus.cardano.onchain.plutus.v1.{Address as OnchainAddress, Credential, PolicyId, PubKeyHash, Value}
-import scalus.cardano.onchain.plutus.v2.{OutputDatum, TxOut}
-import scalus.cardano.onchain.plutus.v3.{ScriptContext, ScriptInfo, TxId, TxInInfo, TxInfo, TxOutRef}
+import scalus.utils.await
 
-/** Tests for one-shot Oracle NFT minting policy.
+/** Tests for one-shot Oracle NFT minting policy using TxBuilder and UPLC evaluation.
+  *
+  * Uses the same testing pattern as Scalus HTLC tests: build transactions with TxBuilder, extract
+  * ScriptContext via getScriptContextV3, and evaluate the compiled UPLC program.
   *
   * The BitcoinValidator's mint method enforces:
   *   1. The parameterized TxOutRef must be consumed as input (one-shot guarantee)
@@ -20,204 +25,124 @@ import scalus.cardano.onchain.plutus.v3.{ScriptContext, ScriptInfo, TxId, TxInIn
   *   4. The oracle output goes to the script address (policyId == script hash)
   *   5. Burning (negative mint qty) is always allowed
   */
-class OracleNFTTest extends AnyFunSuite {
+class OracleNFTTest extends AnyFunSuite, ScalusTest {
 
-    // Use a deterministic policy ID for testing
-    private val testPolicyId: PolicyId =
-        hex"aabbccddee00112233445566778899aabbccddee00112233445566"
+    private given env: CardanoInfo = TestUtil.testEnvironment
+    private val baseContract = BitcoinContract.contract.withErrorTraces
 
-    // The one-shot TxOutRef that must be consumed
-    private val requiredTxOutRef: TxOutRef = TxOutRef(
-      TxId(hex"1111111111111111111111111111111111111111111111111111111111111111"),
-      BigInt(0)
-    )
+    private def createProvider: Emulator =
+        Emulator.withAddresses(Seq(Alice.address))
 
-    // Script address derived from policyId (since policyId == script hash for combined scripts)
-    private val scriptAddress: OnchainAddress =
-        OnchainAddress.fromScriptHash(testPolicyId)
-
-    // A different address (not the script)
-    private val otherAddress: OnchainAddress =
-        OnchainAddress.fromPubKeyHash(
-          PubKeyHash(hex"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef0000")
-        )
-
-    private val dummyTxId: TxId =
-        TxId(hex"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-
-    /** Helper to build a minting ScriptContext */
-    private def makeMintingContext(
-        mintValue: Value,
-        inputs: ScalusList[TxInInfo],
-        outputs: ScalusList[TxOut],
-        redeemer: BigInt = BigInt(0) // output index
-    ): ScriptContext = {
-        val txInfo = TxInfo(
-          inputs = inputs,
-          outputs = outputs,
-          mint = mintValue,
-          id = dummyTxId
-        )
-        ScriptContext(
-          txInfo = txInfo,
-          redeemer = redeemer.toData,
-          scriptInfo = ScriptInfo.MintingScript(policyId = testPolicyId)
-        )
+    // Pre-compute the applied contract from the deterministic emulator seed UTxO.
+    // Emulator.withAddresses creates UTxOs deterministically, so the seed is always the same.
+    private val (contract, scriptHash, scriptAddr) = {
+        val p = createProvider
+        val (input, _) = p.findUtxos(Alice.address).await().toOption.get.head
+        val txOutRef = TxOutRef(TxId(input.transactionId), BigInt(input.index))
+        val c = baseContract(txOutRef.toData)
+        (c, c.script.scriptHash, c.address(env.network))
     }
 
-    /** Helper: TxInInfo consuming the required one-shot UTxO */
-    private val requiredInput: TxInInfo = TxInInfo(
-      outRef = requiredTxOutRef,
-      resolved = TxOut(
-        address = otherAddress,
-        value = Value.lovelace(BigInt(5_000_000))
-      )
-    )
-
-    /** Helper: oracle output at script address with NFT */
-    private val oracleOutputWithNft: TxOut = TxOut(
-      address = scriptAddress,
-      value = Value.lovelace(BigInt(5_000_000)) + Value(testPolicyId, ByteString.empty, BigInt(1)),
-      datum = OutputDatum.NoOutputDatum
-    )
+    test(s"Oracle NFT script size is ${contract.script.script.size} bytes") {
+        assert(contract.script.script.size > 0)
+    }
 
     test("mint succeeds when required UTxO is spent and exactly 1 token minted") {
-        val mintValue = Value(testPolicyId, ByteString.empty, BigInt(1))
+        val provider = createProvider
+        val seed = Utxo(provider.findUtxos(Alice.address).await().toOption.get.head)
 
-        val ctx = makeMintingContext(
-          mintValue = mintValue,
-          inputs = ScalusList(requiredInput),
-          outputs = ScalusList(oracleOutputWithNft)
-        )
+        val scriptCtx = txBuilder
+            .spend(seed)
+            .mint(contract, Map(AssetName.empty -> 1L), BigInt(0))
+            .payTo(scriptAddr, Value.asset(scriptHash, AssetName.empty, 1, Coin.ada(5)))
+            .draft
+            .getScriptContextV3(provider.utxos, ForMint(scriptHash))
 
-        // Should not throw
-        BitcoinValidator.validate(requiredTxOutRef.toData)(ctx.toData)
+        val result = contract(scriptCtx.toData).program.evaluateDebug
+        assert(result.isSuccess, s"Evaluation failed: ${result.logs}")
     }
 
     test("mint fails when required UTxO is NOT in inputs") {
-        val mintValue = Value(testPolicyId, ByteString.empty, BigInt(1))
+        val provider = createProvider
+        val seed = Utxo(provider.findUtxos(Alice.address).await().toOption.get.head)
 
-        // Use a different input (not the required one-shot UTxO)
-        val wrongInput = TxInInfo(
-          outRef = TxOutRef(
-            TxId(hex"2222222222222222222222222222222222222222222222222222222222222222"),
-            BigInt(0)
-          ),
-          resolved = TxOut(
-            address = otherAddress,
-            value = Value.lovelace(BigInt(5_000_000))
-          )
+        // Parameterize with a TxOutRef that doesn't match any input
+        val fakeTxOutRef = TxOutRef(
+          TxId(hex"1111111111111111111111111111111111111111111111111111111111111111"),
+          BigInt(0)
         )
+        val fakeContract = baseContract(fakeTxOutRef.toData)
+        val fakeScriptHash = fakeContract.script.scriptHash
+        val fakeScriptAddr = fakeContract.address(env.network)
 
-        val ctx = makeMintingContext(
-          mintValue = mintValue,
-          inputs = ScalusList(wrongInput),
-          outputs = ScalusList(oracleOutputWithNft)
-        )
+        val scriptCtx = txBuilder
+            .spend(seed)
+            .mint(fakeContract, Map(AssetName.empty -> 1L), BigInt(0))
+            .payTo(fakeScriptAddr, Value.asset(fakeScriptHash, AssetName.empty, 1, Coin.ada(5)))
+            .draft
+            .getScriptContextV3(provider.utxos, ForMint(fakeScriptHash))
 
-        intercept[RuntimeException] {
-            BitcoinValidator.validate(requiredTxOutRef.toData)(ctx.toData)
-        }
+        val result = fakeContract(scriptCtx.toData).program.evaluateDebug
+        assert(!result.isSuccess)
     }
 
     test("mint fails when minting quantity != 1") {
-        // Try minting 2 tokens
-        val mintValue = Value(testPolicyId, ByteString.empty, BigInt(2))
+        val provider = createProvider
+        val seed = Utxo(provider.findUtxos(Alice.address).await().toOption.get.head)
 
-        val oracleOutputWith2 = TxOut(
-          address = scriptAddress,
-          value = Value.lovelace(BigInt(5_000_000)) + Value(
-            testPolicyId,
-            ByteString.empty,
-            BigInt(2)
-          ),
-          datum = OutputDatum.NoOutputDatum
-        )
+        val scriptCtx = txBuilder
+            .spend(seed)
+            .mint(contract, Map(AssetName.empty -> 2L), BigInt(0))
+            .payTo(scriptAddr, Value.asset(scriptHash, AssetName.empty, 2, Coin.ada(5)))
+            .draft
+            .getScriptContextV3(provider.utxos, ForMint(scriptHash))
 
-        val ctx = makeMintingContext(
-          mintValue = mintValue,
-          inputs = ScalusList(requiredInput),
-          outputs = ScalusList(oracleOutputWith2)
-        )
-
-        intercept[RuntimeException] {
-            BitcoinValidator.validate(requiredTxOutRef.toData)(ctx.toData)
-        }
+        val result = contract(scriptCtx.toData).program.evaluateDebug
+        assert(!result.isSuccess)
     }
 
     test("mint fails when oracle output does not contain NFT") {
-        val mintValue = Value(testPolicyId, ByteString.empty, BigInt(1))
+        val provider = createProvider
+        val seed = Utxo(provider.findUtxos(Alice.address).await().toOption.get.head)
 
-        // Output without NFT
-        val oracleOutputNoNft = TxOut(
-          address = scriptAddress,
-          value = Value.lovelace(BigInt(5_000_000)),
-          datum = OutputDatum.NoOutputDatum
-        )
+        val scriptCtx = txBuilder
+            .spend(seed)
+            .mint(contract, Map(AssetName.empty -> 1L), BigInt(0))
+            .payTo(scriptAddr, Value.ada(5)) // No NFT in oracle output
+            .payTo(Alice.address, Value.asset(scriptHash, AssetName.empty, 1)) // NFT elsewhere
+            .draft
+            .getScriptContextV3(provider.utxos, ForMint(scriptHash))
 
-        val ctx = makeMintingContext(
-          mintValue = mintValue,
-          inputs = ScalusList(requiredInput),
-          outputs = ScalusList(oracleOutputNoNft)
-        )
-
-        intercept[RuntimeException] {
-            BitcoinValidator.validate(requiredTxOutRef.toData)(ctx.toData)
-        }
+        val result = contract(scriptCtx.toData).program.evaluateDebug
+        assert(!result.isSuccess)
     }
 
     test("mint fails when oracle output goes to wrong address") {
-        val mintValue = Value(testPolicyId, ByteString.empty, BigInt(1))
+        val provider = createProvider
+        val seed = Utxo(provider.findUtxos(Alice.address).await().toOption.get.head)
 
-        // Output at wrong address (not the script address)
-        val wrongAddressOutput = TxOut(
-          address = otherAddress,
-          value = Value.lovelace(BigInt(5_000_000)) + Value(
-            testPolicyId,
-            ByteString.empty,
-            BigInt(1)
-          ),
-          datum = OutputDatum.NoOutputDatum
-        )
+        val scriptCtx = txBuilder
+            .spend(seed)
+            .mint(contract, Map(AssetName.empty -> 1L), BigInt(0))
+            .payTo(Alice.address, Value.asset(scriptHash, AssetName.empty, 1, Coin.ada(5)))
+            .draft
+            .getScriptContextV3(provider.utxos, ForMint(scriptHash))
 
-        val ctx = makeMintingContext(
-          mintValue = mintValue,
-          inputs = ScalusList(requiredInput),
-          outputs = ScalusList(wrongAddressOutput)
-        )
-
-        intercept[RuntimeException] {
-            BitcoinValidator.validate(requiredTxOutRef.toData)(ctx.toData)
-        }
+        val result = contract(scriptCtx.toData).program.evaluateDebug
+        assert(!result.isSuccess)
     }
 
-    test("burn always succeeds (negative quantity, no UTxO check needed)") {
-        // Burning: negative mint quantity
-        val burnValue = Value(testPolicyId, ByteString.empty, BigInt(-1))
+    test("burn always succeeds (negative quantity)") {
+        val provider = createProvider
+        val seed = Utxo(provider.findUtxos(Alice.address).await().toOption.get.head)
 
-        // No required UTxO in inputs, no oracle output - still should succeed
-        val someInput = TxInInfo(
-          outRef = TxOutRef(
-            TxId(hex"3333333333333333333333333333333333333333333333333333333333333333"),
-            BigInt(0)
-          ),
-          resolved = TxOut(
-            address = otherAddress,
-            value = Value.lovelace(BigInt(5_000_000)) + Value(
-              testPolicyId,
-              ByteString.empty,
-              BigInt(1)
-            )
-          )
-        )
+        val scriptCtx = txBuilder
+            .spend(seed)
+            .mint(contract, Map(AssetName.empty -> -1L), BigInt(0))
+            .draft
+            .getScriptContextV3(provider.utxos, ForMint(scriptHash))
 
-        val ctx = makeMintingContext(
-          mintValue = burnValue,
-          inputs = ScalusList(someInput),
-          outputs = ScalusList.Nil
-        )
-
-        // Should not throw - burning is always allowed
-        BitcoinValidator.validate(requiredTxOutRef.toData)(ctx.toData)
+        val result = contract(scriptCtx.toData).program.evaluateDebug
+        assert(result.isSuccess, s"Burn evaluation failed: ${result.logs}")
     }
 }
