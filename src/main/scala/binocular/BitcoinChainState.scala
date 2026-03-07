@@ -95,9 +95,9 @@ object BitcoinChainState {
         rpc: SimpleBitcoinRpc,
         blockHeight: Int
     )(using ec: ExecutionContext): Future[ChainState] = {
-        val interval = BitcoinValidator.DifficultyAdjustmentInterval.toInt
+        val interval = BitcoinHelpers.DifficultyAdjustmentInterval.toInt
         val adjustmentBlockHeight = blockHeight - (blockHeight % interval)
-        val medianTimeSpan = BitcoinValidator.MedianTimeSpan.toInt // 11 blocks
+        val medianTimeSpan = BitcoinHelpers.MedianTimeSpan.toInt // 11 blocks
 
         for {
             blockHashHex <- rpc.getBlockHash(blockHeight)

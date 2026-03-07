@@ -165,11 +165,11 @@ object BitcoinHeaderFixtures {
         val timestamp = BigInt(firstHeader.timestamp)
 
         // Calculate previous difficulty adjustment timestamp
-        val interval = BitcoinValidator.DifficultyAdjustmentInterval.toInt
+        val interval = BitcoinHelpers.DifficultyAdjustmentInterval.toInt
         val previousAdjustmentHeight = firstHeader.height - (firstHeader.height % interval)
         val blocksSinceAdjustment = firstHeader.height - previousAdjustmentHeight
         val estimatedPrevAdjustmentTime =
-            timestamp - (blocksSinceAdjustment * BitcoinValidator.TargetBlockTime)
+            timestamp - (blocksSinceAdjustment * BitcoinHelpers.TargetBlockTime)
 
         ChainState(
           blockHeight = BigInt(firstHeader.height),
