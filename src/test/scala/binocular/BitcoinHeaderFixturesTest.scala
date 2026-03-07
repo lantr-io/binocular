@@ -1,6 +1,7 @@
 package binocular
 
 import org.scalatest.funsuite.AnyFunSuite
+import scalus.uplc.builtin.ByteString.hex
 
 /** Tests for BitcoinHeaderFixtures infrastructure
   *
@@ -57,5 +58,10 @@ class BitcoinHeaderFixturesTest extends AnyFunSuite {
               s"Block ${currentHeader.height} prevHash should match block ${prevHeader.height} hash"
             )
         }
+    }
+
+    test("RPC bits are converted to internal little-endian compact format") {
+        val bits = BitcoinChainState.rpcBitsToCompactBits("17030ecd")
+        assert(bits == hex"17030ecd".reverse)
     }
 }

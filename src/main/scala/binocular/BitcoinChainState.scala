@@ -9,6 +9,10 @@ import scala.concurrent.{ExecutionContext, Future}
 /** Helper utilities for creating initial ChainState from Bitcoin node */
 object BitcoinChainState {
 
+    /** Convert Bitcoin RPC/display-order compact bits hex into internal little-endian bytes. */
+    def rpcBitsToCompactBits(bitsHex: String): ByteString =
+        ByteString.fromArray(bitsHex.hexToBytes.reverse)
+
     /** Build 80-byte raw header from block header info */
     private def buildRawHeader(header: BlockHeaderInfo): Array[Byte] = {
         println(s"[DEBUG buildRawHeader] Building header for block ${header.height}")
@@ -126,7 +130,7 @@ object BitcoinChainState {
 
             // Bits from RPC is in big-endian (display order), but Bitcoin headers use little-endian
             // Reverse the bytes to match the format in the block header
-            bits = ByteString.fromArray(header.bits.hexToBytes.reverse)
+            bits = rpcBitsToCompactBits(header.bits)
             // Block hash from RPC is in display order (big-endian), but we store it in internal order (little-endian)
             blockHash = ByteString.fromArray(header.hash.hexToBytes.reverse)
             // Sort timestamps by value (descending) - required for median-time-past calculation

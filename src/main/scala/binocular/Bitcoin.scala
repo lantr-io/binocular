@@ -125,7 +125,7 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
             header <- rpc.getBlockHeader(blockHashHex)
             adjustmentBlockHashHex <- rpc.getBlockHash(adjustmentBlockHeight)
             adjustmentHeader <- rpc.getBlockHeader(adjustmentBlockHashHex)
-            bits = hexToByteString(header.bits)
+            bits = BitcoinChainState.rpcBitsToCompactBits(header.bits)
             // Block hash from RPC is in display order (big-endian), but we store it in internal order (little-endian)
             blockHash = ByteString.fromArray(hexToByteString(header.hash).bytes.reverse.toArray)
         yield ChainState(
