@@ -1,34 +1,26 @@
 package binocular
-import com.bloxbean.cardano.client.account.Account
-import com.bloxbean.cardano.client.address.Address
-import com.bloxbean.cardano.client.common.ADAConversionUtil
-import com.bloxbean.cardano.client.plutus.spec.{ExUnits, PlutusV3Script, Redeemer, RedeemerTag}
-import com.bloxbean.cardano.client.transaction.spec
-import com.bloxbean.cardano.client.transaction.spec.*
-import com.bloxbean.cardano.client.transaction.util.TransactionUtil
 import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
 import org.bouncycastle.crypto.signers.Ed25519Signer
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 import scalus.*
-import scalus.bloxbean.Interop
-import scalus.bloxbean.Interop.{getScriptInfoV3, getTxInfoV3, toScalusData}
+import scalus.cardano.ledger
+import scalus.cardano.ledger.{AssetName, CardanoInfo, Coin, DatumOption, ScriptHash, TransactionHash, TransactionInput, TransactionOutput, Utxo, Utxos, Value}
+import scalus.cardano.txbuilder.RedeemerPurpose.ForSpend
+import scalus.cardano.txbuilder.txBuilder
+import scalus.testing.kit.TestUtil.getScriptContextV3
+import scalus.testing.kit.ScalusTest
 import scalus.uplc.builtin.ByteString.hex
 import scalus.uplc.builtin.Data.toData
 import scalus.uplc.builtin.{Builtins, ByteString, Data}
 import scalus.cardano.onchain.plutus.prelude
-import scalus.cardano.ledger
-import scalus.cardano.ledger.{CardanoInfo, Coin}
-import scalus.cardano.onchain.plutus.v1.PubKeyHash
 import scalus.cardano.onchain.plutus.v3.ScriptContext
 import scalus.uplc.eval
 import scalus.uplc.eval.*
 import upickle.default.*
 
-import java.math.BigInteger
 import java.nio.file.{Files, Path}
-import java.util
-import scala.jdk.CollectionConverters.*
+import java.time.Instant
 import scala.language.implicitConversions
 
 case class BitcoinBlock(
@@ -55,13 +47,14 @@ case class BitcoinBlock(
 
 case class CekResult(budget: ledger.ExUnits, logs: Seq[String])
 
-class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
-    private given PlutusVM = PlutusVM.makePlutusV3VM()
+class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyChecks {
+    private given env: CardanoInfo = CardanoInfo.mainnet
 
-    // test(s"Bitcoin validator size is ${bitcoinProgram.doubleCborEncoded.length}") {
-    // println(compiledBitcoinValidator.showHighlighted)
-    // assertEquals(bitcoinProgram.doubleCborEncoded.length, 900)
-    // }
+    private val testContract =
+        BitcoinContract.contract.withErrorTraces(BitcoinContract.testTxOutRef.toData)
+    private val testScript = testContract.script
+    private val testScriptHash = testScript.scriptHash
+    private val testScriptAddr = testContract.address(env.network)
 
     test("reverse") {
         forAll { (a: Array[Byte]) =>
@@ -79,7 +72,6 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
         val coinbase = Bitcoin.makeCoinbaseTxFromByteString(coinbaseTx)
         val coinbaseSize = coinbase.toData.toCbor.length
         println(s"Coinbase size: $coinbaseSize")
-        //        val action = BitcoinValidator.Action.NewTip(blockHeader, coinbase)
     }
 
     test("parseCoinbaseTx") {
@@ -299,20 +291,16 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
             Path.of("00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c.json")
           )
         )
-        //        println(s"block.merkleroot = ${block.merkleroot}")
 
         val coinbaseTx =
             hex"010000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff4f03d6340d082f5669614254432f2cfabe6d6d7853581d1f2abd53fe30833a1e6b8397b200ec3b658fdf6568edc5f54118f99d10000000000000001003b7b5047d947d88f58877bd2cb73c0000000000ffffffff0342db4a15000000001976a914fb37342f6275b13936799def06f2eb4c0f20151588ac00000000000000002b6a2952534b424c4f434b3aec94a488ba1f588e9cb6bb507c70283e9f10057ef683d2d460d3700900678b710000000000000000266a24aa21a9edb9df509533c6a9526f5180b0c34cc48b86a40cc94abfae661242a596393ef47d0120000000000000000000000000000000000000000000000000000000000000000000000000"
         val coinbase = Bitcoin.makeCoinbaseTxFromByteString(coinbaseTx)
         val coinbaseHash = BitcoinValidator.getCoinbaseTxHash(coinbase)
-        //        println(s"Coinbase hash: ${coinbaseHash.reverse}")
 
         val txHashes = block.tx.map(h => ByteString.fromHex(h).reverse)
         val merkleTree = MerkleTree.fromHashes(txHashes)
         val merkleRoot = merkleTree.getMerkleRoot
         val merkleProof = merkleTree.makeMerkleProof(0)
-        //        println(s"Merkle root: ${merkleRoot.reverse}")
-        //        println(s"Merkle proof: ${merkleProof}")
 
         val coinbaseTxInclusionProof = prelude.List.from(merkleProof).toData
 
@@ -390,25 +378,15 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
 
         println(s"Redeemer size: ${redeemer.toCbor.length}")
 
-        val scriptAddress = new Address(
-          binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
-        )
-        val outputAmount = BigInteger.valueOf(5000000) // 5 ADA
-
-        val (scriptContext, tx) = makeScriptContextAndTransaction(
+        val scriptContext = makeScriptContext(
           timestamp.toLong,
           prevState.toData,
           newState.toData,
-          redeemer,
-          Seq.empty,
-          scriptAddress,
-          outputAmount
+          redeemer
         )
-        println(s"Tx size: ${tx.serialize().length}")
         val applied = BitcoinContract.bitcoinProgram $ scriptContext.toData
         println(s"Validator size: ${BitcoinContract.bitcoinProgram.flatEncoded.length}")
 
-        // Try to extract computed state for debugging
         try {
             BitcoinValidator.validate(BitcoinContract.testTxOutRef.toData)(scriptContext.toData)
         } catch {
@@ -421,150 +399,55 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
             case r: Result.Failure => fail(r.toString)
     }
 
-    def posixTimeToSlot(time: Long, sc: ledger.SlotConfig): Long = {
-        val msAfterBegin = time - sc.zeroTime
-        msAfterBegin / sc.slotLength + sc.zeroSlot
-    }
-
     def signMessage(claim: ByteString, privateKey: Ed25519PrivateKeyParameters): ByteString =
         val signer = new Ed25519Signer()
         signer.init(true, privateKey)
         signer.update(claim.bytes, 0, claim.size)
         ByteString.fromArray(signer.generateSignature())
 
-    def getScriptContextV3(
-        redeemer: Redeemer,
-        datum: Option[Data],
-        tx: Transaction,
-        txhash: String,
-        utxos: Map[TransactionInput, TransactionOutput],
-        slotConfig: ledger.SlotConfig,
-        protocolVersion: Int
-    ): ScriptContext = {
-        import scala.jdk.CollectionConverters.*
-        val scriptInfo = getScriptInfoV3(tx, redeemer, datum)
-        val datums = tx.getWitnessSet.getPlutusDataList.asScala.map { plutusData =>
-            ByteString.fromArray(plutusData.getDatumHashAsBytes) -> Interop.toScalusData(plutusData)
-        }
-        val txInfo = getTxInfoV3(tx, txhash, datums, utxos, slotConfig, protocolVersion)
-        val scriptContext = ScriptContext(txInfo, toScalusData(redeemer.getData), scriptInfo)
-        scriptContext
-    }
-    lazy val sender = new Account()
-
-    def makeScriptContextAndTransaction(
-        intervalStartMs: Long,
+    /** Build a ScriptContext for validator tests using Scalus TxBuilder.
+      *
+      * @param intervalStartSeconds
+      *   validity interval start in Unix seconds
+      * @param prevState
+      *   input datum (previous chain state)
+      * @param newState
+      *   output datum (new chain state)
+      * @param redeemer
+      *   the redeemer Data
+      * @param inputValue
+      *   value locked at the script input (default: 5 ADA)
+      * @param outputValue
+      *   value sent to the script output (default: 5 ADA)
+      */
+    def makeScriptContext(
+        intervalStartSeconds: Long,
         prevState: Data,
-        datum: Data,
+        newState: Data,
         redeemer: Data,
-        signatories: Seq[PubKeyHash],
-        scriptAddress: Address,
-        outputAmount: BigInteger,
-        inputMultiAssets: util.List[MultiAsset] = util.List.of(),
-        outputMultiAssets: util.List[MultiAsset] = util.List.of()
-    ): (ScriptContext, Transaction) =
-        val script = PlutusV3Script
-            .builder()
-            .`type`("PlutusScriptV3")
-            .cborHex(BitcoinContract.bitcoinProgram.doubleCborHex)
-            .build()
-            .asInstanceOf[PlutusV3Script]
-        val payeeAddress = sender.baseAddress()
-        val rdmr =
-            Redeemer
-                .builder()
-                .tag(RedeemerTag.Spend)
-                .data(Interop.toPlutusData(redeemer))
-                .index(0)
-                .exUnits(
-                  ExUnits
-                      .builder()
-                      .steps(BigInteger.valueOf(10000000000L))
-                      .mem(BigInteger.valueOf(20000000))
-                      .build()
-                )
-                .build()
-
-        val input = TransactionInput
-            .builder()
-            .transactionId("1ab6879fc08345f51dc9571ac4f530bf8673e0d798758c470f9af6f98e2f3982")
-            .index(0)
-            .build()
-
-        val scriptRefInput = TransactionInput
-            .builder()
-            .transactionId("1ab6879fc08345f51dc9571ac4f530bf8673e0d798758c470f9af6f98e2f3982")
-            .index(1)
-            .build()
-        val inputs = util.List.of(input)
-
-        val inputValue =
-            if inputMultiAssets.isEmpty then spec.Value.builder().coin(outputAmount).build()
-            else spec.Value.builder().coin(outputAmount).multiAssets(inputMultiAssets).build()
-        val utxo = Map(
-          input -> TransactionOutput
-              .builder()
-              .value(inputValue)
-              .address(scriptAddress.getAddress)
-              .inlineDatum(Interop.toPlutusData(prevState))
-              .build(),
-          scriptRefInput -> TransactionOutput
-              .builder()
-              .value(spec.Value.builder().coin(BigInteger.valueOf(20)).build())
-              .address(payeeAddress)
-              .scriptRef(script)
-              .build()
+        inputValue: Value = Value.ada(5),
+        outputValue: Value = Value.ada(5)
+    ): ScriptContext =
+        val input = TransactionInput(
+          TransactionHash.fromHex(
+            "1ab6879fc08345f51dc9571ac4f530bf8673e0d798758c470f9af6f98e2f3982"
+          ),
+          0
         )
-        val slot = posixTimeToSlot(intervalStartMs * 1000, ledger.SlotConfig.mainnet)
-        val tx = Transaction
-            .builder()
-            .body(
-              TransactionBody
-                  .builder()
-                  .validityStartInterval(slot)
-                  .fee(ADAConversionUtil.adaToLovelace(0.2))
-                  .inputs(inputs)
-                  .outputs(
-                    util.List.of(
-                      TransactionOutput
-                          .builder()
-                          .address(scriptAddress.getAddress)
-                          .value(
-                            if outputMultiAssets.isEmpty then
-                                Value.builder().coin(outputAmount).build()
-                            else
-                                Value
-                                    .builder()
-                                    .coin(outputAmount)
-                                    .multiAssets(outputMultiAssets)
-                                    .build()
-                          )
-                          .inlineDatum(Interop.toPlutusData(datum))
-                          .build()
-                    )
-                  )
-                  .referenceInputs(util.List.of(scriptRefInput))
-                  .requiredSigners(signatories.map(_.hash.bytes).asJava)
-                  .build()
-            )
-            .witnessSet(
-              TransactionWitnessSet
-                  .builder()
-                  .redeemers(util.List.of(rdmr))
-                  .build()
-            )
-            .build()
-
-        val scriptContext = getScriptContextV3(
-          rdmr,
-          Some(datum),
-          tx,
-          TransactionUtil.getTxHash(tx),
-          utxo,
-          ledger.SlotConfig.mainnet,
-          protocolVersion = 10
+        val utxo = Utxo(
+          input,
+          TransactionOutput(testScriptAddr, inputValue, DatumOption.Inline(prevState))
         )
-        (scriptContext, tx)
+        val utxos: Utxos = Map(utxo.input -> utxo.output)
+        val validFrom = Instant.ofEpochSecond(intervalStartSeconds)
+
+        val draft = txBuilder
+            .spend(utxo, redeemer, testContract)
+            .payTo(testScriptAddr, outputValue, newState)
+            .validFrom(validFrom)
+            .draft
+
+        draft.getScriptContextV3(utxos, ForSpend(input))
 
     // ===== TEST INFRASTRUCTURE HELPERS =====
 
@@ -982,9 +865,6 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
           forksTree = prelude.List.Nil
         )
 
-        // println(s"[DEBUG] Adding block to forks tree...,  confiremrdState.medianTimestamp = ${BitcoinValidator.getMedianTimePast(confirmedState.recentTimestamps, confirmedState.recentTimestamps.size)}"))
-        // println(s"[DEBUG] newBlockHeader.timestamp = ${newBlockHeader.timestamp}, currentTime = $currentTime")
-
         // Add block to empty forksTree - should succeed
         val updatedForksTree = BitcoinValidator.addBlockToForksTree(
           confirmedState.forksTree,
@@ -999,8 +879,8 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
         val branchOpt = BitcoinValidator.findBranch(updatedForksTree, newBlockHash)
         assert(branchOpt.isDefined, "Block should be tip of a branch in forks tree")
 
-        // Verify it's the tip of the branch
         val branch = branchOpt.getOrFail("Branch not found")
+        // Verify it's the tip of the branch
         assert(branch.tipHash == newBlockHash)
         assert(branch.tipHeight == BigInt(1001))
     }
@@ -1228,8 +1108,6 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
     }
 
     test("selectCanonicalChain - single branch returns that branch") {
-        val confirmedTip =
-            hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
         val blockHash =
             hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c".reverse
 
@@ -1256,10 +1134,6 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
     }
 
     test("selectCanonicalChain - selects highest chainwork") {
-        val confirmedTip =
-            hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
-
-        // Branch with lower chainwork
         val lowChainworkHash = hex"1111111111111111111111111111111111111111111111111111111111111111"
         val lowChainworkBranch = ForkBranch(
           tipHash = lowChainworkHash,
@@ -1277,7 +1151,6 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
           )
         )
 
-        // Branch with higher chainwork
         val highChainworkHash =
             hex"2222222222222222222222222222222222222222222222222222222222222222"
         val highChainworkBranch = ForkBranch(
@@ -1308,9 +1181,6 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
         // Scenario: After promoting blocks 1001-1003, old fork 1001' remains
         // This fork extends old confirmed tip 1000, not new tip 1003
         // This is a VALID state - garbage collection will clean it up
-
-        val oldConfirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
-        val newConfirmedTip = hex"1003000000000000000000000000000000000000000000000000000000000000"
 
         // Old fork branch with single block extending block 1000 (no longer confirmed tip)
         val oldForkHash = hex"1001111111111111111111111111111111111111111111111111111111111111"
@@ -1352,7 +1222,7 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
 
         // Block 864801: extends 864800
         val block864801Hash = "00000000000000000002935605126a1c5587bf4b642fffe943595e6d669c817d"
-        val block864801PrevHash = "0000000000000000000202c4f7f242ab864a6162b8d1e745de6a86ae979e130b"
+        val block864801PrevHash = block864800Hash
         val block864801Bits = "17032f14"
         val block864801Timestamp = 1728414644L
         val block864801Nonce = 4254568467L
@@ -1446,32 +1316,23 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
             .UpdateOracle(prelude.List(blockHeader), baseTime, inputDatumHash)
             .toData
 
-        // Create script context and transaction
-        val scriptAddress = new Address(
-          binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
-        )
-        val outputAmount = BigInteger.valueOf(5000000) // 5 ADA
-
-        val (scriptContext, tx) = makeScriptContextAndTransaction(
+        // Create script context and evaluate
+        val scriptContext = makeScriptContext(
           baseTime.toLong,
           prevState.toData,
           expectedState.toData,
-          redeemer,
-          Seq.empty,
-          scriptAddress,
-          outputAmount
+          redeemer
         )
 
         // Validate - should succeed
         BitcoinValidator.validate(BitcoinContract.testTxOutRef.toData)(scriptContext.toData)
 
-        // Verify the computation internally matches
         val result = BitcoinContract.bitcoinProgram $ scriptContext.toData
         val prices = CardanoInfo.mainnet.protocolParams.executionUnitPrices
         result.evaluateDebug match
             case r: Result.Success =>
                 println(
-                  s"✓ UpdateOracle single block validation succeeded, budget used: ${r.budget.showJson}"
+                  s"UpdateOracle single block validation succeeded, budget used: ${r.budget.showJson}"
                 )
                 println(r)
                 // Resource usage with internal-parent lookup enabled for ForkBranch-based forks,
@@ -1564,19 +1425,11 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
             )
             .toData
 
-        val scriptAddress = new Address(
-          binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
-        )
-        val outputAmount = BigInteger.valueOf(5000000) // 5 ADA
-
-        val (scriptContext, tx) = makeScriptContextAndTransaction(
+        val scriptContext = makeScriptContext(
           baseTime.toLong * 1000,
           prevState.toData,
           prevState.toData, // Expected state same as previous (no change)
-          redeemer,
-          Seq.empty,
-          scriptAddress,
-          outputAmount
+          redeemer
         )
 
         // Should fail with "Empty block headers list"
@@ -1744,48 +1597,18 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
 
     // ===== NFT PRESERVATION TESTS =====
 
-    /** Helper to create bloxbean MultiAsset list with a single NFT token */
-    private def makeNftMultiAssets(policyIdHex: String): util.List[MultiAsset] = {
-        util.List.of(
-          MultiAsset
-              .builder()
-              .policyId(policyIdHex)
-              .assets(
-                util.List.of(
-                  Asset.builder().name("").value(BigInteger.ONE).build()
-                )
-              )
-              .build()
-        )
-    }
+    private val nftPolicyIdScriptHash: ScriptHash =
+        OracleConfig.getScriptHash(BitcoinContract.testTxOutRef)
 
-    /** Helper to create bloxbean MultiAsset list with NFT plus an extra token */
-    private def makeNftPlusExtraMultiAssets(policyIdHex: String): util.List[MultiAsset] = {
-        val extraPolicyId = "aa".repeat(28) // fake 28-byte policy ID
-        util.List.of(
-          MultiAsset
-              .builder()
-              .policyId(policyIdHex)
-              .assets(
-                util.List.of(
-                  Asset.builder().name("").value(BigInteger.ONE).build()
-                )
-              )
-              .build(),
-          MultiAsset
-              .builder()
-              .policyId(extraPolicyId)
-              .assets(
-                util.List.of(
-                  Asset.builder().name("extra").value(BigInteger.valueOf(100)).build()
-                )
-              )
-              .build()
-        )
-    }
+    private def nftValue(lovelace: Long = 5_000_000): Value =
+        Value.asset(nftPolicyIdScriptHash, AssetName.empty, 1, Coin(lovelace))
+
+    private def nftPlusExtraValue(lovelace: Long = 5_000_000): Value =
+        val extraPolicyId = ScriptHash.fromHex("aa" * 28)
+        nftValue(lovelace) + Value.asset(extraPolicyId, AssetName(ByteString.fromString("extra")), 100)
 
     /** Build test data for NFT preservation tests (reuses UpdateOracle single block pattern) */
-    private def buildNftTestData(): (Data, Data, Data, Address, BigInteger, Long) = {
+    private def buildNftTestData(): (Data, Data, Data, Long) = {
         val block864800Hash = "0000000000000000000202c4f7f242ab864a6162b8d1e745de6a86ae979e130b"
         val block864800Height = 864800
         val block864800Timestamp = 1728414569L
@@ -1871,39 +1694,24 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
             .UpdateOracle(prelude.List(blockHeader), baseTime, inputDatumHash)
             .toData
 
-        val scriptAddress = new Address(
-          binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
-        )
-        val outputAmount = BigInteger.valueOf(5000000) // 5 ADA
-
         (
           prevState.toData,
           expectedState.toData,
           redeemer,
-          scriptAddress,
-          outputAmount,
           baseTime.toLong
         )
     }
 
-    private lazy val nftPolicyIdHex: String =
-        OracleConfig.getScriptHash(BitcoinContract.testTxOutRef).toHex
-
     test("UpdateOracle succeeds with NFT preserved in input and output") {
-        val (prevStateData, newStateData, redeemer, scriptAddress, outputAmount, baseTime) =
-            buildNftTestData()
-        val nftAssets = makeNftMultiAssets(nftPolicyIdHex)
+        val (prevStateData, newStateData, redeemer, baseTime) = buildNftTestData()
 
-        val (scriptContext, _) = makeScriptContextAndTransaction(
+        val scriptContext = makeScriptContext(
           baseTime,
           prevStateData,
           newStateData,
           redeemer,
-          Seq.empty,
-          scriptAddress,
-          outputAmount,
-          inputMultiAssets = nftAssets,
-          outputMultiAssets = nftAssets
+          inputValue = nftValue(),
+          outputValue = nftValue()
         )
 
         // Should succeed - NFT preserved
@@ -1917,20 +1725,15 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
     }
 
     test("UpdateOracle fails when NFT removed from output") {
-        val (prevStateData, newStateData, redeemer, scriptAddress, outputAmount, baseTime) =
-            buildNftTestData()
-        val nftAssets = makeNftMultiAssets(nftPolicyIdHex)
+        val (prevStateData, newStateData, redeemer, baseTime) = buildNftTestData()
 
-        val (scriptContext, _) = makeScriptContextAndTransaction(
+        val scriptContext = makeScriptContext(
           baseTime,
           prevStateData,
           newStateData,
           redeemer,
-          Seq.empty,
-          scriptAddress,
-          outputAmount,
-          inputMultiAssets = nftAssets,
-          outputMultiAssets = util.List.of() // No NFT in output
+          inputValue = nftValue(),
+          outputValue = Value.ada(5) // No NFT in output
         )
 
         // Should fail - NFT not preserved
@@ -1940,21 +1743,15 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
     }
 
     test("UpdateOracle fails when extra token added to output (value stuffing)") {
-        val (prevStateData, newStateData, redeemer, scriptAddress, outputAmount, baseTime) =
-            buildNftTestData()
-        val nftAssets = makeNftMultiAssets(nftPolicyIdHex)
-        val nftPlusExtra = makeNftPlusExtraMultiAssets(nftPolicyIdHex)
+        val (prevStateData, newStateData, redeemer, baseTime) = buildNftTestData()
 
-        val (scriptContext, _) = makeScriptContextAndTransaction(
+        val scriptContext = makeScriptContext(
           baseTime,
           prevStateData,
           newStateData,
           redeemer,
-          Seq.empty,
-          scriptAddress,
-          outputAmount,
-          inputMultiAssets = nftAssets,
-          outputMultiAssets = nftPlusExtra // NFT + extra token in output
+          inputValue = nftValue(),
+          outputValue = nftPlusExtraValue() // NFT + extra token in output
         )
 
         // Should fail - extra tokens added
