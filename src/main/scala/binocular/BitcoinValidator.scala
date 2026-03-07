@@ -519,16 +519,36 @@ object BitcoinValidator extends Validator {
         integerToByteString(false, 4, compact)
     }
 
-    /** Gets median from reverse-sorted list (newest first)
+    /** Gets the median time of past blocks from a reverse-sorted timestamp list.
       *
-      * Matches CBlockIndex::GetMedianTimePast() in chain.h:278-290
+      * Matches CBlockIndex::GetMedianTimePast() in chain.h:278-290:
+      * {{{
+      * int64_t GetMedianTimePast() const {
+      *     int64_t pmedian[nMedianTimeSpan];
+      *     int64_t* pbegin = &pmedian[nMedianTimeSpan];
+      *     int64_t* pend = &pmedian[nMedianTimeSpan];
+      *     const CBlockIndex* pindex = this;
+      *     for (int i = 0; i < nMedianTimeSpan && pindex; i++, pindex = pindex->pprev)
+      *         *(--pbegin) = pindex->GetBlockTime();
+      *     std::sort(pbegin, pend);
+      *     return pbegin[(pend - pbegin) / 2];
+      * }
+      * }}}
+      *
+      * Bitcoin Core collects up to 11 timestamps, sorts ascending, and returns the element
+      * at index `count / 2`. Here, `timestamps` is maintained in descending (reverse-sorted)
+      * order. For an odd-sized list (always 11 in steady state), the element at `size / 2`
+      * is the same regardless of sort direction — both yield the true median.
+      *
+      * @param timestamps reverse-sorted list of block timestamps (newest/largest first)
+      * @param size number of elements in the list
+      * @return the median timestamp, or [[UnixEpoch]] if the list is empty
       */
     def getMedianTimePast(timestamps: List[BigInt], size: BigInt): BigInt =
         timestamps match
             case List.Nil => UnixEpoch
             case _ =>
                 val index = size / 2
-                // List is sorted, so just get middle element
                 timestamps !! index
 
     def getMedianTimePastFromBlocks(
