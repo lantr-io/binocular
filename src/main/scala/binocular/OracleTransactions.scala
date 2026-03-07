@@ -3,6 +3,7 @@ package binocular
 import binocular.util.SlotConfigHelper
 import scalus.cardano.address.Address
 import scalus.cardano.ledger.{CardanoInfo, PlutusScript, Script, ScriptRef, Transaction, TransactionOutput, Utxo, Utxos, Value}
+import scalus.cardano.onchain.plutus.v3.TxOutRef
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}
 import scalus.uplc.builtin.Data
@@ -17,9 +18,9 @@ import scala.util.{Failure, Success, Try}
 /** Helper functions for building oracle transactions */
 object OracleTransactions {
 
-    /** Get compiled PlutusV3 script */
-    def getPlutusScript(): Script.PlutusV3 = {
-        Script.PlutusV3(BitcoinContract.bitcoinProgram.cborByteString)
+    /** Get compiled PlutusV3 script for a specific TxOutRef parameter */
+    def getPlutusScript(txOutRef: TxOutRef): Script.PlutusV3 = {
+        Script.PlutusV3(BitcoinContract.makeScript(txOutRef).cborByteString)
     }
 
     /** Deploy the oracle script to a UTxO as a reference script. This allows subsequent
@@ -47,11 +48,12 @@ object OracleTransactions {
         provider: BlockchainProvider,
         sponsorAddress: Address,
         destinationAddress: Address,
+        oracleTxOutRef: TxOutRef,
         timeout: Duration = 120.seconds
     ): Either[String, (String, Int, TransactionOutput)] = {
         given ec: ExecutionContext = provider.executionContext
         Try {
-            val script = getPlutusScript()
+            val script = getPlutusScript(oracleTxOutRef)
 
             val output = TransactionOutput.Babbage(
               address = destinationAddress,
@@ -97,10 +99,11 @@ object OracleTransactions {
     def findReferenceScriptUtxos(
         provider: BlockchainProvider,
         searchAddress: Address,
+        oracleTxOutRef: TxOutRef,
         timeout: Duration = 30.seconds
     ): List[(String, Int)] = {
         given ec: ExecutionContext = provider.executionContext
-        val script = getPlutusScript()
+        val script = getPlutusScript(oracleTxOutRef)
         val expectedScriptHash = script.scriptHash
 
         println(
@@ -250,12 +253,13 @@ object OracleTransactions {
         newChainState: ChainState,
         blockHeaders: ScalusList[BlockHeader],
         validityIntervalTimeSeconds: BigInt,
+        oracleTxOutRef: TxOutRef,
         referenceScriptUtxo: Option[Utxo] = None,
         timeout: Duration = 120.seconds
     ): Either[String, String] = {
         given ec: ExecutionContext = provider.executionContext
         Try {
-            val script = getPlutusScript()
+            val script = getPlutusScript(oracleTxOutRef)
 
             // Verify that the input UTxO's datum matches currentChainState
             val inputData = oracleUtxo.output.requireInlineDatum

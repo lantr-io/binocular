@@ -165,7 +165,7 @@ object BitcoinDependentLockApp {
     }
 
     private def computeOracleScriptHashFromScript(): ByteString = {
-        OracleConfig.getScriptHash()
+        OracleConfig.getScriptHash(BitcoinContract.testTxOutRef)
     }
 
     def showInfo(): Int = {

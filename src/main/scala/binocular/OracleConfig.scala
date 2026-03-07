@@ -2,6 +2,8 @@ package binocular
 
 import scalus.cardano.address.{Address, Network}
 import scalus.cardano.ledger.{Credential, Script, ScriptHash}
+import scalus.cardano.onchain.plutus.v3.TxOutRef
+import scalus.uplc.Program
 import com.typesafe.config.{Config, ConfigFactory}
 import scala.util.{Failure, Success, Try}
 
@@ -32,11 +34,12 @@ case class OracleConfig(
     startHeight: Option[Long] = None,
     maxHeadersPerTx: Int = 10,
     pollInterval: Int = 60,
-    transactionTimeout: Int = 120 // seconds - used for tx building, submission, UTxO polling
+    transactionTimeout: Int = 120, // seconds - used for tx building, submission, UTxO polling
+    oracleTxOutRef: TxOutRef = BitcoinContract.testTxOutRef
 ) {
 
     /** Get the script address derived from BitcoinValidator script hash */
-    lazy val scriptAddress: String = OracleConfig.deriveScriptAddress(network)
+    lazy val scriptAddress: String = OracleConfig.deriveScriptAddress(network, oracleTxOutRef)
 
     /** Validate configuration */
     def validate(): Either[String, Unit] = {
@@ -65,24 +68,29 @@ case class OracleConfig(
 
 object OracleConfig {
 
+    /** Get the parameterized program for a specific TxOutRef */
+    def getProgram(txOutRef: TxOutRef): Program = {
+        BitcoinContract.makeScript(txOutRef)
+    }
+
     /** Get the script CBOR hex from compiled script. */
-    def getScriptCborHex(): String = {
-        BitcoinContract.bitcoinProgram.doubleCborHex
+    def getScriptCborHex(txOutRef: TxOutRef): String = {
+        getProgram(txOutRef).doubleCborHex
     }
 
     /** Get the PlutusScript from the compiled BitcoinValidator */
-    def getPlutusScript(): Script.PlutusV3 = {
-        Script.PlutusV3(BitcoinContract.bitcoinProgram.cborByteString)
+    def getPlutusScript(txOutRef: TxOutRef): Script.PlutusV3 = {
+        Script.PlutusV3(getProgram(txOutRef).cborByteString)
     }
 
     /** Get the script hash */
-    def getScriptHash(): ScriptHash = {
-        getPlutusScript().scriptHash
+    def getScriptHash(txOutRef: TxOutRef): ScriptHash = {
+        getPlutusScript(txOutRef).scriptHash
     }
 
     /** Derive script address from compiled BitcoinValidator for given network. */
-    def deriveScriptAddress(network: CardanoNetwork): String = {
-        val scriptHash = getScriptHash()
+    def deriveScriptAddress(network: CardanoNetwork, txOutRef: TxOutRef): String = {
+        val scriptHash = getScriptHash(txOutRef)
 
         val scalusNetwork = network match {
             case CardanoNetwork.Mainnet => Network.Mainnet
