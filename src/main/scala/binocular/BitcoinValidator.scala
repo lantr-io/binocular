@@ -178,6 +178,31 @@ object BitcoinValidator extends Validator {
         search(blocks)
     }
 
+    /** Find a parent block anywhere in the forks tree.
+      *
+      * Returns the containing branch, the matching block summary, and whether the matching block is
+      * the current tip of that branch.
+      */
+    def lookupParentBlock(
+        forksTree: List[ForkBranch],
+        blockHash: BlockHash
+    ): Option[(ForkBranch, BlockSummary, Boolean)] = {
+        def search(
+            remaining: List[ForkBranch]
+        ): Option[(ForkBranch, BlockSummary, Boolean)] = {
+            remaining match
+                case List.Nil => Option.None
+                case List.Cons(branch, tail) =>
+                    lookupInRecentBlocks(branch.recentBlocks, blockHash) match
+                        case Option.Some(block) =>
+                            Option.Some((branch, block, branch.tipHash == blockHash))
+                        case Option.None =>
+                            search(tail)
+        }
+
+        search(forksTree)
+    }
+
     /** Extend a branch by adding a new block at the tip Updates tipHash, tipHeight, tipChainwork
       * and prepends new block to recentBlocks Keeps ALL blocks in the branch until they are
       * promoted
@@ -653,20 +678,30 @@ object BitcoinValidator extends Validator {
         val prevHash = blockHeader.prevBlockHash
 
         // Check if parent exists (in forksTree OR is confirmed tip)
-        val parentBranchOpt = findBranch(forksTree, prevHash)
+        val parentLookupOpt = lookupParentBlock(forksTree, prevHash)
         val parentIsConfirmedTip = prevHash == confirmedState.blockHash
         require(
-          parentBranchOpt.isDefined || parentIsConfirmedTip,
+          parentLookupOpt.isDefined || parentIsConfirmedTip,
           "Parent block not found"
         )
 
         // === SECURITY: Full block validation ===
 
         // Calculate parent height and chainwork
-        // Parent is always at the tip of its branch (forks create new branches)
-        val (parentHeight, parentChainwork, parentTimestamp, parentBits) =
+        val (
+          parentBranchOpt,
+          parentBlockOpt,
+          parentIsBranchTip,
+          parentHeight,
+          parentChainwork,
+          parentTimestamp,
+          parentBits
+        ) =
             if parentIsConfirmedTip then
                 (
+                  Option.None,
+                  Option.None,
+                  false,
                   confirmedState.blockHeight,
                   calculateBlockProof(
                     compactBitsToTarget(confirmedState.currentTarget)
@@ -675,13 +710,16 @@ object BitcoinValidator extends Validator {
                   confirmedState.currentTarget
                 )
             else
-                parentBranchOpt match
-                    case Option.Some(branch) =>
+                parentLookupOpt match
+                    case Option.Some((branch, block, isTip)) =>
                         (
-                          branch.tipHeight,
-                          branch.tipChainwork,
-                          branch.recentBlocks.head.timestamp,
-                          branch.recentBlocks.head.bits
+                          Option.Some(branch),
+                          Option.Some(block),
+                          isTip,
+                          block.height,
+                          block.chainwork,
+                          block.timestamp,
+                          block.bits
                         )
                     case Option.None =>
                         fail("Parent branch not found")
@@ -751,23 +789,33 @@ object BitcoinValidator extends Validator {
         )
 
         // Determine how to update forksTree based on parent location
-        // Parent is always at the tip of its branch (forks create new branches)
-        parentBranchOpt match
-            case Option.Some(parentBranch) =>
-                // Parent is branch tip - extend the branch
-                // log("Extending existing branch")
-                val extendedBranch = extendBranch(parentBranch, newBlock)
-                updateBranch(forksTree, parentBranch, extendedBranch)
-            case Option.None =>
-                // Parent is confirmed tip - create new branch
-                // log("Creating new branch from confirmed tip")
-                val newBranch = ForkBranch(
-                  tipHash = hash,
-                  tipHeight = blockHeight,
-                  tipChainwork = newChainwork,
-                  recentBlocks = List.single(newBlock)
-                )
-                List.Cons(newBranch, forksTree)
+        if parentIsConfirmedTip then
+            // Parent is confirmed tip - create new branch
+            val newBranch = ForkBranch(
+              tipHash = hash,
+              tipHeight = blockHeight,
+              tipChainwork = newChainwork,
+              recentBlocks = List.single(newBlock)
+            )
+            List.Cons(newBranch, forksTree)
+        else
+            parentBranchOpt match
+                case Option.Some(parentBranch) =>
+                    if parentIsBranchTip then
+                        // Parent is branch tip - extend the branch
+                        val extendedBranch = extendBranch(parentBranch, newBlock)
+                        updateBranch(forksTree, parentBranch, extendedBranch)
+                    else
+                        // Parent is an internal block - create a competing branch from that point
+                        val newBranch = ForkBranch(
+                          tipHash = hash,
+                          tipHeight = blockHeight,
+                          tipChainwork = newChainwork,
+                          recentBlocks = List.single(newBlock)
+                        )
+                        List.Cons(newBranch, forksTree)
+                case Option.None =>
+                    fail("Parent branch not found")
 
     // Block promotion (maturation) - matches Algorithm 10 in Whitepaper
     // Returns (list of promoted blocks oldest-first, updated forks tree with promoted blocks removed)
