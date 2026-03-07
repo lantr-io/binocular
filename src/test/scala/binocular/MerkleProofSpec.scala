@@ -53,7 +53,10 @@ class MerkleProofSpec extends AnyFunSuite {
         for i <- 0 until 4 do {
             val txHash = Seq(tx1, tx2, tx3, tx4)(i)
             val proof = tree.makeMerkleProof(i)
-            assert(proof.length == 2, s"Proof length should be 2 for tx at index $i") // log2(4) = 2 levels
+            assert(
+              proof.length == 2,
+              s"Proof length should be 2 for tx at index $i"
+            ) // log2(4) = 2 levels
 
             val computedRoot = MerkleTree.calculateMerkleRootFromProof(i, txHash, proof)
             assert(computedRoot == root, s"Computed root should match for tx at index $i")
