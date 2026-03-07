@@ -1223,6 +1223,31 @@ object BitcoinValidator extends Validator {
 
         require(validNewState, "New state does not match expected state")
 
+    /** Apply promoted blocks to the confirmed-state metadata in oldest-to-newest order. */
+    def applyPromotionsToConfirmedState(
+        confirmedState: ChainState,
+        promotedBlocks: List[BlockSummary]
+    ): ChainState = {
+        promotedBlocks.foldLeft(confirmedState) { (state, block) =>
+            val withNewTimestamp = insertReverseSorted(block.timestamp, state.recentTimestamps)
+            val newTimestamps = withNewTimestamp.take(MedianTimeSpan)
+            val newDifficultyAdjustmentTimestamp =
+                if block.height % DifficultyAdjustmentInterval == BigInt(0) then block.timestamp
+                else state.previousDifficultyAdjustmentTimestamp
+
+            ChainState(
+              blockHeight = block.height,
+              blockHash = block.hash,
+              currentTarget = block.bits,
+              blockTimestamp = block.timestamp,
+              recentTimestamps = newTimestamps,
+              previousDifficultyAdjustmentTimestamp = newDifficultyAdjustmentTimestamp,
+              confirmedBlocksTree = state.confirmedBlocksTree,
+              forksTree = state.forksTree
+            )
+        }
+    }
+
     /** Compute the new ChainState after applying block headers. This function contains the core
       * UpdateOracle logic and can be called both on-chain (from validator) and off-chain (for
       * pre-computation).
@@ -1358,17 +1383,17 @@ object BitcoinValidator extends Validator {
 
             val updatedMerkleTree = addPromotedBlocks(prevState.confirmedBlocksTree, promotedBlocks)
 
-            // Update confirmed state with promoted block
-            // TODO: Update recentTimestamps, difficulty adjustment properly
-            // For now, preserve these fields - full implementation requires walking promoted chain
+            val updatedConfirmedState =
+                applyPromotionsToConfirmedState(prevState, promotedBlocks)
+
             ChainState(
-              blockHeight = latestPromotedBlock.height,
-              blockHash = latestPromotedBlock.hash,
-              currentTarget = latestPromotedBlock.bits, // Use promoted block's difficulty
-              blockTimestamp = latestPromotedBlock.timestamp,
-              recentTimestamps = prevState.recentTimestamps, // TODO: should be updated
+              blockHeight = updatedConfirmedState.blockHeight,
+              blockHash = updatedConfirmedState.blockHash,
+              currentTarget = updatedConfirmedState.currentTarget,
+              blockTimestamp = updatedConfirmedState.blockTimestamp,
+              recentTimestamps = updatedConfirmedState.recentTimestamps,
               previousDifficultyAdjustmentTimestamp =
-                  prevState.previousDifficultyAdjustmentTimestamp, // TODO: should be updated
+                  updatedConfirmedState.previousDifficultyAdjustmentTimestamp,
               confirmedBlocksTree = updatedMerkleTree,
               forksTree = finalForksTree
             )

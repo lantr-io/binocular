@@ -1138,6 +1138,55 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
         )
     }
 
+    test("applyPromotionsToConfirmedState - updates timestamps and difficulty metadata") {
+        val initialBits = hex"1d00ffff".reverse
+        val promotedBits = hex"1c654657".reverse
+        val nextBits = hex"1c654321".reverse
+
+        val confirmedState = ChainState(
+          blockHeight = 2015,
+          blockHash = ByteString.fromHex("11" * 32),
+          currentTarget = initialBits,
+          blockTimestamp = 110,
+          recentTimestamps = prelude.List.from(Seq[BigInt](110, 100, 90)),
+          previousDifficultyAdjustmentTimestamp = 50,
+          confirmedBlocksTree = prelude.List(ByteString.fromHex("11" * 32)),
+          forksTree = prelude.List.Nil
+        )
+
+        val promoted2016 = BlockSummary(
+          hash = ByteString.fromHex("22" * 32),
+          height = 2016,
+          chainwork = 2000,
+          timestamp = 120,
+          bits = promotedBits,
+          addedTime = 120
+        )
+
+        val promoted2017 = BlockSummary(
+          hash = ByteString.fromHex("33" * 32),
+          height = 2017,
+          chainwork = 3000,
+          timestamp = 130,
+          bits = nextBits,
+          addedTime = 130
+        )
+
+        val updatedState = BitcoinValidator.applyPromotionsToConfirmedState(
+          confirmedState,
+          prelude.List.from(Seq(promoted2016, promoted2017))
+        )
+
+        assert(updatedState.blockHeight == 2017)
+        assert(updatedState.blockHash == promoted2017.hash)
+        assert(updatedState.currentTarget == nextBits)
+        assert(updatedState.blockTimestamp == 130)
+        assert(
+          updatedState.recentTimestamps == prelude.List.from(Seq[BigInt](130, 120, 110, 100, 90))
+        )
+        assert(updatedState.previousDifficultyAdjustmentTimestamp == 120)
+    }
+
     test("selectCanonicalChain - empty forksTree returns None") {
         val emptyForksTree: prelude.List[ForkBranch] = prelude.List.Nil
         val result = BitcoinValidator.selectCanonicalChain(emptyForksTree)
@@ -1392,14 +1441,15 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
                   s"✓ UpdateOracle single block validation succeeded, budget used: ${r.budget.showJson}"
                 )
                 println(r)
-                // Resource usage with internal-parent lookup enabled for ForkBranch-based forks
-                // and expected difficulty calculation for unconfirmed descendants
+                // Resource usage with internal-parent lookup enabled for ForkBranch-based forks,
+                // expected difficulty calculation for unconfirmed descendants,
+                // and confirmed-state metadata advancement during promotion
                 assert(
                   r.budget ==
-                      ledger.ExUnits(405787, 130457468),
+                      ledger.ExUnits(406987, 130649468),
                   "Unexpected resource usage"
                 )
-                assert(r.budget.fee(prices) == Coin(32820), "Unexpected fee cost")
+                assert(r.budget.fee(prices) == Coin(32903), "Unexpected fee cost")
             case r: Result.Failure =>
                 fail(s"Validation failed: $r")
     }
