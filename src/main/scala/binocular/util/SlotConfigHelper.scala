@@ -16,15 +16,20 @@ object SlotConfigHelper {
       * @return
       *   (validityInstant, timeInSeconds)
       */
-    def computeValidityIntervalTime(cardanoInfo: CardanoInfo): (Instant, BigInt) = {
-        val now = Instant.now()
-        val currentPosixTimeMs = now.toEpochMilli
+    def computeValidityIntervalTime(
+        cardanoInfo: CardanoInfo,
+        targetTimeSeconds: Option[BigInt] = None
+    ): (Instant, BigInt) = {
+        val currentPosixTimeMs = targetTimeSeconds match {
+            case Some(seconds) => seconds.toLong * 1000
+            case None          => Instant.now().toEpochMilli
+        }
         val slotConfig = cardanoInfo.slotConfig
         val currentSlot = slotConfig.timeToSlot(currentPosixTimeMs)
         // Compute the slot start time: zeroTime + (slot - zeroSlot) * slotLength
         val slotStartMs =
             slotConfig.zeroTime + (currentSlot - slotConfig.zeroSlot) * slotConfig.slotLength
         val timeInSeconds = BigInt(slotStartMs / 1000)
-        (now, timeInSeconds)
+        (Instant.ofEpochMilli(slotStartMs), timeInSeconds)
     }
 }

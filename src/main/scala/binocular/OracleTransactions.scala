@@ -142,8 +142,11 @@ object OracleTransactions {
       * @return
       *   (validityInstant, timeInSeconds)
       */
-    def computeValidityIntervalTime(cardanoInfo: CardanoInfo): (Instant, BigInt) = {
-        SlotConfigHelper.computeValidityIntervalTime(cardanoInfo)
+    def computeValidityIntervalTime(
+        cardanoInfo: CardanoInfo,
+        targetTimeSeconds: Option[BigInt] = None
+    ): (Instant, BigInt) = {
+        SlotConfigHelper.computeValidityIntervalTime(cardanoInfo, targetTimeSeconds)
     }
 
     /** Apply Bitcoin headers to ChainState to calculate new state */
@@ -274,7 +277,8 @@ object OracleTransactions {
             val slotConfig = cardanoInfo.slotConfig
 
             // Compute validity interval time from current time
-            val (validityInstant, validatorWillSeeTime) = computeValidityIntervalTime(cardanoInfo)
+            val (validityInstant, validatorWillSeeTime) =
+                computeValidityIntervalTime(cardanoInfo, Some(validityIntervalTimeSeconds))
 
             println(s"[DEBUG] Computing time that validator will see:")
             println(s"  validatorWillSeeTime (seconds): $validatorWillSeeTime")

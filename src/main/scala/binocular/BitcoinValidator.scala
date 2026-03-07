@@ -320,9 +320,7 @@ object BitcoinValidator extends Validator {
     val MaturationConfirmations: BigInt = 100 // Blocks needed for promotion to confirmed state
     val TimeToleranceSeconds: BigInt =
         1 * 60 * 60 // Maximum difference between redeemer time and validity interval time
-    // val ChallengeAging: BigInt = 200 * 60 // 200 minutes in seconds (challenge period)
-    val ChallengeAging: BigInt =
-        20 * 60 // 20 minutes in seconds (challenge period) to speedup testing
+    val ChallengeAging: BigInt = 200 * 60 // 200 minutes in seconds (challenge period)
     val StaleCompetingForkAge: BigInt = 400 * 60 // 400 minutes (2× challenge period)
     val ChainworkGapThreshold: BigInt = 10 // Blocks worth of work for stale fork detection
     val MaxForksTreeSize: BigInt = 180 // Maximum forks tree size before garbage collection

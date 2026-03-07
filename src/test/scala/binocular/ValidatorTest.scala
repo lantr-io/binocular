@@ -235,6 +235,25 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
         )
     }
 
+    test("ChallengeAging matches the 200-minute whitepaper parameter") {
+        assert(BitcoinValidator.ChallengeAging == 200 * 60)
+    }
+
+    test("computeValidityIntervalTime can target a requested future time") {
+        val requestedTimeSeconds = BigInt(1_800_000_000L)
+        val slotConfig = CardanoInfo.mainnet.slotConfig
+        val requestedTimeMs = requestedTimeSeconds.toLong * 1000
+        val expectedSlot = slotConfig.timeToSlot(requestedTimeMs)
+        val expectedSlotStartMs =
+            slotConfig.zeroTime + (expectedSlot - slotConfig.zeroSlot) * slotConfig.slotLength
+
+        val (validityInstant, validatorTime) = binocular.util.SlotConfigHelper
+            .computeValidityIntervalTime(CardanoInfo.mainnet, Some(requestedTimeSeconds))
+
+        assert(validityInstant.toEpochMilli == expectedSlotStartMs)
+        assert(validatorTime == expectedSlotStartMs / 1000)
+    }
+
     test("Block Header hash") {
         val blockHeader = BlockHeader(
           hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
