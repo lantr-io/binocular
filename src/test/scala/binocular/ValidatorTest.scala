@@ -982,19 +982,19 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
         val firstBlock = BlockSummary(
           hash = firstBlockHash,
           height = 1001,
-          chainwork = BigInt(1000000),
-          timestamp = BigInt(1234567890),
+          chainwork = 1000000,
+          timestamp = 1234567890,
           bits = hex"1d00ffff".reverse,
-          addedTime = BigInt(1234567890)
+          addedTime = 1234567890
         )
 
         val secondBlock = BlockSummary(
           hash = secondBlockHash,
           height = 1002,
-          chainwork = BigInt(2000000),
-          timestamp = BigInt(1234567900),
+          chainwork = 2000000,
+          timestamp = 1234567900,
           bits = hex"1d00ffff".reverse,
-          addedTime = BigInt(1234567900)
+          addedTime = 1234567900
         )
 
         // Create branch with both blocks (second is tip)
@@ -1074,8 +1074,68 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
 
         assert(parentBranch.tipHash == secondBlockHash)
         assert(parentBlock.hash == firstBlockHash)
-        assert(parentBlock.height == BigInt(1001))
+        assert(parentBlock.height == 1001)
         assert(!parentIsTip, "Internal block should not be reported as a tip")
+    }
+
+    test("expectedNextBitsForParent - non-boundary descendant reuses parent bits") {
+        val bits = hex"1d00ffff".reverse
+        val confirmedState = buildTestChainState(
+          blockHeight = 1000,
+          blockHash = ByteString.fromHex("aa" * 32),
+          bits = bits,
+          baseTimestamp = 1234567890,
+          forksTreeSize = 0
+        )
+
+        val parentBranch = buildSingleBranch(
+          startHeight = 1001,
+          endHeight = 1005,
+          baseChainwork = 1000000,
+          baseTimestamp = 1234568490,
+          bits = bits
+        )
+
+        val parentBlock = parentBranch.recentBlocks.head
+
+        val expectedBits =
+            BitcoinValidator.expectedNextBitsForParent(confirmedState, parentBranch, parentBlock)
+
+        assert(expectedBits == bits)
+    }
+
+    test("expectedNextBitsForParent - retarget boundary uses branch history timestamp") {
+        val bits = hex"1d00ffff".reverse
+        val confirmedState = buildTestChainState(
+          blockHeight = 2015,
+          blockHash = ByteString.fromHex("bb" * 32),
+          bits = bits,
+          baseTimestamp = 1_000_000,
+          forksTreeSize = 0
+        )
+
+        val parentBranch = buildSingleBranch(
+          startHeight = 2016,
+          endHeight = 4031,
+          baseChainwork = 1000000,
+          baseTimestamp = 1_000_600,
+          bits = bits
+        )
+
+        val parentBlock = parentBranch.recentBlocks.head
+        val adjustmentStartBlock = parentBranch.recentBlocks.find(_.height == 2016).get
+
+        val expectedBits =
+            BitcoinValidator.expectedNextBitsForParent(confirmedState, parentBranch, parentBlock)
+
+        assert(
+          expectedBits == BitcoinValidator.getNextWorkRequired(
+            parentBlock.height,
+            parentBlock.bits,
+            parentBlock.timestamp,
+            adjustmentStartBlock.timestamp
+          )
+        )
     }
 
     test("selectCanonicalChain - empty forksTree returns None") {
@@ -1333,12 +1393,13 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
                 )
                 println(r)
                 // Resource usage with internal-parent lookup enabled for ForkBranch-based forks
+                // and expected difficulty calculation for unconfirmed descendants
                 assert(
                   r.budget ==
-                      ledger.ExUnits(405487, 130409468),
+                      ledger.ExUnits(405787, 130457468),
                   "Unexpected resource usage"
                 )
-                assert(r.budget.fee(prices) == Coin(32800), "Unexpected fee cost")
+                assert(r.budget.fee(prices) == Coin(32820), "Unexpected fee cost")
             case r: Result.Failure =>
                 fail(s"Validation failed: $r")
     }

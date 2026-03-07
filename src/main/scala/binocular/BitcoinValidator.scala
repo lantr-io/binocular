@@ -203,6 +203,49 @@ object BitcoinValidator extends Validator {
         search(forksTree)
     }
 
+    def lookupBlockByHeight(
+        blocks: List[BlockSummary],
+        height: BigInt
+    ): Option[BlockSummary] = {
+        def search(remaining: List[BlockSummary]): Option[BlockSummary] = {
+            remaining match
+                case List.Nil => Option.None
+                case List.Cons(block, tail) =>
+                    if block.height == height then Option.Some(block)
+                    else search(tail)
+        }
+
+        search(blocks)
+    }
+
+    /** Compute the expected difficulty bits for a block extending an unconfirmed parent block. */
+    def expectedNextBitsForParent(
+        confirmedState: ChainState,
+        parentBranch: ForkBranch,
+        parentBlock: BlockSummary
+    ): CompactBits = {
+        val nextHeight = parentBlock.height + 1
+
+        if nextHeight % DifficultyAdjustmentInterval != BigInt(0) then parentBlock.bits
+        else
+            val adjustmentStartHeight = nextHeight - DifficultyAdjustmentInterval
+            val adjustmentStartTimestamp =
+                if adjustmentStartHeight <= confirmedState.blockHeight then
+                    confirmedState.previousDifficultyAdjustmentTimestamp
+                else
+                    lookupBlockByHeight(parentBranch.recentBlocks, adjustmentStartHeight) match
+                        case Option.Some(block) => block.timestamp
+                        case Option.None =>
+                            fail("Difficulty adjustment start block not found in branch history")
+
+            getNextWorkRequired(
+              parentBlock.height,
+              parentBlock.bits,
+              parentBlock.timestamp,
+              adjustmentStartTimestamp
+            )
+    }
+
     /** Extend a branch by adding a new block at the tip Updates tipHash, tipHeight, tipChainwork
       * and prepends new block to recentBlocks Keeps ALL blocks in the branch until they are
       * promoted
@@ -741,9 +784,19 @@ object BitcoinValidator extends Validator {
                   confirmedState.previousDifficultyAdjustmentTimestamp
                 )
             else
-                // For simplicity, accept claimed difficulty if PoW is valid
-                // Full validation would require tracking difficulty adjustment state per branch
-                blockHeader.bits
+                parentBranchOpt match
+                    case Option.Some(parentBranch) =>
+                        parentBlockOpt match
+                            case Option.Some(parentBlock) =>
+                                expectedNextBitsForParent(
+                                  confirmedState,
+                                  parentBranch,
+                                  parentBlock
+                                )
+                            case Option.None =>
+                                fail("Parent block data not found")
+                    case Option.None =>
+                        fail("Parent branch data not found")
 
         require(blockHeader.bits == expectedBits, "Invalid difficulty")
 
