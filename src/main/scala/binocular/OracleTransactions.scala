@@ -152,9 +152,7 @@ object OracleTransactions {
         headers: ScalusList[BlockHeader],
         currentTime: BigInt
     ): ChainState = {
-        headers.foldLeft(currentState) { (state, header) =>
-            BitcoinValidator.updateTip(state, header, currentTime)
-        }
+        BitcoinValidator.computeUpdateOracleState(currentState, headers, currentTime)
     }
 
     /** Build and submit initialization transaction

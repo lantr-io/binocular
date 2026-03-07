@@ -1454,6 +1454,58 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
                 fail(s"Validation failed: $r")
     }
 
+    test("OracleTransactions.applyHeaders matches computeUpdateOracleState semantics") {
+        val block864800Hash = "0000000000000000000202c4f7f242ab864a6162b8d1e745de6a86ae979e130b"
+        val block864800Height = 864800
+        val block864800Timestamp = 1728414569L
+        val block864801Bits = "17032f14"
+        val block864801Timestamp = 1728414644L
+        val block864801Nonce = 4254568467L
+        val block864801Version = 666378240L
+        val block864801Merkleroot =
+            "dc2ad1c7a27d394d45961c13a9c36e1d5e6cdbea928c47cb06263bb049a9cd0f"
+
+        val confirmedTip = ByteString.fromHex(block864800Hash).reverse
+        val bits = ByteString.fromHex(block864801Bits).reverse
+        val currentTime = BigInt(block864801Timestamp)
+
+        def longToLE4Bytes(n: Long): ByteString = {
+            ByteString.fromArray(
+              Array(
+                (n & 0xff).toByte,
+                ((n >> 8) & 0xff).toByte,
+                ((n >> 16) & 0xff).toByte,
+                ((n >> 24) & 0xff).toByte
+              )
+            )
+        }
+
+        val blockHeader = BlockHeader(
+          longToLE4Bytes(block864801Version) ++
+              confirmedTip ++
+              ByteString.fromHex(block864801Merkleroot).reverse ++
+              longToLE4Bytes(block864801Timestamp) ++
+              ByteString.fromHex(block864801Bits).reverse ++
+              longToLE4Bytes(block864801Nonce)
+        )
+
+        val prevState = buildTestChainState(
+          blockHeight = block864800Height,
+          blockHash = confirmedTip,
+          bits = bits,
+          baseTimestamp = BigInt(block864800Timestamp),
+          forksTreeSize = 0
+        )
+
+        val headers = prelude.List(blockHeader)
+
+        val expectedState =
+            BitcoinValidator.computeUpdateOracleState(prevState, headers, currentTime)
+        val actualState = OracleTransactions.applyHeaders(prevState, headers, currentTime)
+
+        assert(actualState == expectedState)
+    }
+
     test("UpdateOracle - reject empty block headers list") {
         val baseTime = BigInt(System.currentTimeMillis() / 1000)
         val bits = hex"17030ecd".reverse
