@@ -1035,6 +1035,49 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
         assert(canonicalBranch.map(_.tipHash) == prelude.Option.Some(secondBlockHash))
     }
 
+    test("lookupParentBlock - finds internal block within a branch") {
+        val firstBlockHash = hex"1001000000000000000000000000000000000000000000000000000000000000"
+        val secondBlockHash = hex"1002000000000000000000000000000000000000000000000000000000000000"
+
+        val firstBlock = BlockSummary(
+          hash = firstBlockHash,
+          height = 1001,
+          chainwork = BigInt(1000000),
+          timestamp = BigInt(1234567890),
+          bits = hex"1d00ffff".reverse,
+          addedTime = BigInt(1234567890)
+        )
+
+        val secondBlock = BlockSummary(
+          hash = secondBlockHash,
+          height = 1002,
+          chainwork = BigInt(2000000),
+          timestamp = BigInt(1234567900),
+          bits = hex"1d00ffff".reverse,
+          addedTime = BigInt(1234567900)
+        )
+
+        val branch = ForkBranch(
+          tipHash = secondBlockHash,
+          tipHeight = 1002,
+          tipChainwork = BigInt(2000000),
+          recentBlocks = prelude.List.from(Seq(secondBlock, firstBlock))
+        )
+
+        val forksTree = prelude.List(branch)
+
+        val parentLookup = BitcoinValidator.lookupParentBlock(forksTree, firstBlockHash)
+        assert(parentLookup.isDefined, "Internal block should be discoverable for fork creation")
+
+        val (parentBranch, parentBlock, parentIsTip) =
+            parentLookup.getOrFail("Parent block should be found")
+
+        assert(parentBranch.tipHash == secondBlockHash)
+        assert(parentBlock.hash == firstBlockHash)
+        assert(parentBlock.height == BigInt(1001))
+        assert(!parentIsTip, "Internal block should not be reported as a tip")
+    }
+
     test("selectCanonicalChain - empty forksTree returns None") {
         val emptyForksTree: prelude.List[ForkBranch] = prelude.List.Nil
         val result = BitcoinValidator.selectCanonicalChain(emptyForksTree)
@@ -1289,16 +1332,13 @@ class ValidatorTest extends AnyFunSuite with ScalaCheckPropertyChecks {
                   s"✓ UpdateOracle single block validation succeeded, budget used: ${r.budget.showJson}"
                 )
                 println(r)
-                // Resource usage with ForkBranch implementation (optimized findBranch)
-                // and debug logging enabled
-                // Updated for correct chainwork calculation using 2^256 / (target + 1)
-                // Updated for Scalus 0.14.2 with new package imports
+                // Resource usage with internal-parent lookup enabled for ForkBranch-based forks
                 assert(
                   r.budget ==
-                      ledger.ExUnits(396160, 126856690),
+                      ledger.ExUnits(405487, 130409468),
                   "Unexpected resource usage"
                 )
-                assert(r.budget.fee(prices) == Coin(32005), "Unexpected fee cost")
+                assert(r.budget.fee(prices) == Coin(32800), "Unexpected fee cost")
             case r: Result.Failure =>
                 fail(s"Validation failed: $r")
     }
