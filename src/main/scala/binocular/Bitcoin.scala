@@ -1,17 +1,14 @@
 package binocular
-import binocular.BitcoinValidator.*
+import binocular.BitcoinHelpers.*
 import org.apache.pekko.actor.ActorSystem
+import scalus.cardano.onchain.plutus.prelude
+import scalus.cardano.onchain.plutus.v1.TxOutRef
 import scalus.uplc.builtin.Builtins.*
 import scalus.uplc.builtin.ByteString
-import scalus.cardano.onchain.plutus.v1.TxOutRef
-import scalus.cardano.onchain.plutus.prelude
 
 import scala.concurrent.{ExecutionContext, Future}
 
 object Bitcoin {
-    def isWitnessTransaction(rawTx: ByteString): Boolean =
-        rawTx.at(4) == BigInt(0) && indexByteString(rawTx, 5) == BigInt(1)
-
     def makeCoinbaseTxFromByteString(rawTx: ByteString): CoinbaseTx = {
         val version = rawTx.slice(0, 4)
         if isWitnessTransaction(rawTx) then
@@ -118,7 +115,7 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
         BlockHeader(ByteString.fromArray(buildRawHeader(header)))
 
     private def getInitialChainState(blockHeight: Int): Future[ChainState] = {
-        val interval = BitcoinValidator.DifficultyAdjustmentInterval.toInt
+        val interval = BitcoinHelpers.DifficultyAdjustmentInterval.toInt
         val adjustmentBlockHeight = blockHeight - (blockHeight % interval)
         for
             blockHashHex <- rpc.getBlockHash(blockHeight)

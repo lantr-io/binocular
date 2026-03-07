@@ -125,7 +125,7 @@ object TransactionVerifierValidator {
         val confirmedTreeRoot = BitcoinValidator.getMerkleRoot(oracleState.confirmedBlocksTree)
 
         // Step 3: Verify block is in Oracle's confirmed blocks tree
-        val computedTreeRoot = BitcoinValidator.merkleRootFromInclusionProof(
+        val computedTreeRoot = BitcoinHelpers.merkleRootFromInclusionProof(
           proof.blockMerkleProof,
           datum.expectedBlockHash,
           proof.blockIndex
@@ -136,7 +136,7 @@ object TransactionVerifierValidator {
         )
 
         // Step 4: Verify block header hashes to expected block hash
-        val computedBlockHash = BitcoinValidator.blockHeaderHash(proof.blockHeader)
+        val computedBlockHash = BitcoinHelpers.blockHeaderHash(proof.blockHeader)
         require(
           computedBlockHash == datum.expectedBlockHash,
           "Block header does not hash to expected block hash"
@@ -146,7 +146,7 @@ object TransactionVerifierValidator {
         val blockMerkleRoot = proof.blockHeader.merkleRoot
 
         // Step 6: Verify transaction is in the block via merkle proof
-        val computedTxRoot = BitcoinValidator.merkleRootFromInclusionProof(
+        val computedTxRoot = BitcoinHelpers.merkleRootFromInclusionProof(
           proof.txMerkleProof,
           datum.expectedTxHash,
           proof.txIndex
