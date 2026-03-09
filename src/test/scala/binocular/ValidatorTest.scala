@@ -128,8 +128,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           currentTarget = bits,
           blockTimestamp = timestamp - 600,
           recentTimestamps = prelude.List(timestamp - 600),
-          previousDifficultyAdjustmentTimestamp =
-              timestamp - 600 * DifficultyAdjustmentInterval,
+          previousDifficultyAdjustmentTimestamp = timestamp - 600 * DifficultyAdjustmentInterval,
           confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(
             hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse
           ),
@@ -688,7 +687,8 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           blockTimestamp = 110,
           recentTimestamps = prelude.List.from(Seq[BigInt](110, 100, 90)),
           previousDifficultyAdjustmentTimestamp = 50,
-          confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(ByteString.fromHex("11" * 32)),
+          confirmedBlocksRoot =
+              BitcoinChainState.mpfRootForSingleBlock(ByteString.fromHex("11" * 32)),
           forksTree = prelude.List.Nil
         )
 
@@ -1009,7 +1009,12 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         val headers = prelude.List(blockHeader)
 
         val expectedState =
-            BitcoinValidator.computeUpdateOracleState(prevState, headers, currentTime, prelude.List.Nil)
+            BitcoinValidator.computeUpdateOracleState(
+              prevState,
+              headers,
+              currentTime,
+              prelude.List.Nil
+            )
         val actualState = OracleTransactions.applyHeaders(prevState, headers, currentTime)
 
         assert(actualState == expectedState)
@@ -1216,7 +1221,11 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
 
     private def nftPlusExtraValue(lovelace: Long = 5_000_000): Value =
         val extraPolicyId = ScriptHash.fromHex("aa" * 28)
-        nftValue(lovelace) + Value.asset(extraPolicyId, AssetName(ByteString.fromString("extra")), 100)
+        nftValue(lovelace) + Value.asset(
+          extraPolicyId,
+          AssetName(ByteString.fromString("extra")),
+          100
+        )
 
     /** Build test data for NFT preservation tests (reuses UpdateOracle single block pattern) */
     private def buildNftTestData(): (Data, Data, Data, Long) = {
@@ -1348,6 +1357,196 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         intercept[RuntimeException] {
             BitcoinValidator.validate(BitcoinContract.testTxOutRef.toData)(scriptContext.toData)
         }
+    }
+
+    // ===== MPF PROOF GENERATION TESTS =====
+
+    test("MPF proof generation - off-chain proof validates on-chain insert") {
+        import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
+        import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry as OnChainMPF
+
+        val blockHash1 = ByteString.fromHex("aa" * 32)
+        val blockHash2 = ByteString.fromHex("bb" * 32)
+
+        // Create off-chain MPF with one block
+        val offChainMpf = OffChainMPF.empty.insert(blockHash1, blockHash1)
+
+        // Generate non-membership proof for second block
+        val proof = offChainMpf.proveNonMembership(blockHash2)
+
+        // Verify on-chain insert succeeds with this proof
+        val onChainMpf = OnChainMPF(offChainMpf.rootHash)
+        val newOnChainMpf = onChainMpf.insert(blockHash2, blockHash2, proof)
+
+        // Insert second block into off-chain MPF and verify roots match
+        val offChainMpf2 = offChainMpf.insert(blockHash2, blockHash2)
+        assert(
+          newOnChainMpf.root == offChainMpf2.rootHash,
+          "On-chain and off-chain roots should match after insert"
+        )
+    }
+
+    test("MPF sequential insertions - multiple proofs validate on-chain") {
+        import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
+        import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry as OnChainMPF
+
+        val initialHash = ByteString.fromHex("00" * 32)
+        val block1 = ByteString.fromHex("11" * 32)
+        val block2 = ByteString.fromHex("22" * 32)
+        val block3 = ByteString.fromHex("33" * 32)
+
+        // Start with initial block
+        var offMpf = OffChainMPF.empty.insert(initialHash, initialHash)
+        var onChainRoot = offMpf.rootHash
+
+        // Sequential insertions with proofs
+        for blockHash <- Seq(block1, block2, block3) do {
+            val proof = offMpf.proveNonMembership(blockHash)
+
+            // Verify on-chain insert
+            val newRoot = OnChainMPF(onChainRoot).insert(blockHash, blockHash, proof).root
+
+            // Update off-chain state
+            offMpf = offMpf.insert(blockHash, blockHash)
+            onChainRoot = newRoot
+
+            // Verify roots match
+            assert(
+              onChainRoot == offMpf.rootHash,
+              s"Roots should match after inserting ${blockHash.toHex}"
+            )
+        }
+    }
+
+    test("MPF applyMpfInserts - validates sequential proofs matching on-chain logic") {
+        import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
+        import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
+
+        val initialHash = ByteString.fromHex("00" * 32)
+        val block1Hash = ByteString.fromHex("11" * 32)
+        val block2Hash = ByteString.fromHex("22" * 32)
+
+        // Create off-chain MPF with initial block
+        var offMpf = OffChainMPF.empty.insert(initialHash, initialHash)
+        val initialRoot = offMpf.rootHash
+
+        // Generate proofs for two blocks (mimicking computeUpdateWithProofs)
+        val proof1 = offMpf.proveNonMembership(block1Hash)
+        offMpf = offMpf.insert(block1Hash, block1Hash)
+
+        val proof2 = offMpf.proveNonMembership(block2Hash)
+        offMpf = offMpf.insert(block2Hash, block2Hash)
+
+        val mpfProofs = prelude.List.from(Seq(proof1, proof2))
+
+        // Create mock promoted blocks (only hash matters for MPF)
+        val promoted1 = BlockSummary(
+          hash = block1Hash,
+          height = 1001,
+          chainwork = 1000,
+          timestamp = 100,
+          bits = hex"1d00ffff".reverse,
+          addedTime = 100
+        )
+        val promoted2 = BlockSummary(
+          hash = block2Hash,
+          height = 1002,
+          chainwork = 2000,
+          timestamp = 200,
+          bits = hex"1d00ffff".reverse,
+          addedTime = 200
+        )
+        val promotedBlocks = prelude.List.from(Seq(promoted1, promoted2))
+
+        // Call the on-chain applyMpfInserts logic directly
+        def applyMpfInserts(
+            root: ByteString,
+            blocks: prelude.List[BlockSummary],
+            proofs: prelude.List[prelude.List[ProofStep]]
+        ): ByteString =
+            blocks match
+                case prelude.List.Nil =>
+                    proofs match
+                        case prelude.List.Nil => root
+                        case _                => throw new RuntimeException("proof count mismatch")
+                case prelude.List.Cons(block, bTail) =>
+                    proofs match
+                        case prelude.List.Cons(proof, pTail) =>
+                            import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry as MPF
+                            val newRoot =
+                                MPF(root).insert(block.hash, block.hash, proof).root
+                            applyMpfInserts(newRoot, bTail, pTail)
+                        case prelude.List.Nil =>
+                            throw new RuntimeException("proof count mismatch")
+
+        val finalRoot = applyMpfInserts(initialRoot, promotedBlocks, mpfProofs)
+
+        // Verify the final root matches the off-chain MPF
+        assert(
+          finalRoot == offMpf.rootHash,
+          "On-chain applyMpfInserts result should match off-chain MPF root"
+        )
+    }
+
+    test("computeUpdateWithProofs matches applyHeaders when no promotion") {
+        import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
+
+        val block864800Hash = "0000000000000000000202c4f7f242ab864a6162b8d1e745de6a86ae979e130b"
+        val block864800Height = 864800
+        val block864800Timestamp = 1728414569L
+        val block864801Bits = "17032f14"
+        val block864801Timestamp = 1728414644L
+        val block864801Nonce = 4254568467L
+        val block864801Version = 666378240L
+        val block864801Merkleroot =
+            "dc2ad1c7a27d394d45961c13a9c36e1d5e6cdbea928c47cb06263bb049a9cd0f"
+
+        val confirmedTip = ByteString.fromHex(block864800Hash).reverse
+        val bits = ByteString.fromHex(block864801Bits).reverse
+        val currentTime = BigInt(block864801Timestamp)
+
+        def longToLE4Bytes(n: Long): ByteString = {
+            ByteString.fromArray(
+              Array(
+                (n & 0xff).toByte,
+                ((n >> 8) & 0xff).toByte,
+                ((n >> 16) & 0xff).toByte,
+                ((n >> 24) & 0xff).toByte
+              )
+            )
+        }
+
+        val blockHeader = BlockHeader(
+          longToLE4Bytes(block864801Version) ++
+              confirmedTip ++
+              ByteString.fromHex(block864801Merkleroot).reverse ++
+              longToLE4Bytes(block864801Timestamp) ++
+              ByteString.fromHex(block864801Bits).reverse ++
+              longToLE4Bytes(block864801Nonce)
+        )
+
+        val prevState = buildTestChainState(
+          blockHeight = block864800Height,
+          blockHash = confirmedTip,
+          bits = bits,
+          baseTimestamp = BigInt(block864800Timestamp),
+          forksTreeSize = 0
+        )
+
+        val headers = prelude.List(blockHeader)
+        val offChainMpf = OffChainMPF.empty.insert(confirmedTip, confirmedTip)
+
+        val (newStateWithProofs, proofs, updatedMpf) =
+            OracleTransactions.computeUpdateWithProofs(prevState, headers, currentTime, offChainMpf)
+        val newStateSimple = OracleTransactions.applyHeaders(prevState, headers, currentTime)
+
+        // No promotion expected, so states should match and proofs should be empty
+        assert(newStateWithProofs == newStateSimple, "States should match when no promotion occurs")
+        assert(proofs.isEmpty, "No proofs expected when no promotion occurs")
+        assert(
+          updatedMpf.rootHash == offChainMpf.rootHash,
+          "MPF should be unchanged when no promotion occurs"
+        )
     }
 
     test("UpdateOracle fails when extra token added to output (value stuffing)") {

@@ -6,8 +6,10 @@ import scalus.cardano.address.Address
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.cardano.onchain.plutus.prelude
 import scalus.cardano.txbuilder.TransactionSigner
-import scalus.uplc.builtin.Data
+import scalus.uplc.builtin.{ByteString, Data}
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
+import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
+import scalus.utils.Hex.hexToBytes
 
 import scala.concurrent.duration.*
 import scala.concurrent.{Await, ExecutionContext, Future}
@@ -258,6 +260,84 @@ case class UpdateOracleCommand(
                         println(s"  Block Hash: ${currentChainState.blockHash.toHex}")
                         println(s"  Fork Tree Size: ${currentChainState.forksTree.size}")
 
+                        // Reconstruct off-chain MPF trie to match confirmedBlocksRoot.
+                        // If the MPF has just the initial block, we can reconstruct trivially.
+                        // If promotions occurred previously, we need to rebuild from Bitcoin RPC.
+                        val initialMpf = OffChainMPF.empty
+                            .insert(currentChainState.blockHash, currentChainState.blockHash)
+                        val offChainMpfInit: OffChainMPF =
+                            if initialMpf.rootHash == currentChainState.confirmedBlocksRoot then
+                                println(
+                                  s"  MPF state: single confirmed block (no previous promotions)"
+                                )
+                                initialMpf
+                            else
+                                // Previous promotions occurred - rebuild MPF from Bitcoin RPC
+                                val startHeight = oracleConf.startHeight match {
+                                    case Some(h) => h
+                                    case None =>
+                                        System.err.println(
+                                          s"  Error: Previous promotions detected but oracle start-height not configured."
+                                        )
+                                        System.err.println(
+                                          s"  Set ORACLE_START_HEIGHT or start-height in config to rebuild MPF."
+                                        )
+                                        return 1
+                                }
+                                println(
+                                  s"  MPF state: rebuilding from blocks $startHeight to ${currentChainState.blockHeight}"
+                                )
+                                val rpcForMpf = new SimpleBitcoinRpc(btcConf)
+                                def rebuildMpf(
+                                    heights: List[Long],
+                                    mpf: OffChainMPF
+                                ): Future[OffChainMPF] = {
+                                    heights match {
+                                        case Nil => Future.successful(mpf)
+                                        case h :: tail =>
+                                            for {
+                                                hashHex <- rpcForMpf.getBlockHash(h.toInt)
+                                                blockHash = ByteString
+                                                    .fromArray(hashHex.hexToBytes.reverse)
+                                                updatedMpf = mpf.insert(blockHash, blockHash)
+                                                result <- rebuildMpf(tail, updatedMpf)
+                                            } yield result
+                                    }
+                                }
+                                val heights =
+                                    (startHeight to currentChainState.blockHeight.toLong).toList
+                                val rebuiltMpf =
+                                    try {
+                                        Await.result(
+                                          rebuildMpf(heights, OffChainMPF.empty),
+                                          120.seconds
+                                        )
+                                    } catch {
+                                        case e: Exception =>
+                                            System.err.println(
+                                              s"  Error rebuilding MPF: ${e.getMessage}"
+                                            )
+                                            return 1
+                                    }
+                                if rebuiltMpf.rootHash != currentChainState.confirmedBlocksRoot
+                                then {
+                                    System.err.println(
+                                      s"  Error: Rebuilt MPF root does not match on-chain confirmedBlocksRoot."
+                                    )
+                                    System.err.println(
+                                      s"  Expected: ${currentChainState.confirmedBlocksRoot.toHex}"
+                                    )
+                                    System.err.println(
+                                      s"  Got: ${rebuiltMpf.rootHash.toHex}"
+                                    )
+                                    System.err.println(
+                                      s"  Check that ORACLE_START_HEIGHT is correct."
+                                    )
+                                    return 1
+                                }
+                                println(s"  MPF rebuilt successfully (${heights.size} blocks)")
+                                rebuiltMpf
+
                         // Determine the highest block we have
                         val highestBlock = if currentChainState.forksTree.nonEmpty then {
                             val maxForkHeight = currentChainState.forksTree.foldLeft(0L) {
@@ -397,9 +477,10 @@ case class UpdateOracleCommand(
                             )
                         }
 
-                        // Track current state and UTxO across batches
+                        // Track current state, UTxO, and MPF across batches
                         var currentState = currentChainState
                         var currentOracleUtxo = oracleUtxo
+                        var currentMpf = offChainMpfInit
 
                         boundary[Int] {
                             for (batch, batchIndex) <- batches.zipWithIndex do {
@@ -464,13 +545,13 @@ case class UpdateOracleCommand(
                                     println(s"  Using validity interval time: $validityTime")
                                 }
 
-                                val newChainState =
+                                val (newChainState, mpfProofs, updatedMpf) =
                                     try {
-                                        BitcoinValidator.computeUpdateOracleState(
+                                        OracleTransactions.computeUpdateWithProofs(
                                           currentState,
                                           headersList,
                                           validityTime,
-                                          prelude.List.Nil
+                                          currentMpf
                                         )
                                     } catch {
                                         case e: Exception =>
@@ -503,7 +584,8 @@ case class UpdateOracleCommand(
                                   validityTime,
                                   oracleConf.oracleTxOutRef,
                                   referenceScriptUtxo,
-                                  timeout
+                                  timeout,
+                                  mpfProofs
                                 )
 
                                 txResult match {
@@ -512,8 +594,9 @@ case class UpdateOracleCommand(
                                             println(s"    Batch $batchNum submitted: $resultTxHash")
                                         }
 
-                                        // Update state for next batch
+                                        // Update state and MPF for next batch
                                         currentState = newChainState
+                                        currentMpf = updatedMpf
 
                                         // Wait for UTxO to be indexed before next batch
                                         if batchIndex < batches.size - 1 then {

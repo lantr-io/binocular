@@ -9,6 +9,8 @@ import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}
 import scalus.uplc.builtin.Data
 import scalus.uplc.builtin.Data.toData
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
+import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
+import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 
 import java.time.Instant
 import scala.concurrent.{Await, ExecutionContext}
@@ -152,13 +154,94 @@ object OracleTransactions {
         SlotConfigHelper.computeValidityIntervalTime(cardanoInfo, targetTimeSeconds)
     }
 
-    /** Apply Bitcoin headers to ChainState to calculate new state */
+    /** Apply Bitcoin headers to ChainState to calculate new state. Uses empty MPF proofs - only
+      * works when no promotion occurs.
+      */
     def applyHeaders(
         currentState: ChainState,
         headers: ScalusList[BlockHeader],
         currentTime: BigInt
     ): ChainState = {
-        BitcoinValidator.computeUpdateOracleState(currentState, headers, currentTime, ScalusList.Nil)
+        BitcoinValidator.computeUpdateOracleState(
+          currentState,
+          headers,
+          currentTime,
+          ScalusList.Nil
+        )
+    }
+
+    /** Determine which blocks will be promoted when applying headers to the state. This mirrors the
+      * header processing + promotion logic from computeUpdateOracleState but is used off-chain only
+      * to pre-compute promoted blocks for proof generation.
+      */
+    def computePromotedBlocks(
+        prevState: ChainState,
+        blockHeaders: ScalusList[BlockHeader],
+        currentTime: BigInt
+    ): ScalusList[BlockSummary] = {
+        val forksTreeAfterAddition = blockHeaders.foldLeft(prevState.forksTree) { (tree, header) =>
+            BitcoinValidator.addBlockToForksTree(tree, header, prevState, currentTime)
+        }
+        val (promotedBlocks, _) = BitcoinValidator.promoteQualifiedBlocks(
+          forksTreeAfterAddition,
+          prevState.blockHash,
+          prevState.blockHeight,
+          currentTime
+        )
+        promotedBlocks
+    }
+
+    /** Compute new ChainState with real MPF insert proofs.
+      *
+      * This is the primary off-chain function for updating the oracle when promotion may occur. It:
+      *   1. Determines which blocks will be promoted
+      *   2. Generates MPF non-membership proofs for each promoted block
+      *   3. Inserts promoted blocks into the off-chain MPF trie
+      *   4. Calls computeUpdateOracleState with the real proofs
+      *
+      * @param currentState
+      *   Current ChainState
+      * @param headers
+      *   Block headers to apply
+      * @param currentTime
+      *   Current time in seconds (POSIX time)
+      * @param offChainMpf
+      *   Current off-chain MPF trie (must match currentState.confirmedBlocksRoot)
+      * @return
+      *   (newState, mpfInsertProofs, updatedMpf)
+      */
+    def computeUpdateWithProofs(
+        currentState: ChainState,
+        headers: ScalusList[BlockHeader],
+        currentTime: BigInt,
+        offChainMpf: OffChainMPF
+    ): (ChainState, ScalusList[ScalusList[ProofStep]], OffChainMPF) = {
+        // 1. Determine which blocks will be promoted
+        val promotedBlocks = computePromotedBlocks(currentState, headers, currentTime)
+
+        // 2. Generate MPF insert proofs for each promoted block.
+        // Each proof is a non-membership proof generated BEFORE inserting the block,
+        // which is what the on-chain MPF.insert expects.
+        var mpf = offChainMpf
+        val proofsBuilder = scala.collection.mutable.ListBuffer[ScalusList[ProofStep]]()
+
+        promotedBlocks.foreach { block =>
+            val proof = mpf.proveNonMembership(block.hash)
+            proofsBuilder += proof
+            mpf = mpf.insert(block.hash, block.hash)
+        }
+
+        val mpfProofs = ScalusList.from(proofsBuilder.toList)
+
+        // 3. Compute the full state with real proofs
+        val newState = BitcoinValidator.computeUpdateOracleState(
+          currentState,
+          headers,
+          currentTime,
+          mpfProofs
+        )
+
+        (newState, mpfProofs, mpf)
     }
 
     /** Build and submit initialization transaction
@@ -255,7 +338,8 @@ object OracleTransactions {
         validityIntervalTimeSeconds: BigInt,
         oracleTxOutRef: TxOutRef,
         referenceScriptUtxo: Option[Utxo] = None,
-        timeout: Duration = 120.seconds
+        timeout: Duration = 120.seconds,
+        mpfInsertProofs: ScalusList[ScalusList[ProofStep]] = ScalusList.Nil
     ): Either[String, String] = {
         given ec: ExecutionContext = provider.executionContext
         Try {
@@ -310,7 +394,7 @@ object OracleTransactions {
 
             // Create UpdateOracle action as redeemer
             val action =
-                Action.UpdateOracle(blockHeaders, redeemerTime, ScalusList.Nil)
+                Action.UpdateOracle(blockHeaders, redeemerTime, mpfInsertProofs)
 
             println(s"[DEBUG] New state forksTree size: ${newChainState.forksTree.size}")
 
