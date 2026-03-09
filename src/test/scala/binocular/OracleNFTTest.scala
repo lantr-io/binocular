@@ -58,7 +58,7 @@ class OracleNFTTest extends AnyFunSuite, ScalusTest {
             .draft
             .getScriptContextV3(provider.utxos, ForMint(scriptHash))
 
-        val result = contract(scriptCtx.toData).program.evaluateDebug
+        val result = contract.program.runWithDebug(scriptCtx)
         assert(result.isSuccess, s"Evaluation failed: ${result.logs}")
     }
 
@@ -82,7 +82,7 @@ class OracleNFTTest extends AnyFunSuite, ScalusTest {
             .draft
             .getScriptContextV3(provider.utxos, ForMint(fakeScriptHash))
 
-        val result = fakeContract(scriptCtx.toData).program.evaluateDebug
+        val result = fakeContract.program.runWithDebug(scriptCtx)
         assert(!result.isSuccess)
     }
 
@@ -97,7 +97,7 @@ class OracleNFTTest extends AnyFunSuite, ScalusTest {
             .draft
             .getScriptContextV3(provider.utxos, ForMint(scriptHash))
 
-        val result = contract(scriptCtx.toData).program.evaluateDebug
+        val result = contract.program.runWithDebug(scriptCtx)
         assert(!result.isSuccess)
     }
 
@@ -113,7 +113,7 @@ class OracleNFTTest extends AnyFunSuite, ScalusTest {
             .draft
             .getScriptContextV3(provider.utxos, ForMint(scriptHash))
 
-        val result = contract(scriptCtx.toData).program.evaluateDebug
+        val result = contract.program.runWithDebug(scriptCtx)
         assert(!result.isSuccess)
     }
 
@@ -128,7 +128,7 @@ class OracleNFTTest extends AnyFunSuite, ScalusTest {
             .draft
             .getScriptContextV3(provider.utxos, ForMint(scriptHash))
 
-        val result = contract(scriptCtx.toData).program.evaluateDebug
+        val result = contract.program.runWithDebug(scriptCtx)
         assert(!result.isSuccess)
     }
 
@@ -142,7 +142,7 @@ class OracleNFTTest extends AnyFunSuite, ScalusTest {
             .draft
             .getScriptContextV3(provider.utxos, ForMint(scriptHash))
 
-        val result = contract(scriptCtx.toData).program.evaluateDebug
+        val result = contract.program.runWithDebug(scriptCtx)
         assert(result.isSuccess, s"Burn evaluation failed: ${result.logs}")
     }
 }
