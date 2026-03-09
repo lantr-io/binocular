@@ -7,6 +7,7 @@ import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.uplc.builtin.{ByteString, Data}
 import scalus.utils.await
+import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 
 import scala.concurrent.duration.*
 import scala.concurrent.{ExecutionContext, Future}
@@ -218,9 +219,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
         println(s"[Test] Test with empty headers skipped (validator rejects empty list)")
     }
 
-    // TODO: Re-enable once off-chain MPF proof generation is implemented.
-    // This test triggers block promotion which requires MPF insert proofs in the redeemer.
-    ignore("scenario: full lifecycle - promotion, proof, and verification") {
+    test("scenario: full lifecycle - promotion, proof, and verification") {
         val ctx = createYaciContext()
         given ec: ExecutionContext = ctx.provider.executionContext
 
@@ -318,6 +317,9 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
         // Process in batches
         val batches = allHeaders.grouped(batchSize).toSeq
         var currentState = initialState
+        // Initialize off-chain MPF from the initial confirmed block
+        var currentMpf = OffChainMPF.empty
+            .insert(initialState.blockHash, initialState.blockHash)
 
         batches.zipWithIndex.foreach { case (batch, batchIndex) =>
             println(
@@ -343,12 +345,12 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
                 OracleTransactions.computeValidityIntervalTime(ctx.provider.cardanoInfo)._2
             }
 
-            // Compute new state
-            val newState = BitcoinValidator.computeUpdateOracleState(
+            // Compute new state with MPF proofs
+            val (newState, mpfProofs, updatedMpf) = OracleTransactions.computeUpdateWithProofs(
               currentState,
               headersList,
               validityTime,
-              ScalusList.Nil
+              currentMpf
             )
 
             println(s"  [Batch ${batchIndex + 1}] Off-chain computed state:")
@@ -377,7 +379,8 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
               headersList,
               validityTime,
               BitcoinContract.testTxOutRef,
-              referenceScriptUtxo
+              referenceScriptUtxo,
+              mpfInsertProofs = mpfProofs
             )
 
             updateTxResult match {
@@ -418,6 +421,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
                     // Update for next iteration
                     currentState = newState
                     currentOracleUtxo = oracleUtxo
+                    currentMpf = updatedMpf
 
                 case Left(errorMsg) =>
                     fail(s"Failed to update oracle with batch ${batchIndex + 1}: $errorMsg")
