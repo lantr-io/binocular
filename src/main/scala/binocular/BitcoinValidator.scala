@@ -1146,35 +1146,6 @@ object BitcoinValidator extends DataParameterizedValidator {
         update(outRef, action, inputs, outputs, validRange)
     }
 
-    // This is for Sum-of-Products lowering
-    inline def spend2(
-        param: Data,
-        datum: Option[Datum],
-        redeemer: Datum,
-        txInfoData: Data,
-        outRef: TxOutRef
-    ): Unit = {
-        val action = redeemer.to[Action]
-
-        val inputs = txInfoData.field[TxInfo](_.inputs).to[List[TxInInfo]]
-        val outputs = txInfoData.field[TxInfo](_.outputs).to[List[TxOut]]
-        val validRange = txInfoData.field[TxInfo](_.validRange).to[Interval]
-        update(outRef, action, inputs, outputs, validRange)
-    }
-
-    // This is for Sum-of-Products lowering
-    def validate2(param: Data)(scData: Data): Unit = {
-        val sc = unConstrData(scData).snd
-        val txInfoData = sc.head
-        val redeemer = sc.tail.head
-        val scriptInfo = unConstrData(sc.tail.tail.head)
-        if scriptInfo.fst == BigInt(1) then
-            val txOutRef = scriptInfo.snd.head.to[TxOutRef]
-            val datum = scriptInfo.snd.tail.head.to[Option[Datum]]
-            spend2(param, datum, redeemer, txInfoData, txOutRef)
-        else fail("Invalid script context")
-    }
-
     def reverse(bs: ByteString): ByteString =
         val len = lengthOfByteString(bs)
         def loop(idx: BigInt, acc: ByteString): ByteString =
