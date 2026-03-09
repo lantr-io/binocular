@@ -93,9 +93,8 @@ object TransactionBuilders {
             )
 
             // 2. Create UpdateOracle action as redeemer
-            val dummyHash = ByteString.empty
             val currentTime = BigInt(System.currentTimeMillis() / 1000)
-            val action = Action.UpdateOracle(blockHeaders, currentTime, dummyHash, ScalusList.Nil)
+            val action = Action.UpdateOracle(blockHeaders, currentTime, ScalusList.Nil)
             println(s"[UpdateOracle] Created redeemer with ${blockHeaders.length} headers")
 
             // 3. Calculate amount to lock (same as input)

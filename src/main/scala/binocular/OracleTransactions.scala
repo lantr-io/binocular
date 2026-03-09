@@ -308,14 +308,9 @@ object OracleTransactions {
 
             val redeemerTime = validityIntervalTimeSeconds
 
-            // Compute input datum hash for redeemer
-            val inputDatumHash = scalus.uplc.builtin.Builtins.blake2b_256(
-              scalus.uplc.builtin.Builtins.serialiseData(currentChainState.toData)
-            )
-
             // Create UpdateOracle action as redeemer
             val action =
-                Action.UpdateOracle(blockHeaders, redeemerTime, inputDatumHash, ScalusList.Nil)
+                Action.UpdateOracle(blockHeaders, redeemerTime, ScalusList.Nil)
 
             println(s"[DEBUG] New state forksTree size: ${newChainState.forksTree.size}")
 
