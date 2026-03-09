@@ -2,6 +2,7 @@ package binocular
 
 import scalus.uplc.builtin.ByteString
 import scalus.cardano.onchain.plutus.prelude
+import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 import scalus.utils.Hex.hexToBytes
 
 import scala.concurrent.{ExecutionContext, Future}
@@ -12,6 +13,10 @@ object BitcoinChainState {
     /** Convert Bitcoin RPC/display-order compact bits hex into internal little-endian bytes. */
     def rpcBitsToCompactBits(bitsHex: String): ByteString =
         ByteString.fromArray(bitsHex.hexToBytes.reverse)
+
+    /** Compute MPF root hash for a single block (used for initial state creation) */
+    def mpfRootForSingleBlock(blockHash: ByteString): ByteString =
+        OffChainMPF.empty.insert(blockHash, blockHash).rootHash
 
     /** Build 80-byte raw header from block header info */
     private def buildRawHeader(header: BlockHeaderInfo): Array[Byte] = {
@@ -147,7 +152,7 @@ object BitcoinChainState {
           blockTimestamp = BigInt(header.time),
           recentTimestamps = recentTimestamps,
           previousDifficultyAdjustmentTimestamp = BigInt(adjustmentHeader.time),
-          confirmedBlocksTree = prelude.List(blockHash), // Single-element Merkle tree: [blockHash]
+          confirmedBlocksRoot = mpfRootForSingleBlock(blockHash), // MPF trie with single block
           forksTree = prelude.List.Nil // Initialize with empty forks tree
         )
     }

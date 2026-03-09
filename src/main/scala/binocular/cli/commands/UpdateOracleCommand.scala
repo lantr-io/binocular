@@ -4,6 +4,7 @@ import binocular.cli.{Command, CommandHelpers}
 import binocular.*
 import scalus.cardano.address.Address
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
+import scalus.cardano.onchain.plutus.prelude
 import scalus.cardano.txbuilder.TransactionSigner
 import scalus.uplc.builtin.Data
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
@@ -468,7 +469,8 @@ case class UpdateOracleCommand(
                                         BitcoinValidator.computeUpdateOracleState(
                                           currentState,
                                           headersList,
-                                          validityTime
+                                          validityTime,
+                                          prelude.List.Nil
                                         )
                                     } catch {
                                         case e: Exception =>

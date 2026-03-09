@@ -10,6 +10,8 @@ import scalus.uplc.builtin.*
 import scalus.uplc.builtin.Builtins.*
 import scalus.uplc.builtin.Data.{FromData, ToData}
 import scalus.uplc.{PlutusV3, Program}
+import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry as MPF
+import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 
 /** Datum for the TransactionVerifier contract
   *
@@ -36,18 +38,15 @@ object TxVerifierDatum
   *   Index of the transaction in the block (0-based)
   * @param txMerkleProof
   *   Merkle proof path from transaction to block's merkle root (list of sibling hashes)
-  * @param blockIndex
-  *   Index of the block in the Oracle's confirmed blocks tree (0-based)
-  * @param blockMerkleProof
-  *   Merkle proof path from block hash to confirmed blocks tree root
+  * @param blockMpfProof
+  *   MPF membership proof that block hash is in Oracle's confirmed blocks trie
   * @param blockHeader
   *   The 80-byte Bitcoin block header (to extract merkle root and verify hash)
   */
 case class TxVerifierRedeemer(
     txIndex: BigInt,
     txMerkleProof: List[TxHash],
-    blockIndex: BigInt,
-    blockMerkleProof: List[BlockHash],
+    blockMpfProof: List[ProofStep],
     blockHeader: BlockHeader
 ) derives FromData,
       ToData
@@ -121,18 +120,11 @@ object TransactionVerifierValidator {
         val oracleOutput = findOracleInput(tx.referenceInputs, datum.oracleScriptHash)
         val oracleState = getOracleState(oracleOutput)
 
-        // Step 2: Compute the confirmed blocks tree root from Oracle state
-        val confirmedTreeRoot = BitcoinValidator.getMerkleRoot(oracleState.confirmedBlocksTree)
-
-        // Step 3: Verify block is in Oracle's confirmed blocks tree
-        val computedTreeRoot = BitcoinHelpers.merkleRootFromInclusionProof(
-          proof.blockMerkleProof,
+        // Step 2-3: Verify block is in Oracle's confirmed blocks trie via MPF membership proof
+        MPF(oracleState.confirmedBlocksRoot).verifyMembership(
           datum.expectedBlockHash,
-          proof.blockIndex
-        )
-        require(
-          computedTreeRoot == confirmedTreeRoot,
-          "Block not found in Oracle's confirmed blocks tree"
+          datum.expectedBlockHash,
+          proof.blockMpfProof
         )
 
         // Step 4: Verify block header hashes to expected block hash

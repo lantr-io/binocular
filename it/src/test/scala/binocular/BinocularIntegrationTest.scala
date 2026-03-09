@@ -217,7 +217,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
           recentTimestamps = genesisRecentTimestamps,
           previousDifficultyAdjustmentTimestamp =
               genesisTimestamp - 600 * BitcoinHelpers.DifficultyAdjustmentInterval,
-          confirmedBlocksTree = prelude.List(genesisHash),
+          confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(genesisHash),
           forksTree = prelude.List.Nil
         )
     }

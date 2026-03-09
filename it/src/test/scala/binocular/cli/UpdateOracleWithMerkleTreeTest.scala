@@ -10,16 +10,16 @@ import scalus.utils.await
 import scala.concurrent.duration.*
 import scala.concurrent.{ExecutionContext, Future}
 
-/** Integration test for UpdateOracle with Merkle Tree verification
+/** Integration test for UpdateOracle with MPF (MerklePatriciaForestry) verification
   *
-  * Tests that the confirmed blocks Merkle tree is correctly updated when:
-  *   1. Oracle is initialized at block N 2. Multiple blocks are submitted and promoted 3. The
-  *      confirmedBlocksTree field is properly updated 4. The Merkle root can be calculated from the
-  *      tree
+  * Tests that the confirmed blocks MPF root is correctly maintained when:
+  *   1. Oracle is initialized at block N
+  *   2. Multiple blocks are submitted
+  *   3. The confirmedBlocksRoot field is properly set
   */
 class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
 
-    test("update-oracle: Merkle tree is updated when blocks are promoted") {
+    test("update-oracle: MPF root is maintained when blocks are added") {
         val ctx = createYaciContext()
         given ec: ExecutionContext = ctx.provider.executionContext
 
@@ -72,16 +72,19 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                 fail(s"Failed to initialize oracle: $err")
         }
 
-        // Verify initial Merkle tree state
+        // Verify initial MPF root state
         val initialChainState = oracleUtxo.output.inlineDatum.get.to[ChainState]
 
-        println(s"[Test] Initial Merkle tree:")
-        println(s"    Tree size: ${countTreeLevels(initialChainState.confirmedBlocksTree)}")
+        println(s"[Test] Initial MPF root: ${initialChainState.confirmedBlocksRoot.toHex}")
         println(s"    Initial block: ${initialState.blockHash.toHex}")
 
         assert(
-          countTreeLevels(initialChainState.confirmedBlocksTree) == 1,
-          "Initial tree should have 1 level (single block)"
+          initialChainState.confirmedBlocksRoot.size == 32,
+          "Initial MPF root should be 32 bytes"
+        )
+        assert(
+          initialChainState.confirmedBlocksRoot == initialState.confirmedBlocksRoot,
+          "On-chain MPF root should match initial state"
         )
 
         println(
@@ -110,7 +113,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
         val (_, validityTime) =
             OracleTransactions.computeValidityIntervalTime(ctx.provider.cardanoInfo)
         val newState =
-            BitcoinValidator.computeUpdateOracleState(initialState, headersList, validityTime)
+            BitcoinValidator.computeUpdateOracleState(initialState, headersList, validityTime, ScalusList.Nil)
 
         println(s"[Test] New state calculated:")
         println(s"    Old height: ${initialState.blockHeight}")
@@ -173,70 +176,24 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
 
                 println(s"[Test] Forks tree has grown correctly")
 
-                println(s"[Test] Step 7: Verifying we can compute Merkle root")
+                println(s"[Test] Step 7: Verifying MPF root")
 
-                // Try to compute the Merkle root from the tree
-                val computedRoot =
-                    BitcoinValidator.getMerkleRoot(chainState.confirmedBlocksTree)
-                println(s"    Computed Merkle root: ${computedRoot.toHex}")
-                println(s"    Root length: ${computedRoot.bytes.length} bytes")
+                // The MPF root should be unchanged since no blocks have been promoted
+                // (only 2 new blocks added, far fewer than 100 required for promotion)
+                val mpfRoot = chainState.confirmedBlocksRoot
+                println(s"    MPF root: ${mpfRoot.toHex}")
+                println(s"    Root length: ${mpfRoot.bytes.length} bytes")
 
-                assert(computedRoot.bytes.length == 32, "Merkle root should be 32 bytes")
+                assert(mpfRoot.bytes.length == 32, "MPF root should be 32 bytes")
+                assert(
+                  mpfRoot == initialState.confirmedBlocksRoot,
+                  "MPF root should be unchanged (no promotion occurred)"
+                )
 
-                println(s"[Test] Successfully computed Merkle root from tree")
-
-                println(s"[Test] Step 8: Verifying tree represents all blocks")
-
-                // Build reference Merkle tree from all block hashes
-                val allBlockHashes = scala.collection.mutable.ArrayBuffer[ByteString]()
-
-                // Add initial block
-                allBlockHashes += initialState.blockHash
-
-                // Add updated blocks (need to fetch their hashes)
-                for height <- startHeight + 1 to updateToHeight do {
-                    val hashHex = mockRpc.getBlockHash(height).await(5.seconds)
-                    val hashBytes = ByteString.fromHex(hashHex).reverse
-                    allBlockHashes += hashBytes
-                }
-
-                println(s"    Total blocks: ${allBlockHashes.size}")
-                println(s"    Block 0: ${allBlockHashes(0).toHex}")
-                println(s"    Block 1: ${allBlockHashes(1).toHex}")
-                println(s"    Block 2: ${allBlockHashes(2).toHex}")
-            // println(s"    Block 3: ${allBlockHashes(3).toHex}")
-
-            /** Here nothing hase changed because blocks are not yet confirmed, so we cannot
-              * verify the confirmedBlocksTree against allBlockHashes.
-              *
-              * // Build reference tree using MerkleTree (non-rolling) val referenceMerkleTree =
-              * MerkleTree.fromHashes(allBlockHashes.toSeq) val referenceRoot =
-              * referenceMerkleTree.getMerkleRoot
-              *
-              * println(s" Reference Merkle root: ${referenceRoot.toHex}")
-              *
-              * // The rolling tree root should match the reference tree root assert(
-              * computedRoot == referenceRoot, s"Rolling Merkle root doesn't match reference!\n
-              * Computed: ${computedRoot.toHex}\n Reference: ${referenceRoot.toHex}" )
-              *
-              * println(s"[Test] Rolling Merkle tree matches reference implementation!")
-              */
+                println(s"[Test] MPF root correctly unchanged (no promotion)")
             case Left(err) =>
                 fail(s"Failed to update oracle: $err")
         }
     }
 
-    /** Helper to count non-empty levels in the Merkle tree */
-    private def countTreeLevels(tree: ScalusList[ByteString]): Int = {
-        def count(list: ScalusList[ByteString], acc: Int): Int = {
-            list match {
-                case ScalusList.Nil              => acc
-                case ScalusList.Cons(head, tail) =>
-                    // Count this level if it's not all zeros (empty)
-                    val isEmpty = head.bytes.forall(_ == 0)
-                    count(tail, if isEmpty then acc else acc + 1)
-            }
-        }
-        count(tree, 0)
-    }
 }

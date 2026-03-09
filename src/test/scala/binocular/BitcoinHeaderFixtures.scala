@@ -178,7 +178,7 @@ object BitcoinHeaderFixtures {
           blockTimestamp = timestamp,
           recentTimestamps = prelude.List.single(timestamp),
           previousDifficultyAdjustmentTimestamp = estimatedPrevAdjustmentTime,
-          confirmedBlocksTree = prelude.List(blockHash),
+          confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(blockHash),
           forksTree = prelude.List.Nil
         )
     }
