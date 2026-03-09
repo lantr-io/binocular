@@ -12,7 +12,7 @@ import scalus.testing.kit.TestUtil.getScriptContextV3
 import scalus.testing.kit.ScalusTest
 import scalus.uplc.builtin.ByteString.hex
 import scalus.uplc.builtin.Data.toData
-import scalus.uplc.builtin.{Builtins, ByteString, Data}
+import scalus.uplc.builtin.{ByteString, Data}
 import scalus.cardano.onchain.plutus.prelude
 import scalus.cardano.onchain.plutus.v3.ScriptContext
 import scalus.uplc.eval
@@ -176,13 +176,8 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         println(s"Expected forksTree size: ${newForksTree.size}")
         println(s"Expected newState.forksTree size: ${newState.forksTree.size}")
 
-        // Compute input datum hash for datum hash verification
-        val inputDatumHash = Builtins.blake2b_256(
-          Builtins.serialiseData(prevState.toData)
-        )
-
         val redeemer = Action
-            .UpdateOracle(prelude.List(blockHeader), timestamp, inputDatumHash, prelude.List.Nil)
+            .UpdateOracle(prelude.List(blockHeader), timestamp, prelude.List.Nil)
             .toData
 
         println(s"Redeemer size: ${redeemer.toCbor.length}")
@@ -938,12 +933,8 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           forksTree = expectedForksTree
         )
 
-        // Create redeemer with correct input datum hash
-        val inputDatumHash = Builtins.blake2b_256(
-          Builtins.serialiseData(prevState.toData)
-        )
         val redeemer = Action
-            .UpdateOracle(prelude.List(blockHeader), baseTime, inputDatumHash, prelude.List.Nil)
+            .UpdateOracle(prelude.List(blockHeader), baseTime, prelude.List.Nil)
             .toData
 
         // Create script context and evaluate
@@ -1037,15 +1028,10 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           forksTreeSize = 0
         )
 
-        // Create redeemer with empty list and correct input datum hash
-        val inputDatumHash = Builtins.blake2b_256(
-          Builtins.serialiseData(prevState.toData)
-        )
         val redeemer = Action
             .UpdateOracle(
               prelude.List.empty,
               BigInt(System.currentTimeMillis() / 1000),
-              inputDatumHash,
               prelude.List.Nil
             )
             .toData
@@ -1312,11 +1298,8 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           forksTree = prelude.List(expectedBranch)
         )
 
-        val inputDatumHash = Builtins.blake2b_256(
-          Builtins.serialiseData(prevState.toData)
-        )
         val redeemer = Action
-            .UpdateOracle(prelude.List(blockHeader), baseTime, inputDatumHash, prelude.List.Nil)
+            .UpdateOracle(prelude.List(blockHeader), baseTime, prelude.List.Nil)
             .toData
 
         (

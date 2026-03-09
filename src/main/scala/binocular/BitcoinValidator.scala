@@ -115,15 +115,12 @@ enum Action derives FromData, ToData:
       *   \- new block headers to process (ordered from oldest to newest)
       * @param currentTime
       *   \- current on-chain time for validation in seconds since Unix epoch
-      * @param inputDatumHash
-      *   \- blake2b-256 hash of the input datum (for debugging non-determinism)
       * @param mpfInsertProofs
       *   \- one MPF proof (List[ProofStep]) per promoted block, for inserting into confirmed trie
       */
     case UpdateOracle(
         blockHeaders: List[BlockHeader],
         currentTime: BigInt,
-        inputDatumHash: ByteString,
         mpfInsertProofs: List[List[ProofStep]]
     )
 
@@ -1062,18 +1059,7 @@ object BitcoinValidator extends DataParameterizedValidator {
                     datum.to[ChainState]
                 case _ => fail("No datum")
         action match
-            case Action.UpdateOracle(blockHeaders, redeemerTime, inputDatumHash, mpfInsertProofs) =>
-                // Datum hash verification disabled for production (expensive)
-                // Uncomment for debugging datum non-determinism issues:
-                // val actualInputDatumHash = blake2b_256(serialiseData(prevState.toData))
-                // // scalus.prelude.log("Expected inputDatumHash from redeemer (hex):")
-                // // scalus.prelude.log(scalus.prelude.Prelude.encodeHex(inputDatumHash))
-                // // scalus.prelude.log("Actual inputDatumHash computed on-chain (hex):")
-                // // scalus.prelude.log(scalus.prelude.Prelude.encodeHex(actualInputDatumHash))
-                // require(
-                //   inputDatumHash == actualInputDatumHash,
-                //   "Input datum hash mismatch - datum was modified!"
-                // )
+            case Action.UpdateOracle(blockHeaders, redeemerTime, mpfInsertProofs) =>
 
                 // Verify redeemer time is within tolerance of actual validity interval time
                 val timeDiff =
