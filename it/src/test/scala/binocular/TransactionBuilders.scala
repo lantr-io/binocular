@@ -175,14 +175,4 @@ object TransactionBuilders {
         }
     }
 
-    /** Apply block headers to ChainState to calculate new state */
-    def applyHeaders(
-        currentState: ChainState,
-        headers: ScalusList[BlockHeader],
-        currentTime: BigInt
-    ): ChainState = {
-        headers.foldLeft(currentState) { (state, header) =>
-            BitcoinValidator.updateTip(state, header, currentTime)
-        }
-    }
 }

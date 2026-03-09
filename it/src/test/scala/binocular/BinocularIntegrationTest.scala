@@ -165,7 +165,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
             // Calculate expected new state
             val headerList = prelude.List.single(header)
             val newState =
-                TransactionBuilders.applyHeaders(currentState, headerList, currentTime)
+                OracleTransactions.applyHeaders(currentState, headerList, currentTime)
             println(s"  Expected new height: ${newState.blockHeight}")
 
             // Submit UpdateOracle transaction
