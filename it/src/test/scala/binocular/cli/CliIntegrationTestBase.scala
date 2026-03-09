@@ -1,6 +1,6 @@
 package binocular.cli
 
-import binocular.{BitcoinNodeConfig, BlockHeaderInfo, BlockInfo, BlockchainInfo, CardanoConfig, OracleConfig, RawTransactionInfo, TransactionInfo, WalletConfig}
+import binocular.{BitcoinNodeConfig, BlockFixture, BlockHeaderInfo, BlockInfo, BlockchainInfo, CardanoConfig, OracleConfig, RawTransactionInfo, TransactionInfo, WalletConfig}
 import org.scalatest.funsuite.AnyFunSuite
 import scalus.cardano.address.Address
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
@@ -89,11 +89,8 @@ trait CliIntegrationTestBase extends AnyFunSuite with YaciDevKit {
         ec: ExecutionContext
     ) {
 
-        private def loadBlockFixture(height: Int): BlockFixture = {
-            val file = s"$fixtureDir/block_$height.json"
-            val json = Source.fromFile(file).mkString
-            read[BlockFixture](json)
-        }
+        private def loadBlockFixture(height: Int): BlockFixture =
+            BlockFixture.load(height, fixtureDir)
 
         private def loadBlockByHash(hash: String): Option[BlockFixture] = {
             // Linear search through fixtures - good enough for tests
@@ -102,10 +99,7 @@ trait CliIntegrationTestBase extends AnyFunSuite with YaciDevKit {
                 .filter(_.getName.startsWith("block_"))
                 .filter(_.getName.endsWith(".json"))
                 .filterNot(_.getName.contains("merkle_proofs")) // Skip merkle proof files
-                .map { f =>
-                    val json = Source.fromFile(f).mkString
-                    read[BlockFixture](json)
-                }
+                .map { f => BlockFixture.load(f) }
                 .find(_.hash == hash)
         }
 
@@ -182,10 +176,7 @@ trait CliIntegrationTestBase extends AnyFunSuite with YaciDevKit {
                     .filter(_.getName.startsWith("block_"))
                     .filter(_.getName.endsWith(".json"))
                     .filterNot(_.getName.contains("merkle_proofs"))
-                    .map { f =>
-                        val json = Source.fromFile(f).mkString
-                        read[BlockFixture](json)
-                    }
+                    .map { f => BlockFixture.load(f) }
                     .find(_.transactions.contains(txid))
 
                 blockWithTx match {
@@ -212,10 +203,7 @@ trait CliIntegrationTestBase extends AnyFunSuite with YaciDevKit {
                     .filter(_.getName.startsWith("block_"))
                     .filter(_.getName.endsWith(".json"))
                     .filterNot(_.getName.contains("merkle_proofs"))
-                    .map { f =>
-                        val json = Source.fromFile(f).mkString
-                        read[BlockFixture](json)
-                    }
+                    .map { f => BlockFixture.load(f) }
                     .map(_.height)
                     .maxOption
                     .getOrElse(0)
@@ -230,21 +218,6 @@ trait CliIntegrationTestBase extends AnyFunSuite with YaciDevKit {
             }
         }
     }
-
-    /** Block fixture from JSON */
-    case class BlockFixture(
-        height: Int,
-        hash: String,
-        merkleroot: String,
-        transactions: Seq[String],
-        previousblockhash: Option[String], // Required for all blocks except genesis
-        timestamp: Long, // Required for validation
-        bits: String, // Required for difficulty validation
-        nonce: Long, // Required for proof-of-work validation
-        version: Long, // Required for header hash calculation
-        difficulty: Option[Double] = None, // Optional - not used in validation
-        description: Option[String] = None // Optional - for documentation
-    ) derives ReadWriter
 
     /** Merkle proof test case from JSON */
     case class MerkleProofTestCase(
