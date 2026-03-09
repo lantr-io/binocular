@@ -31,7 +31,7 @@ class ForksTreeStructureTest extends AnyFunSuite {
           blockTimestamp = BigInt(1000000),
           recentTimestamps = List.single(BigInt(1000000)),
           previousDifficultyAdjustmentTimestamp = BigInt(900000),
-          confirmedBlocksTree = List.Nil,
+          confirmedBlocksRoot = ByteString.fromHex("00" * 32), // Empty MPF root
           forksTree = List.Nil
         )
 

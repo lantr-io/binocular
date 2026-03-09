@@ -132,7 +132,7 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
           blockTimestamp = BigInt(header.time),
           recentTimestamps = prelude.List(BigInt(header.time)),
           previousDifficultyAdjustmentTimestamp = BigInt(adjustmentHeader.time),
-          confirmedBlocksTree = prelude.List(blockHash), // Single-element Merkle tree
+          confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(blockHash), // MPF trie with single block
           forksTree = prelude.List.Nil // Initialize with empty forks tree
         )
     }

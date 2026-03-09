@@ -9,6 +9,8 @@ import scalus.cardano.onchain.plutus.v2.{Interval, IntervalBoundType, OutputDatu
 import scalus.cardano.onchain.plutus.v1.PolicyId
 import scalus.cardano.onchain.plutus.v3.{DataParameterizedValidator, Datum, TxInInfo, TxInfo, TxOut, TxOutRef}
 import scalus.cardano.onchain.plutus.prelude.{List, *}
+import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry as MPF
+import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import scalus.{show as _, *}
 
 import scala.annotation.tailrec
@@ -95,7 +97,7 @@ case class ChainState(
     blockTimestamp: BigInt,
     recentTimestamps: List[BigInt], // Newest first
     previousDifficultyAdjustmentTimestamp: BigInt,
-    confirmedBlocksTree: List[ByteString], // Rolling Merkle tree state (levels array)
+    confirmedBlocksRoot: ByteString, // MPF root hash (32 bytes) for confirmed blocks trie
 
     // Forks tree - each branch stores consecutive blocks from a fork point
     // This reduces memory usage by ~90% compared to storing each block separately
@@ -115,11 +117,14 @@ enum Action derives FromData, ToData:
       *   \- current on-chain time for validation in seconds since Unix epoch
       * @param inputDatumHash
       *   \- blake2b-256 hash of the input datum (for debugging non-determinism)
+      * @param mpfInsertProofs
+      *   \- one MPF proof (List[ProofStep]) per promoted block, for inserting into confirmed trie
       */
     case UpdateOracle(
         blockHeaders: List[BlockHeader],
         currentTime: BigInt,
-        inputDatumHash: ByteString
+        inputDatumHash: ByteString,
+        mpfInsertProofs: List[List[ProofStep]]
     )
 
 @Compile
@@ -301,90 +306,6 @@ object BitcoinValidator extends DataParameterizedValidator {
     val StaleCompetingForkAge: BigInt = 400 * 60 // 400 minutes (2× challenge period)
     val ChainworkGapThreshold: BigInt = 10 // Blocks worth of work for stale fork detection
     val MaxForksTreeSize: BigInt = 180 // Maximum forks tree size before garbage collection
-
-    // === Rolling Merkle Tree Implementation ===
-    // Matches the rolling tree algorithm from MerkleTreeRootBuilder in merkle.scala
-    // The tree state is stored as a list of hashes, one per level
-    // Empty slots are represented as 32 zero bytes
-
-    val emptyHash: ByteString =
-        hex"0000000000000000000000000000000000000000000000000000000000000000"
-
-    /** Check if a ByteString is the empty hash (all zeros) */
-    def isEmptyHash(bs: ByteString): Boolean =
-        lengthOfByteString(bs) == BigInt(32) && bs == emptyHash
-
-    /** Get value at index in list, or return default if index out of bounds */
-    def getAtIndex(levels: List[ByteString], idx: BigInt, default: ByteString): ByteString =
-        if idx < BigInt(0) then default
-        else
-            levels match
-                case List.Nil => default
-                case List.Cons(head, tail) =>
-                    if idx == BigInt(0) then head
-                    else getAtIndex(tail, idx - 1, default)
-
-    /** Set value at index in list, extending list if necessary */
-    def setAtIndex(levels: List[ByteString], idx: BigInt, value: ByteString): List[ByteString] =
-        if idx < BigInt(0) then fail("Negative index")
-        else if idx == BigInt(0) then
-            levels match
-                case List.Nil           => List.Cons(value, List.Nil)
-                case List.Cons(_, tail) => List.Cons(value, tail)
-        else
-            levels match
-                case List.Nil =>
-                    // Extend list with empty hashes
-                    List.Cons(emptyHash, setAtIndex(List.Nil, idx - 1, value))
-                case List.Cons(head, tail) =>
-                    List.Cons(head, setAtIndex(tail, idx - 1, value))
-
-    /** Get length of list */
-    def listLength(list: List[ByteString]): BigInt =
-        list match
-            case List.Nil           => 0
-            case List.Cons(_, tail) => 1 + listLength(tail)
-
-    /** Add a hash to the rolling Merkle tree at a specific level */
-    def addHashAtLevel(
-        levels: List[ByteString],
-        hash: ByteString,
-        startingLevel: BigInt
-    ): List[ByteString] =
-        val currentHash = getAtIndex(levels, startingLevel, emptyHash)
-        if isEmptyHash(currentHash) then
-            // Empty slot - just store the hash here
-            setAtIndex(levels, startingLevel, hash)
-        else
-            // Occupied slot - combine hashes and move to next level
-            val combined = sha2_256(sha2_256(currentHash ++ hash))
-            val clearedLevel = setAtIndex(levels, startingLevel, emptyHash)
-            addHashAtLevel(clearedLevel, combined, startingLevel + 1)
-
-    /** Add a block hash to the rolling Merkle tree */
-    def addToMerkleTree(tree: List[ByteString], blockHash: BlockHash): List[ByteString] =
-        addHashAtLevel(tree, blockHash, 0)
-
-    /** Get Merkle root from the rolling tree state */
-    def getMerkleRoot(levels: List[ByteString]): MerkleRoot =
-        // Finalize tree by combining all remaining levels
-        def finalize(levels: List[ByteString], idx: BigInt): MerkleRoot =
-            val len = listLength(levels)
-            if idx >= len then
-                // Return last non-empty hash
-                val lastHash = getAtIndex(levels, len - 1, emptyHash)
-                if isEmptyHash(lastHash) then emptyHash else lastHash
-            else
-                val currentHash = getAtIndex(levels, idx, emptyHash)
-                if !isEmptyHash(currentHash) && idx < len - 1 then
-                    // Propagate this hash up
-                    val updated = addHashAtLevel(levels, currentHash, idx)
-                    finalize(updated, idx + 1)
-                else finalize(levels, idx + 1)
-
-        levels match
-            case List.Nil => emptyHash
-            case _        => finalize(levels, 0)
 
     def getMedianTimePastFromBlocks(
         forkBlocks: List[BlockSummary],
@@ -908,8 +829,8 @@ object BitcoinValidator extends DataParameterizedValidator {
           blockTimestamp = blockTime,
           recentTimestamps = newTimestamps,
           previousDifficultyAdjustmentTimestamp = newDifficultyAdjustmentTimestamp,
-          confirmedBlocksTree =
-              prevState.confirmedBlocksTree, // Preserve confirmed blocks tree (updated separately)
+          confirmedBlocksRoot =
+              prevState.confirmedBlocksRoot, // Preserve confirmed blocks root (updated separately)
           forksTree = prevState.forksTree // Preserve forks tree (will be updated separately)
         )
 
@@ -943,7 +864,7 @@ object BitcoinValidator extends DataParameterizedValidator {
               blockTimestamp = block.timestamp,
               recentTimestamps = newTimestamps,
               previousDifficultyAdjustmentTimestamp = newDifficultyAdjustmentTimestamp,
-              confirmedBlocksTree = state.confirmedBlocksTree,
+              confirmedBlocksRoot = state.confirmedBlocksRoot,
               forksTree = state.forksTree
             )
         }
@@ -965,7 +886,8 @@ object BitcoinValidator extends DataParameterizedValidator {
     def computeUpdateOracleState(
         prevState: ChainState,
         blockHeaders: List[BlockHeader],
-        currentTime: BigInt
+        currentTime: BigInt,
+        mpfInsertProofs: List[List[ProofStep]]
     ): ChainState = {
         // scalus.prelude.log("computeUpdateOracleState START")
         // scalus.prelude.log("INPUT prevState.forksTree.size:")
@@ -1062,7 +984,7 @@ object BitcoinValidator extends DataParameterizedValidator {
               recentTimestamps = prevState.recentTimestamps,
               previousDifficultyAdjustmentTimestamp =
                   prevState.previousDifficultyAdjustmentTimestamp,
-              confirmedBlocksTree = prevState.confirmedBlocksTree,
+              confirmedBlocksRoot = prevState.confirmedBlocksRoot,
               forksTree = finalForksTree
             )
         else
@@ -1071,18 +993,28 @@ object BitcoinValidator extends DataParameterizedValidator {
             // Get the latest (newest) promoted block (last in oldest-first list)
             val latestPromotedBlock = promotedBlocks.last
 
-            // Add promoted blocks to Merkle tree (in order from oldest to newest)
-            // promotedBlocks is already sorted from oldest to newest
-            def addPromotedBlocks(
-                tree: List[ByteString],
-                blocks: List[BlockSummary]
-            ): List[ByteString] =
+            // Insert promoted blocks into MPF trie (in order from oldest to newest)
+            // Each insert proof must correspond to the trie state after previous inserts
+            def applyMpfInserts(
+                root: ByteString,
+                blocks: List[BlockSummary],
+                proofs: List[List[ProofStep]]
+            ): ByteString =
                 blocks match
-                    case List.Nil => tree
-                    case List.Cons(block, tail) =>
-                        addPromotedBlocks(addToMerkleTree(tree, block.hash), tail)
+                    case List.Nil =>
+                        proofs match
+                            case List.Nil => root
+                            case _        => fail("MPF proof count mismatch")
+                    case List.Cons(block, bTail) =>
+                        proofs match
+                            case List.Cons(proof, pTail) =>
+                                val newRoot =
+                                    MPF(root).insert(block.hash, block.hash, proof).root
+                                applyMpfInserts(newRoot, bTail, pTail)
+                            case List.Nil => fail("MPF proof count mismatch")
 
-            val updatedMerkleTree = addPromotedBlocks(prevState.confirmedBlocksTree, promotedBlocks)
+            val updatedRoot =
+                applyMpfInserts(prevState.confirmedBlocksRoot, promotedBlocks, mpfInsertProofs)
 
             val updatedConfirmedState =
                 applyPromotionsToConfirmedState(prevState, promotedBlocks)
@@ -1095,7 +1027,7 @@ object BitcoinValidator extends DataParameterizedValidator {
               recentTimestamps = updatedConfirmedState.recentTimestamps,
               previousDifficultyAdjustmentTimestamp =
                   updatedConfirmedState.previousDifficultyAdjustmentTimestamp,
-              confirmedBlocksTree = updatedMerkleTree,
+              confirmedBlocksRoot = updatedRoot,
               forksTree = finalForksTree
             )
     }
@@ -1130,7 +1062,7 @@ object BitcoinValidator extends DataParameterizedValidator {
                     datum.to[ChainState]
                 case _ => fail("No datum")
         action match
-            case Action.UpdateOracle(blockHeaders, redeemerTime, inputDatumHash) =>
+            case Action.UpdateOracle(blockHeaders, redeemerTime, inputDatumHash, mpfInsertProofs) =>
                 // Datum hash verification disabled for production (expensive)
                 // Uncomment for debugging datum non-determinism issues:
                 // val actualInputDatumHash = blake2b_256(serialiseData(prevState.toData))
@@ -1155,7 +1087,8 @@ object BitcoinValidator extends DataParameterizedValidator {
                 )
 
                 // Compute the new state using time from redeemer (ensures offline/online consistency)
-                val computedState = computeUpdateOracleState(prevState, blockHeaders, redeemerTime)
+                val computedState =
+                    computeUpdateOracleState(prevState, blockHeaders, redeemerTime, mpfInsertProofs)
 
                 val continuingOutput = findUniqueOutputFrom(outputs, ownInput.address)
 

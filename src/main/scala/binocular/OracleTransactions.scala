@@ -158,7 +158,7 @@ object OracleTransactions {
         headers: ScalusList[BlockHeader],
         currentTime: BigInt
     ): ChainState = {
-        BitcoinValidator.computeUpdateOracleState(currentState, headers, currentTime)
+        BitcoinValidator.computeUpdateOracleState(currentState, headers, currentTime, ScalusList.Nil)
     }
 
     /** Build and submit initialization transaction
@@ -314,7 +314,8 @@ object OracleTransactions {
             )
 
             // Create UpdateOracle action as redeemer
-            val action = Action.UpdateOracle(blockHeaders, redeemerTime, inputDatumHash)
+            val action =
+                Action.UpdateOracle(blockHeaders, redeemerTime, inputDatumHash, ScalusList.Nil)
 
             println(s"[DEBUG] New state forksTree size: ${newChainState.forksTree.size}")
 

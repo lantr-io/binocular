@@ -120,7 +120,7 @@ case class VerifyOracleCommand(utxo: String) extends Command {
                                               s"  Previous Diff Adjustment: ${chainState.previousDifficultyAdjustmentTimestamp}"
                                             )
                                             println(
-                                              s"  Confirmed Blocks Tree: ${chainState.confirmedBlocksTree.size} levels"
+                                              s"  Confirmed Blocks Root: ${chainState.confirmedBlocksRoot.toHex}"
                                             )
                                             println(
                                               s"  Forks Tree: ${chainState.forksTree.size} branches"
