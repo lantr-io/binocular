@@ -48,9 +48,13 @@ object BlockFixture {
     def toBlockHeader(fixture: BlockFixture): BlockHeader = {
         BlockHeader(
           longToLE4Bytes(fixture.version) ++
-              ByteString.fromHex(fixture.previousblockhash.getOrElse(
-                "0000000000000000000000000000000000000000000000000000000000000000"
-              )).reverse ++
+              ByteString
+                  .fromHex(
+                    fixture.previousblockhash.getOrElse(
+                      "0000000000000000000000000000000000000000000000000000000000000000"
+                    )
+                  )
+                  .reverse ++
               ByteString.fromHex(fixture.merkleroot).reverse ++
               longToLE4Bytes(fixture.timestamp) ++
               ByteString.fromHex(fixture.bits).reverse ++
