@@ -4,13 +4,14 @@ import scalus.uplc.builtin.*
 import scalus.uplc.builtin.Builtins.*
 import scalus.uplc.builtin.ByteString.*
 import scalus.uplc.builtin.Data.{toData, FromData, ToData}
-import scalus.cardano.onchain.plutus.v1.{Address, Credential}
+import scalus.cardano.onchain.plutus.v1.{Address, Credential, PolicyId, TokenName}
 import scalus.cardano.onchain.plutus.v2.{Interval, IntervalBoundType, OutputDatum}
-import scalus.cardano.onchain.plutus.v1.PolicyId
-import scalus.cardano.onchain.plutus.v3.{DataParameterizedValidator, Datum, TxInInfo, TxInfo, TxOut, TxOutRef}
+import scalus.cardano.onchain.plutus.v3.{DataParameterizedValidator, Datum, TxInInfo, TxInfo, TxOut, TxOutRef, Value}
 import scalus.cardano.onchain.plutus.prelude.{List, *}
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry as MPF
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
+import scalus.cardano.onchain.plutus.prelude.PairList.{PairCons, PairNil}
+import scalus.compiler.Compile
 import scalus.{show as _, *}
 
 import scala.annotation.tailrec
@@ -1097,36 +1098,39 @@ object BitcoinValidator extends DataParameterizedValidator {
                 )
     }
 
+    import StrictLookups.*
     // One-shot NFT minting policy
     // param: TxOutRef that must be consumed to mint (one-shot guarantee)
     // redeemer: BigInt index of the oracle output in tx.outputs
     inline override def mint(
-        param: Data,
+        oneShotTxOutRef: Data,
         redeemer: Data,
         policyId: PolicyId,
         tx: TxInfo
     ): Unit = {
-        val mintedQty = tx.mint.quantityOf(policyId, ByteString.empty)
-        if mintedQty > BigInt(0) then
-            // Minting: enforce one-shot
-            val requiredUtxo = param.to[TxOutRef]
-            require(tx.inputs.exists(_.outRef === requiredUtxo), "Required UTxO not spent")
-            require(mintedQty == BigInt(1), "Must mint exactly 1 NFT")
+        val minted = tx.mint.toSortedMap.lookupOrFail(policyId).toData
+        if minted == SortedMap.singleton(ByteString.empty, BigInt(1)).toData then
+            // ensure we spend the one-shot TxOutRef
+            tx.inputs.findOrFail(_.outRef.toData == oneShotTxOutRef)
             // Verify oracle output contains the NFT at the specified index
             val outputIndex = redeemer.to[BigInt]
             val oracleOutput = tx.outputs !! outputIndex
             require(
-              oracleOutput.value.quantityOf(policyId, ByteString.empty) == BigInt(1),
+              oracleOutput.value.existingQuantityOf(policyId, ByteString.empty) == BigInt(1),
               "Oracle output must contain NFT"
             )
             // Verify oracle output goes to this script's address (policyId == script hash)
             require(
-              oracleOutput.address.credential match
-                  case Credential.ScriptCredential(hash) => hash == policyId
-                  case _                                 => false,
+              oracleOutput.address.credential.toData == Credential
+                  .ScriptCredential(policyId)
+                  .toData,
               "Oracle output must go to script address"
             )
-        // else: burning (mintedQty < 0) is always allowed
+        else
+            require(
+              minted == SortedMap.singleton(ByteString.empty, BigInt(-1)).toData,
+              "can only mint 1 or burn 1 SP NFT"
+            )
     }
 
     // This one is for V3 lowering
@@ -1153,4 +1157,41 @@ object BitcoinValidator extends DataParameterizedValidator {
             else loop(idx + 1, consByteString(bs.at(idx), acc))
         loop(0, ByteString.empty)
 }
-// recompile trigger $(date +%s)
+
+/** Optimized utilities
+  */
+@Compile
+object StrictLookups {
+
+    extension [A](self: List[A]) {
+        @tailrec
+        def findOrFail(predicate: A => Boolean): A = self match
+            case List.Nil => fail("element not found")
+            case List.Cons(head, tail) =>
+                if predicate(head) then head else tail.findOrFail(predicate)
+
+        def oneOrFail(message: String): A = self match
+            case List.Cons(head, List.Nil) => head
+            case _                         => fail(message)
+
+    }
+
+    extension [V](self: Value) {
+        def existingQuantityOf(policyId: PolicyId, tokenName: TokenName): BigInt = {
+            self.toSortedMap.lookupOrFail(policyId).lookupOrFail(tokenName)
+        }
+    }
+    extension [V](self: SortedMap[ByteString, V]) {
+        def lookupOrFail(key: ByteString): V = {
+            @tailrec
+            def go(lst: PairList[ByteString, V]): V = lst match
+                case PairNil => fail("key not found")
+                case PairCons((k, v), tail) =>
+                    if key == k then v
+                    else if key < k then fail("key not found")
+                    else go(tail)
+
+            go(self.toPairList)
+        }
+    }
+}
