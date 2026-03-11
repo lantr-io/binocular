@@ -7,7 +7,6 @@ import scalus.cardano.onchain.plutus.v3.TxOutRef
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}
 import scalus.uplc.builtin.Data
-import scalus.uplc.builtin.Data.toData
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep

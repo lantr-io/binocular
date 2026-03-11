@@ -1,19 +1,18 @@
 package binocular
 
 import scalus.*
-import scalus.cardano.onchain.plutus.v3.TxOutRef
-import scalus.cardano.onchain.plutus.v3.TxId
+import scalus.cardano.ledger.MajorProtocolVersion
+import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import scalus.compiler.Options
-import scalus.compiler.sir.TargetLoweringBackend
-import scalus.uplc.{PlutusV3, Program}
 import scalus.uplc.builtin.ByteString.hex
+import scalus.uplc.builtin.Data
 import scalus.uplc.builtin.Data.toData
+import scalus.uplc.{PlutusV3, Program}
 
 object BitcoinContract {
-    given Options = Options(
-      optimizeUplc = true,
-      generateErrorTraces = true,
-      targetLoweringBackend = TargetLoweringBackend.SirToUplcV3Lowering
+    given opts: Options = Options.release.copy(
+      generateErrorTraces = false,
+      targetProtocolVersion = MajorProtocolVersion.plominPV
     )
 
     lazy val contract = PlutusV3.compile(BitcoinValidator.validate)

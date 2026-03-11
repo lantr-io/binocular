@@ -64,6 +64,10 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         }
     }
 
+    test("BitcoinValidator size") {
+        assert(BitcoinContract.contract.script.script.size == 8734)
+    }
+
     test("Tx size makes sense") {
         val blockHeader =
             hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
