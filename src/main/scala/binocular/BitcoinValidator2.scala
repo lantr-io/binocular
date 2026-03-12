@@ -452,7 +452,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
     def applyPromotions(
         state: ChainState2,
         promoted: List[BlockSummary2],
-        mpfProofs: List[List[ProofStep]]
+        mpfProofs: List[List[ProofStep]],
+        ctx0: TraversalCtx
     ): ChainState2 = {
         def loop(
             blocks: List[BlockSummary2],
@@ -475,7 +476,6 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                         case Nil => fail("MPF proof count mismatch")
         }
 
-        val ctx0 = initCtx(state)
         val (finalCtx, finalRoot) =
             loop(promoted, mpfProofs, ctx0, state.confirmedBlocksRoot)
 
@@ -495,7 +495,7 @@ object BitcoinValidator2 extends DataParameterizedValidator {
     // ============================================================================
 
     /** Compute the new ChainState2 after applying an update. */
-    def computeUpdate2(
+    def computeUpdate(
         state: ChainState2,
         update: UpdateOracle2,
         currentTime: BigInt
@@ -529,7 +529,7 @@ object BitcoinValidator2 extends DataParameterizedValidator {
             )
         else
             val updatedState =
-                applyPromotions(state, promoted, update.mpfInsertProofs)
+                applyPromotions(state, promoted, update.mpfInsertProofs, ctx0)
             ChainState2(
               blockHeight = updatedState.blockHeight,
               blockHash = updatedState.blockHash,
@@ -579,7 +579,7 @@ object BitcoinValidator2 extends DataParameterizedValidator {
             case _                          => fail("No inline datum")
 
         // Compute expected new state
-        val computedState = computeUpdate2(prevState, update, intervalStartInSeconds)
+        val computedState = computeUpdate(prevState, update, intervalStartInSeconds)
 
         // Find continuing output
         val continuingOutput = findUniqueOutputFrom(outputs, ownInput.address)
