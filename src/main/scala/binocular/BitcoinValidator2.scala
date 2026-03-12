@@ -200,19 +200,19 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         (summary, newCtx)
     }
 
-    /** Validate a list of headers (oldest-first), returning summaries and final context. */
+    /** Validate a list of headers (oldest-first), returning validated summaries. */
     def validateAndCollectBlocks(
         headers: List[BlockHeader],
         ctx: TraversalCtx,
         currentTime: BigInt
-    ): (List[BlockSummary2], TraversalCtx) = {
+    ): List[BlockSummary2] = {
         def loop(
             remaining: List[BlockHeader],
             acc: List[BlockSummary2],
             currentCtx: TraversalCtx
-        ): (List[BlockSummary2], TraversalCtx) = {
+        ): List[BlockSummary2] = {
             remaining match
-                case Nil => (acc.reverse, currentCtx)
+                case Nil => acc.reverse
                 case Cons(header, tail) =>
                     val (summary, newCtx) = validateBlock(header, currentCtx, currentTime)
                     loop(tail, Cons(summary, acc), newCtx)
@@ -474,7 +474,7 @@ object BitcoinValidator2 extends DataParameterizedValidator {
             case Cons(head, _) =>
                 if head.prevBlockHash == state.blockHash then
                     // Parent is confirmed tip — validate and attach
-                    val (newSummaries, _) =
+                    val newSummaries =
                         validateAndCollectBlocks(headers, ctx0, currentTime)
                     val newBranch = ForkTree.Blocks(newSummaries, ForkTree.End)
                     state.forksTree match
@@ -488,7 +488,7 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                       head.prevBlockHash == parentCtx.lastBlockHash,
                       "Parent hash mismatch"
                     )
-                    val (newSummaries, _) =
+                    val newSummaries =
                         validateAndCollectBlocks(headers, parentCtx, currentTime)
                     insertBlocks(state.forksTree, update.parentPath, newSummaries)
         }
