@@ -39,6 +39,12 @@ case class ChainState2(
 ) derives FromData,
       ToData
 
+/** Path in [[ForkTree]]
+  *
+  *   - empty mean no blocks in fork tree, take parent from confirmed state
+  *   - non-negative number means index in Blocks node (0-based, oldest-first)
+  *   - 0 in Fork means go left, 1 means go right
+  */
 type PathElement = BigInt
 type Path = List[PathElement]
 
@@ -107,25 +113,9 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         )
     }
 
-    /** Accumulate exactly `count` blocks from the head of `blocks` (oldest-first). */
-    def accumulateN(
-        ctx: TraversalCtx,
-        blocks: List[BlockSummary2],
-        count: BigInt
-    ): TraversalCtx = {
-        if count == BigInt(0) then ctx
-        else
-            blocks match
-                case Nil => fail("accumulateN: not enough blocks")
-                case Cons(head, tail) =>
-                    accumulateN(accumulateBlock(ctx, head), tail, count - 1)
-    }
-
     /** Accumulate all blocks in the list. */
     def accumulateCtx(ctx: TraversalCtx, blocks: List[BlockSummary2]): TraversalCtx = {
-        blocks match
-            case Nil              => ctx
-            case Cons(head, tail) => accumulateCtx(accumulateBlock(ctx, head), tail)
+        blocks.foldLeft(ctx)(accumulateBlock)
     }
 
     // ============================================================================
@@ -218,32 +208,38 @@ object BitcoinValidator2 extends DataParameterizedValidator {
     // Tree navigation and insertion
     // ============================================================================
 
-    /** Traverse the tree along the given path, accumulating context.
-      * Returns the context at the parent block (insertion point).
+    /** Traverse the tree along the given path, accumulating context. Returns the context at the
+      * parent block (insertion point).
       */
     def navigateToParent(
         tree: ForkTree,
         path: Path,
         ctx: TraversalCtx
     ): TraversalCtx = {
-        require(!path.isEmpty, "Path is empty")
-        val pathHead = path.head
-        val pathTail = path.tail
+        path match
+            case Nil => ctx
+            case Cons(pathHead, pathTail) =>
+                tree match
+                    case ForkTree.Blocks(blocks, next) =>
+                        def loop(
+                            count: BigInt,
+                            blocks: List[BlockSummary2],
+                            newCtx: TraversalCtx
+                        ): TraversalCtx = {
+                            blocks match
+                                case Nil if count == pathHead =>
+                                    navigateToParent(next, pathTail, newCtx)
+                                case Cons(block, tail) =>
+                                    if count == pathHead then accumulateBlock(newCtx, block)
+                                    else loop(count + 1, tail, accumulateBlock(newCtx, block))
+                                case _ => fail("Path index out of bounds")
+                        }
+                        loop(0, blocks, ctx)
+                    case ForkTree.Fork(left, right) =>
+                        if pathHead == BigInt(0) then navigateToParent(left, pathTail, ctx)
+                        else navigateToParent(right, pathTail, ctx)
 
-        tree match
-            case ForkTree.Blocks(blocks, next) =>
-                if pathHead == blocks.size then
-                    val newCtx = accumulateCtx(ctx, blocks)
-                    navigateToParent(next, pathTail, newCtx)
-                else
-                    accumulateN(ctx, blocks, pathHead + 1)
-
-            case ForkTree.Fork(left, right) =>
-                if pathHead == BigInt(0) then navigateToParent(left, pathTail, ctx)
-                else navigateToParent(right, pathTail, ctx)
-
-            case ForkTree.End =>
-                fail("Path leads to End")
+                    case ForkTree.End => fail("Path leads to End")
     }
 
     /** Insert already-validated block summaries into the fork tree at the given path. */
@@ -252,49 +248,63 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         path: Path,
         newBlocks: List[BlockSummary2]
     ): ForkTree = {
-        require(!path.isEmpty, "Path is empty")
-        val pathHead = path.head
-        val pathTail = path.tail
+        path match
+            case Nil => tree
+            case Cons(pathHead, pathTail) =>
+                tree match
+                    case ForkTree.Blocks(blocks, next) =>
+                        def loop(
+                            count: BigInt,
+                            remaining: List[BlockSummary2],
+                            prefix: List[BlockSummary2]
+                        ): ForkTree = {
+                            remaining match
+                                case Nil if count == pathHead =>
+                                    // Pass through, recurse into next
+                                    ForkTree.Blocks(
+                                      blocks,
+                                      insertBlocks(next, pathTail, newBlocks)
+                                    )
+                                case Cons(block, tail) if count == pathHead =>
+                                    // Insertion point found
+                                    val fullPrefix = prefix.reverse.prepended(block)
+                                    tail match
+                                        case Nil =>
+                                            next match
+                                                case ForkTree.End =>
+                                                    ForkTree.Blocks(
+                                                      fullPrefix ++ newBlocks,
+                                                      ForkTree.End
+                                                    )
+                                                case _ =>
+                                                    ForkTree.Blocks(
+                                                      fullPrefix,
+                                                      ForkTree.Fork(
+                                                        next,
+                                                        ForkTree.Blocks(newBlocks, ForkTree.End)
+                                                      )
+                                                    )
+                                        case _ =>
+                                            ForkTree.Blocks(
+                                              fullPrefix,
+                                              ForkTree.Fork(
+                                                ForkTree.Blocks(tail, next),
+                                                ForkTree.Blocks(newBlocks, ForkTree.End)
+                                              )
+                                            )
+                                case Cons(block, tail) =>
+                                    loop(count + 1, tail, Cons(block, prefix))
+                                case _ => fail("Path index out of bounds")
+                        }
+                        loop(0, blocks, Nil)
 
-        tree match
-            case ForkTree.Blocks(blocks, next) =>
-                if pathHead == blocks.size then
-                    // Pass through, recurse into next
-                    ForkTree.Blocks(blocks, insertBlocks(next, pathTail, newBlocks))
-                else
-                    val isLast = pathHead == blocks.size - 1
+                    case ForkTree.Fork(left, right) =>
+                        if pathHead == BigInt(0) then
+                            ForkTree.Fork(insertBlocks(left, pathTail, newBlocks), right)
+                        else ForkTree.Fork(left, insertBlocks(right, pathTail, newBlocks))
 
-                    if isLast then
-                        next match
-                            case ForkTree.End =>
-                                ForkTree.Blocks(blocks ++ newBlocks, ForkTree.End)
-                            case _ =>
-                                ForkTree.Blocks(
-                                  blocks,
-                                  ForkTree.Fork(
-                                    next,
-                                    ForkTree.Blocks(newBlocks, ForkTree.End)
-                                  )
-                                )
-                    else
-                        val prefix = blocks.take(pathHead + 1)
-                        val suffix = blocks.drop(pathHead + 1)
-                        ForkTree.Blocks(
-                          prefix,
-                          ForkTree.Fork(
-                            ForkTree.Blocks(suffix, next),
-                            ForkTree.Blocks(newBlocks, ForkTree.End)
-                          )
-                        )
-
-            case ForkTree.Fork(left, right) =>
-                if pathHead == BigInt(0) then
-                    ForkTree.Fork(insertBlocks(left, pathTail, newBlocks), right)
-                else
-                    ForkTree.Fork(left, insertBlocks(right, pathTail, newBlocks))
-
-            case ForkTree.End =>
-                fail("Path leads to End")
+                    case ForkTree.End =>
+                        fail("Path leads to End")
     }
 
     // ============================================================================
@@ -463,29 +473,11 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         val ctx0 = initCtx(state)
 
         // Step 1: Validate and insert new blocks into tree
-        val newTree = headers match {
-            case Nil => state.forksTree
-            case Cons(head, _) =>
-                if head.prevBlockHash == state.blockHash then
-                    // Parent is confirmed tip — validate and attach
-                    val newSummaries =
-                        validateAndCollectBlocks(headers, ctx0, currentTime)
-                    val newBranch = ForkTree.Blocks(newSummaries, ForkTree.End)
-                    state.forksTree match
-                        case ForkTree.End => newBranch
-                        case existing     => ForkTree.Fork(existing, newBranch)
-                else
-                    // Navigate to parent, validate, then insert
-                    val parentCtx =
-                        navigateToParent(state.forksTree, update.parentPath, ctx0)
-                    require(
-                      head.prevBlockHash == parentCtx.lastBlockHash,
-                      "Parent hash mismatch"
-                    )
-                    val newSummaries =
-                        validateAndCollectBlocks(headers, parentCtx, currentTime)
-                    insertBlocks(state.forksTree, update.parentPath, newSummaries)
-        }
+        val newTree =
+            // Navigate to parent, validate, then insert
+            val parentCtx = navigateToParent(state.forksTree, update.parentPath, ctx0)
+            val newSummaries = validateAndCollectBlocks(headers, parentCtx, currentTime)
+            insertBlocks(state.forksTree, update.parentPath, newSummaries)
 
         // Step 2: Find best chain (single full traversal)
         val (bestWork, bestDepth, bestPath) = bestChainPath(newTree, ctx0)
