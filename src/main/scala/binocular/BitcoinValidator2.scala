@@ -87,9 +87,9 @@ object BitcoinValidator2 extends DataParameterizedValidator {
 
     /** Initialize traversal context from the confirmed state.
       *
-      * The context starts at the confirmed tip, with height, bits, timestamps, and hash matching the
-      * confirmed chain. All tree traversal (accumulation, validation, chainwork) builds on top of
-      * this starting point.
+      * The context starts at the confirmed tip, with height, bits, timestamps, and hash matching
+      * the confirmed chain. All tree traversal (accumulation, validation, chainwork) builds on top
+      * of this starting point.
       */
     def initCtx(state: ChainState2): TraversalCtx =
         TraversalCtx(
@@ -158,48 +158,50 @@ object BitcoinValidator2 extends DataParameterizedValidator {
     ): (BlockSummary2, TraversalCtx, BigInt) = {
         val hash = blockHeaderHash(header)
         val hashInt = byteStringToInteger(false, hash)
+        val bits = header.bits
+        val timestamps = ctx.timestamps
+        val height = ctx.height
+        val prevDiffAdjTimestamp = ctx.prevDiffAdjTimestamp
 
         // PoW validation — target is reused for block proof below
-        val target = compactBitsToTarget(header.bits)
+        val target = compactBitsToTarget(bits)
         require(hashInt <= target, "Invalid proof-of-work")
         require(target <= PowLimit, "Target exceeds PowLimit")
 
         // Difficulty validation
         val expectedBits = getNextWorkRequired(
-          ctx.height,
+          height,
           ctx.currentBits,
-          ctx.timestamps.head,
-          ctx.prevDiffAdjTimestamp
+          timestamps.head,
+          prevDiffAdjTimestamp
         )
-        require(header.bits == expectedBits, "Invalid difficulty")
+        require(bits == expectedBits, "Invalid difficulty")
 
         // MTP validation
-        val sortedTimestamps = insertionSort(ctx.timestamps.take(MedianTimeSpan))
+        val sortedTimestamps = insertionSort(timestamps.take(MedianTimeSpan))
         val medianTimePast = sortedTimestamps.at(5)
-        require(header.timestamp > medianTimePast, "Block timestamp not greater than MTP")
+        val timestamp = header.timestamp
+        require(timestamp > medianTimePast, "Block timestamp not greater than MTP")
 
         // Future time validation
         require(
-          header.timestamp <= currentTime + MaxFutureBlockTime,
+          timestamp <= currentTime + MaxFutureBlockTime,
           "Block timestamp too far in future"
         )
-
-        // Version validation
-        require(header.version >= 4, "Outdated block version")
 
         // Parent hash validation
         require(header.prevBlockHash == ctx.lastBlockHash, "Parent hash mismatch")
 
         // Build new context
-        val newHeight = ctx.height + 1
-        val newTimestamps = Cons(header.timestamp, ctx.timestamps)
+        val newHeight = height + 1
+        val newTimestamps = Cons(timestamp, timestamps)
         val newPrevDiffAdjTimestamp =
-            if newHeight % DifficultyAdjustmentInterval == BigInt(0) then header.timestamp
-            else ctx.prevDiffAdjTimestamp
+            if newHeight % DifficultyAdjustmentInterval == BigInt(0) then timestamp
+            else prevDiffAdjTimestamp
 
         val summary = BlockSummary2(
           hash = hash,
-          timestamp = header.timestamp,
+          timestamp = timestamp,
           addedTimeSeconds = currentTime
         )
 
@@ -504,7 +506,7 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         maxPromotions: BigInt
     ): (List[BlockSummary2], List[BlockSummary2], TraversalCtx) = {
         blocks match
-            case Nil => (Nil, Nil, ctx)
+            case Nil               => (Nil, Nil, ctx)
             case Cons(block, tail) =>
                 // Promotion limit reached — treat remaining blocks as non-promotable.
                 if maxPromotions <= BigInt(0) then (Nil, blocks, ctx)
@@ -535,8 +537,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
       * Walks the tree following `bestPath` (from [[bestChainPath]]). At each node:
       *   - '''Blocks''': tries to promote eligible blocks (up to `numPromotions`), then recurses
       *     into the subtree for more promotions and/or GC.
-      *   - '''Fork''': follows the best branch (per `bestPath`), drops the other branch (GC).
-      *     The Fork node itself is eliminated — the surviving branch replaces it.
+      *   - '''Fork''': follows the best branch (per `bestPath`), drops the other branch (GC). The
+      *     Fork node itself is eliminated — the surviving branch replaces it.
       *   - '''End''': leaf, nothing to do.
       *
       * `bestPath` is consumed only at Fork nodes (matching [[bestChainPath]] which produces path
@@ -695,8 +697,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
       *      (single traversal along best path)
       *   1. '''Apply''': update confirmed state with promoted blocks and MPF proofs
       *
-      * Steps 2-4 are skipped when no MPF proofs are provided (header-only submission).
-      * When proofs are provided, the number of promoted blocks must match exactly.
+      * Steps 2-4 are skipped when no MPF proofs are provided (header-only submission). When proofs
+      * are provided, the number of promoted blocks must match exactly.
       */
     def computeUpdate(
         state: ChainState2,
