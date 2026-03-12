@@ -206,18 +206,12 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         ctx: TraversalCtx,
         currentTime: BigInt
     ): List[BlockSummary2] = {
-        def loop(
-            remaining: List[BlockHeader],
-            acc: List[BlockSummary2],
-            currentCtx: TraversalCtx
-        ): List[BlockSummary2] = {
-            remaining match
-                case Nil => acc.reverse
-                case Cons(header, tail) =>
-                    val (summary, newCtx) = validateBlock(header, currentCtx, currentTime)
-                    loop(tail, Cons(summary, acc), newCtx)
+        val (acc, _) = headers.foldLeft((Nil: List[BlockSummary2], ctx)) {
+            case ((acc, currentCtx), header) =>
+                val (summary, newCtx) = validateBlock(header, currentCtx, currentTime)
+                (Cons(summary, acc), newCtx)
         }
-        loop(headers, Nil, ctx)
+        acc.reverse
     }
 
     // ============================================================================
