@@ -123,6 +123,18 @@ object BitcoinValidator2 extends DataParameterizedValidator {
     // Block validation
     // ============================================================================
 
+    /** Insert element into an ascending-sorted list, maintaining ascending order. */
+    def insertAscending(x: BigInt, sorted: List[BigInt]): List[BigInt] = sorted match
+        case Nil              => Cons(x, Nil)
+        case Cons(h, t) if x <= h => Cons(x, sorted)
+        case Cons(h, t)       => Cons(h, insertAscending(x, t))
+
+    /** Sort a list of BigInts in ascending order using insertion sort. Efficient for small fixed-size
+      * lists (e.g. 11 timestamps for MTP calculation).
+      */
+    def insertionSort(xs: List[BigInt]): List[BigInt] =
+        xs.foldLeft(List.empty[BigInt])((sorted, x) => insertAscending(x, sorted))
+
     /** Validate a single new block header against the traversal context. Returns the BlockSummary2
       * and updated context.
       */
@@ -149,7 +161,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         require(header.bits == expectedBits, "Invalid difficulty")
 
         // MTP validation
-        val sortedTimestamps = ctx.timestamps.take(MedianTimeSpan).quicksort
+        val sortedTimestamps = insertionSort(ctx.timestamps.take(MedianTimeSpan))
+        log("validateBlock sort")
         val medianTimePast = sortedTimestamps !! (BigInt(5))
         require(header.timestamp > medianTimePast, "Block timestamp not greater than MTP")
 
@@ -187,6 +200,7 @@ object BitcoinValidator2 extends DataParameterizedValidator {
           lastBlockHash = hash,
           chainwork = newChainwork
         )
+        log("validateBlock 7")
 
         (summary, newCtx)
     }
@@ -242,6 +256,7 @@ object BitcoinValidator2 extends DataParameterizedValidator {
     ): ForkTree = {
         path match
             case Nil =>
+                log("validateAndInsert 1")
                 // Parent is the confirmed tip. Validate and attach as a new branch.
                 // path=[], tree=Blocks([A,B],End)  →  Fork(Blocks([A,B],End), Blocks([X,Y],End))
                 // path=[], tree=End                →  Blocks([X,Y],End)
@@ -510,25 +525,17 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                 validateAndInsert(state.forksTree, update.parentPath, headers, ctx0, currentTime)
 
         // Step 2: Find best chain (single full traversal)
-        val (bestWork, bestDepth, bestPath) = bestChainPath(newTree, ctx0)
+//        val (bestWork, bestDepth, bestPath) = bestChainPath(newTree, ctx0)
 
         // Step 3: Promote eligible blocks + GC dead forks (single traversal along bestPath)
-        val (promoted, cleanedTree) =
-            promoteAndGC(newTree, ctx0, bestPath, bestDepth, currentTime)
+        val cleanedTree = newTree
+//        val (promoted, cleanedTree) =
+//            promoteAndGC(newTree, ctx0, bestPath, bestDepth, currentTime)
 
         // Step 4: Apply promotions (no-op when promoted is empty) and set cleaned tree
-        val updatedState =
-            applyPromotions(state, promoted, update.mpfInsertProofs, ctx0)
-        ChainState2(
-          blockHeight = updatedState.blockHeight,
-          blockHash = updatedState.blockHash,
-          currentTarget = updatedState.currentTarget,
-          recentTimestamps = updatedState.recentTimestamps,
-          previousDifficultyAdjustmentTimestamp =
-              updatedState.previousDifficultyAdjustmentTimestamp,
-          confirmedBlocksRoot = updatedState.confirmedBlocksRoot,
-          forksTree = cleanedTree
-        )
+        val updatedState = state
+//            applyPromotions(state, promoted, update.mpfInsertProofs, ctx0)
+        updatedState.copy(forksTree = cleanedTree)
     }
 
     // ============================================================================
