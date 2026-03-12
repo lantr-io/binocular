@@ -516,30 +516,19 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         val (promoted, cleanedTree) =
             promoteAndGC(newTree, ctx0, bestPath, bestDepth, currentTime)
 
-        // Step 4: Build result
-        if promoted.isEmpty then
-            ChainState2(
-              blockHeight = state.blockHeight,
-              blockHash = state.blockHash,
-              currentTarget = state.currentTarget,
-              recentTimestamps = state.recentTimestamps,
-              previousDifficultyAdjustmentTimestamp = state.previousDifficultyAdjustmentTimestamp,
-              confirmedBlocksRoot = state.confirmedBlocksRoot,
-              forksTree = cleanedTree
-            )
-        else
-            val updatedState =
-                applyPromotions(state, promoted, update.mpfInsertProofs, ctx0)
-            ChainState2(
-              blockHeight = updatedState.blockHeight,
-              blockHash = updatedState.blockHash,
-              currentTarget = updatedState.currentTarget,
-              recentTimestamps = updatedState.recentTimestamps,
-              previousDifficultyAdjustmentTimestamp =
-                  updatedState.previousDifficultyAdjustmentTimestamp,
-              confirmedBlocksRoot = updatedState.confirmedBlocksRoot,
-              forksTree = cleanedTree
-            )
+        // Step 4: Apply promotions (no-op when promoted is empty) and set cleaned tree
+        val updatedState =
+            applyPromotions(state, promoted, update.mpfInsertProofs, ctx0)
+        ChainState2(
+          blockHeight = updatedState.blockHeight,
+          blockHash = updatedState.blockHash,
+          currentTarget = updatedState.currentTarget,
+          recentTimestamps = updatedState.recentTimestamps,
+          previousDifficultyAdjustmentTimestamp =
+              updatedState.previousDifficultyAdjustmentTimestamp,
+          confirmedBlocksRoot = updatedState.confirmedBlocksRoot,
+          forksTree = cleanedTree
+        )
     }
 
     // ============================================================================

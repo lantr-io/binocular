@@ -10,7 +10,7 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
     test("BitcoinValidator2 size") {
         given Options = Options.release
         val contract = PlutusV3.compile(BitcoinValidator2.validate)
-        assert(contract.script.script.size == 7464)
+        assert(contract.script.script.size == 7381)
     }
 
 }
