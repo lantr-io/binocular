@@ -423,22 +423,31 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         blocks: List[BlockSummary2],
         ctx: TraversalCtx,
         bestDepth: BigInt,
-        currentTime: PosixTimeSeconds
+        currentTime: PosixTimeSeconds,
+        maxPromotions: BigInt
     ): (List[BlockSummary2], List[BlockSummary2], TraversalCtx) = {
         blocks match
             case Nil => (Nil, Nil, ctx)
             case Cons(block, tail) =>
-                val blockHeight = ctx.height + 1
-                val depth = bestDepth - blockHeight
-                val age = currentTime - block.addedTimeSeconds
-                if depth >= MaturationConfirmations && age >= ChallengeAging then
-                    val newCtx = accumulateBlock(ctx, block)
-                    val (morePromoted, remaining, finalCtx) =
-                        splitPromotable(tail, newCtx, bestDepth, currentTime)
-                    (Cons(block, morePromoted), remaining, finalCtx)
+                if maxPromotions <= BigInt(0) then (Nil, blocks, ctx)
                 else
-                    // This block not eligible, so neither are any following (they are newer/shallower)
-                    (Nil, blocks, ctx)
+                    val blockHeight = ctx.height + 1
+                    val depth = bestDepth - blockHeight
+                    val age = currentTime - block.addedTimeSeconds
+                    if depth >= MaturationConfirmations && age >= ChallengeAging then
+                        val newCtx = accumulateBlock(ctx, block)
+                        val (morePromoted, remaining, finalCtx) =
+                            splitPromotable(
+                              tail,
+                              newCtx,
+                              bestDepth,
+                              currentTime,
+                              maxPromotions - 1
+                            )
+                        (Cons(block, morePromoted), remaining, finalCtx)
+                    else
+                        // This block not eligible, so neither are any following (they are newer/shallower)
+                        (Nil, blocks, ctx)
     }
 
     /** Promote eligible blocks and GC dead forks along the best path. Returns (promoted blocks
@@ -449,24 +458,39 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         ctx: TraversalCtx,
         bestPath: Path,
         bestDepth: BigInt,
-        currentTime: PosixTimeSeconds
+        currentTime: PosixTimeSeconds,
+        numPromotions: BigInt
     ): (List[BlockSummary2], ForkTree) = {
         tree match
             case Blocks(blocks, cw, next) =>
                 val (promoted, remaining, newCtx) =
-                    splitPromotable(blocks, ctx, bestDepth, currentTime)
+                    splitPromotable(blocks, ctx, bestDepth, currentTime, numPromotions)
                 log("splitPromotable 2")
                 if promoted.isEmpty then
                     // No promotion here — accumulate and recurse into next for GC
                     val fullCtx = blocks.foldLeft(ctx)(accumulateBlock)
                     log("promoteAndGC fullCtx")
                     val (nextPromoted, cleanedNext) =
-                        promoteAndGC(next, fullCtx, bestPath, bestDepth, currentTime)
+                        promoteAndGC(
+                          next,
+                          fullCtx,
+                          bestPath,
+                          bestDepth,
+                          currentTime,
+                          numPromotions
+                        )
                     (nextPromoted, Blocks(blocks, cw, cleanedNext))
                 else if remaining.isEmpty then
                     // All blocks promoted — recurse into next for more promotion
                     val (nextPromoted, cleanedNext) =
-                        promoteAndGC(next, newCtx, bestPath, bestDepth, currentTime)
+                        promoteAndGC(
+                          next,
+                          newCtx,
+                          bestPath,
+                          bestDepth,
+                          currentTime,
+                          numPromotions - promoted.length
+                        )
                     (promoted ++ nextPromoted, cleanedNext)
                 else
                     // Partial promotion — derive remaining chainwork by subtraction
@@ -481,12 +505,12 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                 if direction == BigInt(0) then
                     // Follow left, drop right (GC)
                     val (promoted, cleanedLeft) =
-                        promoteAndGC(left, ctx, pathTail, bestDepth, currentTime)
+                        promoteAndGC(left, ctx, pathTail, bestDepth, currentTime, numPromotions)
                     (promoted, cleanedLeft)
                 else
                     // Follow right, drop left (GC)
                     val (promoted, cleanedRight) =
-                        promoteAndGC(right, ctx, pathTail, bestDepth, currentTime)
+                        promoteAndGC(right, ctx, pathTail, bestDepth, currentTime, numPromotions)
                     (promoted, cleanedRight)
 
             case End =>
@@ -565,19 +589,25 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                 )
         log("validateAndInsert")
 
-        // Step 2: Find best chain by chainwork (single full traversal)
-        val (_, bestDepth, bestPath) = bestChainPath(newTree, state.blockHeight, BigInt(0))
-        log("bestChainPath")
+        val promotionProofs = update.mpfInsertProofs
+        val numBlocksToPromote = promotionProofs.length
+        if numBlocksToPromote > BigInt(0) then
+            // Step 2: Find best chain by chainwork (single full traversal)
+            val (_, bestDepth, bestPath) = bestChainPath(newTree, state.blockHeight, BigInt(0))
+            log("bestChainPath")
 
-        // Step 3: Promote eligible blocks + GC dead forks (single traversal along bestPath)
-//        val cleanedTree = newTree
-        val (promoted, cleanedTree) = promoteAndGC(newTree, ctx0, bestPath, bestDepth, currentTime)
-        log("promoteAndGC")
+            // Step 3: Promote eligible blocks + GC dead forks (single traversal along bestPath)
+            //        val cleanedTree = newTree
+            val (promoted, cleanedTree) =
+                promoteAndGC(newTree, ctx0, bestPath, bestDepth, currentTime, numBlocksToPromote)
+            log("promoteAndGC")
+            require(promoted.length == numBlocksToPromote, "Promoted block count mismatch")
 
-        // Step 4: Apply promotions (no-op when promoted is empty) and set cleaned tree
-        val updatedState = applyPromotions(state, promoted, update.mpfInsertProofs, ctx0)
-        log("applyPromotions")
-        updatedState.copy(forksTree = cleanedTree)
+            // Step 4: Apply promotions and set cleaned tree
+            val updatedState = applyPromotions(state, promoted, promotionProofs, ctx0)
+            log("applyPromotions")
+            updatedState.copy(forksTree = cleanedTree)
+        else state.copy(forksTree = newTree)
     }
 
     // ============================================================================
