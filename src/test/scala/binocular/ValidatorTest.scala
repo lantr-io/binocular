@@ -5,7 +5,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 import scalus.*
 import scalus.cardano.ledger
-import scalus.cardano.ledger.{AssetName, CardanoInfo, Coin, DatumOption, ScriptHash, TransactionHash, TransactionInput, TransactionOutput, Utxo, Utxos, Value}
+import scalus.cardano.ledger.{AssetName, CardanoInfo, Coin, DatumOption, Output, ScriptHash, ScriptRef, TransactionHash, TransactionInput, Utxo, Utxos, Value}
 import scalus.cardano.txbuilder.RedeemerPurpose.ForSpend
 import scalus.cardano.txbuilder.txBuilder
 import scalus.testing.kit.TestUtil.getScriptContextV3
@@ -243,7 +243,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         )
         val utxo = Utxo(
           input,
-          TransactionOutput(testScriptAddr, inputValue, DatumOption.Inline(prevState))
+          Output(testScriptAddr, inputValue, DatumOption.Inline(prevState))
         )
         val utxos: Utxos = Map(utxo.input -> utxo.output)
         val validFrom = Instant.ofEpochSecond(intervalStartSeconds)
@@ -1602,6 +1602,23 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           0
         )
 
+        // Reference script UTxO — script lives here, not in the transaction witness set
+        val refScriptInput = TransactionInput(
+          TransactionHash.fromHex(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ),
+          0
+        )
+        val refScriptUtxo = Utxo(
+          refScriptInput,
+          Output(
+            testScriptAddr,
+            Value.ada(10),
+            None,
+            Some(ScriptRef(testContract.script))
+          )
+        )
+
         println()
         println("=" * 100)
         println("BLOCK HEADER THROUGHPUT TEST")
@@ -1636,18 +1653,16 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
             val inputValue = Value.ada(5)
             val utxo = Utxo(
               input,
-              TransactionOutput(
-                testScriptAddr,
-                inputValue,
-                DatumOption.Inline(prevState.toData)
-              )
+              Output(testScriptAddr, inputValue, DatumOption.Inline(prevState.toData))
             )
-            val utxos: Utxos = Map(utxo.input -> utxo.output)
+            val utxos: Utxos =
+                Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
             val validFrom = Instant.ofEpochSecond(lastTimestamp.toLong)
 
-            // Build a real draft transaction
+            // Build a real draft transaction using reference script
             val draft = txBuilder
-                .spend(utxo, redeemer, testContract)
+                .references(refScriptUtxo, testContract)
+                .spend(utxo, redeemer)
                 .payTo(testScriptAddr, inputValue, expectedState.toData)
                 .validFrom(validFrom)
                 .draft
@@ -1656,7 +1671,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
 
             val scriptContext = draft.getScriptContextV3(utxos, ForSpend(input))
 
-            val result = BitcoinContract.bitcoinProgram $ scriptContext.toData
+            val result = testContract.program $ scriptContext.toData
             result.evaluateDebug match
                 case r: Result.Success =>
                     val cpuPct = r.budget.steps * 100.0 / maxTxCpu
