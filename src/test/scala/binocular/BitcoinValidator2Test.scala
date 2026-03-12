@@ -307,7 +307,7 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
               BigInt(0)
             )
             val (promoted, _) =
-                BitcoinValidator2.promoteAndGC(newTree, ctx0, bestPath, bestDepth, currentTime)
+                BitcoinValidator2.promoteAndGC(newTree, ctx0, bestPath, bestDepth, currentTime, count)
             val promotedCount = promoted.length
 
             // Generate MPF proofs for actual promoted blocks
