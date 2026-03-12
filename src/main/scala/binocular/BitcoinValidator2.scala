@@ -217,7 +217,13 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         currentTime: BigInt
     ): ForkTree = {
         path match
-            case Nil => fail("Path is empty")
+            case Nil =>
+                // Parent is confirmed tip — validate and attach
+                val newBlocks = validateAndCollectBlocks(headers, ctx, currentTime)
+                val newBranch = ForkTree.Blocks(newBlocks, ForkTree.End)
+                tree match
+                    case ForkTree.End => newBranch
+                    case existing     => ForkTree.Fork(existing, newBranch)
             case Cons(pathHead, pathTail) =>
                 tree match
                     case ForkTree.Blocks(blocks, next) =>
@@ -469,24 +475,14 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         // Step 1: Validate and insert new blocks into tree
         val newTree = headers match {
             case Nil => state.forksTree
-            case Cons(head, _) =>
-                if head.prevBlockHash == state.blockHash then
-                    // Parent is confirmed tip — validate and attach
-                    val newSummaries =
-                        validateAndCollectBlocks(headers, ctx0, currentTime)
-                    val newBranch = ForkTree.Blocks(newSummaries, ForkTree.End)
-                    state.forksTree match
-                        case ForkTree.End => newBranch
-                        case existing     => ForkTree.Fork(existing, newBranch)
-                else
-                    // Single traversal: navigate to parent, validate, insert
-                    validateAndInsert(
-                      state.forksTree,
-                      update.parentPath,
-                      headers,
-                      ctx0,
-                      currentTime
-                    )
+            case _ =>
+                validateAndInsert(
+                  state.forksTree,
+                  update.parentPath,
+                  headers,
+                  ctx0,
+                  currentTime
+                )
         }
 
         // Step 2: Find best chain (single full traversal)
