@@ -77,6 +77,10 @@ object BitcoinValidator2 extends DataParameterizedValidator {
     val MaturationConfirmations: BigInt = 100
     val ChallengeAging: BigInt = 200 * 60 // 200 minutes in seconds
 
+    // Fork path directions
+    val LeftFork: BigInt = 0
+    val RightFork: BigInt = 1
+
     // ============================================================================
     // TraversalCtx helpers
     // ============================================================================
@@ -409,7 +413,7 @@ object BitcoinValidator2 extends DataParameterizedValidator {
 
                     case Fork(left, right) =>
                         // Consume path element: 0 → recurse left, else → recurse right.
-                        if pathHead == BigInt(0) then
+                        if pathHead == LeftFork then
                             Fork(
                               validateAndInsert(
                                 left,
@@ -466,8 +470,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                 // Recurse both branches, pick higher chainwork, prepend direction to path.
                 val (leftWork, leftDepth, leftPath) = bestChainPath(left, height, chainwork)
                 val (rightWork, rightDepth, rightPath) = bestChainPath(right, height, chainwork)
-                if leftWork >= rightWork then (leftWork, leftDepth, Cons(0, leftPath))
-                else (rightWork, rightDepth, Cons(1, rightPath))
+                if leftWork >= rightWork then (leftWork, leftDepth, Cons(LeftFork, leftPath))
+                else (rightWork, rightDepth, Cons(RightFork, rightPath))
 
             case End =>
                 // Leaf — return accumulated totals, empty path.
@@ -607,7 +611,7 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                 require(!bestPath.isEmpty, "Best path exhausted at Fork")
                 val direction = bestPath.head
                 val pathTail = bestPath.tail
-                if direction == BigInt(0) then
+                if direction == LeftFork then
                     val (promoted, cleanedLeft) =
                         promoteAndGC(left, ctx, pathTail, bestDepth, currentTime, numPromotions)
                     (promoted, cleanedLeft)
