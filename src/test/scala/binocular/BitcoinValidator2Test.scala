@@ -5,6 +5,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 import scalus.*
 import scalus.cardano.ledger.{CardanoInfo, DatumOption, ScriptRef, TransactionHash, TransactionInput, TransactionOutput, Utxo, Utxos, Value}
+import scalus.cardano.ledger.utils.MinTransactionFee
 import scalus.cardano.onchain.plutus.prelude
 import scalus.cardano.txbuilder.RedeemerPurpose.ForSpend
 import scalus.cardano.txbuilder.txBuilder
@@ -102,7 +103,7 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
         println("BLOCK HEADER THROUGHPUT TEST (V2)")
         println("=" * 100)
         println(
-          f"${"Headers"}%8s | ${"CPU Steps"}%15s | ${"Memory"}%12s | ${"CPU %"}%7s | ${"Mem %"}%7s | ${"Fee (ADA)"}%12s | ${"Tx Size"}%8s | ${"Size %"}%7s | ${"Status"}%6s"
+          f"${"Headers"}%8s | ${"CPU Steps"}%15s | ${"Memory"}%12s | ${"CPU %"}%7s | ${"Mem %"}%7s | ${"Ex Fee"}%12s | ${"Tx Fee"}%12s | ${"Tx Size"}%8s | ${"Size %"}%7s | ${"Status"}%6s"
         )
         println("-" * 100)
 
@@ -160,11 +161,15 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
                     val cpuPct = r.budget.steps * 100.0 / maxTxCpu
                     val memPct = r.budget.memory * 100.0 / maxTxMem
                     val sizePct = txSize * 100.0 / maxTxSize
-                    val feeAda = r.budget.fee(prices).value / 1_000_000.0
+                    val exFeeAda = r.budget.fee(prices).value / 1_000_000.0
+                    val txFeeAda = MinTransactionFee
+                        .computeMinFee(draft, utxos, pp)
+                        .getOrElse(throw new Exception("Failed to compute min fee"))
+                        .value / 1_000_000.0
                     withinLimits = cpuPct <= 100 && memPct <= 100 && sizePct <= 100
                     val status = if withinLimits then "OK" else "OVER"
                     println(
-                      f"$count%8d | ${r.budget.steps}%15d | ${r.budget.memory}%12d | $cpuPct%6.1f%% | $memPct%6.1f%% | $feeAda%12.6f | $txSize%8d | $sizePct%6.1f%% | $status%6s"
+                      f"$count%8d | ${r.budget.steps}%15d | ${r.budget.memory}%12d | $cpuPct%6.1f%% | $memPct%6.1f%% | $exFeeAda%12.6f | $txFeeAda%12.6f | $txSize%8d | $sizePct%6.1f%% | $status%6s"
                     )
                 case r: Result.Failure =>
                     println(f"$count%8d | EVALUATION FAILED: $r")
