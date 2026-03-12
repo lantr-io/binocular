@@ -61,8 +61,7 @@ case class TraversalCtx(
     height: BigInt,
     currentBits: CompactBits,
     prevDiffAdjTimestamp: BigInt,
-    lastBlockHash: BlockHash,
-    chainwork: BigInt // cumulative relative to confirmed tip
+    lastBlockHash: BlockHash
 ) derives FromData,
       ToData
 
@@ -78,15 +77,14 @@ object BitcoinValidator2 extends DataParameterizedValidator {
     // TraversalCtx helpers
     // ============================================================================
 
-    /** Initialize traversal context from confirmed state. chainwork starts at 0 (relative). */
+    /** Initialize traversal context from confirmed state. */
     def initCtx(state: ChainState2): TraversalCtx =
         TraversalCtx(
           timestamps = state.recentTimestamps,
           height = state.blockHeight,
           currentBits = state.currentTarget,
           prevDiffAdjTimestamp = state.previousDifficultyAdjustmentTimestamp,
-          lastBlockHash = state.blockHash,
-          chainwork = BigInt(0)
+          lastBlockHash = state.blockHash
         )
 
     /** Accumulate one existing block into the traversal context. */
@@ -99,8 +97,6 @@ object BitcoinValidator2 extends DataParameterizedValidator {
           ctx.prevDiffAdjTimestamp
         )
         val newTimestamps = Cons(block.timestamp, ctx.timestamps)
-        val newChainwork =
-            ctx.chainwork + calculateBlockProof(compactBitsToTarget(newBits))
         val newPrevDiffAdjTimestamp =
             if newHeight % DifficultyAdjustmentInterval == BigInt(0) then block.timestamp
             else ctx.prevDiffAdjTimestamp
@@ -109,8 +105,7 @@ object BitcoinValidator2 extends DataParameterizedValidator {
           height = newHeight,
           currentBits = newBits,
           prevDiffAdjTimestamp = newPrevDiffAdjTimestamp,
-          lastBlockHash = block.hash,
-          chainwork = newChainwork
+          lastBlockHash = block.hash
         )
     }
 
@@ -180,7 +175,6 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         // Build new context
         val newHeight = ctx.height + 1
         val newTimestamps = Cons(header.timestamp, ctx.timestamps)
-        val newChainwork = ctx.chainwork + calculateBlockProof(target)
         val newPrevDiffAdjTimestamp =
             if newHeight % DifficultyAdjustmentInterval == BigInt(0) then header.timestamp
             else ctx.prevDiffAdjTimestamp
@@ -196,8 +190,7 @@ object BitcoinValidator2 extends DataParameterizedValidator {
           height = newHeight,
           currentBits = expectedBits,
           prevDiffAdjTimestamp = newPrevDiffAdjTimestamp,
-          lastBlockHash = hash,
-          chainwork = newChainwork
+          lastBlockHash = hash
         )
 
         (summary, newCtx)
@@ -354,26 +347,41 @@ object BitcoinValidator2 extends DataParameterizedValidator {
     // Best chain selection
     // ============================================================================
 
+    /** Walk blocks accumulating ctx and chainwork. Simple recursion, no TraversalCtx in the
+      * bestChainPath signature — ctx is only used internally to compute proof-of-work per block.
+      */
+    def accumulateChainwork(
+        blocks: List[BlockSummary2],
+        ctx: TraversalCtx,
+        chainwork: BigInt
+    ): (TraversalCtx, BigInt) = blocks match
+        case Nil => (ctx, chainwork)
+        case Cons(block, tail) =>
+            val newCtx = accumulateBlock(ctx, block)
+            val proof = calculateBlockProof(compactBitsToTarget(newCtx.currentBits))
+            accumulateChainwork(tail, newCtx, chainwork + proof)
+
     /** Find the best (highest chainwork) chain path through the tree. Returns (chainwork, depth,
-      * path-to-best). Single full traversal of the tree.
+      * path-to-best). Single full traversal. Chainwork is computed only here, not during insertion.
       */
     def bestChainPath(
         tree: ForkTree,
-        ctx: TraversalCtx
+        ctx: TraversalCtx,
+        chainwork: BigInt
     ): (BigInt, BigInt, Path) = {
         tree match
             case Blocks(blocks, next) =>
-                val newCtx = accumulateCtx(ctx, blocks)
-                bestChainPath(next, newCtx)
+                val (newCtx, newChainwork) = accumulateChainwork(blocks, ctx, chainwork)
+                bestChainPath(next, newCtx, newChainwork)
 
             case Fork(left, right) =>
-                val (leftWork, leftDepth, leftPath) = bestChainPath(left, ctx)
-                val (rightWork, rightDepth, rightPath) = bestChainPath(right, ctx)
-                if leftWork >= rightWork then (leftWork, leftDepth, Cons(BigInt(0), leftPath))
-                else (rightWork, rightDepth, Cons(BigInt(1), rightPath))
+                val (leftWork, leftDepth, leftPath) = bestChainPath(left, ctx, chainwork)
+                val (rightWork, rightDepth, rightPath) = bestChainPath(right, ctx, chainwork)
+                if leftWork >= rightWork then (leftWork, leftDepth, Cons(0, leftPath))
+                else (rightWork, rightDepth, Cons(1, rightPath))
 
             case End =>
-                (ctx.chainwork, ctx.height, Nil)
+                (chainwork, ctx.height, Nil)
     }
 
     // ============================================================================
@@ -521,8 +529,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
             case _ =>
                 validateAndInsert(state.forksTree, update.parentPath, headers, ctx0, currentTime)
 
-        // Step 2: Find best chain (single full traversal)
-        val (bestWork, bestDepth, bestPath) = bestChainPath(newTree, ctx0)
+        // Step 2: Find best chain by chainwork (single full traversal)
+        val (_, bestDepth, bestPath) = bestChainPath(newTree, ctx0, BigInt(0))
 
         // Step 3: Promote eligible blocks + GC dead forks (single traversal along bestPath)
 //        val cleanedTree = newTree
