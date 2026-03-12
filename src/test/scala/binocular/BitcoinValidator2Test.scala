@@ -33,7 +33,7 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
 
     private val testContract = {
         given Options = Options.release
-        PlutusV3.compile(BitcoinValidator2.validate).withErrorTraces(testTxOutRef.toData)
+        PlutusV3.compile(BitcoinValidator2.validate)(testTxOutRef.toData)
     }
     private val testScriptAddr = testContract.address(env.network)
     private val testProgram = testContract.program.deBruijnedProgram
@@ -156,7 +156,7 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
             val txSize = draft.toCbor.length
             val scriptContext = draft.getScriptContextV3(utxos, ForSpend(input))
 
-            val result = (testProgram $ scriptContext.toData).evaluateDebug
+            val result = testProgram.applyArg(scriptContext.toData).evaluateDebug
             result match
                 case r: Result.Success =>
                     val cpuPct = r.budget.steps * 100.0 / maxTxCpu
@@ -307,7 +307,14 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
               BigInt(0)
             )
             val (promoted, _) =
-                BitcoinValidator2.promoteAndGC(newTree, ctx0, bestPath, bestDepth, currentTime, count)
+                BitcoinValidator2.promoteAndGC(
+                  newTree,
+                  ctx0,
+                  bestPath,
+                  bestDepth,
+                  currentTime,
+                  count
+                )
             val promotedCount = promoted.length
 
             // Generate MPF proofs for actual promoted blocks
