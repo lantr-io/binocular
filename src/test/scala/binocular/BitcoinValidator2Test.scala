@@ -140,7 +140,8 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
                 DatumOption.Inline(prevState.toData)
               )
             )
-            val utxos: Utxos = Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
+            val utxos: Utxos =
+                Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
             val validFrom = Instant.ofEpochSecond(lastTimestamp.toLong)
 
             val draft = txBuilder
@@ -153,24 +154,23 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
             val txSize = draft.toCbor.length
             val scriptContext = draft.getScriptContextV3(utxos, ForSpend(input))
 
-            val result = testProgram $ scriptContext.toData
-            result.evaluateDebug match
+            val result = (testProgram $ scriptContext.toData).evaluateDebug
+            result match
                 case r: Result.Success =>
                     val cpuPct = r.budget.steps * 100.0 / maxTxCpu
                     val memPct = r.budget.memory * 100.0 / maxTxMem
                     val sizePct = txSize * 100.0 / maxTxSize
                     val feeAda = r.budget.fee(prices).value / 1_000_000.0
                     withinLimits = cpuPct <= 100 && memPct <= 100 && sizePct <= 100
-                    val status = if withinLimits then "OK" else {
-                        println(r)
-                        "OVER"
-                    }
+                    val status = if withinLimits then "OK" else "OVER"
                     println(
                       f"$count%8d | ${r.budget.steps}%15d | ${r.budget.memory}%12d | $cpuPct%6.1f%% | $memPct%6.1f%% | $feeAda%12.6f | $txSize%8d | $sizePct%6.1f%% | $status%6s"
                     )
                 case r: Result.Failure =>
                     println(f"$count%8d | EVALUATION FAILED: $r")
                     withinLimits = false
+
+            if !withinLimits then println(result)
         }
 
         val maxHeadersPerTx = if withinLimits then count else count - 1
