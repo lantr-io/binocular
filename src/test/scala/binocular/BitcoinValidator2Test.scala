@@ -552,6 +552,7 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
                     .getOrElse(throw new Exception("Failed to compute min fee"))
                     .value / 1_000_000.0
 
+                println(result)
                 println()
                 println("=" * 80)
                 println("BIFROST SCENARIO: 100 blocks in tree + 1 header + 1 promotion")
