@@ -528,18 +528,22 @@ object BitcoinValidator2 extends DataParameterizedValidator {
             case Nil => state.forksTree
             case _ =>
                 validateAndInsert(state.forksTree, update.parentPath, headers, ctx0, currentTime)
+        log("validateAndInsert")
 
         // Step 2: Find best chain by chainwork (single full traversal)
         val (_, bestDepth, bestPath) = bestChainPath(newTree, ctx0, BigInt(0))
+        log("bestChainPath")
 
         // Step 3: Promote eligible blocks + GC dead forks (single traversal along bestPath)
 //        val cleanedTree = newTree
         val (promoted, cleanedTree) =
             promoteAndGC(newTree, ctx0, bestPath, bestDepth, currentTime)
+        log("promoteAndGC")
 
         // Step 4: Apply promotions (no-op when promoted is empty) and set cleaned tree
         val updatedState =
             applyPromotions(state, promoted, update.mpfInsertProofs, ctx0)
+        log("applyPromotions")
         updatedState.copy(forksTree = cleanedTree)
     }
 
