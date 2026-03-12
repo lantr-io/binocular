@@ -314,9 +314,6 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                                           currentTime
                                         )
                                     val fullPrefix = prefix.reverse.prepended(block)
-                                    val prefixCw =
-                                        computeChainwork(fullPrefix, ctx, BigInt(0))
-                                    val suffixCw = originalCw - prefixCw
                                     tail match
                                         case Nil =>
                                             next match
@@ -329,6 +326,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                                                     )
                                                 case _ =>
                                                     // Parent is the last block with subtree — fork.
+                                                    val prefixCw =
+                                                        computeChainwork(fullPrefix, ctx, BigInt(0))
                                                     Blocks(
                                                       fullPrefix,
                                                       prefixCw,
@@ -339,11 +338,13 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                                                     )
                                         case _ =>
                                             // Parent is in the middle — split.
+                                            val prefixCw =
+                                                computeChainwork(fullPrefix, ctx, BigInt(0))
                                             Blocks(
                                               fullPrefix,
                                               prefixCw,
                                               Fork(
-                                                Blocks(tail, suffixCw, next),
+                                                Blocks(tail, originalCw - prefixCw, next),
                                                 Blocks(newBlocks, newCw, End)
                                               )
                                             )
@@ -467,9 +468,9 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                         promoteAndGC(next, newCtx, bestPath, bestDepth, currentTime)
                     (promoted ++ nextPromoted, cleanedNext)
                 else
-                    // Partial promotion — recompute remaining chainwork
-                    val remainingCw = computeChainwork(remaining, newCtx, BigInt(0))
-                    (promoted, Blocks(remaining, remainingCw, next))
+                    // Partial promotion — derive remaining chainwork by subtraction
+                    val promotedCw = computeChainwork(promoted, ctx, BigInt(0))
+                    (promoted, Blocks(remaining, cw - promotedCw, next))
 
             case Fork(left, right) =>
                 require(!bestPath.isEmpty, "Best path exhausted at Fork")
@@ -568,13 +569,11 @@ object BitcoinValidator2 extends DataParameterizedValidator {
 
         // Step 3: Promote eligible blocks + GC dead forks (single traversal along bestPath)
 //        val cleanedTree = newTree
-        val (promoted, cleanedTree) =
-            promoteAndGC(newTree, ctx0, bestPath, bestDepth, currentTime)
+        val (promoted, cleanedTree) = promoteAndGC(newTree, ctx0, bestPath, bestDepth, currentTime)
         log("promoteAndGC")
 
         // Step 4: Apply promotions (no-op when promoted is empty) and set cleaned tree
-        val updatedState =
-            applyPromotions(state, promoted, update.mpfInsertProofs, ctx0)
+        val updatedState = applyPromotions(state, promoted, update.mpfInsertProofs, ctx0)
         log("applyPromotions")
         updatedState.copy(forksTree = cleanedTree)
     }
