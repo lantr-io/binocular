@@ -80,6 +80,7 @@ lazy val coreDependencies = Seq(
 // Unit test dependencies
 lazy val testDependencies = Seq(
   "com.lihaoyi" %% "os-lib" % "0.11.8" % Test,
+  "com.lihaoyi" %% "pprint" % "0.9.6" % Test,
   "org.scalatest" %% "scalatest" % "3.2.19" % Test,
   "org.scalatestplus" %% "scalacheck-1-18" % "3.2.19.0" % Test,
   "org.scalacheck" %% "scalacheck" % "1.19.0" % Test
