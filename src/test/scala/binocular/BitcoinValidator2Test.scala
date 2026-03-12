@@ -44,14 +44,14 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
     }
 
     test("Block header throughput - max headers per transaction") {
-        val baseHeight = 864800
+        val baseHeight = 866880
         val pp = CardanoInfo.mainnet.protocolParams
         val prices = pp.executionUnitPrices
         val maxTxCpu = pp.maxTxExecutionUnits.steps
         val maxTxMem = pp.maxTxExecutionUnits.memory
         val maxTxSize = pp.maxTxSize
 
-        // Load the confirmed tip block (864800)
+        // Load the confirmed tip block (866880 — exactly at retarget boundary 2016*430)
         val (baseFixture, _) = BlockFixture.loadWithHeader(baseHeight)
         val confirmedTip = ByteString.fromHex(baseFixture.hash).reverse
         val bits = ByteString.fromHex(baseFixture.bits).reverse
@@ -61,14 +61,14 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
         val recentTimestamps =
             prelude.List.from((0 until 11).map(i => baseTimestamp - i * 600).toList)
 
-        // Create initial ChainState2 with block 864800 as confirmed tip
+        // Create initial ChainState2 with block 866880 as confirmed tip
+        // Block 866880 is at retarget boundary, so previousDifficultyAdjustmentTimestamp is its own timestamp
         val prevState = ChainState2(
           blockHeight = baseFixture.height,
           blockHash = confirmedTip,
           currentTarget = bits,
           recentTimestamps = recentTimestamps,
-          previousDifficultyAdjustmentTimestamp =
-              BigInt(baseFixture.timestamp) - 600 * DifficultyAdjustmentInterval,
+          previousDifficultyAdjustmentTimestamp = baseTimestamp,
           confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(confirmedTip),
           forksTree = ForkTree.End
         )
@@ -106,7 +106,7 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
         )
         println("-" * 100)
 
-        val maxAvailableHeaders = 50 // fixtures available: 864801..864850
+        val maxAvailableHeaders = 195 // fixtures available: 866881..867075
         var count = 0
         var withinLimits = true
         while withinLimits && count < maxAvailableHeaders do {

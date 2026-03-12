@@ -125,12 +125,12 @@ object BitcoinValidator2 extends DataParameterizedValidator {
 
     /** Insert element into an ascending-sorted list, maintaining ascending order. */
     def insertAscending(x: BigInt, sorted: List[BigInt]): List[BigInt] = sorted match
-        case Nil              => Cons(x, Nil)
+        case Nil                  => Cons(x, Nil)
         case Cons(h, t) if x <= h => Cons(x, sorted)
-        case Cons(h, t)       => Cons(h, insertAscending(x, t))
+        case Cons(h, t)           => Cons(h, insertAscending(x, t))
 
-    /** Sort a list of BigInts in ascending order using insertion sort. Efficient for small fixed-size
-      * lists (e.g. 11 timestamps for MTP calculation).
+    /** Sort a list of BigInts in ascending order using insertion sort. Efficient for small
+      * fixed-size lists (e.g. 11 timestamps for MTP calculation).
       */
     def insertionSort(xs: List[BigInt]): List[BigInt] =
         xs.foldLeft(List.empty[BigInt])((sorted, x) => insertAscending(x, sorted))
@@ -162,8 +162,7 @@ object BitcoinValidator2 extends DataParameterizedValidator {
 
         // MTP validation
         val sortedTimestamps = insertionSort(ctx.timestamps.take(MedianTimeSpan))
-        log("validateBlock sort")
-        val medianTimePast = sortedTimestamps !! (BigInt(5))
+        val medianTimePast = sortedTimestamps.at(5)
         require(header.timestamp > medianTimePast, "Block timestamp not greater than MTP")
 
         // Future time validation
@@ -200,7 +199,6 @@ object BitcoinValidator2 extends DataParameterizedValidator {
           lastBlockHash = hash,
           chainwork = newChainwork
         )
-        log("validateBlock 7")
 
         (summary, newCtx)
     }
@@ -256,7 +254,6 @@ object BitcoinValidator2 extends DataParameterizedValidator {
     ): ForkTree = {
         path match
             case Nil =>
-                log("validateAndInsert 1")
                 // Parent is the confirmed tip. Validate and attach as a new branch.
                 // path=[], tree=Blocks([A,B],End)  →  Fork(Blocks([A,B],End), Blocks([X,Y],End))
                 // path=[], tree=End                →  Blocks([X,Y],End)
@@ -525,16 +522,16 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                 validateAndInsert(state.forksTree, update.parentPath, headers, ctx0, currentTime)
 
         // Step 2: Find best chain (single full traversal)
-//        val (bestWork, bestDepth, bestPath) = bestChainPath(newTree, ctx0)
+        val (bestWork, bestDepth, bestPath) = bestChainPath(newTree, ctx0)
 
         // Step 3: Promote eligible blocks + GC dead forks (single traversal along bestPath)
-        val cleanedTree = newTree
-//        val (promoted, cleanedTree) =
-//            promoteAndGC(newTree, ctx0, bestPath, bestDepth, currentTime)
+//        val cleanedTree = newTree
+        val (promoted, cleanedTree) =
+            promoteAndGC(newTree, ctx0, bestPath, bestDepth, currentTime)
 
         // Step 4: Apply promotions (no-op when promoted is empty) and set cleaned tree
-        val updatedState = state
-//            applyPromotions(state, promoted, update.mpfInsertProofs, ctx0)
+        val updatedState =
+            applyPromotions(state, promoted, update.mpfInsertProofs, ctx0)
         updatedState.copy(forksTree = cleanedTree)
     }
 
@@ -595,5 +592,40 @@ object BitcoinValidator2 extends DataParameterizedValidator {
           computedState.toData == providedOutputDatum,
           "Computed state does not match provided output datum"
         )
+    }
+
+    import StrictLookups.*
+    // One-shot NFT minting policy
+    // param: TxOutRef that must be consumed to mint (one-shot guarantee)
+    // redeemer: BigInt index of the oracle output in tx.outputs
+    inline override def mint(
+        oneShotTxOutRef: Data,
+        redeemer: Data,
+        policyId: PolicyId,
+        tx: TxInfo
+    ): Unit = {
+        val minted = tx.mint.toSortedMap.lookupOrFail(policyId).toData
+        if minted == SortedMap.singleton(ByteString.empty, BigInt(1)).toData then
+            // ensure we spend the one-shot TxOutRef
+            tx.inputs.findOrFail(_.outRef.toData == oneShotTxOutRef)
+            // Verify oracle output contains the NFT at the specified index
+            val outputIndex = redeemer.to[BigInt]
+            val oracleOutput = tx.outputs !! outputIndex
+            require(
+              oracleOutput.value.existingQuantityOf(policyId, ByteString.empty) == BigInt(1),
+              "Oracle output must contain NFT"
+            )
+            // Verify oracle output goes to this script's address (policyId == script hash)
+            require(
+              oracleOutput.address.credential.toData == Credential
+                  .ScriptCredential(policyId)
+                  .toData,
+              "Oracle output must go to script address"
+            )
+        else
+            require(
+              minted == SortedMap.singleton(ByteString.empty, BigInt(-1)).toData,
+              "can only mint 1 or burn 1 SP NFT"
+            )
     }
 }
