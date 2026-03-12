@@ -526,7 +526,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         state: ChainState2,
         promoted: List[BlockSummary2],
         mpfProofs: List[List[ProofStep]],
-        ctx0: TraversalCtx
+        ctx0: TraversalCtx,
+        cleanedTree: ForkTree
     ): ChainState2 = {
         def loop(
             blocks: List[BlockSummary2],
@@ -559,7 +560,7 @@ object BitcoinValidator2 extends DataParameterizedValidator {
           recentTimestamps = finalCtx.timestamps.take(MedianTimeSpan),
           previousDifficultyAdjustmentTimestamp = finalCtx.prevDiffAdjTimestamp,
           confirmedBlocksRoot = finalRoot,
-          forksTree = state.forksTree // placeholder, will be overwritten by caller
+          forksTree = cleanedTree
         )
     }
 
@@ -604,9 +605,10 @@ object BitcoinValidator2 extends DataParameterizedValidator {
             require(promoted.length == numBlocksToPromote, "Promoted block count mismatch")
 
             // Step 4: Apply promotions and set cleaned tree
-            val updatedState = applyPromotions(state, promoted, promotionProofs, ctx0)
+            val updatedState =
+                applyPromotions(state, promoted, promotionProofs, ctx0, cleanedTree)
             log("applyPromotions")
-            updatedState.copy(forksTree = cleanedTree)
+            updatedState
         else state.copy(forksTree = newTree)
     }
 
