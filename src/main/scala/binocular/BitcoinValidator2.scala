@@ -19,7 +19,8 @@ type PosixTimeSeconds = BigInt
 case class BlockSummary2(
     hash: BlockHash, // Block hash
     timestamp: PosixTime, // Bitcoin block timestamp (for median-time-past)
-    addedTimeSeconds: PosixTimeSeconds // Cardano time when this block was added to forksTree
+    addedTimeSeconds: PosixTimeSeconds, // Cardano time when this block was added to forksTree
+    chainwork: BigInt // Cumulative proof-of-work from confirmed tip
 ) derives FromData,
       ToData
 
@@ -136,7 +137,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
     def validateBlock(
         header: BlockHeader,
         ctx: TraversalCtx,
-        currentTime: BigInt
+        currentTime: BigInt,
+        chainwork: BigInt
     ): (BlockSummary2, TraversalCtx) = {
         val hash = blockHeaderHash(header)
         val hashInt = byteStringToInteger(false, hash)
@@ -178,11 +180,13 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         val newPrevDiffAdjTimestamp =
             if newHeight % DifficultyAdjustmentInterval == BigInt(0) then header.timestamp
             else ctx.prevDiffAdjTimestamp
+        val newChainwork = chainwork + calculateBlockProof(target)
 
         val summary = BlockSummary2(
           hash = hash,
           timestamp = header.timestamp,
-          addedTimeSeconds = currentTime
+          addedTimeSeconds = currentTime,
+          chainwork = newChainwork
         )
 
         val newCtx = TraversalCtx(
@@ -200,12 +204,13 @@ object BitcoinValidator2 extends DataParameterizedValidator {
     def validateAndCollectBlocks(
         headers: List[BlockHeader],
         ctx: TraversalCtx,
-        currentTime: BigInt
+        currentTime: BigInt,
+        chainwork: BigInt
     ): List[BlockSummary2] = {
-        val (acc, _) = headers.foldLeft((Nil: List[BlockSummary2], ctx)) {
-            case ((acc, currentCtx), header) =>
-                val (summary, newCtx) = validateBlock(header, currentCtx, currentTime)
-                (Cons(summary, acc), newCtx)
+        val (acc, _, _) = headers.foldLeft((Nil: List[BlockSummary2], ctx, chainwork)) {
+            case ((acc, currentCtx, cw), header) =>
+                val (summary, newCtx) = validateBlock(header, currentCtx, currentTime, cw)
+                (Cons(summary, acc), newCtx, summary.chainwork)
         }
         acc.reverse
     }
@@ -243,14 +248,16 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         path: Path,
         headers: List[BlockHeader],
         ctx: TraversalCtx,
-        currentTime: BigInt
+        currentTime: BigInt,
+        chainwork: BigInt
     ): ForkTree = {
         path match
             case Nil =>
                 // Parent is the confirmed tip. Validate and attach as a new branch.
                 // path=[], tree=Blocks([A,B],End)  →  Fork(Blocks([A,B],End), Blocks([X,Y],End))
                 // path=[], tree=End                →  Blocks([X,Y],End)
-                val newBlocks = validateAndCollectBlocks(headers, ctx, currentTime)
+                val newBlocks =
+                    validateAndCollectBlocks(headers, ctx, currentTime, chainwork)
                 val newBranch = Blocks(newBlocks, End)
                 tree match
                     case End      => newBranch
@@ -262,7 +269,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                             count: BigInt,
                             remaining: List[BlockSummary2],
                             prefix: List[BlockSummary2],
-                            newCtx: TraversalCtx
+                            newCtx: TraversalCtx,
+                            lastCw: BigInt
                         ): ForkTree = {
                             remaining match
                                 case Nil if count == pathHead =>
@@ -276,14 +284,19 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                                         pathTail,
                                         headers,
                                         newCtx,
-                                        currentTime
+                                        currentTime,
+                                        lastCw
                                       )
                                     )
                                 case Cons(block, tail) if count == pathHead =>
                                     // Found insertion point: block at pathHead is the parent.
                                     val parentCtx = accumulateBlock(newCtx, block)
-                                    val newBlocks =
-                                        validateAndCollectBlocks(headers, parentCtx, currentTime)
+                                    val newBlocks = validateAndCollectBlocks(
+                                      headers,
+                                      parentCtx,
+                                      currentTime,
+                                      block.chainwork
+                                    )
                                     val fullPrefix = prefix.reverse.prepended(block)
                                     tail match
                                         case Nil =>
@@ -318,11 +331,12 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                                       count + 1,
                                       tail,
                                       Cons(block, prefix),
-                                      accumulateBlock(newCtx, block)
+                                      accumulateBlock(newCtx, block),
+                                      block.chainwork
                                     )
                                 case _ => fail("Path index out of bounds")
                         }
-                        loop(0, blocks, Nil, ctx)
+                        loop(0, blocks, Nil, ctx, chainwork)
 
                     case Fork(left, right) =>
                         // Consume path element to select branch: 0 = left, 1 = right.
@@ -330,13 +344,27 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                         // path=[1,...], Fork(L,R) → Fork(L, validateAndInsert(R,...))
                         if pathHead == BigInt(0) then
                             Fork(
-                              validateAndInsert(left, pathTail, headers, ctx, currentTime),
+                              validateAndInsert(
+                                left,
+                                pathTail,
+                                headers,
+                                ctx,
+                                currentTime,
+                                chainwork
+                              ),
                               right
                             )
                         else
                             Fork(
                               left,
-                              validateAndInsert(right, pathTail, headers, ctx, currentTime)
+                              validateAndInsert(
+                                right,
+                                pathTail,
+                                headers,
+                                ctx,
+                                currentTime,
+                                chainwork
+                              )
                             )
 
                     case End =>
@@ -347,41 +375,32 @@ object BitcoinValidator2 extends DataParameterizedValidator {
     // Best chain selection
     // ============================================================================
 
-    /** Walk blocks accumulating ctx and chainwork. Simple recursion, no TraversalCtx in the
-      * bestChainPath signature — ctx is only used internally to compute proof-of-work per block.
-      */
-    def accumulateChainwork(
+    /** Walk a block list, counting height and reading the last block's chainwork. */
+    def walkBlocks(
         blocks: List[BlockSummary2],
-        ctx: TraversalCtx,
+        height: BigInt,
         chainwork: BigInt
-    ): (TraversalCtx, BigInt) = blocks match
-        case Nil => (ctx, chainwork)
-        case Cons(block, tail) =>
-            val newCtx = accumulateBlock(ctx, block)
-            val proof = calculateBlockProof(compactBitsToTarget(newCtx.currentBits))
-            accumulateChainwork(tail, newCtx, chainwork + proof)
+    ): (BigInt, BigInt) = blocks match
+        case Nil            => (height, chainwork)
+        case Cons(block, t) => walkBlocks(t, height + 1, block.chainwork)
 
     /** Find the best (highest chainwork) chain path through the tree. Returns (chainwork, depth,
-      * path-to-best). Single full traversal. Chainwork is computed only here, not during insertion.
+      * path-to-best). Single full traversal using two simple accumulators.
       */
-    def bestChainPath(
-        tree: ForkTree,
-        ctx: TraversalCtx,
-        chainwork: BigInt
-    ): (BigInt, BigInt, Path) = {
+    def bestChainPath(tree: ForkTree, height: BigInt, chainwork: BigInt): (BigInt, BigInt, Path) = {
         tree match
             case Blocks(blocks, next) =>
-                val (newCtx, newChainwork) = accumulateChainwork(blocks, ctx, chainwork)
-                bestChainPath(next, newCtx, newChainwork)
+                val (newHeight, newChainwork) = walkBlocks(blocks, height, chainwork)
+                bestChainPath(next, newHeight, newChainwork)
 
             case Fork(left, right) =>
-                val (leftWork, leftDepth, leftPath) = bestChainPath(left, ctx, chainwork)
-                val (rightWork, rightDepth, rightPath) = bestChainPath(right, ctx, chainwork)
+                val (leftWork, leftDepth, leftPath) = bestChainPath(left, height, chainwork)
+                val (rightWork, rightDepth, rightPath) = bestChainPath(right, height, chainwork)
                 if leftWork >= rightWork then (leftWork, leftDepth, Cons(0, leftPath))
                 else (rightWork, rightDepth, Cons(1, rightPath))
 
             case End =>
-                (chainwork, ctx.height, Nil)
+                (chainwork, height, Nil)
     }
 
     // ============================================================================
@@ -527,11 +546,18 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         val newTree = headers match
             case Nil => state.forksTree
             case _ =>
-                validateAndInsert(state.forksTree, update.parentPath, headers, ctx0, currentTime)
+                validateAndInsert(
+                  state.forksTree,
+                  update.parentPath,
+                  headers,
+                  ctx0,
+                  currentTime,
+                  BigInt(0)
+                )
         log("validateAndInsert")
 
         // Step 2: Find best chain by chainwork (single full traversal)
-        val (_, bestDepth, bestPath) = bestChainPath(newTree, ctx0, BigInt(0))
+        val (_, bestDepth, bestPath) = bestChainPath(newTree, state.blockHeight, BigInt(0))
         log("bestChainPath")
 
         // Step 3: Promote eligible blocks + GC dead forks (single traversal along bestPath)
