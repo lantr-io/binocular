@@ -15,6 +15,10 @@ import scalus.compiler.Compile
 import scalus.{show as _, *}
 
 type PosixTimeSeconds = BigInt
+type Chainwork = BigInt
+type NonEmptyList[A] = List[A]
+type List11Timestamps = List[PosixTimeSeconds]
+type MPFRoot = ByteString
 
 case class BlockSummary2(
     hash: BlockHash, // Block hash
@@ -24,7 +28,7 @@ case class BlockSummary2(
       ToData
 
 enum ForkTree derives FromData, ToData {
-    case Blocks(blocks: List[BlockSummary2], chainwork: BigInt, next: ForkTree)
+    case Blocks(blocks: NonEmptyList[BlockSummary2], chainwork: Chainwork, next: ForkTree)
     case Fork(left: ForkTree, right: ForkTree)
     case End
 }
@@ -33,9 +37,9 @@ case class ChainState2(
     blockHeight: BigInt,
     blockHash: BlockHash,
     currentTarget: CompactBits,
-    recentTimestamps: List[PosixTime],
+    recentTimestamps: List11Timestamps,
     previousDifficultyAdjustmentTimestamp: PosixTime,
-    confirmedBlocksRoot: ByteString,
+    confirmedBlocksRoot: MPFRoot,
     forksTree: ForkTree
 ) derives FromData,
       ToData
@@ -57,10 +61,10 @@ case class UpdateOracle2(
       ToData
 
 case class TraversalCtx(
-    timestamps: List[BigInt], // newest-first (prepended during accumulation)
+    timestamps: NonEmptyList[PosixTimeSeconds], // newest-first (prepended during accumulation)
     height: BigInt,
     currentBits: CompactBits,
-    prevDiffAdjTimestamp: BigInt,
+    prevDiffAdjTimestamp: PosixTimeSeconds,
     lastBlockHash: BlockHash
 ) derives FromData,
       ToData
@@ -109,11 +113,6 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         )
     }
 
-    /** Accumulate all blocks in the list. */
-    def accumulateCtx(ctx: TraversalCtx, blocks: List[BlockSummary2]): TraversalCtx = {
-        blocks.foldLeft(ctx)(accumulateBlock)
-    }
-
     // ============================================================================
     // Block validation
     // ============================================================================
@@ -136,7 +135,7 @@ object BitcoinValidator2 extends DataParameterizedValidator {
     def validateBlock(
         header: BlockHeader,
         ctx: TraversalCtx,
-        currentTime: BigInt
+        currentTime: PosixTimeSeconds
     ): (BlockSummary2, TraversalCtx, BigInt) = {
         val hash = blockHeaderHash(header)
         val hashInt = byteStringToInteger(false, hash)
@@ -201,9 +200,9 @@ object BitcoinValidator2 extends DataParameterizedValidator {
 
     /** Compute segment chainwork for a list of blocks by replaying difficulty from TraversalCtx. */
     def computeChainwork(
-        blocks: List[BlockSummary2],
+        blocks: NonEmptyList[BlockSummary2],
         ctx: TraversalCtx,
-        chainwork: BigInt
+        chainwork: Chainwork
     ): BigInt = blocks match
         case Nil => chainwork
         case Cons(block, tail) =>
@@ -450,15 +449,17 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         ctx: TraversalCtx,
         bestPath: Path,
         bestDepth: BigInt,
-        currentTime: BigInt
+        currentTime: PosixTimeSeconds
     ): (List[BlockSummary2], ForkTree) = {
         tree match
             case Blocks(blocks, cw, next) =>
                 val (promoted, remaining, newCtx) =
                     splitPromotable(blocks, ctx, bestDepth, currentTime)
+                log("splitPromotable 2")
                 if promoted.isEmpty then
                     // No promotion here — accumulate and recurse into next for GC
-                    val fullCtx = accumulateCtx(ctx, blocks)
+                    val fullCtx = blocks.foldLeft(ctx)(accumulateBlock)
+                    log("promoteAndGC fullCtx")
                     val (nextPromoted, cleanedNext) =
                         promoteAndGC(next, fullCtx, bestPath, bestDepth, currentTime)
                     (nextPromoted, Blocks(blocks, cw, cleanedNext))
@@ -469,7 +470,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                     (promoted ++ nextPromoted, cleanedNext)
                 else
                     // Partial promotion — derive remaining chainwork by subtraction
-                    val promotedCw = computeChainwork(promoted, ctx, BigInt(0))
+                    val promotedCw = computeChainwork(promoted, ctx, 0)
+                    log("promoteAndGC computeChainwork")
                     (promoted, Blocks(remaining, cw - promotedCw, next))
 
             case Fork(left, right) =>
@@ -631,10 +633,12 @@ object BitcoinValidator2 extends DataParameterizedValidator {
             case OutputDatum.OutputDatum(d) => d
             case _                          => fail("Continuing output must have inline datum")
 
+        log("spend: providedOutputDatum")
         require(
           computedState.toData == providedOutputDatum,
           "Computed state does not match provided output datum"
         )
+        log("spend: computedState.toData == providedOutputDatum")
     }
 
     import StrictLookups.*
