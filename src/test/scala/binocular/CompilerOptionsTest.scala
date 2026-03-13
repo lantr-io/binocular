@@ -104,11 +104,7 @@ class CompilerOptionsTest extends AnyFunSuite {
     test("BitcoinContract.bitcoinProgram size matches fresh compilation with same options") {
         // Compile fresh with the same options as BitcoinContract
         val freshContract = {
-            given Options = Options(
-              optimizeUplc = true,
-              generateErrorTraces = true,
-              targetLoweringBackend = TargetLoweringBackend.SirToUplcV3Lowering
-            )
+            given Options = BitcoinContract.opts
             PlutusV3.compile(BitcoinValidator.validate)
         }
 

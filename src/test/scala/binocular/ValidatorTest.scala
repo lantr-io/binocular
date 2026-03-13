@@ -65,7 +65,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
     }
 
     test("BitcoinValidator size") {
-        assert(BitcoinContract.contract.script.script.size == 8734)
+        assert(BitcoinContract.contract.script.script.size == 8686)
     }
 
     test("Tx size makes sense") {
