@@ -7,7 +7,7 @@ import scalus.compiler.sir.TargetLoweringBackend
 import scalus.uplc.PlutusV3
 import scalus.uplc.builtin.ByteString.hex
 import scalus.uplc.builtin.Data.toData
-import scalus.cardano.onchain.plutus.v3.{TxOutRef, TxId}
+import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 
 /** Test that changing compiler options actually affects the compiled validator size. */
 class CompilerOptionsTest extends AnyFunSuite {
