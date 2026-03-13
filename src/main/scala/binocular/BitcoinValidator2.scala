@@ -93,13 +93,16 @@ case class TraversalCtx(
 ) derives FromData,
       ToData
 
+case class BitcoinValidator2Params(
+    maturationConfirmations: BigInt,
+    challengeAging: BigInt,
+    oneShotTxOutRef: TxOutRef
+) derives FromData,
+      ToData
+
 @Compile
 object BitcoinValidator2 extends DataParameterizedValidator {
     import BitcoinHelpers.*
-
-    // Binocular protocol parameters
-    val MaturationConfirmations: BigInt = 100
-    val ChallengeAging: BigInt = 200 * 60 // 200 minutes in seconds
 
     // Fork path directions
     val LeftFork: BigInt = 0
@@ -545,8 +548,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
     /** Split a block list into promotable prefix and remaining suffix.
       *
       * Walks oldest→newest. A block is eligible for promotion if:
-      *   - `bestDepth - blockHeight >= MaturationConfirmations` (100 confirmations)
-      *   - `currentTime - addedTimeSeconds >= ChallengeAging` (200 minutes on-chain)
+      *   - `bestDepth - blockHeight >= params.maturationConfirmations` (e.g. 100 confirmations)
+      *   - `currentTime - addedTimeSeconds >= params.challengeAging` (e.g. 200 minutes on-chain)
       *   - `maxPromotions > 0` (caller-imposed limit from number of MPF proofs provided)
       *
       * Stops at the first ineligible block. This is safe because blocks are ordered oldest→newest:
@@ -561,7 +564,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         ctx: TraversalCtx,
         bestDepth: BigInt,
         currentTime: PosixTimeSeconds,
-        maxPromotions: BigInt
+        maxPromotions: BigInt,
+        params: BitcoinValidator2Params
     ): (List[BlockSummary2], List[BlockSummary2], TraversalCtx) = {
         blocks match
             case Nil               => (Nil, Nil, ctx)
@@ -572,7 +576,7 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                     val blockHeight = ctx.height + 1
                     val depth = bestDepth - blockHeight
                     val age = currentTime - block.addedTimeSeconds
-                    if depth >= MaturationConfirmations && age >= ChallengeAging then
+                    if depth >= params.maturationConfirmations && age >= params.challengeAging then
                         // Block eligible — promote it and check next block.
                         val newCtx = accumulateBlock(ctx, block)
                         val (morePromoted, remaining, finalCtx) =
@@ -581,7 +585,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                               newCtx,
                               bestDepth,
                               currentTime,
-                              maxPromotions - 1
+                              maxPromotions - 1,
+                              params
                             )
                         (Cons(block, morePromoted), remaining, finalCtx)
                     else
@@ -614,12 +619,13 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         bestPath: BestPath,
         bestDepth: BigInt,
         currentTime: PosixTimeSeconds,
-        numPromotions: BigInt
+        numPromotions: BigInt,
+        params: BitcoinValidator2Params
     ): (List[BlockSummary2], ForkTree) = {
         tree match
             case Blocks(blocks, cw, next) =>
                 val (promoted, remaining, newCtx) =
-                    splitPromotable(blocks, ctx, bestDepth, currentTime, numPromotions)
+                    splitPromotable(blocks, ctx, bestDepth, currentTime, numPromotions, params)
                 log("splitPromotable 2")
                 if promoted.isEmpty then
                     // No promotion in this node (blocks too young/shallow, or limit reached).
@@ -635,7 +641,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                           bestPath,
                           bestDepth,
                           currentTime,
-                          numPromotions
+                          numPromotions,
+                          params
                         )
                     (nextPromoted, Blocks(blocks, cw, cleanedNext))
                 else if remaining.isEmpty then
@@ -650,7 +657,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                           bestPath,
                           bestDepth,
                           currentTime,
-                          numPromotions - promoted.length
+                          numPromotions - promoted.length,
+                          params
                         )
                     (promoted ++ nextPromoted, cleanedNext)
                 else
@@ -673,11 +681,27 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                 val pathTail = bestPath.tail
                 if direction == LeftFork then
                     val (promoted, cleanedLeft) =
-                        promoteAndGC(left, ctx, pathTail, bestDepth, currentTime, numPromotions)
+                        promoteAndGC(
+                          left,
+                          ctx,
+                          pathTail,
+                          bestDepth,
+                          currentTime,
+                          numPromotions,
+                          params
+                        )
                     (promoted, cleanedLeft)
                 else
                     val (promoted, cleanedRight) =
-                        promoteAndGC(right, ctx, pathTail, bestDepth, currentTime, numPromotions)
+                        promoteAndGC(
+                          right,
+                          ctx,
+                          pathTail,
+                          bestDepth,
+                          currentTime,
+                          numPromotions,
+                          params
+                        )
                     (promoted, cleanedRight)
 
             case End =>
@@ -761,7 +785,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
     def computeUpdate(
         state: ChainState2,
         update: UpdateOracle2,
-        currentTime: BigInt
+        currentTime: BigInt,
+        params: BitcoinValidator2Params
     ): ChainState2 = {
         val headers = update.blockHeaders
         val ctx0 = initCtx(state)
@@ -788,7 +813,15 @@ object BitcoinValidator2 extends DataParameterizedValidator {
 
             // Step 3: Promote eligible blocks + GC dead forks (single traversal along bestPath)
             val (promoted, cleanedTree) =
-                promoteAndGC(newTree, ctx0, bestPath, bestDepth, currentTime, numBlocksToPromote)
+                promoteAndGC(
+                  newTree,
+                  ctx0,
+                  bestPath,
+                  bestDepth,
+                  currentTime,
+                  numBlocksToPromote,
+                  params
+                )
             log("promoteAndGC")
             require(promoted.length == numBlocksToPromote, "Promoted block count mismatch")
 
@@ -819,6 +852,7 @@ object BitcoinValidator2 extends DataParameterizedValidator {
         tx: TxInfo,
         outRef: TxOutRef
     ): Unit = {
+        val params = param.to[BitcoinValidator2Params]
         val update = redeemer.to[UpdateOracle2]
 
         val intervalStartInSeconds = tx.validRange.from.boundType match
@@ -839,7 +873,7 @@ object BitcoinValidator2 extends DataParameterizedValidator {
             case _                          => fail("No inline datum")
 
         // Compute expected new state
-        val computedState = computeUpdate(prevState, update, intervalStartInSeconds)
+        val computedState = computeUpdate(prevState, update, intervalStartInSeconds, params)
 
         // Find continuing output
         val continuingOutput = findUniqueOutputFrom(outputs, ownInput.address)
@@ -865,18 +899,19 @@ object BitcoinValidator2 extends DataParameterizedValidator {
 
     import StrictLookups.*
     // One-shot NFT minting policy
-    // param: TxOutRef that must be consumed to mint (one-shot guarantee)
+    // param: BitcoinValidator2Params containing the TxOutRef that must be consumed to mint
     // redeemer: BigInt index of the oracle output in tx.outputs
     inline override def mint(
-        oneShotTxOutRef: Data,
+        param: Data,
         redeemer: Data,
         policyId: PolicyId,
         tx: TxInfo
     ): Unit = {
+        val params = param.to[BitcoinValidator2Params]
         val minted = tx.mint.toSortedMap.lookupOrFail(policyId).toData
         if minted == SortedMap.singleton(ByteString.empty, BigInt(1)).toData then
             // ensure we spend the one-shot TxOutRef
-            tx.inputs.findOrFail(_.outRef.toData == oneShotTxOutRef)
+            tx.inputs.findOrFail(_.outRef.toData == params.oneShotTxOutRef.toData)
             // Verify oracle output contains the NFT at the specified index
             val outputIndex = redeemer.to[BigInt]
             val oracleOutput = tx.outputs !! outputIndex
