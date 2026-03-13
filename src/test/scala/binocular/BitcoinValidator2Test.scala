@@ -21,6 +21,8 @@ import scalus.uplc.eval.*
 
 import java.time.Instant
 
+import binocular.ForkTree.*
+
 class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckPropertyChecks {
     private given env: CardanoInfo = CardanoInfo.mainnet
 
@@ -37,6 +39,81 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
     }
     private val testScriptAddr = testContract.address(env.network)
     private val testProgram = testContract.program.deBruijnedProgram
+
+    // Helper to create a dummy block summary for bestChainPath tests (only hash matters for identity)
+    private def dummyBlock(id: Byte): BlockSummary2 =
+        BlockSummary2(
+          hash = ByteString.unsafeFromArray(Array.fill(32)(id)),
+          timestamp = BigInt(1000000 + id),
+          addedTimeSeconds = BigInt(1000000 + id)
+        )
+
+    test(
+      "bestChainPath - equal chainwork favors left (existing) branch, matching Bitcoin Core first-seen rule"
+    ) {
+        // Bitcoin Core's CBlockIndexWorkComparator prefers the first-seen chain when chainwork
+        // is equal (lower nSequenceId wins). In Binocular, validateAndInsert always places the
+        // existing branch left and the new branch right, so bestChainPath's >= tie-break on left
+        // achieves the same effect: never reorganize to an equal-work competitor.
+
+        val blockA = dummyBlock(1)
+        val blockB = dummyBlock(2)
+
+        // Two branches with identical chainwork
+        val equalWorkTree = Fork(
+          Blocks(prelude.List(blockA), 100, End),
+          Blocks(prelude.List(blockB), 100, End)
+        )
+
+        val (cw, depth, path) = BitcoinValidator2.bestChainPath(equalWorkTree, 0, 0)
+        assert(cw == BigInt(100), "chainwork should be 100")
+        assert(depth == BigInt(1), "depth should be 1")
+        assert(
+          path == prelude.List(BitcoinValidator2.LeftFork),
+          "equal chainwork must select left (existing) branch"
+        )
+    }
+
+    test("bestChainPath - higher chainwork wins regardless of position") {
+        val blockA = dummyBlock(1)
+        val blockB = dummyBlock(2)
+        val blockC = dummyBlock(3)
+
+        // Right branch has strictly more work → must win despite being the newer branch
+        val rightWinsTree = Fork(
+          Blocks(prelude.List(blockA), 100, End),
+          Blocks(prelude.List(blockB, blockC), 300, End)
+        )
+
+        val (cw, depth, path) = BitcoinValidator2.bestChainPath(rightWinsTree, 0, 0)
+        assert(cw == BigInt(300), "chainwork should be 300")
+        assert(depth == BigInt(2), "depth should be 2")
+        assert(path == prelude.List(BitcoinValidator2.RightFork), "higher chainwork must win")
+    }
+
+    test("bestChainPath - nested forks with equal chainwork favor left at every level") {
+        val blockA = dummyBlock(1)
+        val blockB = dummyBlock(2)
+        val blockC = dummyBlock(3)
+
+        // Shared prefix, then inner fork with equal work
+        val nestedTree = Blocks(
+          prelude.List(blockA),
+          50,
+          Fork(
+            Blocks(prelude.List(blockB), 100, End),
+            Blocks(prelude.List(blockC), 100, End)
+          )
+        )
+
+        val (cw, depth, path) = BitcoinValidator2.bestChainPath(nestedTree, 0, 0)
+        assert(cw == BigInt(150), "chainwork should be 50 + 100")
+        assert(depth == BigInt(2), "depth should be 2 (prefix + one branch block)")
+        assert(
+          path == prelude.List(BitcoinValidator2.LeftFork),
+          "inner equal-work fork must select left"
+        )
+    }
 
     test("BitcoinValidator2 size") {
         given Options = Options.release

@@ -27,6 +27,16 @@ case class BlockSummary2(
 ) derives FromData,
       ToData
 
+/** Binary tree of unconfirmed block segments.
+  *
+  * '''Fork ordering invariant:''' `Fork(left = existing, right = new)`. Every fork-creating
+  * operation in [[BitcoinValidator2.validateAndInsert]] places the pre-existing subtree on the left
+  * and the newly submitted branch on the right. This mirrors Bitcoin Core's first-seen preference:
+  * `CBlockIndexWorkComparator` (`blockstorage.cpp`) breaks equal-chainwork ties by `nSequenceId`,
+  * favoring whichever chain tip was received first. Since [[BitcoinValidator2.bestChainPath]] uses
+  * `>=` when comparing left vs right chainwork, the left (existing/older) branch wins ties —
+  * achieving the same "never reorg to an equal-work competitor" behavior as Bitcoin Core.
+  */
 enum ForkTree derives FromData, ToData {
     case Blocks(blocks: NonEmptyList[BlockSummary2], chainwork: Chainwork, next: ForkTree)
     case Fork(left: ForkTree, right: ForkTree)
@@ -327,7 +337,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                     // First-ever insertion into an empty tree:
                     //   End → Blocks([H1,H2], cw, End)
                     case End => newBranch
-                    // Tree already has blocks from confirmed tip → create a fork:
+                    // Tree already has blocks from confirmed tip → create a fork.
+                    // Existing branch goes left, new branch goes right (Fork ordering invariant).
                     //   Blocks([A,B], ..) → Fork(Blocks([A,B], ..), Blocks([H1,H2], cw, End))
                     case existing => Fork(existing, newBranch)
 
@@ -400,6 +411,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                                         case _ =>
                                             // Fork at end: parent is last block but subtree
                                             // exists. Must split chainwork.
+                                            // Existing subtree goes left, new branch right
+                                            // (Fork ordering invariant).
                                             // Blocks([A,B,C], cw, Fork(..)), path=[2]
                                             //   → Blocks([A,B,C], prefCw,
                                             //       Fork(Fork(..), Blocks([H1], newCw, End)))
@@ -416,6 +429,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                                 case _ =>
                                     // Mid-split: parent is in the middle of the block list.
                                     // The Blocks node is split into prefix and suffix.
+                                    // Existing suffix goes left, new branch right
+                                    // (Fork ordering invariant).
                                     // Blocks([A,B,C,D,E], cw, End), path=[2]
                                     //   → Blocks([A,B,C], prefCw,
                                     //       Fork(Blocks([D,E], cw-prefCw, End),
@@ -481,11 +496,18 @@ object BitcoinValidator2 extends DataParameterizedValidator {
       * Returns `(chainwork, depth, path)` where:
       *   - `chainwork` — total proof-of-work of the best chain (relative to confirmed tip)
       *   - `depth` — height of the best chain's tip (confirmed height + unconfirmed blocks)
-      *   - `path` — navigation path to the best chain tip, used by [[promoteAndGC]]
+      *   - `path` — [[BestPath]] to the best chain tip, used by [[promoteAndGC]]
       *
       * The path contains one element per Fork node encountered (0 = left, 1 = right). Blocks nodes
       * do not consume or produce path elements — they simply add their stored chainwork and block
-      * count, then recurse into `next`. Ties favor the left branch (`>=`).
+      * count, then recurse into `next`.
+      *
+      * '''Tie-breaking: left (existing) branch wins (`>=`).''' This matches Bitcoin Core's
+      * `CBlockIndexWorkComparator` in `blockstorage.cpp`, which uses `nSequenceId` to prefer the
+      * first-seen chain when chainwork is equal. Since [[validateAndInsert]] always places existing
+      * branches left and new branches right, `>=` ensures the existing chain is never displaced by
+      * an equal-work competitor — consistent with Bitcoin Core never reorganizing to a same-work
+      * alternative.
       *
       * Example: `Fork(Blocks([A,B], 200, End), Blocks([C], 150, End))` with confirmed height 100
       *   - Left: chainwork=200, depth=102, path=[]
@@ -504,6 +526,8 @@ object BitcoinValidator2 extends DataParameterizedValidator {
 
             case Fork(left, right) =>
                 // Recurse both branches, pick higher chainwork, prepend direction to path.
+                // >= means left (existing) wins ties — matches Bitcoin Core's first-seen rule
+                // (CBlockIndexWorkComparator in blockstorage.cpp).
                 val (leftWork, leftDepth, leftPath) = bestChainPath(left, height, chainwork)
                 val (rightWork, rightDepth, rightPath) = bestChainPath(right, height, chainwork)
                 if leftWork >= rightWork then (leftWork, leftDepth, Cons(LeftFork, leftPath))
