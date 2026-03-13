@@ -318,128 +318,144 @@ object BitcoinValidator2 extends DataParameterizedValidator {
                     case existing => Fork(existing, newBranch)
 
             case Cons(pathHead, pathTail) =>
-                tree match
-                    case Blocks(blocks, originalCw, next) =>
-                        // Walk the blocks list to find the insertion point at index pathHead.
-                        // `count` tracks position, `prefix` accumulates blocks before pathHead
-                        // (in reverse), `newCtx` accumulates traversal context.
-                        def loop(
-                            count: BigInt,
-                            remaining: List[BlockSummary2],
-                            prefix: List[BlockSummary2],
-                            newCtx: TraversalCtx
-                        ): ForkTree = {
-                            remaining match
-                                case Nil if count == pathHead =>
-                                    // Pass-through: pathHead == blocks.length, all blocks consumed.
-                                    // Continue navigation into the subtree `next`.
-                                    // Example: Blocks([A,B,C], cw, Fork(..)), path=[3, 0, ..]
-                                    //   → accumulate A,B,C, recurse into Fork(..) with path=[0, ..]
-                                    Blocks(
-                                      blocks,
-                                      originalCw,
-                                      validateAndInsert(
-                                        next,
-                                        pathTail,
-                                        headers,
-                                        newCtx,
-                                        currentTime
-                                      )
-                                    )
-                                case Cons(block, tail) if count == pathHead =>
-                                    // Found insertion point: block at index pathHead is the parent.
-                                    val parentCtx = accumulateBlock(newCtx, block)
-                                    val (newBlocks, newCw) =
-                                        validateAndCollectBlocks(
-                                          headers,
-                                          parentCtx,
-                                          currentTime
-                                        )
-                                    val fullPrefix = prefix.reverse.prepended(block)
-                                    tail match
-                                        case Nil =>
-                                            next match
-                                                case End =>
-                                                    // Append: parent is last block, no subtree.
-                                                    // Blocks([A,B,C], cw, End), path=[2]
-                                                    //   → Blocks([A,B,C,H1,H2], cw+newCw, End)
-                                                    Blocks(
-                                                      fullPrefix ++ newBlocks,
-                                                      originalCw + newCw,
-                                                      End
-                                                    )
-                                                case _ =>
-                                                    // Fork at end: parent is last block but subtree
-                                                    // exists. Must split chainwork.
-                                                    // Blocks([A,B,C], cw, Fork(..)), path=[2]
-                                                    //   → Blocks([A,B,C], prefCw,
-                                                    //       Fork(Fork(..), Blocks([H1], newCw, End)))
-                                                    val prefixCw =
-                                                        computeChainwork(fullPrefix, ctx, BigInt(0))
-                                                    Blocks(
-                                                      fullPrefix,
-                                                      prefixCw,
-                                                      Fork(
-                                                        next,
-                                                        Blocks(newBlocks, newCw, End)
-                                                      )
-                                                    )
+                validateAndInsertInPath(tree, headers, ctx, currentTime, pathHead, pathTail)
+    }
+
+    // ============================================================================
+    // Best chain selection
+    // ============================================================================
+
+    inline def validateAndInsertInPath(
+        tree: ForkTree,
+        headers: List[BlockHeader],
+        ctx: TraversalCtx,
+        currentTime: BigInt,
+        pathHead: PosixTimeSeconds,
+        pathTail: List[PosixTimeSeconds]
+    ) = {
+        tree match
+            case Blocks(blocks, originalCw, next) =>
+                // Walk the blocks list to find the insertion point at index pathHead.
+                // `count` tracks position, `prefix` accumulates blocks before pathHead
+                // (in reverse), `newCtx` accumulates traversal context.
+                def loop(
+                    count: BigInt,
+                    remaining: List[BlockSummary2],
+                    prefix: List[BlockSummary2],
+                    newCtx: TraversalCtx
+                ): ForkTree = {
+                    remaining match
+                        case Nil if count == pathHead =>
+                            // Pass-through: pathHead == blocks.length, all blocks consumed.
+                            // Continue navigation into the subtree `next`.
+                            // Example: Blocks([A,B,C], cw, Fork(..)), path=[3, 0, ..]
+                            //   → accumulate A,B,C, recurse into Fork(..) with path=[0, ..]
+                            Blocks(
+                              blocks,
+                              originalCw,
+                              validateAndInsert(
+                                next,
+                                pathTail,
+                                headers,
+                                newCtx,
+                                currentTime
+                              )
+                            )
+                        case Cons(block, tail) if count == pathHead =>
+                            // Found insertion point: block at index pathHead is the parent.
+                            val parentCtx = accumulateBlock(newCtx, block)
+                            val (newBlocks, newCw) =
+                                validateAndCollectBlocks(
+                                  headers,
+                                  parentCtx,
+                                  currentTime
+                                )
+                            val fullPrefix = prefix.reverse.prepended(block)
+                            tail match
+                                case Nil =>
+                                    next match
+                                        case End =>
+                                            // Append: parent is last block, no subtree.
+                                            // Blocks([A,B,C], cw, End), path=[2]
+                                            //   → Blocks([A,B,C,H1,H2], cw+newCw, End)
+                                            Blocks(
+                                              fullPrefix ++ newBlocks,
+                                              originalCw + newCw,
+                                              End
+                                            )
                                         case _ =>
-                                            // Mid-split: parent is in the middle of the block list.
-                                            // The Blocks node is split into prefix and suffix.
-                                            // Blocks([A,B,C,D,E], cw, End), path=[2]
+                                            // Fork at end: parent is last block but subtree
+                                            // exists. Must split chainwork.
+                                            // Blocks([A,B,C], cw, Fork(..)), path=[2]
                                             //   → Blocks([A,B,C], prefCw,
-                                            //       Fork(Blocks([D,E], cw-prefCw, End),
-                                            //            Blocks([H1,H2], newCw, End)))
+                                            //       Fork(Fork(..), Blocks([H1], newCw, End)))
                                             val prefixCw =
                                                 computeChainwork(fullPrefix, ctx, BigInt(0))
                                             Blocks(
                                               fullPrefix,
                                               prefixCw,
                                               Fork(
-                                                Blocks(tail, originalCw - prefixCw, next),
+                                                next,
                                                 Blocks(newBlocks, newCw, End)
                                               )
                                             )
-                                case Cons(block, tail) =>
-                                    // Not at pathHead yet — accumulate block and advance counter.
-                                    loop(
-                                      count + 1,
-                                      tail,
-                                      Cons(block, prefix),
-                                      accumulateBlock(newCtx, block)
+                                case _ =>
+                                    // Mid-split: parent is in the middle of the block list.
+                                    // The Blocks node is split into prefix and suffix.
+                                    // Blocks([A,B,C,D,E], cw, End), path=[2]
+                                    //   → Blocks([A,B,C], prefCw,
+                                    //       Fork(Blocks([D,E], cw-prefCw, End),
+                                    //            Blocks([H1,H2], newCw, End)))
+                                    val prefixCw =
+                                        computeChainwork(fullPrefix, ctx, BigInt(0))
+                                    Blocks(
+                                      fullPrefix,
+                                      prefixCw,
+                                      Fork(
+                                        Blocks(tail, originalCw - prefixCw, next),
+                                        Blocks(newBlocks, newCw, End)
+                                      )
                                     )
-                                case _ => fail("Path index out of bounds")
-                        }
-                        loop(0, blocks, Nil, ctx)
-
-                    case Fork(left, right) =>
-                        // Consume path element: 0 → recurse left, else → recurse right.
-                        if pathHead == LeftFork then
-                            Fork(
-                              validateAndInsert(
-                                left,
-                                pathTail,
-                                headers,
-                                ctx,
-                                currentTime
-                              ),
-                              right
+                        case Cons(block, tail) =>
+                            // Not at pathHead yet — accumulate block and advance counter.
+                            loop(
+                              count + 1,
+                              tail,
+                              Cons(block, prefix),
+                              accumulateBlock(newCtx, block)
                             )
-                        else
-                            Fork(
-                              left,
-                              validateAndInsert(
-                                right,
-                                pathTail,
-                                headers,
-                                ctx,
-                                currentTime
-                              )
-                            )
+                        case _ => fail("Path index out of bounds")
+                }
 
-                    case End =>
-                        fail("Path leads to End")
+                loop(0, blocks, Nil, ctx)
+
+            case Fork(left, right) =>
+                // Consume path element: 0 → recurse left, else → recurse right.
+                if pathHead == LeftFork then
+                    Fork(
+                      validateAndInsert(
+                        left,
+                        pathTail,
+                        headers,
+                        ctx,
+                        currentTime
+                      ),
+                      right
+                    )
+                else
+                    Fork(
+                      left,
+                      validateAndInsert(
+                        right,
+                        pathTail,
+                        headers,
+                        ctx,
+                        currentTime
+                      )
+                    )
+
+            case End =>
+                fail("Path leads to End")
     }
 
     // ============================================================================
