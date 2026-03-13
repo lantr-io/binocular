@@ -44,14 +44,28 @@ case class ChainState2(
 ) derives FromData,
       ToData
 
-/** Path in [[ForkTree]]
-  *
-  *   - empty mean no blocks in fork tree, take parent from confirmed state
-  *   - non-negative number means index in Blocks node (0-based, oldest-first)
-  *   - 0 in Fork means go left, 1 means go right
-  */
+/** Path element in [[ForkTree]] navigation. Interpretation depends on path type. */
 type PathElement = BigInt
+
+/** Insertion path — navigates to a specific block within [[ForkTree]].
+  *
+  * Used by [[BitcoinValidator2.validateAndInsert]] to find the parent block for new headers. One
+  * element is consumed per tree node:
+  *   - '''At `Blocks`''': element is a 0-based index into the block list. If index ==
+  *     blocks.length, all blocks are accumulated and traversal continues into `next`.
+  *   - '''At `Fork`''': 0 = left, 1 = right.
+  *   - '''Empty''': parent is the confirmed tip (no blocks in fork tree).
+  */
 type Path = List[PathElement]
+
+/** Best-chain path — navigates through [[ForkTree]] forks to identify the winning chain.
+  *
+  * Produced by [[BitcoinValidator2.bestChainPath]], consumed by [[BitcoinValidator2.promoteAndGC]].
+  * Elements are produced/consumed '''only at `Fork` nodes''' (0 = left, 1 = right). `Blocks` nodes
+  * do not produce or consume path elements — `promoteAndGC` processes entire `Blocks` nodes
+  * (promoting eligible blocks), so block-level indexing is unnecessary.
+  */
+type BestPath = List[PathElement]
 
 case class UpdateOracle2(
     blockHeaders: List[BlockHeader],
@@ -478,7 +492,11 @@ object BitcoinValidator2 extends DataParameterizedValidator {
       *   - Right: chainwork=150, depth=101, path=[]
       *   - Result: (200, 102, [0])
       */
-    def bestChainPath(tree: ForkTree, height: BigInt, chainwork: BigInt): (BigInt, BigInt, Path) = {
+    def bestChainPath(
+        tree: ForkTree,
+        height: BigInt,
+        chainwork: BigInt
+    ): (BigInt, BigInt, BestPath) = {
         tree match
             case Blocks(blocks, cw, next) =>
                 // Accumulate segment chainwork and block count, recurse into subtree.
@@ -569,7 +587,7 @@ object BitcoinValidator2 extends DataParameterizedValidator {
     def promoteAndGC(
         tree: ForkTree,
         ctx: TraversalCtx,
-        bestPath: Path,
+        bestPath: BestPath,
         bestDepth: BigInt,
         currentTime: PosixTimeSeconds,
         numPromotions: BigInt
