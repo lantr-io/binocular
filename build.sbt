@@ -1,4 +1,4 @@
-val scalusVersion = "0.16.0"
+val scalusVersion = "0.16.0+28-5b1ae379-SNAPSHOT"
 
 // Common settings for all projects
 ThisBuild / scalaVersion := "3.3.7"
@@ -17,7 +17,7 @@ lazy val binocular = (project in file("."))
       name := "binocular",
       Test / parallelExecution := false,
       Test / javaOptions ++= Seq("-Xmx2g"),
-      addCompilerPlugin("org.scalus" %% "scalus-plugin" % scalusVersion),
+      addCompilerPlugin("org.scalus" % "scalus-plugin_3.3.7" % scalusVersion),
       libraryDependencies ++= coreDependencies ++ testDependencies,
       // Assembly configuration
       assembly / assemblyMergeStrategy := {
@@ -40,7 +40,7 @@ lazy val it = (project in file("it"))
       name := "binocular-it",
       Test / parallelExecution := false,
       Test / javaOptions ++= Seq("-Xmx2g"),
-      addCompilerPlugin("org.scalus" %% "scalus-plugin" % scalusVersion),
+      addCompilerPlugin("org.scalus" % "scalus-plugin_3.3.7" % scalusVersion),
       libraryDependencies ++= integrationTestDependencies,
       // Use test resources from root project
       Test / resourceDirectory := (binocular / Test / resourceDirectory).value
@@ -51,7 +51,7 @@ lazy val example = (project in file("example"))
     .dependsOn(binocular)
     .settings(
       name := "binocular-example",
-      addCompilerPlugin("org.scalus" %% "scalus-plugin" % scalusVersion),
+      addCompilerPlugin("org.scalus" %% "scalus-plugin_3.3.7" % scalusVersion),
       Compile / mainClass := Some("binocular.example.bitcoinDependentLock")
     )
 
