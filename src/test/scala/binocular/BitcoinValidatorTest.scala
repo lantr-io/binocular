@@ -20,7 +20,6 @@ import scalus.uplc.builtin.Data.toData
 import scalus.uplc.eval.*
 
 import java.time.Instant
-
 import binocular.ForkTree.*
 
 class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyChecks {
@@ -45,6 +44,18 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
     }
     private val testScriptAddr = testContract.address(env.network)
     private val testProgram = testContract.program.deBruijnedProgram
+
+    private def chainStateWithTree(tree: ForkTree): ChainState =
+        ChainState(
+          blockHeight = 866880,
+          blockHash = ByteString.unsafeFromArray(Array.fill(32)(0: Byte)),
+          currentTarget = ByteString.unsafeFromArray(Array.fill(4)(0xff.toByte)),
+          recentTimestamps =
+              prelude.List.from((0 until 11).map(i => BigInt(1000000 - i * 600)).toList),
+          previousDifficultyAdjustmentTimestamp = 1000000,
+          confirmedBlocksRoot = ByteString.unsafeFromArray(Array.fill(32)(0: Byte)),
+          forkTree = tree
+        )
 
     // Helper to create a dummy block summary for bestChainPath tests (only hash matters for identity)
     private def dummyBlock(id: Byte): BlockSummary =
@@ -156,7 +167,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
           recentTimestamps = recentTimestamps,
           previousDifficultyAdjustmentTimestamp = baseTimestamp,
           confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(confirmedTip),
-          forkTree = ForkTree.End
+          forkTree = End
         )
 
         val input = Input(
@@ -303,7 +314,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
           recentTimestamps = recentTimestamps,
           previousDifficultyAdjustmentTimestamp = baseTimestamp,
           confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(confirmedTip),
-          forkTree = ForkTree.End
+          forkTree = End
         )
 
         // Pre-load 100 blocks into fork tree (866881..866980)
@@ -483,6 +494,104 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         )
     }
 
+    test("ForkTree capacity - max blocks in single branch") {
+        val pp = CardanoInfo.mainnet.protocolParams
+        val maxTxSize = pp.maxTxSize
+
+        // Build a linear fork tree of increasing size
+        // and find the maximum number of blocks that fits in a transaction
+        def linearTree(n: Int): ForkTree = {
+            val blocks = prelude.List.from((1 to n).map(i => dummyBlock(i.toByte)).toList)
+            Blocks(blocks, 100, End)
+        }
+
+        // Binary search for the max count that fits
+        var lo = 1
+        var hi = 500
+        while lo < hi do {
+            val mid = (lo + hi + 1) / 2
+            val size = chainStateWithTree(linearTree(mid)).toData.toCbor.length
+            if size <= maxTxSize then lo = mid else hi = mid - 1
+        }
+        val maxBlocks = lo
+        val datumSize = chainStateWithTree(linearTree(maxBlocks)).toData.toCbor.length
+        val overSize = chainStateWithTree(linearTree(maxBlocks + 1)).toData.toCbor.length
+
+        println(
+          f"\nSingle branch: max $maxBlocks blocks ($datumSize%,d bytes, limit $maxTxSize%,d)"
+        )
+
+        assert(maxBlocks == 338, s"Expected 338 blocks in single branch, got $maxBlocks")
+    }
+
+    test("ForkTree capacity - max forks and minimum griefing attack cost") {
+        val pp = CardanoInfo.mainnet.protocolParams
+        val maxTxSize = pp.maxTxSize
+
+        // Griefing attack: fill the fork tree so no new block can be added, while keeping
+        // every branch shorter than maturationConfirmations (100). Since no branch is deep
+        // enough for promotion, blocks can never be removed — the oracle is permanently halted.
+        //
+        // The cheapest attack uses single-block branches (depth 1, well under 100) to maximize
+        // forks per byte. Two tree shapes give different block counts for the same fork count:
+        //
+        // Left-leaning: Fork(Fork(Fork(..., leaf), leaf), leaf)
+        //   Matches how validateAndInsert builds the tree (existing left, new right).
+        //   N forks = N+1 blocks. This is the MAXIMUM forks/blocks that fit.
+        //
+        // Balanced: complete binary tree of depth D
+        //   2^D - 1 forks, 2^D blocks. More compact encoding (shared structure) means
+        //   fewer blocks fit — this is the MINIMUM blocks needed to halt the oracle.
+
+        def balancedForkTree(depth: Int): ForkTree = {
+            if depth <= 0 then Blocks(prelude.List(dummyBlock(1)), 100, End)
+            else Fork(balancedForkTree(depth - 1), balancedForkTree(depth - 1))
+        }
+
+        // Left-leaning fork tree (matches validateAndInsert: existing branch goes left, new goes right)
+        def leftLeaningForkTree(forks: Int): ForkTree = {
+            if forks <= 0 then Blocks(prelude.List(dummyBlock(1)), 100, End)
+            else
+                Fork(
+                  leftLeaningForkTree(forks - 1),
+                  Blocks(prelude.List(dummyBlock(1)), 100, End)
+                )
+        }
+
+        // Binary search for max forks (left-leaning)
+        var lo = 1
+        var hi = 300
+        while lo < hi do {
+            val mid = (lo + hi + 1) / 2
+            val size = chainStateWithTree(leftLeaningForkTree(mid)).toData.toCbor.length
+            if size <= maxTxSize then lo = mid else hi = mid - 1
+        }
+        val maxForks = lo
+        val forkDatumSize = chainStateWithTree(leftLeaningForkTree(maxForks)).toData.toCbor.length
+        val forkOverSize =
+            chainStateWithTree(leftLeaningForkTree(maxForks + 1)).toData.toCbor.length
+
+        // Balanced tree: minimum blocks to fill the datum (griefing lower bound)
+        var balancedDepth = 1
+        while chainStateWithTree(
+              balancedForkTree(balancedDepth + 1)
+            ).toData.toCbor.length <= maxTxSize
+        do balancedDepth += 1
+        val balancedForks = (1 << balancedDepth) - 1 // 2^depth - 1
+        val balancedBlocks = 1 << balancedDepth // 2^depth leaf nodes, each with 1 block
+        val balancedSize = chainStateWithTree(balancedForkTree(balancedDepth)).toData.toCbor.length
+
+        println(
+          f"\nLeft-leaning:  $maxForks forks, ${maxForks + 1} blocks ($forkDatumSize%,d bytes, limit $maxTxSize%,d)"
+        )
+        println(
+          f"Balanced:      $balancedForks forks, $balancedBlocks blocks, depth $balancedDepth ($balancedSize%,d bytes) — min griefing cost"
+        )
+
+        assert(maxForks == 256, s"Expected 256 left-leaning forks, got $maxForks")
+        assert(balancedDepth == 8, s"Expected balanced depth 8, got $balancedDepth")
+    }
+
     test("Bifrost scenario - 100 blocks in tree, add 1 header, promote 1 block") {
         val baseHeight = 866880
         val preloadCount = 100
@@ -506,7 +615,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
           recentTimestamps = recentTimestamps,
           previousDifficultyAdjustmentTimestamp = baseTimestamp,
           confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(confirmedTip),
-          forkTree = ForkTree.End
+          forkTree = End
         )
 
         // Pre-load 100 blocks into fork tree (866881..866980)
