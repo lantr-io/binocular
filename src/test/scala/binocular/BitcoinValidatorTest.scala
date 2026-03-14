@@ -25,6 +25,9 @@ import binocular.ForkTree.*
 class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyChecks {
     private given env: CardanoInfo = CardanoInfo.mainnet
 
+//    override protected def plutusVM: PlutusVM =
+//        PlutusVM.makePlutusV3VM(MajorProtocolVersion.vanRossemPV)
+
     private val testTxOutRef = scalus.cardano.onchain.plutus.v3.TxOutRef(
       scalus.cardano.onchain.plutus.v3.TxId(
         hex"0000000000000000000000000000000000000000000000000000000000000000"
@@ -40,6 +43,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
 
     private val testContract = {
         given Options = Options.release
+//        Options.release.copy(targetProtocolVersion = MajorProtocolVersion.vanRossemPV)
         PlutusV3.compile(BitcoinValidator.validate).withErrorTraces(testParams.toData)
     }
     private val testScriptAddr = testContract.address(env.network)
@@ -133,7 +137,8 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
     }
 
     test("BitcoinValidator size") {
-        given Options = Options.release
+        given Options =
+            Options.release.copy(targetProtocolVersion = MajorProtocolVersion.vanRossemPV)
         val contract = PlutusV3.compile(BitcoinValidator.validate).apply(testParams.toData)
         println(s"Contract size: ${contract.script.script.size}")
 //        println(s"Contract size: ${contract.program.showHighlighted}")
