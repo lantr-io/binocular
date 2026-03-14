@@ -1,6 +1,6 @@
 package binocular.cli.commands
 
-import binocular.{existsHash, reverse, BitcoinNodeConfig, CardanoConfig, ChainState, MerkleTree, OracleConfig, SimpleBitcoinRpc}
+import binocular.{reverse, BitcoinNodeConfig, CardanoConfig, ChainState, MerkleTree, OracleConfig, SimpleBitcoinRpc}
 import binocular.cli.{Command, CommandHelpers}
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.uplc.builtin.ByteString

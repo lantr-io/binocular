@@ -1,22 +1,19 @@
 package binocular
 
 import binocular.ForkTree.{Blocks, End, Fork}
+import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry as MPF
+import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
+import scalus.cardano.onchain.plutus.prelude.List.*
+import scalus.cardano.onchain.plutus.prelude.{List, *}
+import scalus.cardano.onchain.plutus.v1.{Address, Credential, PolicyId, PosixTime}
+import scalus.cardano.onchain.plutus.v2.{IntervalBoundType, OutputDatum}
+import scalus.cardano.onchain.plutus.v3.{DataParameterizedValidator, *}
+import scalus.compiler.Compile
 import scalus.uplc.builtin.*
 import scalus.uplc.builtin.Builtins.*
 import scalus.uplc.builtin.ByteString.*
 import scalus.uplc.builtin.Data.{toData, FromData, ToData}
-import scalus.cardano.onchain.plutus.v1.{Address, Credential, PolicyId, PosixTime, TokenName}
-import scalus.cardano.onchain.plutus.v2.{IntervalBoundType, OutputDatum}
-import scalus.cardano.onchain.plutus.v3.{DataParameterizedValidator, Datum, TxInfo, TxOut, TxOutRef, Value}
-import scalus.cardano.onchain.plutus.prelude.{List, *}
-import scalus.cardano.onchain.plutus.prelude.List.*
-import scalus.cardano.onchain.plutus.prelude.PairList.{PairCons, PairNil}
-import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry as MPF
-import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
-import scalus.compiler.Compile
 import scalus.{show as _, *}
-
-import scala.annotation.tailrec
 
 extension (a: ByteString) def reverse: ByteString = ByteString.fromArray(a.bytes.reverse)
 
@@ -81,6 +78,94 @@ enum ForkTree derives FromData, ToData {
         case ForkTree.Blocks(blocks, _, next) => blocks.size.toInt + next.blockCount
         case ForkTree.Fork(left, right)       => left.blockCount + right.blockCount
         case ForkTree.End                     => 0
+
+    def nonEmpty: Boolean = this != ForkTree.End
+
+    /** Check if a block hash exists anywhere in the tree. */
+    def existsHash(hash: BlockHash): Boolean = this match
+        case ForkTree.Blocks(blocks, _, next) =>
+            blocks.exists(_.hash == hash) || next.existsHash(hash)
+        case ForkTree.Fork(left, right) =>
+            left.existsHash(hash) || right.existsHash(hash)
+        case ForkTree.End => false
+
+    /** Height of the best chain tip (confirmed height + unconfirmed blocks). */
+    def highestHeight(baseHeight: BigInt): BigInt = {
+        val (_, depth, _) = BitcoinValidator.bestChainPath(this, baseHeight, 0)
+        depth
+    }
+
+    /** Earliest addedTimeSeconds among all blocks in the tree, or None if empty. */
+    def oldestBlockTime: scala.Option[BigInt] = this match
+        case ForkTree.Blocks(blocks, _, next) =>
+            var min: scala.Option[BigInt] = scala.None
+            blocks.foreach { b =>
+                min = min match
+                    case scala.Some(v) => scala.Some(v.min(b.addedTimeSeconds))
+                    case scala.None    => scala.Some(b.addedTimeSeconds)
+            }
+            val minInNext = next.oldestBlockTime
+            (min, minInNext) match
+                case (scala.Some(a), scala.Some(b)) => scala.Some(a.min(b))
+                case (a, scala.None)                => a
+                case (scala.None, b)                => b
+        case ForkTree.Fork(left, right) =>
+            (left.oldestBlockTime, right.oldestBlockTime) match
+                case (scala.Some(a), scala.Some(b)) => scala.Some(a.min(b))
+                case (a, scala.None)                => a
+                case (scala.None, b)                => b
+        case ForkTree.End => scala.None
+
+    /** Flatten all blocks in the tree into a single list (depth-first order). */
+    def toBlockList: scala.collection.immutable.List[BlockSummary] = this match
+        case ForkTree.Blocks(blocks, _, next) =>
+            blocks.toScalaList ++ next.toBlockList
+        case ForkTree.Fork(left, right) =>
+            left.toBlockList ++ right.toBlockList
+        case ForkTree.End => scala.collection.immutable.Nil
+
+    /** Compute the insertion path to the tip of the best chain.
+      *
+      * Produces a [[Path]] (not a [[BestPath]]). At each node:
+      *   - `Blocks(bs, _, next)` with `next == End`: emit `bs.length - 1` (last block is the
+      *     parent)
+      *   - `Blocks(bs, _, next)` with `next != End`: emit `bs.length` (pass-through) and recurse
+      *   - `Fork(left, right)`: pick highest-chainwork branch (left wins ties), emit 0/1 and
+      *     recurse
+      *   - `End`: emit nothing (empty tree — parent is the confirmed tip)
+      */
+    def findTipPath: List[BigInt] = this match
+        case ForkTree.Blocks(blocks, _, next) =>
+            next match
+                case ForkTree.End =>
+                    // Last Blocks node — tip is the last block
+                    List(blocks.length - 1)
+                case _ =>
+                    // Pass through all blocks, recurse into subtree
+                    List.Cons(blocks.length, next.findTipPath)
+        case ForkTree.Fork(left, right) =>
+            val (leftWork, _, _) = BitcoinValidator.bestChainPath(left, 0, 0)
+            val (rightWork, _, _) = BitcoinValidator.bestChainPath(right, 0, 0)
+            if leftWork >= rightWork then List.Cons(BigInt(0), left.findTipPath)
+            else List.Cons(BigInt(1), right.findTipPath)
+        case ForkTree.End => List.Nil
+
+    /** Display tree structure for debugging/CLI output. */
+    def displayTree(baseHeight: BigInt, indent: String = ""): String = this match
+        case ForkTree.Blocks(blocks, cw, next) =>
+            val first = blocks.head
+            val last = blocks.last
+            val firstHeight = baseHeight + 1
+            val lastHeight = baseHeight + blocks.size.toInt
+            val line =
+                s"${indent}Blocks[${blocks.size.toInt}] heights $firstHeight..$lastHeight, chainwork=$cw, tip=${last.hash.toHex.take(8)}..."
+            val nextStr = next.displayTree(lastHeight, indent)
+            if nextStr.isEmpty then line else line + "\n" + nextStr
+        case ForkTree.Fork(left, right) =>
+            val leftStr = left.displayTree(baseHeight, indent + "  L ")
+            val rightStr = right.displayTree(baseHeight, indent + "  R ")
+            s"${indent}Fork:\n$leftStr\n$rightStr"
+        case ForkTree.End => ""
 }
 
 case class ChainState(
@@ -953,137 +1038,4 @@ object BitcoinValidator extends DataParameterizedValidator {
               "can only mint 1 or burn 1 SP NFT"
             )
     }
-}
-
-/** Optimized utilities
-  */
-@Compile
-object StrictLookups {
-
-    extension [A](self: List[A]) {
-        @tailrec
-        def findOrFail(predicate: A => Boolean): A = self match
-            case List.Nil => fail("element not found")
-            case List.Cons(head, tail) =>
-                if predicate(head) then head else tail.findOrFail(predicate)
-
-        def oneOrFail(message: String): A = self match
-            case List.Cons(head, List.Nil) => head
-            case _                         => fail(message)
-
-    }
-
-    extension [V](self: Value) {
-        def existingQuantityOf(policyId: PolicyId, tokenName: TokenName): BigInt = {
-            self.toSortedMap.lookupOrFail(policyId).lookupOrFail(tokenName)
-        }
-    }
-    extension [V](self: SortedMap[ByteString, V]) {
-        def lookupOrFail(key: ByteString): V = {
-            @tailrec
-            def go(lst: PairList[ByteString, V]): V = lst match
-                case PairNil => fail("key not found")
-                case PairCons((k, v), tail) =>
-                    if key == k then v
-                    else if key < k then fail("key not found")
-                    else go(tail)
-
-            go(self.toPairList)
-        }
-    }
-}
-
-// ============================================================================
-// Off-chain ForkTree extension methods (not compiled to Plutus)
-// ============================================================================
-
-extension (tree: ForkTree) {
-
-    def nonEmpty: Boolean = tree != ForkTree.End
-
-    /** Check if a block hash exists anywhere in the tree. */
-    def existsHash(hash: BlockHash): Boolean = tree match
-        case ForkTree.Blocks(blocks, _, next) =>
-            blocks.exists(_.hash == hash) || next.existsHash(hash)
-        case ForkTree.Fork(left, right) =>
-            left.existsHash(hash) || right.existsHash(hash)
-        case ForkTree.End => false
-
-    /** Height of the best chain tip (confirmed height + unconfirmed blocks). */
-    def highestHeight(baseHeight: BigInt): BigInt = {
-        val (_, depth, _) = BitcoinValidator.bestChainPath(tree, baseHeight, 0)
-        depth
-    }
-
-    /** Earliest addedTimeSeconds among all blocks in the tree, or None if empty. */
-    def oldestBlockTime: scala.Option[BigInt] = tree match
-        case ForkTree.Blocks(blocks, _, next) =>
-            var min: scala.Option[BigInt] = scala.None
-            blocks.foreach { b =>
-                min = min match
-                    case scala.Some(v) => scala.Some(v.min(b.addedTimeSeconds))
-                    case scala.None    => scala.Some(b.addedTimeSeconds)
-            }
-            val minInNext = next.oldestBlockTime
-            (min, minInNext) match
-                case (scala.Some(a), scala.Some(b)) => scala.Some(a.min(b))
-                case (a, scala.None)                => a
-                case (scala.None, b)                => b
-        case ForkTree.Fork(left, right) =>
-            (left.oldestBlockTime, right.oldestBlockTime) match
-                case (scala.Some(a), scala.Some(b)) => scala.Some(a.min(b))
-                case (a, scala.None)                => a
-                case (scala.None, b)                => b
-        case ForkTree.End => scala.None
-
-    /** Flatten all blocks in the tree into a single list (depth-first order). */
-    def toBlockList: scala.collection.immutable.List[BlockSummary] = tree match
-        case ForkTree.Blocks(blocks, _, next) =>
-            blocks.toScalaList ++ next.toBlockList
-        case ForkTree.Fork(left, right) =>
-            left.toBlockList ++ right.toBlockList
-        case ForkTree.End => scala.collection.immutable.Nil
-
-    /** Compute the insertion path to the tip of the best chain.
-      *
-      * Produces a [[Path]] (not a [[BestPath]]). At each node:
-      *   - `Blocks(bs, _, next)` with `next == End`: emit `bs.length - 1` (last block is the
-      *     parent)
-      *   - `Blocks(bs, _, next)` with `next != End`: emit `bs.length` (pass-through) and recurse
-      *   - `Fork(left, right)`: pick highest-chainwork branch (left wins ties), emit 0/1 and
-      *     recurse
-      *   - `End`: emit nothing (empty tree — parent is the confirmed tip)
-      */
-    def findTipPath: List[BigInt] = tree match
-        case ForkTree.Blocks(blocks, _, next) =>
-            next match
-                case ForkTree.End =>
-                    // Last Blocks node — tip is the last block
-                    List(blocks.length - 1)
-                case _ =>
-                    // Pass through all blocks, recurse into subtree
-                    List.Cons(blocks.length, next.findTipPath)
-        case ForkTree.Fork(left, right) =>
-            val (leftWork, _, _) = BitcoinValidator.bestChainPath(left, 0, 0)
-            val (rightWork, _, _) = BitcoinValidator.bestChainPath(right, 0, 0)
-            if leftWork >= rightWork then List.Cons(BigInt(0), left.findTipPath)
-            else List.Cons(BigInt(1), right.findTipPath)
-        case ForkTree.End => List.Nil
-
-    /** Display tree structure for debugging/CLI output. */
-    def displayTree(baseHeight: BigInt, indent: String = ""): String = tree match
-        case ForkTree.Blocks(blocks, cw, next) =>
-            val first = blocks.head
-            val last = blocks.last
-            val firstHeight = baseHeight + 1
-            val lastHeight = baseHeight + blocks.size.toInt
-            val line =
-                s"${indent}Blocks[${blocks.size.toInt}] heights $firstHeight..$lastHeight, chainwork=$cw, tip=${last.hash.toHex.take(8)}..."
-            val nextStr = next.displayTree(lastHeight, indent)
-            if nextStr.isEmpty then line else line + "\n" + nextStr
-        case ForkTree.Fork(left, right) =>
-            val leftStr = left.displayTree(baseHeight, indent + "  L ")
-            val rightStr = right.displayTree(baseHeight, indent + "  R ")
-            s"${indent}Fork:\n$leftStr\n$rightStr"
-        case ForkTree.End => ""
 }
