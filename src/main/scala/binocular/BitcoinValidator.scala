@@ -405,16 +405,20 @@ object BitcoinValidator extends DataParameterizedValidator {
     def validateAndCollectBlocks(
         headers: List[BlockHeader],
         ctx: TraversalCtx,
-        currentTime: BigInt
-    ): (List[BlockSummary], BigInt) = {
-        val (acc, _, cw) = headers.foldLeft((Nil: List[BlockSummary], ctx, BigInt(0))) {
-            case ((acc, currentCtx, chainwork), header) =>
-                val (summary, newCtx, blockProof) =
-                    validateBlock(header, currentCtx, currentTime)
-                (Cons(summary, acc), newCtx, chainwork + blockProof)
-        }
-        (acc.reverse, cw)
-    }
+        currentTime: BigInt,
+        chainwork: BigInt,
+        acc: List[BlockSummary]
+    ): (List[BlockSummary], BigInt) = headers match
+        case Nil => (acc.reverse, chainwork)
+        case Cons(header, tail) =>
+            val (summary, newCtx, blockProof) = validateBlock(header, ctx, currentTime)
+            validateAndCollectBlocks(
+              tail,
+              newCtx,
+              currentTime,
+              chainwork + blockProof,
+              Cons(summary, acc)
+            )
 
     // ============================================================================
     // Tree navigation, validation, and insertion (single traversal)
@@ -456,7 +460,7 @@ object BitcoinValidator extends DataParameterizedValidator {
                 // Path is empty → parent is the confirmed tip (stored in ctx).
                 // Validate headers and attach as a new branch at the tree root.
                 val (newBlocks, newCw) =
-                    validateAndCollectBlocks(headers, ctx, currentTime)
+                    validateAndCollectBlocks(headers, ctx, currentTime, 0, Nil)
                 val newBranch = Blocks(newBlocks, newCw, End)
                 tree match
                     // First-ever insertion into an empty tree:
@@ -475,7 +479,7 @@ object BitcoinValidator extends DataParameterizedValidator {
     // Best chain selection
     // ============================================================================
 
-    inline def validateAndInsertInPath(
+    private inline def validateAndInsertInPath(
         tree: ForkTree,
         headers: List[BlockHeader],
         ctx: TraversalCtx,
@@ -518,7 +522,9 @@ object BitcoinValidator extends DataParameterizedValidator {
                                 validateAndCollectBlocks(
                                   headers,
                                   parentCtx,
-                                  currentTime
+                                  currentTime,
+                                  0,
+                                  Nil
                                 )
                             val fullPrefix = prefix.reverse.prepended(block)
                             tail match
@@ -748,12 +754,12 @@ object BitcoinValidator extends DataParameterizedValidator {
             case Blocks(blocks, cw, next) =>
                 val (promoted, remaining, newCtx) =
                     splitPromotable(blocks, ctx, bestDepth, currentTime, numPromotions, params)
-                log("splitPromotable 2")
+//                log("splitPromotable 2")
                 if promoted.isEmpty then
                     // No promotion in this node (blocks too young/shallow, or limit reached).
                     // Accumulate all blocks and recurse into subtree for GC.
                     val fullCtx = blocks.foldLeft(ctx)(accumulateBlock)
-                    log("promoteAndGC fullCtx")
+//                    log("promoteAndGC fullCtx")
                     val (nextPromoted, cleanedNext) =
                         promoteAndGC(
                           next,
@@ -783,7 +789,7 @@ object BitcoinValidator extends DataParameterizedValidator {
                     // Partial promotion: some blocks promoted, rest remain. Stop recursion —
                     // remaining blocks and subtree stay as-is (subtree GC deferred to future tx).
                     val promotedCw = computeChainwork(promoted, ctx, 0)
-                    log("promoteAndGC computeChainwork")
+//                    log("promoteAndGC computeChainwork")
                     (promoted, Blocks(remaining, cw - promotedCw, next))
 
             case Fork(left, right) =>
@@ -905,14 +911,14 @@ object BitcoinValidator extends DataParameterizedValidator {
                   ctx0,
                   currentTime
                 )
-        log("validateAndInsert")
+//        log("validateAndInsert")
 
         val promotionProofs = update.mpfInsertProofs
         val numBlocksToPromote = promotionProofs.length
         if numBlocksToPromote > BigInt(0) then
             // Step 2: Find best chain by chainwork (single full traversal)
             val (_, bestDepth, bestPath) = bestChainPath(newTree, state.blockHeight, BigInt(0))
-            log("bestChainPath")
+//            log("bestChainPath")
 
             // Step 3: Promote eligible blocks + GC dead forks (single traversal along bestPath)
             val (promoted, cleanedTree) =
@@ -925,13 +931,13 @@ object BitcoinValidator extends DataParameterizedValidator {
                   numBlocksToPromote,
                   params
                 )
-            log("promoteAndGC")
+//            log("promoteAndGC")
             require(promoted.length == numBlocksToPromote, "Promoted block count mismatch")
 
             // Step 4: Apply promotions and set cleaned tree
             val updatedState =
                 applyPromotions(state, promoted, promotionProofs, ctx0, cleanedTree)
-            log("applyPromotions")
+//            log("applyPromotions")
             updatedState
         else
             // No proofs → header-only submission, skip promotion and GC
@@ -992,12 +998,12 @@ object BitcoinValidator extends DataParameterizedValidator {
             case OutputDatum.OutputDatum(d) => d
             case _                          => fail("Continuing output must have inline datum")
 
-        log("spend: providedOutputDatum")
+//        log("spend: providedOutputDatum")
         require(
           computedState.toData == providedOutputDatum,
           "Computed state does not match provided output datum"
         )
-        log("spend: computedState.toData == providedOutputDatum")
+//        log("spend: computedState.toData == providedOutputDatum")
     }
 
     import StrictLookups.*
