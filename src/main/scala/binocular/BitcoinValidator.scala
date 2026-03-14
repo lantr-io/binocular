@@ -30,21 +30,18 @@ type NonEmptyList[A] = List[A]
 type List11Timestamps = List[PosixTimeSeconds]
 type MPFRoot = ByteString
 
-case class BlockHeader(bytes: ByteString) derives FromData, ToData
-@Compile
-object BlockHeader
-
-extension (bh: BlockHeader)
+case class BlockHeader(bytes: ByteString) derives FromData, ToData {
     inline def version: BigInt =
-        byteStringToInteger(false, bh.bytes.slice(0, 4))
+        byteStringToInteger(false, bytes.slice(0, 4))
 
-    inline def prevBlockHash: BlockHash = bh.bytes.slice(4, 32)
+    inline def prevBlockHash: BlockHash = bytes.slice(4, 32)
 
-    inline def bits: CompactBits = bh.bytes.slice(72, 4)
+    inline def bits: CompactBits = bytes.slice(72, 4)
 
-    inline def merkleRoot: MerkleRoot = bh.bytes.slice(36, 32)
+    inline def merkleRoot: MerkleRoot = bytes.slice(36, 32)
 
-    inline def timestamp: BigInt = byteStringToInteger(false, bh.bytes.slice(68, 4))
+    inline def timestamp: BigInt = byteStringToInteger(false, bytes.slice(68, 4))
+}
 
 case class BlockSummary(
     hash: BlockHash, // Block hash
