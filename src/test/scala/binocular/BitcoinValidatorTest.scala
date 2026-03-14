@@ -246,11 +246,13 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
                 Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
             val validFrom = Instant.ofEpochSecond(lastTimestamp.toLong)
 
+            val validTo = validFrom.plusSeconds(600)
             val draft = txBuilder
                 .references(refScriptUtxo, testContract)
                 .spend(utxo, redeemer)
                 .payTo(testScriptAddr, inputValue, expectedState.toData)
                 .validFrom(validFrom)
+                .validTo(validTo)
                 .draft
 
             val txSize = draft.toCbor.length
@@ -450,12 +452,14 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             val utxos: Utxos =
                 Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
             val validFrom = Instant.ofEpochSecond(currentTime.toLong)
+            val validTo = validFrom.plusSeconds(600)
 
             val draft = txBuilder
                 .references(refScriptUtxo, testContract)
                 .spend(utxo, redeemer)
                 .payTo(testScriptAddr, inputValue, expectedState.toData)
                 .validFrom(validFrom)
+                .validTo(validTo)
                 .draft
 
             val txSize = draft.toCbor.length
@@ -597,6 +601,173 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         assert(balancedDepth == 8, s"Expected balanced depth 8, got $balancedDepth")
     }
 
+    test("Validity interval - unbounded validRange (no validTo) must be rejected") {
+        // Without a validTo upper bound, the on-chain time (validFrom) could be
+        // arbitrarily stale — the transaction remains valid forever. This weakens
+        // the challenge aging guarantee: addedTimeSeconds could be set to a much
+        // earlier time than when the transaction actually executes on-chain.
+        // The fix requires both validFrom and validTo with a bounded window.
+        val baseHeight = 866880
+
+        val (baseFixture, _) = BlockFixture.loadWithHeader(baseHeight)
+        val confirmedTip = ByteString.fromHex(baseFixture.hash).reverse
+        val bits = ByteString.fromHex(baseFixture.bits).reverse
+        val baseTimestamp = BigInt(baseFixture.timestamp)
+        val recentTimestamps =
+            prelude.List.from((0 until 11).map(i => baseTimestamp - i * 600).toList)
+
+        val prevState = ChainState(
+          blockHeight = baseFixture.height,
+          blockHash = confirmedTip,
+          currentTarget = bits,
+          recentTimestamps = recentTimestamps,
+          previousDifficultyAdjustmentTimestamp = baseTimestamp,
+          confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(confirmedTip),
+          forkTree = End
+        )
+
+        // Add 1 block with a legitimate validFrom
+        val header = BlockFixture.loadWithHeader(baseHeight + 1)._2
+        val headersScalus = prelude.List(header)
+        val fixture = BlockFixture.load(baseHeight + 1)
+        val currentTime = BigInt(fixture.timestamp)
+
+        val update = UpdateOracle(
+          blockHeaders = headersScalus,
+          parentPath = prelude.List.Nil,
+          mpfInsertProofs = prelude.List.Nil
+        )
+        val expectedState =
+            BitcoinValidator.computeUpdate(prevState, update, currentTime, testParams)
+
+        val input = Input(
+          TransactionHash.fromHex(
+            "1ab6879fc08345f51dc9571ac4f530bf8673e0d798758c470f9af6f98e2f3982"
+          ),
+          0
+        )
+        val refScriptUtxo = Utxo(
+          Input(
+            TransactionHash.fromHex(
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            0
+          ),
+          Output(
+            testScriptAddr,
+            Value.ada(10),
+            None,
+            Some(ScriptRef(testContract.script))
+          )
+        )
+        val inputValue = Value.ada(5)
+        val utxo = Utxo(
+          input,
+          Output(testScriptAddr, inputValue, DatumOption.Inline(prevState.toData))
+        )
+        val utxos: Utxos =
+            Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
+
+        // Transaction with only validFrom, no validTo — unbounded upper end
+        val draft = txBuilder
+            .references(refScriptUtxo, testContract)
+            .spend(utxo, update.toData)
+            .payTo(testScriptAddr, inputValue, expectedState.toData)
+            .validFrom(Instant.ofEpochSecond(currentTime.toLong))
+            .draft
+
+        val scriptContext = draft.getScriptContextV3(utxos, ForSpend(input))
+        val result = testProgram.applyArg(scriptContext.toData).evaluateDebug
+
+        assert(
+          result.isInstanceOf[Result.Failure],
+          "Unbounded validity interval (no validTo) must be rejected"
+        )
+    }
+
+    test("Validity interval - too wide window must be rejected") {
+        // Even with validTo set, the window must be bounded to ensure
+        // addedTimeSeconds is close to actual wall-clock time.
+        val baseHeight = 866880
+
+        val (baseFixture, _) = BlockFixture.loadWithHeader(baseHeight)
+        val confirmedTip = ByteString.fromHex(baseFixture.hash).reverse
+        val bits = ByteString.fromHex(baseFixture.bits).reverse
+        val baseTimestamp = BigInt(baseFixture.timestamp)
+        val recentTimestamps =
+            prelude.List.from((0 until 11).map(i => baseTimestamp - i * 600).toList)
+
+        val prevState = ChainState(
+          blockHeight = baseFixture.height,
+          blockHash = confirmedTip,
+          currentTarget = bits,
+          recentTimestamps = recentTimestamps,
+          previousDifficultyAdjustmentTimestamp = baseTimestamp,
+          confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(confirmedTip),
+          forkTree = End
+        )
+
+        val header = BlockFixture.loadWithHeader(baseHeight + 1)._2
+        val headersScalus = prelude.List(header)
+        val fixture = BlockFixture.load(baseHeight + 1)
+        val currentTime = BigInt(fixture.timestamp)
+
+        val update = UpdateOracle(
+          blockHeaders = headersScalus,
+          parentPath = prelude.List.Nil,
+          mpfInsertProofs = prelude.List.Nil
+        )
+        val expectedState =
+            BitcoinValidator.computeUpdate(prevState, update, currentTime, testParams)
+
+        val input = Input(
+          TransactionHash.fromHex(
+            "1ab6879fc08345f51dc9571ac4f530bf8673e0d798758c470f9af6f98e2f3982"
+          ),
+          0
+        )
+        val refScriptUtxo = Utxo(
+          Input(
+            TransactionHash.fromHex(
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            0
+          ),
+          Output(
+            testScriptAddr,
+            Value.ada(10),
+            None,
+            Some(ScriptRef(testContract.script))
+          )
+        )
+        val inputValue = Value.ada(5)
+        val utxo = Utxo(
+          input,
+          Output(testScriptAddr, inputValue, DatumOption.Inline(prevState.toData))
+        )
+        val utxos: Utxos =
+            Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
+
+        // Transaction with validTo set 1 hour after validFrom (too wide)
+        val validFromInstant = Instant.ofEpochSecond(currentTime.toLong)
+        val validToInstant = Instant.ofEpochSecond(currentTime.toLong + 3600) // 1 hour window
+        val draft = txBuilder
+            .references(refScriptUtxo, testContract)
+            .spend(utxo, update.toData)
+            .payTo(testScriptAddr, inputValue, expectedState.toData)
+            .validFrom(validFromInstant)
+            .validTo(validToInstant)
+            .draft
+
+        val scriptContext = draft.getScriptContextV3(utxos, ForSpend(input))
+        val result = testProgram.applyArg(scriptContext.toData).evaluateDebug
+
+        assert(
+          result.isInstanceOf[Result.Failure],
+          "Validity interval wider than MaxValidityWindow must be rejected"
+        )
+    }
+
     test("Bifrost scenario - 100 blocks in tree, add 1 header, promote 1 block") {
         val baseHeight = 866880
         val preloadCount = 100
@@ -729,12 +900,14 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         val utxos: Utxos =
             Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
         val validFrom = Instant.ofEpochSecond(currentTime.toLong)
+        val validTo = validFrom.plusSeconds(600)
 
         val draft = txBuilder
             .references(refScriptUtxo, testContract)
             .spend(utxo, update.toData)
             .payTo(testScriptAddr, inputValue, expectedState.toData)
             .validFrom(validFrom)
+            .validTo(validTo)
             .draft
 
         val txSize = draft.toCbor.length

@@ -330,9 +330,13 @@ object OracleTransactions {
             }
 
             // Output new state with same value
+            // Validator requires finite validity interval <= MaxValidityWindow (10 min)
+            val validToInstant =
+                validityInstant.plusMillis(BitcoinValidator.MaxValidityWindow.toLong)
             builder = builder
                 .payTo(scriptAddress, oracleUtxo.output.value, newChainState)
                 .validFrom(validityInstant)
+                .validTo(validToInstant)
 
             val tx = Await
                 .result(

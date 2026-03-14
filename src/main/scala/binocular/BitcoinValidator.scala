@@ -6,7 +6,7 @@ import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofSte
 import scalus.cardano.onchain.plutus.prelude.List.*
 import scalus.cardano.onchain.plutus.prelude.{List, *}
 import scalus.cardano.onchain.plutus.v1.{Address, Credential, PolicyId, PosixTime}
-import scalus.cardano.onchain.plutus.v2.{IntervalBoundType, OutputDatum}
+import scalus.cardano.onchain.plutus.v2.OutputDatum
 import scalus.cardano.onchain.plutus.v3.{DataParameterizedValidator, *}
 import scalus.compiler.Compile
 import scalus.uplc.builtin.*
@@ -225,6 +225,12 @@ case class BitcoinValidatorParams(
 @Compile
 object BitcoinValidator extends DataParameterizedValidator {
     import BitcoinHelpers.*
+
+    // Maximum allowed width of the transaction validity interval (in milliseconds).
+    // Ensures validFrom is close to actual wall-clock time, so addedTimeSeconds
+    // is trustworthy for the challenge aging check.
+    // 10 minutes = 600 seconds = 600_000 milliseconds
+    val MaxValidityWindow: BigInt = 600_000
 
     // Fork path directions
     val LeftFork: BigInt = 0
@@ -964,9 +970,12 @@ object BitcoinValidator extends DataParameterizedValidator {
         val params = param.to[BitcoinValidatorParams]
         val update = redeemer.to[UpdateOracle]
 
-        val intervalStartInSeconds = tx.validRange.from.boundType match
-            case IntervalBoundType.Finite(time) => time / 1000
-            case _                              => fail("Must have finite interval start")
+        val intervalStartMs = tx.validRange.from.finiteOrFail("Must have finite interval start")
+        val intervalEndMs = tx.validRange.to.finiteOrFail("Must have finite interval end")
+
+        require(intervalEndMs - intervalStartMs <= MaxValidityWindow, "Validity interval too wide")
+
+        val intervalStartInSeconds = intervalStartMs / 1000
 
         val inputs = tx.inputs
         val outputs = tx.outputs
