@@ -218,7 +218,8 @@ case class TraversalCtx(
 case class BitcoinValidatorParams(
     maturationConfirmations: BigInt,
     challengeAging: BigInt,
-    oneShotTxOutRef: TxOutRef
+    oneShotTxOutRef: TxOutRef,
+    testingMode: Boolean = false
 ) derives FromData,
       ToData
 
@@ -309,7 +310,8 @@ object BitcoinValidator extends DataParameterizedValidator {
     def validateBlock(
         header: BlockHeader,
         ctx: TraversalCtx,
-        currentTime: PosixTimeSeconds
+        currentTime: PosixTimeSeconds,
+        testingMode: Boolean = false
     ): (BlockSummary, TraversalCtx, BigInt) = {
         val hash = blockHeaderHash(header)
         val hashInt = byteStringToInteger(false, hash)
@@ -320,17 +322,23 @@ object BitcoinValidator extends DataParameterizedValidator {
 
         // PoW validation — target is reused for block proof below
         val target = compactBitsToTarget(bits)
-        require(hashInt <= target, "Invalid proof-of-work")
-        require(target <= PowLimit, "Target exceeds PowLimit")
+
+        if !testingMode then
+            require(hashInt <= target, "Invalid proof-of-work")
+            require(target <= PowLimit, "Target exceeds PowLimit")
 
         // Difficulty validation
-        val expectedBits = getNextWorkRequired(
-          height,
-          ctx.currentBits,
-          timestamps.head,
-          prevDiffAdjTimestamp
-        )
-        require(bits == expectedBits, "Invalid difficulty")
+        val expectedBits =
+            if testingMode then bits
+            else
+                val eb = getNextWorkRequired(
+                  height,
+                  ctx.currentBits,
+                  timestamps.head,
+                  prevDiffAdjTimestamp
+                )
+                require(bits == eb, "Invalid difficulty")
+                eb
 
         // MTP validation
         val sortedTimestamps = insertionSort(timestamps.take(MedianTimeSpan))
@@ -413,17 +421,20 @@ object BitcoinValidator extends DataParameterizedValidator {
         ctx: TraversalCtx,
         currentTime: BigInt,
         chainwork: BigInt,
-        acc: List[BlockSummary]
+        acc: List[BlockSummary],
+        testingMode: Boolean = false
     ): (List[BlockSummary], BigInt) = headers match
         case Nil => (acc.reverse, chainwork)
         case Cons(header, tail) =>
-            val (summary, newCtx, blockProof) = validateBlock(header, ctx, currentTime)
+            val (summary, newCtx, blockProof) =
+                validateBlock(header, ctx, currentTime, testingMode)
             validateAndCollectBlocks(
               tail,
               newCtx,
               currentTime,
               chainwork + blockProof,
-              Cons(summary, acc)
+              Cons(summary, acc),
+              testingMode
             )
 
     // ============================================================================
@@ -459,14 +470,15 @@ object BitcoinValidator extends DataParameterizedValidator {
         path: Path,
         headers: List[BlockHeader],
         ctx: TraversalCtx,
-        currentTime: BigInt
+        currentTime: BigInt,
+        testingMode: Boolean = false
     ): ForkTree = {
         path match
             case Nil =>
                 // Path is empty → parent is the confirmed tip (stored in ctx).
                 // Validate headers and attach as a new branch at the tree root.
                 val (newBlocks, newCw) =
-                    validateAndCollectBlocks(headers, ctx, currentTime, 0, Nil)
+                    validateAndCollectBlocks(headers, ctx, currentTime, 0, Nil, testingMode)
                 val newBranch = Blocks(newBlocks, newCw, End)
                 tree match
                     // First-ever insertion into an empty tree:
@@ -478,7 +490,15 @@ object BitcoinValidator extends DataParameterizedValidator {
                     case existing => Fork(existing, newBranch)
 
             case Cons(pathHead, pathTail) =>
-                validateAndInsertInPath(tree, headers, ctx, currentTime, pathHead, pathTail)
+                validateAndInsertInPath(
+                  tree,
+                  headers,
+                  ctx,
+                  currentTime,
+                  pathHead,
+                  pathTail,
+                  testingMode
+                )
     }
 
     // ============================================================================
@@ -491,7 +511,8 @@ object BitcoinValidator extends DataParameterizedValidator {
         ctx: TraversalCtx,
         currentTime: BigInt,
         pathHead: PosixTimeSeconds,
-        pathTail: List[PosixTimeSeconds]
+        pathTail: List[PosixTimeSeconds],
+        testingMode: Boolean = false
     ) = {
         tree match
             case Blocks(blocks, originalCw, next) =>
@@ -518,7 +539,8 @@ object BitcoinValidator extends DataParameterizedValidator {
                                 pathTail,
                                 headers,
                                 newCtx,
-                                currentTime
+                                currentTime,
+                                testingMode
                               )
                             )
                         case Cons(block, tail) if count == pathHead =>
@@ -530,9 +552,10 @@ object BitcoinValidator extends DataParameterizedValidator {
                                   parentCtx,
                                   currentTime,
                                   0,
-                                  Nil
+                                  Nil,
+                                  testingMode
                                 )
-                            val fullPrefix = prefix.reverse.prepended(block)
+                            val fullPrefix = Cons(block, prefix).reverse
                             tail match
                                 case Nil =>
                                     next match
@@ -604,7 +627,8 @@ object BitcoinValidator extends DataParameterizedValidator {
                         pathTail,
                         headers,
                         ctx,
-                        currentTime
+                        currentTime,
+                        testingMode
                       ),
                       right
                     )
@@ -616,7 +640,8 @@ object BitcoinValidator extends DataParameterizedValidator {
                         pathTail,
                         headers,
                         ctx,
-                        currentTime
+                        currentTime,
+                        testingMode
                       )
                     )
 
@@ -915,7 +940,8 @@ object BitcoinValidator extends DataParameterizedValidator {
                   update.parentPath,
                   headers,
                   ctx0,
-                  currentTime
+                  currentTime,
+                  params.testingMode
                 )
 //        log("validateAndInsert")
 
