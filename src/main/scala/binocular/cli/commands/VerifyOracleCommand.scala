@@ -112,14 +112,14 @@ case class VerifyOracleCommand(utxo: String) extends Command {
                                               s"  Confirmed Blocks Root: ${chainState.confirmedBlocksRoot.toHex}"
                                             )
                                             println(
-                                              s"  Forks Tree: ${chainState.forksTree.blockCount} block(s)"
+                                              s"  Forks Tree: ${chainState.forkTree.blockCount} block(s)"
                                             )
 
-                                            if chainState.forksTree.nonEmpty then {
+                                            if chainState.forkTree.nonEmpty then {
                                                 println()
                                                 println("  Fork tree:")
                                                 println(
-                                                  chainState.forksTree
+                                                  chainState.forkTree
                                                       .displayTree(chainState.blockHeight, "    ")
                                                 )
                                             }

@@ -112,7 +112,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
         // Calculate new state using shared validator logic
         val (_, validityTime) =
             OracleTransactions.computeValidityIntervalTime(ctx.provider.cardanoInfo)
-        val parentPath = initialState.forksTree.findTipPath
+        val parentPath = initialState.forkTree.findTipPath
         val params = BitcoinContract.testParams
         val newState =
             OracleTransactions.applyHeaders(initialState, headersList, parentPath, validityTime, params)
@@ -165,7 +165,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                 )
 
                 println(s"[Test] Step 6: Verifying forks tree structure")
-                val totalBlocks = chainState.forksTree.blockCount
+                val totalBlocks = chainState.forkTree.blockCount
                 println(s"    Total blocks in forks tree: $totalBlocks")
                 assert(
                   totalBlocks == headers.size,

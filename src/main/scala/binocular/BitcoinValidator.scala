@@ -62,7 +62,7 @@ extension (bh: BlockHeader)
 case class BlockSummary(
     hash: BlockHash, // Block hash
     timestamp: PosixTime, // Bitcoin block timestamp (for median-time-past)
-    addedTimeSeconds: PosixTimeSeconds // Cardano time when this block was added to forksTree
+    addedTimeSeconds: PosixTimeSeconds // Cardano time when this block was added to forkTree
 ) derives FromData,
       ToData
 
@@ -89,7 +89,7 @@ case class ChainState(
     recentTimestamps: List11Timestamps,
     previousDifficultyAdjustmentTimestamp: PosixTime,
     confirmedBlocksRoot: MPFRoot,
-    forksTree: ForkTree
+    forkTree: ForkTree
 ) derives FromData,
       ToData
 
@@ -782,7 +782,7 @@ object BitcoinValidator extends DataParameterizedValidator {
           recentTimestamps = finalCtx.timestamps.take(MedianTimeSpan),
           previousDifficultyAdjustmentTimestamp = finalCtx.prevDiffAdjTimestamp,
           confirmedBlocksRoot = finalRoot,
-          forksTree = cleanedTree
+          forkTree = cleanedTree
         )
     }
 
@@ -813,10 +813,10 @@ object BitcoinValidator extends DataParameterizedValidator {
 
         // Step 1: Validate and insert new blocks into tree (or keep tree if no headers)
         val newTree = headers match
-            case Nil => state.forksTree
+            case Nil => state.forkTree
             case _ =>
                 validateAndInsert(
-                  state.forksTree,
+                  state.forkTree,
                   update.parentPath,
                   headers,
                   ctx0,
@@ -852,7 +852,7 @@ object BitcoinValidator extends DataParameterizedValidator {
             updatedState
         else
             // No proofs → header-only submission, skip promotion and GC
-            state.copy(forksTree = newTree)
+            state.copy(forkTree = newTree)
     }
 
     // ============================================================================

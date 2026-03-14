@@ -156,7 +156,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
           recentTimestamps = recentTimestamps,
           previousDifficultyAdjustmentTimestamp = baseTimestamp,
           confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(confirmedTip),
-          forksTree = ForkTree.End
+          forkTree = ForkTree.End
         )
 
         val input = Input(
@@ -303,7 +303,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
           recentTimestamps = recentTimestamps,
           previousDifficultyAdjustmentTimestamp = baseTimestamp,
           confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(confirmedTip),
-          forksTree = ForkTree.End
+          forkTree = ForkTree.End
         )
 
         // Pre-load 100 blocks into fork tree (866881..866980)
@@ -379,7 +379,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             // Determine promoted blocks by running validator logic
             val ctx0 = BitcoinValidator.initCtx(stateWith100Blocks)
             val newTree = BitcoinValidator.validateAndInsert(
-              stateWith100Blocks.forksTree,
+              stateWith100Blocks.forkTree,
               parentPath,
               newHeadersScalus,
               ctx0,
@@ -506,7 +506,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
           recentTimestamps = recentTimestamps,
           previousDifficultyAdjustmentTimestamp = baseTimestamp,
           confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(confirmedTip),
-          forksTree = ForkTree.End
+          forkTree = ForkTree.End
         )
 
         // Pre-load 100 blocks into fork tree (866881..866980)
@@ -537,7 +537,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         // Determine promoted block
         val ctx0 = BitcoinValidator.initCtx(stateWith100Blocks)
         val newTree = BitcoinValidator.validateAndInsert(
-          stateWith100Blocks.forksTree,
+          stateWith100Blocks.forkTree,
           parentPath,
           newHeadersScalus,
           ctx0,

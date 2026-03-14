@@ -92,7 +92,7 @@ object TransactionBuilders {
             )
 
             // 2. Create UpdateOracle redeemer
-            val parentPath = prevChainState.forksTree.findTipPath
+            val parentPath = prevChainState.forkTree.findTipPath
             val action = UpdateOracle(blockHeaders, parentPath, ScalusList.Nil)
             println(s"[UpdateOracle] Created redeemer with ${blockHeaders.length} headers")
 

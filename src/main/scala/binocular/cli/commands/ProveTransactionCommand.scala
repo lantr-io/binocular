@@ -276,7 +276,7 @@ case class ProveTransactionCommand(
 
                 val blockHashBytes = ByteString.fromHex(targetBlockHash).reverse
 
-                val blockInForksTree = chainState.forksTree.existsHash(blockHashBytes)
+                val blockInForksTree = chainState.forkTree.existsHash(blockHashBytes)
 
                 if blockInForksTree then {
                     System.err.println(s"Block is still in fork tree (not yet confirmed)")

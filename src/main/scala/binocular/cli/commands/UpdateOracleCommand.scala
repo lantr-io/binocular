@@ -257,7 +257,7 @@ case class UpdateOracleCommand(
                         println(s"  Current oracle state:")
                         println(s"  Confirmed Height: ${currentChainState.blockHeight}")
                         println(s"  Block Hash: ${currentChainState.blockHash.toHex}")
-                        println(s"  Fork Tree Size: ${currentChainState.forksTree.blockCount}")
+                        println(s"  Fork Tree Size: ${currentChainState.forkTree.blockCount}")
 
                         // Reconstruct off-chain MPF trie to match confirmedBlocksRoot.
                         // If the MPF has just the initial block, we can reconstruct trivially.
@@ -338,9 +338,9 @@ case class UpdateOracleCommand(
                                 rebuiltMpf
 
                         // Determine the highest block we have
-                        val highestBlock = if currentChainState.forksTree.nonEmpty then {
+                        val highestBlock = if currentChainState.forkTree.nonEmpty then {
                             val maxForkHeight =
-                                currentChainState.forksTree
+                                currentChainState.forkTree
                                     .highestHeight(currentChainState.blockHeight)
                                     .toLong
                             println(s"  Fork Tree Tip: $maxForkHeight")
@@ -385,7 +385,7 @@ case class UpdateOracleCommand(
                             val challengeAgingSeconds = params.challengeAging.toLong
 
                             val canPromote =
-                                currentChainState.forksTree.oldestBlockTime match {
+                                currentChainState.forkTree.oldestBlockTime match {
                                     case Some(oldest) =>
                                         val age = currentTime - oldest.toLong
                                         age >= challengeAgingSeconds
@@ -403,7 +403,7 @@ case class UpdateOracleCommand(
                                   s"  causing transactions to exceed Cardano's 16KB limit."
                                 )
                                 System.err.println()
-                                currentChainState.forksTree.oldestBlockTime.foreach {
+                                currentChainState.forkTree.oldestBlockTime.foreach {
                                     oldestAddedTime =>
                                         val timeUntilPromotion =
                                             challengeAgingSeconds - (currentTime - oldestAddedTime.toLong)
@@ -528,7 +528,7 @@ case class UpdateOracleCommand(
                                     )
 
                                 // Compute parent path for header insertion
-                                val parentPath = currentState.forksTree.findTipPath
+                                val parentPath = currentState.forkTree.findTipPath
 
                                 val params = BitcoinContract.testParams
 

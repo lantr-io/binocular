@@ -151,10 +151,10 @@ object OracleTransactions {
 
         // Insert headers into fork tree
         val newTree = blockHeaders match
-            case ScalusList.Nil => prevState.forksTree
+            case ScalusList.Nil => prevState.forkTree
             case _ =>
                 BitcoinValidator.validateAndInsert(
-                  prevState.forksTree,
+                  prevState.forkTree,
                   parentPath,
                   blockHeaders,
                   ctx0,
@@ -298,7 +298,7 @@ object OracleTransactions {
             val redeemer = UpdateOracle(blockHeaders, parentPath, mpfInsertProofs)
 
             println(
-              s"[DEBUG] New state forksTree block count: ${newChainState.forksTree.blockCount}"
+              s"[DEBUG] New state forkTree block count: ${newChainState.forkTree.blockCount}"
             )
 
             // Build the transaction

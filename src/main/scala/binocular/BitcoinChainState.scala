@@ -140,9 +140,9 @@ object BitcoinChainState {
             blockHash = ByteString.fromArray(header.hash.hexToBytes.reverse)
             // Timestamps are in block order (newest first) — matching how the validator
             // prepends each new block's timestamp during accumulation.
-            recentTimestamps = recentTimestampsSeq.foldRight(prelude.List.Nil: prelude.List[BigInt])(
-              (ts, acc) => prelude.List.Cons(ts, acc)
-            )
+            recentTimestamps = recentTimestampsSeq.foldRight(
+              prelude.List.Nil: prelude.List[BigInt]
+            )((ts, acc) => prelude.List.Cons(ts, acc))
         } yield ChainState(
           blockHeight = blockHeight,
           blockHash = blockHash,
@@ -150,7 +150,7 @@ object BitcoinChainState {
           recentTimestamps = recentTimestamps,
           previousDifficultyAdjustmentTimestamp = BigInt(adjustmentHeader.time),
           confirmedBlocksRoot = mpfRootForSingleBlock(blockHash), // MPF trie with single block
-          forksTree = ForkTree.End // Initialize with empty forks tree
+          forkTree = ForkTree.End // Initialize with empty forks tree
         )
     }
 }

@@ -133,7 +133,7 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
           previousDifficultyAdjustmentTimestamp = BigInt(adjustmentHeader.time),
           confirmedBlocksRoot =
               BitcoinChainState.mpfRootForSingleBlock(blockHash), // MPF trie with single block
-          forksTree = ForkTree.End // Initialize with empty forks tree
+          forkTree = ForkTree.End // Initialize with empty forks tree
         )
     }
 
@@ -149,7 +149,7 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
           recentTimestamps = newCtx.timestamps.take(BitcoinHelpers.MedianTimeSpan),
           previousDifficultyAdjustmentTimestamp = newCtx.prevDiffAdjTimestamp,
           confirmedBlocksRoot = currentState.confirmedBlocksRoot,
-          forksTree = currentState.forksTree
+          forkTree = currentState.forkTree
         )
 
     private def syncLoop(height: Int, targetHeight: Int, currentState: ChainState): Future[Unit] =

@@ -97,13 +97,13 @@ case class ListOraclesCommand(limit: Int) extends Command {
                                     println(
                                       s"    Block Hash: ${vo.chainState.blockHash.toHex.take(16)}..."
                                     )
-                                    if vo.chainState.forksTree.nonEmpty then {
+                                    if vo.chainState.forkTree.nonEmpty then {
                                         val maxForkHeight =
-                                            vo.chainState.forksTree
+                                            vo.chainState.forkTree
                                                 .highestHeight(vo.chainState.blockHeight)
                                                 .toLong
                                         println(
-                                          s"    Fork Tree: ${vo.chainState.forksTree.blockCount} block(s), highest at $maxForkHeight"
+                                          s"    Fork Tree: ${vo.chainState.forkTree.blockCount} block(s), highest at $maxForkHeight"
                                         )
                                     }
                                     println()
