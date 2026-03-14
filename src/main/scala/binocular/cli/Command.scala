@@ -1,9 +1,8 @@
 package binocular.cli
 
-import binocular.ChainState
+import binocular.*
 import scalus.cardano.ledger.Utxo
 import scalus.uplc.builtin.Data.fromData
-import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 
 import scala.util.Try
 
@@ -81,11 +80,7 @@ object CommandHelpers {
 
     /** Check if ChainState is valid (has 11 sorted timestamps) */
     def isValidChainState(chainState: ChainState): Boolean = {
-        def toScalaList(l: ScalusList[BigInt]): scala.List[BigInt] = l match {
-            case ScalusList.Nil        => scala.Nil
-            case ScalusList.Cons(h, t) => h :: toScalaList(t)
-        }
-        val timestamps = toScalaList(chainState.recentTimestamps)
+        val timestamps = chainState.recentTimestamps.toScalaList
         timestamps.size >= 11 && timestamps.sliding(2).forall {
             case Seq(a, b) => a >= b
             case _         => true

@@ -115,7 +115,7 @@ case class InitOracleCommand(startBlock: Option[Long]) extends Command {
         println(s"Fetched initial state:")
         println(s"  Block Height: ${initialState.blockHeight}")
         println(s"  Block Hash: ${initialState.blockHash.toHex}")
-        println(s"  Block Timestamp: ${initialState.blockTimestamp}")
+        println(s"  Block Timestamp: ${initialState.recentTimestamps.head}")
         println(s"  Current Target: ${initialState.currentTarget.toHex}")
         println(s"  Recent Timestamps: ${initialState.recentTimestamps.size} entries")
 

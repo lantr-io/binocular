@@ -48,11 +48,11 @@ case class BitcoinBlock(
 
 case class CekResult(budget: ledger.ExUnits, logs: Seq[String])
 
-class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyChecks {
+class OldValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyChecks {
     private given env: CardanoInfo = CardanoInfo.mainnet
 
     private val testContract =
-        BitcoinContract.contract.withErrorTraces(BitcoinContract.testTxOutRef.toData)
+        OldBitcoinContract.contract.withErrorTraces(OldBitcoinContract.testTxOutRef.toData)
     private val testScript = testContract.script
     private val testScriptHash = testScript.scriptHash
     private val testScriptAddr = testContract.address(env.network)
@@ -65,7 +65,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
     }
 
     test("BitcoinValidator size") {
-        assert(BitcoinContract.contract.script.script.size == 8686)
+        assert(OldBitcoinContract.contract.script.script.size == 8686)
     }
 
     test("Tx size makes sense") {
@@ -80,7 +80,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
     }
 
     test("ChallengeAging matches the 200-minute whitepaper parameter") {
-        assert(BitcoinValidator.ChallengeAging == 200 * 60)
+        assert(OldBitcoinValidator.ChallengeAging == 200 * 60)
     }
 
     test("computeValidityIntervalTime can target a requested future time") {
@@ -126,7 +126,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         val target = compactBitsToTarget(bits)
         val timestamp = blockHeader.timestamp
 
-        val prevState = ChainState(
+        val prevState = OldChainState(
           865493,
           blockHash = hex"0000000000000000000143a112c5ab741ec6e95b6c80f9834199efe2154c972b".reverse,
           currentTarget = bits,
@@ -148,7 +148,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         val newBlockHeight = prevState.blockHeight + 1
 
         // Expected state: block added to forks tree, but NOT promoted (doesn't meet 100 confirmations + 200 min criteria)
-        val newBlockSummary = BlockSummary(
+        val newBlockSummary = OldBlockSummary(
           hash = hash,
           height = newBlockHeight,
           chainwork = newBlockChainwork,
@@ -156,7 +156,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           bits = bits,
           addedTime = timestamp
         )
-        val newBranch = ForkBranch(
+        val newBranch = OldForkBranch(
           tipHash = hash,
           tipHeight = newBlockHeight,
           tipChainwork = newBlockChainwork,
@@ -164,7 +164,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         )
         val newForksTree = prelude.List(newBranch)
 
-        val newState = ChainState(
+        val newState = OldChainState(
           prevState.blockHeight, // Height unchanged - no promotion
           blockHash = prevState.blockHash, // Hash unchanged - no promotion
           currentTarget = prevState.currentTarget, // Target unchanged - no promotion
@@ -179,7 +179,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         println(s"Expected forksTree size: ${newForksTree.size}")
         println(s"Expected newState.forksTree size: ${newState.forksTree.size}")
 
-        val redeemer = Action
+        val redeemer = OldAction
             .UpdateOracle(prelude.List(blockHeader), timestamp, prelude.List.Nil)
             .toData
 
@@ -191,11 +191,13 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           newState.toData,
           redeemer
         )
-        val applied = BitcoinContract.bitcoinProgram $ scriptContext.toData
-        println(s"Validator size: ${BitcoinContract.bitcoinProgram.flatEncoded.length}")
+        val applied = OldBitcoinContract.bitcoinProgram $ scriptContext.toData
+        println(s"Validator size: ${OldBitcoinContract.bitcoinProgram.flatEncoded.length}")
 
         try {
-            BitcoinValidator.validate(BitcoinContract.testTxOutRef.toData)(scriptContext.toData)
+            OldBitcoinValidator.validate(OldBitcoinContract.testTxOutRef.toData)(
+              scriptContext.toData
+            )
         } catch {
             case e: Exception =>
                 println(s"Validation error: ${e.getMessage}")
@@ -287,7 +289,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         blockCount: Int,
         baseTimestamp: BigInt,
         bits: CompactBits
-    ): prelude.List[ForkBranch] = {
+    ): prelude.List[OldForkBranch] = {
         if blockCount == 0 then return prelude.List.Nil
 
         val target = compactBitsToTarget(bits)
@@ -298,13 +300,13 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
             height: BigInt,
             chainwork: BigInt,
             timestamp: BigInt,
-            blocks: List[BlockSummary]
-        ): (List[BlockSummary], BigInt, BigInt) = {
+            blocks: List[OldBlockSummary]
+        ): (List[OldBlockSummary], BigInt, BigInt) = {
             if remaining == 0 then (blocks.reverse, chainwork, height - 1)
             else
                 val blockHash = ByteString.fromArray(Array.fill(32)((height % 256).toByte))
                 val newChainwork = computeChainwork(chainwork, target)
-                val block = BlockSummary(
+                val block = OldBlockSummary(
                   hash = blockHash,
                   height = height,
                   chainwork = newChainwork,
@@ -332,7 +334,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         // Create a single ForkBranch with all blocks (keep only last 11)
         val recentBlocks = prelude.List.from(blocks.takeRight(11))
         val tipBlock = blocks.last
-        val branch = ForkBranch(
+        val branch = OldForkBranch(
           tipHash = tipBlock.hash,
           tipHeight = tipBlock.height,
           tipChainwork = tipBlock.chainwork,
@@ -349,7 +351,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         bits: CompactBits,
         baseTimestamp: BigInt,
         forksTreeSize: Int = 0
-    ): ChainState = {
+    ): OldChainState = {
         val forksTree =
             if forksTreeSize > 0 then
                 buildSimpleForksTree(
@@ -362,7 +364,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
                 )
             else prelude.List.Nil
 
-        ChainState(
+        OldChainState(
           blockHeight = blockHeight,
           blockHash = blockHash,
           currentTarget = bits,
@@ -381,8 +383,8 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         baseChainwork: BigInt,
         baseTimestamp: BigInt,
         bits: CompactBits = hex"1d00ffff".reverse
-    ): ForkBranch = {
-        val blocks = scala.collection.mutable.ListBuffer[BlockSummary]()
+    ): OldForkBranch = {
+        val blocks = scala.collection.mutable.ListBuffer[OldBlockSummary]()
         var chainwork = baseChainwork
 
         for h <- startHeight to endHeight do {
@@ -391,7 +393,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
             val addedTime =
                 baseTimestamp + (h - startHeight) * 60 // Each block added 1 minute apart
             chainwork = chainwork + 1000
-            blocks += BlockSummary(
+            blocks += OldBlockSummary(
               hash = hash,
               height = h,
               chainwork = chainwork,
@@ -404,7 +406,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         val recentBlocks = prelude.List.from(blocks.reverse) // All blocks, newest first
         val tipBlock = blocks.last
 
-        ForkBranch(
+        OldForkBranch(
           tipHash = tipBlock.hash,
           tipHeight = tipBlock.height,
           tipChainwork = tipBlock.chainwork,
@@ -421,11 +423,11 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           hex"000000302b974c15e2ef994183f9806c5be9c61e74abc512a14301000000000000000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
         )
 
-        val forksTree: prelude.List[ForkBranch] = prelude.List.Nil
+        val forksTree: prelude.List[OldForkBranch] = prelude.List.Nil
         val headers = prelude.List(blockExtendingTip)
 
         // Should NOT throw - pure canonical extension is valid
-        BitcoinValidator.validateForkSubmission(headers, forksTree, confirmedTip)
+        OldBitcoinValidator.validateForkSubmission(headers, forksTree, confirmedTip)
     }
 
     test("validateForkSubmission - reject pure fork submission") {
@@ -437,12 +439,12 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           hex"00000020ffffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
         )
 
-        val forksTree: prelude.List[ForkBranch] = prelude.List.Nil
+        val forksTree: prelude.List[OldForkBranch] = prelude.List.Nil
         val headers = prelude.List(forkBlock)
 
         // Should throw - fork without canonical extension
         intercept[RuntimeException] {
-            BitcoinValidator.validateForkSubmission(headers, forksTree, confirmedTip)
+            OldBitcoinValidator.validateForkSubmission(headers, forksTree, confirmedTip)
         }
     }
 
@@ -460,11 +462,11 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           hex"00000020ffffffffffffffffffffffffffffffffffffffffffffffffffffffff00000000aff4af5b1dcc2b8754db824b9911818b65913dc262c295f060abb45c6c1d7ee749f90b67cd0e0317f9cc7dac"
         )
 
-        val forksTree: prelude.List[ForkBranch] = prelude.List.Nil
+        val forksTree: prelude.List[OldForkBranch] = prelude.List.Nil
         val headers = prelude.List.from(Seq(canonicalBlock, forkBlock))
 
         // Should NOT throw - canonical + fork is valid
-        BitcoinValidator.validateForkSubmission(headers, forksTree, confirmedTip)
+        OldBitcoinValidator.validateForkSubmission(headers, forksTree, confirmedTip)
     }
 
     test("addBlockToForksTree - block extending confirmed tip") {
@@ -482,7 +484,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         val currentTime = BigInt(System.currentTimeMillis() / 1000)
         // val blockTimestamp = currentTime - 100  // Block is 100 seconds in the past
 
-        val confirmedState = ChainState(
+        val confirmedState = OldChainState(
           blockHeight = 1000,
           blockHash = confirmedTip,
           currentTarget = bits,
@@ -494,7 +496,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         )
 
         // Add block to empty forksTree - should succeed
-        val updatedForksTree = BitcoinValidator.addBlockToForksTree(
+        val updatedForksTree = OldBitcoinValidator.addBlockToForksTree(
           confirmedState.forksTree,
           newBlockHeader,
           confirmedState,
@@ -504,7 +506,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         val newBlockHash = blockHeaderHash(newBlockHeader)
 
         // Verify block was added - should find branch with this block as tip
-        val branchOpt = BitcoinValidator.findBranch(updatedForksTree, newBlockHash)
+        val branchOpt = OldBitcoinValidator.findBranch(updatedForksTree, newBlockHash)
         assert(branchOpt.isDefined, "Block should be tip of a branch in forks tree")
 
         val branch = branchOpt.getOrFail("Branch not found")
@@ -520,7 +522,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         val secondBlockHash = hex"1002000000000000000000000000000000000000000000000000000000000000"
 
         // Create branch with two blocks
-        val firstBlock = BlockSummary(
+        val firstBlock = OldBlockSummary(
           hash = firstBlockHash,
           height = 1001,
           chainwork = 1000000,
@@ -529,7 +531,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           addedTime = 1234567890
         )
 
-        val secondBlock = BlockSummary(
+        val secondBlock = OldBlockSummary(
           hash = secondBlockHash,
           height = 1002,
           chainwork = 2000000,
@@ -539,7 +541,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         )
 
         // Create branch with both blocks (second is tip)
-        val branch = ForkBranch(
+        val branch = OldForkBranch(
           tipHash = secondBlockHash,
           tipHeight = 1002,
           tipChainwork = BigInt(2000000),
@@ -551,28 +553,28 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         // findBranch only finds by tip hash now (since parents are always tips of their branches)
         // First block is NOT the tip, so findBranch won't find it directly
         assert(
-          BitcoinValidator.findBranch(forksTree, firstBlockHash).isEmpty,
+          OldBitcoinValidator.findBranch(forksTree, firstBlockHash).isEmpty,
           "First block is not a tip, so findBranch returns None"
         )
         assert(
-          BitcoinValidator.findBranch(forksTree, secondBlockHash).isDefined,
+          OldBitcoinValidator.findBranch(forksTree, secondBlockHash).isDefined,
           "Second block is the tip"
         )
 
         // Verify second block is at tip
         val foundBranch =
-            BitcoinValidator.findBranch(forksTree, secondBlockHash).getOrFail("Branch not found")
+            OldBitcoinValidator.findBranch(forksTree, secondBlockHash).getOrFail("Branch not found")
         assert(foundBranch.tipHash == secondBlockHash)
         assert(foundBranch.tipHeight == BigInt(1002))
 
         // First block can be found in the branch's recentBlocks
         assert(
-          BitcoinValidator.existsHash(foundBranch.recentBlocks, firstBlockHash),
+          OldBitcoinValidator.existsHash(foundBranch.recentBlocks, firstBlockHash),
           "First block should be in branch's recentBlocks"
         )
 
         // Verify canonical chain selection picks highest chainwork (the branch)
-        val canonicalBranch = BitcoinValidator.selectCanonicalChain(forksTree)
+        val canonicalBranch = OldBitcoinValidator.selectCanonicalChain(forksTree)
         assert(canonicalBranch.map(_.tipHash) == prelude.Option.Some(secondBlockHash))
     }
 
@@ -580,7 +582,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         val firstBlockHash = hex"1001000000000000000000000000000000000000000000000000000000000000"
         val secondBlockHash = hex"1002000000000000000000000000000000000000000000000000000000000000"
 
-        val firstBlock = BlockSummary(
+        val firstBlock = OldBlockSummary(
           hash = firstBlockHash,
           height = 1001,
           chainwork = BigInt(1000000),
@@ -589,7 +591,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           addedTime = BigInt(1234567890)
         )
 
-        val secondBlock = BlockSummary(
+        val secondBlock = OldBlockSummary(
           hash = secondBlockHash,
           height = 1002,
           chainwork = BigInt(2000000),
@@ -598,7 +600,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           addedTime = BigInt(1234567900)
         )
 
-        val branch = ForkBranch(
+        val branch = OldForkBranch(
           tipHash = secondBlockHash,
           tipHeight = 1002,
           tipChainwork = BigInt(2000000),
@@ -607,7 +609,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
 
         val forksTree = prelude.List(branch)
 
-        val parentLookup = BitcoinValidator.lookupParentBlock(forksTree, firstBlockHash)
+        val parentLookup = OldBitcoinValidator.lookupParentBlock(forksTree, firstBlockHash)
         assert(parentLookup.isDefined, "Internal block should be discoverable for fork creation")
 
         val (parentBranch, parentBlock, parentIsTip) =
@@ -640,7 +642,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         val parentBlock = parentBranch.recentBlocks.head
 
         val expectedBits =
-            BitcoinValidator.expectedNextBitsForParent(confirmedState, parentBranch, parentBlock)
+            OldBitcoinValidator.expectedNextBitsForParent(confirmedState, parentBranch, parentBlock)
 
         assert(expectedBits == bits)
     }
@@ -667,7 +669,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         val adjustmentStartBlock = parentBranch.recentBlocks.find(_.height == 2016).get
 
         val expectedBits =
-            BitcoinValidator.expectedNextBitsForParent(confirmedState, parentBranch, parentBlock)
+            OldBitcoinValidator.expectedNextBitsForParent(confirmedState, parentBranch, parentBlock)
 
         assert(
           expectedBits == getNextWorkRequired(
@@ -684,7 +686,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         val promotedBits = hex"1c654657".reverse
         val nextBits = hex"1c654321".reverse
 
-        val confirmedState = ChainState(
+        val confirmedState = OldChainState(
           blockHeight = 2015,
           blockHash = ByteString.fromHex("11" * 32),
           currentTarget = initialBits,
@@ -696,7 +698,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           forksTree = prelude.List.Nil
         )
 
-        val promoted2016 = BlockSummary(
+        val promoted2016 = OldBlockSummary(
           hash = ByteString.fromHex("22" * 32),
           height = 2016,
           chainwork = 2000,
@@ -705,7 +707,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           addedTime = 120
         )
 
-        val promoted2017 = BlockSummary(
+        val promoted2017 = OldBlockSummary(
           hash = ByteString.fromHex("33" * 32),
           height = 2017,
           chainwork = 3000,
@@ -714,7 +716,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           addedTime = 130
         )
 
-        val updatedState = BitcoinValidator.applyPromotionsToConfirmedState(
+        val updatedState = OldBitcoinValidator.applyPromotionsToConfirmedState(
           confirmedState,
           prelude.List.from(Seq(promoted2016, promoted2017))
         )
@@ -730,8 +732,8 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
     }
 
     test("selectCanonicalChain - empty forksTree returns None") {
-        val emptyForksTree: prelude.List[ForkBranch] = prelude.List.Nil
-        val result = BitcoinValidator.selectCanonicalChain(emptyForksTree)
+        val emptyForksTree: prelude.List[OldForkBranch] = prelude.List.Nil
+        val result = OldBitcoinValidator.selectCanonicalChain(emptyForksTree)
 
         assert(result.isEmpty)
     }
@@ -740,7 +742,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         val blockHash =
             hex"00000000000000000002cfdedd8358532b2284bc157e1352dbc8682b2067fb0c".reverse
 
-        val blockSummary = BlockSummary(
+        val blockSummary = OldBlockSummary(
           hash = blockHash,
           height = 1001,
           chainwork = BigInt(1000000),
@@ -749,7 +751,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           addedTime = BigInt(1234567890)
         )
 
-        val branch = ForkBranch(
+        val branch = OldForkBranch(
           tipHash = blockHash,
           tipHeight = 1001,
           tipChainwork = BigInt(1000000),
@@ -757,19 +759,19 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         )
 
         val forksTree = prelude.List(branch)
-        val result = BitcoinValidator.selectCanonicalChain(forksTree)
+        val result = OldBitcoinValidator.selectCanonicalChain(forksTree)
 
         assert(result.map(_.tipHash) == prelude.Option.Some(blockHash))
     }
 
     test("selectCanonicalChain - selects highest chainwork") {
         val lowChainworkHash = hex"1111111111111111111111111111111111111111111111111111111111111111"
-        val lowChainworkBranch = ForkBranch(
+        val lowChainworkBranch = OldForkBranch(
           tipHash = lowChainworkHash,
           tipHeight = 1001,
           tipChainwork = BigInt(1000000),
           recentBlocks = prelude.List(
-            BlockSummary(
+            OldBlockSummary(
               hash = lowChainworkHash,
               height = 1001,
               chainwork = BigInt(1000000),
@@ -782,12 +784,12 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
 
         val highChainworkHash =
             hex"2222222222222222222222222222222222222222222222222222222222222222"
-        val highChainworkBranch = ForkBranch(
+        val highChainworkBranch = OldForkBranch(
           tipHash = highChainworkHash,
           tipHeight = 1001,
           tipChainwork = BigInt(2000000),
           recentBlocks = prelude.List(
-            BlockSummary(
+            OldBlockSummary(
               hash = highChainworkHash,
               height = 1001,
               chainwork = BigInt(2000000),
@@ -800,7 +802,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
 
         val forksTree = prelude.List.from(Seq(lowChainworkBranch, highChainworkBranch))
 
-        val result = BitcoinValidator.selectCanonicalChain(forksTree)
+        val result = OldBitcoinValidator.selectCanonicalChain(forksTree)
 
         // Should select branch with highest chainwork
         assert(result.map(_.tipHash) == prelude.Option.Some(highChainworkHash))
@@ -813,12 +815,12 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
 
         // Old fork branch with single block extending block 1000 (no longer confirmed tip)
         val oldForkHash = hex"1001111111111111111111111111111111111111111111111111111111111111"
-        val oldForkBranch = ForkBranch(
+        val oldForkBranch = OldForkBranch(
           tipHash = oldForkHash,
           tipHeight = 1001,
           tipChainwork = BigInt(500000),
           recentBlocks = prelude.List(
-            BlockSummary(
+            OldBlockSummary(
               hash = oldForkHash,
               height = 1001,
               chainwork = BigInt(500000),
@@ -908,7 +910,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         val blockWork = calculateBlockProof(target)
         val newChainwork = parentChainwork + blockWork
 
-        val expectedBlockSummary = BlockSummary(
+        val expectedBlockSummary = OldBlockSummary(
           hash = newBlockHash,
           height = prevState.blockHeight + 1,
           chainwork = newChainwork,
@@ -917,7 +919,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           addedTime = baseTime
         )
 
-        val expectedBranch = ForkBranch(
+        val expectedBranch = OldForkBranch(
           tipHash = newBlockHash,
           tipHeight = prevState.blockHeight + 1,
           tipChainwork = newChainwork,
@@ -926,7 +928,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
 
         val expectedForksTree = prelude.List(expectedBranch)
 
-        val expectedState = ChainState(
+        val expectedState = OldChainState(
           blockHeight = prevState.blockHeight,
           blockHash = prevState.blockHash,
           currentTarget = prevState.currentTarget,
@@ -937,7 +939,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           forksTree = expectedForksTree
         )
 
-        val redeemer = Action
+        val redeemer = OldAction
             .UpdateOracle(prelude.List(blockHeader), baseTime, prelude.List.Nil)
             .toData
 
@@ -950,9 +952,9 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         )
 
         // Validate - should succeed
-        BitcoinValidator.validate(BitcoinContract.testTxOutRef.toData)(scriptContext.toData)
+        OldBitcoinValidator.validate(OldBitcoinContract.testTxOutRef.toData)(scriptContext.toData)
 
-        val result = BitcoinContract.bitcoinProgram $ scriptContext.toData
+        val result = OldBitcoinContract.bitcoinProgram $ scriptContext.toData
         val prices = CardanoInfo.mainnet.protocolParams.executionUnitPrices
         result.evaluateDebug match
             case r: Result.Success =>
@@ -967,62 +969,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
                 fail(s"Validation failed: $r")
     }
 
-    test("OracleTransactions.applyHeaders matches computeUpdateOracleState semantics") {
-        val block864800Hash = "0000000000000000000202c4f7f242ab864a6162b8d1e745de6a86ae979e130b"
-        val block864800Height = 864800
-        val block864800Timestamp = 1728414569L
-        val block864801Bits = "17032f14"
-        val block864801Timestamp = 1728414644L
-        val block864801Nonce = 4254568467L
-        val block864801Version = 666378240L
-        val block864801Merkleroot =
-            "dc2ad1c7a27d394d45961c13a9c36e1d5e6cdbea928c47cb06263bb049a9cd0f"
-
-        val confirmedTip = ByteString.fromHex(block864800Hash).reverse
-        val bits = ByteString.fromHex(block864801Bits).reverse
-        val currentTime = BigInt(block864801Timestamp)
-
-        def longToLE4Bytes(n: Long): ByteString = {
-            ByteString.fromArray(
-              Array(
-                (n & 0xff).toByte,
-                ((n >> 8) & 0xff).toByte,
-                ((n >> 16) & 0xff).toByte,
-                ((n >> 24) & 0xff).toByte
-              )
-            )
-        }
-
-        val blockHeader = BlockHeader(
-          longToLE4Bytes(block864801Version) ++
-              confirmedTip ++
-              ByteString.fromHex(block864801Merkleroot).reverse ++
-              longToLE4Bytes(block864801Timestamp) ++
-              ByteString.fromHex(block864801Bits).reverse ++
-              longToLE4Bytes(block864801Nonce)
-        )
-
-        val prevState = buildTestChainState(
-          blockHeight = block864800Height,
-          blockHash = confirmedTip,
-          bits = bits,
-          baseTimestamp = BigInt(block864800Timestamp),
-          forksTreeSize = 0
-        )
-
-        val headers = prelude.List(blockHeader)
-
-        val expectedState =
-            BitcoinValidator.computeUpdateOracleState(
-              prevState,
-              headers,
-              currentTime,
-              prelude.List.Nil
-            )
-        val actualState = OracleTransactions.applyHeaders(prevState, headers, currentTime)
-
-        assert(actualState == expectedState)
-    }
+    // Test removed: OracleTransactions.applyHeaders now uses new ChainState type
 
     test("UpdateOracle - reject empty block headers list") {
         val baseTime = BigInt(System.currentTimeMillis() / 1000)
@@ -1037,7 +984,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           forksTreeSize = 0
         )
 
-        val redeemer = Action
+        val redeemer = OldAction
             .UpdateOracle(
               prelude.List.empty,
               BigInt(System.currentTimeMillis() / 1000),
@@ -1054,7 +1001,9 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
 
         // Should fail with "Empty block headers list"
         intercept[RuntimeException] {
-            BitcoinValidator.validate(BitcoinContract.testTxOutRef.toData)(scriptContext.toData)
+            OldBitcoinValidator.validate(OldBitcoinContract.testTxOutRef.toData)(
+              scriptContext.toData
+            )
         }
     }
 
@@ -1062,10 +1011,10 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
 
     test("promoteQualifiedBlocks - empty forks tree returns empty list") {
         val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
-        val emptyForksTree: prelude.List[ForkBranch] = prelude.List.Nil
+        val emptyForksTree: prelude.List[OldForkBranch] = prelude.List.Nil
         val currentTime = BigInt(System.currentTimeMillis() / 1000)
 
-        val (promotedBlocks, updatedTree) = BitcoinValidator.promoteQualifiedBlocks(
+        val (promotedBlocks, updatedTree) = OldBitcoinValidator.promoteQualifiedBlocks(
           emptyForksTree,
           confirmedTip,
           confirmedHeight = 1000,
@@ -1091,7 +1040,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         )
         val forksTree = prelude.List(branch)
 
-        val (promotedBlocks, updatedTree) = BitcoinValidator.promoteQualifiedBlocks(
+        val (promotedBlocks, updatedTree) = OldBitcoinValidator.promoteQualifiedBlocks(
           forksTree,
           confirmedTip,
           confirmedHeight = 1000,
@@ -1125,7 +1074,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         )
         val forksTree = prelude.List(branch)
 
-        val (promotedBlocks, updatedTree) = BitcoinValidator.promoteQualifiedBlocks(
+        val (promotedBlocks, updatedTree) = OldBitcoinValidator.promoteQualifiedBlocks(
           forksTree,
           confirmedTip,
           confirmedHeight = 1000,
@@ -1143,7 +1092,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
     test("promoteQualifiedBlocks - reject block with insufficient age") {
         val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
         val currentTime = BigInt(System.currentTimeMillis() / 1000)
-        val challengeAgingSeconds = BitcoinValidator.ChallengeAging
+        val challengeAgingSeconds = OldBitcoinValidator.ChallengeAging
 
         // Build chain from 1001 to 1101 (100+ confirmations - sufficient)
         // Blocks added 1 minute less than ChallengeAging (insufficient age)
@@ -1155,7 +1104,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         )
         val forksTree = prelude.List(branch)
 
-        val (promotedBlocks, updatedTree) = BitcoinValidator.promoteQualifiedBlocks(
+        val (promotedBlocks, updatedTree) = OldBitcoinValidator.promoteQualifiedBlocks(
           forksTree,
           confirmedTip,
           confirmedHeight = 1000,
@@ -1173,7 +1122,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
     test("promoteQualifiedBlocks - partial promotion with depth-based cutoff") {
         val confirmedTip = hex"1000000000000000000000000000000000000000000000000000000000000000"
         val currentTime = BigInt(System.currentTimeMillis() / 1000)
-        val challengeAgingSeconds = BitcoinValidator.ChallengeAging
+        val challengeAgingSeconds = OldBitcoinValidator.ChallengeAging
         val challengeAgingMinutes = challengeAgingSeconds / 60
 
         // Build chain from 1001 to 1105
@@ -1192,7 +1141,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         )
         val forksTree = prelude.List(branch)
 
-        val (promotedBlocks, updatedTree) = BitcoinValidator.promoteQualifiedBlocks(
+        val (promotedBlocks, updatedTree) = OldBitcoinValidator.promoteQualifiedBlocks(
           forksTree,
           confirmedTip,
           confirmedHeight = 1000,
@@ -1218,7 +1167,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
     // ===== NFT PRESERVATION TESTS =====
 
     private val nftPolicyIdScriptHash: ScriptHash =
-        OracleConfig.getScriptHash(BitcoinContract.testTxOutRef)
+        OracleConfig.getScriptHash(OldBitcoinContract.testTxOutRef)
 
     private def nftValue(lovelace: Long = 5_000_000): Value =
         Value.asset(nftPolicyIdScriptHash, AssetName.empty, 1, Coin(lovelace))
@@ -1284,7 +1233,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         val blockWork = calculateBlockProof(target)
         val newChainwork = parentChainwork + blockWork
 
-        val expectedBlockSummary = BlockSummary(
+        val expectedBlockSummary = OldBlockSummary(
           hash = newBlockHash,
           height = prevState.blockHeight + 1,
           chainwork = newChainwork,
@@ -1293,14 +1242,14 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           addedTime = baseTime
         )
 
-        val expectedBranch = ForkBranch(
+        val expectedBranch = OldForkBranch(
           tipHash = newBlockHash,
           tipHeight = prevState.blockHeight + 1,
           tipChainwork = newChainwork,
           recentBlocks = prelude.List(expectedBlockSummary)
         )
 
-        val expectedState = ChainState(
+        val expectedState = OldChainState(
           blockHeight = prevState.blockHeight,
           blockHash = prevState.blockHash,
           currentTarget = prevState.currentTarget,
@@ -1311,7 +1260,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           forksTree = prelude.List(expectedBranch)
         )
 
-        val redeemer = Action
+        val redeemer = OldAction
             .UpdateOracle(prelude.List(blockHeader), baseTime, prelude.List.Nil)
             .toData
 
@@ -1336,9 +1285,9 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         )
 
         // Should succeed - NFT preserved
-        BitcoinValidator.validate(BitcoinContract.testTxOutRef.toData)(scriptContext.toData)
+        OldBitcoinValidator.validate(OldBitcoinContract.testTxOutRef.toData)(scriptContext.toData)
 
-        val result = BitcoinContract.bitcoinProgram $ scriptContext.toData
+        val result = OldBitcoinContract.bitcoinProgram $ scriptContext.toData
         result.evaluateDebug match
             case r: Result.Success =>
                 println(s"NFT preserved test passed, budget: ${r.budget.showJson}")
@@ -1359,7 +1308,9 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
 
         // Should fail - NFT not preserved
         intercept[RuntimeException] {
-            BitcoinValidator.validate(BitcoinContract.testTxOutRef.toData)(scriptContext.toData)
+            OldBitcoinValidator.validate(OldBitcoinContract.testTxOutRef.toData)(
+              scriptContext.toData
+            )
         }
     }
 
@@ -1444,7 +1395,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         val mpfProofs = prelude.List.from(Seq(proof1, proof2))
 
         // Create mock promoted blocks (only hash matters for MPF)
-        val promoted1 = BlockSummary(
+        val promoted1 = OldBlockSummary(
           hash = block1Hash,
           height = 1001,
           chainwork = 1000,
@@ -1452,7 +1403,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
           bits = hex"1d00ffff".reverse,
           addedTime = 100
         )
-        val promoted2 = BlockSummary(
+        val promoted2 = OldBlockSummary(
           hash = block2Hash,
           height = 1002,
           chainwork = 2000,
@@ -1465,7 +1416,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         // Call the on-chain applyMpfInserts logic directly
         def applyMpfInserts(
             root: ByteString,
-            blocks: prelude.List[BlockSummary],
+            blocks: prelude.List[OldBlockSummary],
             proofs: prelude.List[prelude.List[ProofStep]]
         ): ByteString =
             blocks match
@@ -1492,66 +1443,7 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
         )
     }
 
-    test("computeUpdateWithProofs matches applyHeaders when no promotion") {
-        import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
-
-        val block864800Hash = "0000000000000000000202c4f7f242ab864a6162b8d1e745de6a86ae979e130b"
-        val block864800Height = 864800
-        val block864800Timestamp = 1728414569L
-        val block864801Bits = "17032f14"
-        val block864801Timestamp = 1728414644L
-        val block864801Nonce = 4254568467L
-        val block864801Version = 666378240L
-        val block864801Merkleroot =
-            "dc2ad1c7a27d394d45961c13a9c36e1d5e6cdbea928c47cb06263bb049a9cd0f"
-
-        val confirmedTip = ByteString.fromHex(block864800Hash).reverse
-        val bits = ByteString.fromHex(block864801Bits).reverse
-        val currentTime = BigInt(block864801Timestamp)
-
-        def longToLE4Bytes(n: Long): ByteString = {
-            ByteString.fromArray(
-              Array(
-                (n & 0xff).toByte,
-                ((n >> 8) & 0xff).toByte,
-                ((n >> 16) & 0xff).toByte,
-                ((n >> 24) & 0xff).toByte
-              )
-            )
-        }
-
-        val blockHeader = BlockHeader(
-          longToLE4Bytes(block864801Version) ++
-              confirmedTip ++
-              ByteString.fromHex(block864801Merkleroot).reverse ++
-              longToLE4Bytes(block864801Timestamp) ++
-              ByteString.fromHex(block864801Bits).reverse ++
-              longToLE4Bytes(block864801Nonce)
-        )
-
-        val prevState = buildTestChainState(
-          blockHeight = block864800Height,
-          blockHash = confirmedTip,
-          bits = bits,
-          baseTimestamp = BigInt(block864800Timestamp),
-          forksTreeSize = 0
-        )
-
-        val headers = prelude.List(blockHeader)
-        val offChainMpf = OffChainMPF.empty.insert(confirmedTip, confirmedTip)
-
-        val (newStateWithProofs, proofs, updatedMpf) =
-            OracleTransactions.computeUpdateWithProofs(prevState, headers, currentTime, offChainMpf)
-        val newStateSimple = OracleTransactions.applyHeaders(prevState, headers, currentTime)
-
-        // No promotion expected, so states should match and proofs should be empty
-        assert(newStateWithProofs == newStateSimple, "States should match when no promotion occurs")
-        assert(proofs.isEmpty, "No proofs expected when no promotion occurs")
-        assert(
-          updatedMpf.rootHash == offChainMpf.rootHash,
-          "MPF should be unchanged when no promotion occurs"
-        )
-    }
+    // Test removed: OracleTransactions.computeUpdateWithProofs now uses new ChainState type
 
     test("UpdateOracle fails when extra token added to output (value stuffing)") {
         val (prevStateData, newStateData, redeemer, baseTime) = buildNftTestData()
@@ -1567,7 +1459,9 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
 
         // Should fail - extra tokens added
         intercept[RuntimeException] {
-            BitcoinValidator.validate(BitcoinContract.testTxOutRef.toData)(scriptContext.toData)
+            OldBitcoinValidator.validate(OldBitcoinContract.testTxOutRef.toData)(
+              scriptContext.toData
+            )
         }
     }
 
@@ -1639,14 +1533,14 @@ class ValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyC
             val lastFixture = BlockFixture.load(baseHeight + count)
             val lastTimestamp = BigInt(lastFixture.timestamp)
 
-            val expectedState = BitcoinValidator.computeUpdateOracleState(
+            val expectedState = OldBitcoinValidator.computeUpdateOracleState(
               prevState,
               headersScalus,
               lastTimestamp,
               prelude.List.Nil
             )
 
-            val redeemer = Action
+            val redeemer = OldAction
                 .UpdateOracle(headersScalus, lastTimestamp, prelude.List.Nil)
                 .toData
 

@@ -37,7 +37,7 @@ class BitcoinHeaderFixturesTest extends AnyFunSuite {
         assert(genesisState.blockHash.length == 32, "Block hash should be 32 bytes")
         assert(genesisState.currentTarget.length == 4, "Compact bits should be 4 bytes")
         assert(!genesisState.recentTimestamps.isEmpty, "Should have at least one timestamp")
-        assert(genesisState.blockTimestamp == BigInt(1736701001))
+        assert(genesisState.recentTimestamps.head == BigInt(1736701001))
     }
 
     test("Fixture headers are sequential") {

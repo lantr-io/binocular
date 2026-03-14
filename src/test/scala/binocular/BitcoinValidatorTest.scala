@@ -23,7 +23,7 @@ import java.time.Instant
 
 import binocular.ForkTree.*
 
-class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckPropertyChecks {
+class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyChecks {
     private given env: CardanoInfo = CardanoInfo.mainnet
 
     private val testTxOutRef = scalus.cardano.onchain.plutus.v3.TxOutRef(
@@ -33,7 +33,7 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
       BigInt(0)
     )
 
-    private val testParams = BitcoinValidator2Params(
+    private val testParams = BitcoinValidatorParams(
       maturationConfirmations = 100,
       challengeAging = 200 * 60, // 200 minutes in seconds
       oneShotTxOutRef = testTxOutRef
@@ -41,14 +41,14 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
 
     private val testContract = {
         given Options = Options.release
-        PlutusV3.compile(BitcoinValidator2.validate).withErrorTraces(testParams.toData)
+        PlutusV3.compile(BitcoinValidator.validate).withErrorTraces(testParams.toData)
     }
     private val testScriptAddr = testContract.address(env.network)
     private val testProgram = testContract.program.deBruijnedProgram
 
     // Helper to create a dummy block summary for bestChainPath tests (only hash matters for identity)
-    private def dummyBlock(id: Byte): BlockSummary2 =
-        BlockSummary2(
+    private def dummyBlock(id: Byte): BlockSummary =
+        BlockSummary(
           hash = ByteString.unsafeFromArray(Array.fill(32)(id)),
           timestamp = BigInt(1000000 + id),
           addedTimeSeconds = BigInt(1000000 + id)
@@ -71,11 +71,11 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
           Blocks(prelude.List(blockB), 100, End)
         )
 
-        val (cw, depth, path) = BitcoinValidator2.bestChainPath(equalWorkTree, 0, 0)
+        val (cw, depth, path) = BitcoinValidator.bestChainPath(equalWorkTree, 0, 0)
         assert(cw == BigInt(100), "chainwork should be 100")
         assert(depth == BigInt(1), "depth should be 1")
         assert(
-          path == prelude.List(BitcoinValidator2.LeftFork),
+          path == prelude.List(BitcoinValidator.LeftFork),
           "equal chainwork must select left (existing) branch"
         )
     }
@@ -91,10 +91,10 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
           Blocks(prelude.List(blockB, blockC), 300, End)
         )
 
-        val (cw, depth, path) = BitcoinValidator2.bestChainPath(rightWinsTree, 0, 0)
+        val (cw, depth, path) = BitcoinValidator.bestChainPath(rightWinsTree, 0, 0)
         assert(cw == BigInt(300), "chainwork should be 300")
         assert(depth == BigInt(2), "depth should be 2")
-        assert(path == prelude.List(BitcoinValidator2.RightFork), "higher chainwork must win")
+        assert(path == prelude.List(BitcoinValidator.RightFork), "higher chainwork must win")
     }
 
     test("bestChainPath - nested forks with equal chainwork favor left at every level") {
@@ -112,18 +112,18 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
           )
         )
 
-        val (cw, depth, path) = BitcoinValidator2.bestChainPath(nestedTree, 0, 0)
+        val (cw, depth, path) = BitcoinValidator.bestChainPath(nestedTree, 0, 0)
         assert(cw == BigInt(150), "chainwork should be 50 + 100")
         assert(depth == BigInt(2), "depth should be 2 (prefix + one branch block)")
         assert(
-          path == prelude.List(BitcoinValidator2.LeftFork),
+          path == prelude.List(BitcoinValidator.LeftFork),
           "inner equal-work fork must select left"
         )
     }
 
-    test("BitcoinValidator2 size") {
+    test("BitcoinValidator size") {
         given Options = Options.release
-        val contract = PlutusV3.compile(BitcoinValidator2.validate).apply(testParams.toData)
+        val contract = PlutusV3.compile(BitcoinValidator.validate).apply(testParams.toData)
         println(s"Contract size: ${contract.script.script.size}")
 //        println(s"Contract size: ${contract.program.showHighlighted}")
 //        assert(contract.script.script.size == 7381)
@@ -147,9 +147,9 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
         val recentTimestamps =
             prelude.List.from((0 until 11).map(i => baseTimestamp - i * 600).toList)
 
-        // Create initial ChainState2 with block 866880 as confirmed tip
+        // Create initial ChainState with block 866880 as confirmed tip
         // Block 866880 is at retarget boundary, so previousDifficultyAdjustmentTimestamp is its own timestamp
-        val prevState = ChainState2(
+        val prevState = ChainState(
           blockHeight = baseFixture.height,
           blockHash = confirmedTip,
           currentTarget = bits,
@@ -203,14 +203,14 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
             val lastFixture = BlockFixture.load(baseHeight + count)
             val lastTimestamp = BigInt(lastFixture.timestamp)
 
-            // Compute expected state using BitcoinValidator2.computeUpdate
-            val update = UpdateOracle2(
+            // Compute expected state using BitcoinValidator.computeUpdate
+            val update = UpdateOracle(
               blockHeaders = headersScalus,
               parentPath = prelude.List.Nil, // parent is confirmed tip
               mpfInsertProofs = prelude.List.Nil
             )
             val expectedState =
-                BitcoinValidator2.computeUpdate(prevState, update, lastTimestamp, testParams)
+                BitcoinValidator.computeUpdate(prevState, update, lastTimestamp, testParams)
 
 //            pprint.pprintln(expectedState)
 
@@ -296,7 +296,7 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
             prelude.List.from((0 until 11).map(i => baseTimestamp - i * 600).toList)
 
         // Initial confirmed state
-        val initialState = ChainState2(
+        val initialState = ChainState(
           blockHeight = baseFixture.height,
           blockHash = confirmedTip,
           currentTarget = bits,
@@ -313,13 +313,13 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
         val lastPreloadFixture = BlockFixture.load(baseHeight + preloadCount)
         val preloadTime = BigInt(lastPreloadFixture.timestamp)
 
-        val preloadUpdate = UpdateOracle2(
+        val preloadUpdate = UpdateOracle(
           blockHeaders = preloadHeadersScalus,
           parentPath = prelude.List.Nil,
           mpfInsertProofs = prelude.List.Nil
         )
         val stateWith100Blocks =
-            BitcoinValidator2.computeUpdate(initialState, preloadUpdate, preloadTime, testParams)
+            BitcoinValidator.computeUpdate(initialState, preloadUpdate, preloadTime, testParams)
 
         val input = Input(
           TransactionHash.fromHex(
@@ -377,21 +377,21 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
             val parentPath = prelude.List(BigInt(preloadCount - 1))
 
             // Determine promoted blocks by running validator logic
-            val ctx0 = BitcoinValidator2.initCtx(stateWith100Blocks)
-            val newTree = BitcoinValidator2.validateAndInsert(
+            val ctx0 = BitcoinValidator.initCtx(stateWith100Blocks)
+            val newTree = BitcoinValidator.validateAndInsert(
               stateWith100Blocks.forksTree,
               parentPath,
               newHeadersScalus,
               ctx0,
               currentTime
             )
-            val (_, bestDepth, bestPath) = BitcoinValidator2.bestChainPath(
+            val (_, bestDepth, bestPath) = BitcoinValidator.bestChainPath(
               newTree,
               stateWith100Blocks.blockHeight,
               BigInt(0)
             )
             val (promoted, _) =
-                BitcoinValidator2.promoteAndGC(
+                BitcoinValidator.promoteAndGC(
                   newTree,
                   ctx0,
                   bestPath,
@@ -413,13 +413,13 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
             }
             val mpfProofsScalus = prelude.List.from(proofsBuilder.toList)
 
-            val update = UpdateOracle2(
+            val update = UpdateOracle(
               blockHeaders = newHeadersScalus,
               parentPath = parentPath,
               mpfInsertProofs = mpfProofsScalus
             )
             val expectedState =
-                BitcoinValidator2.computeUpdate(stateWith100Blocks, update, currentTime, testParams)
+                BitcoinValidator.computeUpdate(stateWith100Blocks, update, currentTime, testParams)
 
             val redeemer = update.toData
             val inputValue = Value.ada(5)
@@ -499,7 +499,7 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
         val recentTimestamps =
             prelude.List.from((0 until 11).map(i => baseTimestamp - i * 600).toList)
 
-        val initialState = ChainState2(
+        val initialState = ChainState(
           blockHeight = baseFixture.height,
           blockHash = confirmedTip,
           currentTarget = bits,
@@ -516,13 +516,13 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
         val lastPreloadFixture = BlockFixture.load(baseHeight + preloadCount)
         val preloadTime = BigInt(lastPreloadFixture.timestamp)
 
-        val preloadUpdate = UpdateOracle2(
+        val preloadUpdate = UpdateOracle(
           blockHeaders = preloadHeadersScalus,
           parentPath = prelude.List.Nil,
           mpfInsertProofs = prelude.List.Nil
         )
         val stateWith100Blocks =
-            BitcoinValidator2.computeUpdate(initialState, preloadUpdate, preloadTime, testParams)
+            BitcoinValidator.computeUpdate(initialState, preloadUpdate, preloadTime, testParams)
 
         // Add 1 new header (866981) and promote 1 block
         val newHeader = BlockFixture.loadWithHeader(baseHeight + preloadCount + 1)._2
@@ -535,21 +535,21 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
         val numPromotions = 1
 
         // Determine promoted block
-        val ctx0 = BitcoinValidator2.initCtx(stateWith100Blocks)
-        val newTree = BitcoinValidator2.validateAndInsert(
+        val ctx0 = BitcoinValidator.initCtx(stateWith100Blocks)
+        val newTree = BitcoinValidator.validateAndInsert(
           stateWith100Blocks.forksTree,
           parentPath,
           newHeadersScalus,
           ctx0,
           currentTime
         )
-        val (_, bestDepth, bestPath) = BitcoinValidator2.bestChainPath(
+        val (_, bestDepth, bestPath) = BitcoinValidator.bestChainPath(
           newTree,
           stateWith100Blocks.blockHeight,
           BigInt(0)
         )
         val (promoted, _) =
-            BitcoinValidator2.promoteAndGC(
+            BitcoinValidator.promoteAndGC(
               newTree,
               ctx0,
               bestPath,
@@ -573,13 +573,13 @@ class BitcoinValidator2Test extends AnyFunSuite with ScalusTest with ScalaCheckP
         }
         val mpfProofsScalus = prelude.List.from(proofsBuilder.toList)
 
-        val update = UpdateOracle2(
+        val update = UpdateOracle(
           blockHeaders = newHeadersScalus,
           parentPath = parentPath,
           mpfInsertProofs = mpfProofsScalus
         )
         val expectedState =
-            BitcoinValidator2.computeUpdate(stateWith100Blocks, update, currentTime, testParams)
+            BitcoinValidator.computeUpdate(stateWith100Blocks, update, currentTime, testParams)
 
         val input = Input(
           TransactionHash.fromHex(

@@ -1,6 +1,6 @@
 package binocular.cli.commands
 
-import binocular.{CardanoConfig, OracleConfig}
+import binocular.*
 import binocular.cli.{Command, CommandHelpers}
 import scalus.cardano.address.Address
 import scalus.cardano.ledger.Utxo
@@ -98,12 +98,12 @@ case class ListOraclesCommand(limit: Int) extends Command {
                                       s"    Block Hash: ${vo.chainState.blockHash.toHex.take(16)}..."
                                     )
                                     if vo.chainState.forksTree.nonEmpty then {
-                                        val maxForkHeight = vo.chainState.forksTree.foldLeft(0L) {
-                                            (max, branch) =>
-                                                math.max(max, branch.tipHeight.toLong)
-                                        }
+                                        val maxForkHeight =
+                                            vo.chainState.forksTree
+                                                .highestHeight(vo.chainState.blockHeight)
+                                                .toLong
                                         println(
-                                          s"    Fork Tree: ${vo.chainState.forksTree.size} branch(es), highest at $maxForkHeight"
+                                          s"    Fork Tree: ${vo.chainState.forksTree.blockCount} block(s), highest at $maxForkHeight"
                                         )
                                     }
                                     println()

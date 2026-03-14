@@ -4,7 +4,6 @@ import binocular.cli.{Command, CommandHelpers}
 import binocular.*
 import scalus.cardano.address.Address
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
-import scalus.cardano.onchain.plutus.prelude
 import scalus.cardano.txbuilder.TransactionSigner
 import scalus.uplc.builtin.{ByteString, Data}
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
@@ -258,7 +257,7 @@ case class UpdateOracleCommand(
                         println(s"  Current oracle state:")
                         println(s"  Confirmed Height: ${currentChainState.blockHeight}")
                         println(s"  Block Hash: ${currentChainState.blockHash.toHex}")
-                        println(s"  Fork Tree Size: ${currentChainState.forksTree.size}")
+                        println(s"  Fork Tree Size: ${currentChainState.forksTree.blockCount}")
 
                         // Reconstruct off-chain MPF trie to match confirmedBlocksRoot.
                         // If the MPF has just the initial block, we can reconstruct trivially.
@@ -340,9 +339,10 @@ case class UpdateOracleCommand(
 
                         // Determine the highest block we have
                         val highestBlock = if currentChainState.forksTree.nonEmpty then {
-                            val maxForkHeight = currentChainState.forksTree.foldLeft(0L) {
-                                (max, branch) => math.max(max, branch.tipHeight.toLong)
-                            }
+                            val maxForkHeight =
+                                currentChainState.forksTree
+                                    .highestHeight(currentChainState.blockHeight)
+                                    .toLong
                             println(s"  Fork Tree Tip: $maxForkHeight")
                             maxForkHeight
                         } else {
@@ -381,24 +381,16 @@ case class UpdateOracleCommand(
                         val maxBlocksPerCommand = 100
                         if numBlocks > maxBlocksPerCommand then {
                             val currentTime = System.currentTimeMillis() / 1000
-                            val challengeAgingSeconds = BitcoinValidator.ChallengeAging.toLong
+                            val params = BitcoinContract.testParams
+                            val challengeAgingSeconds = params.challengeAging.toLong
 
-                            def toScalaList[A](l: ScalusList[A]): scala.List[A] = l match {
-                                case ScalusList.Nil        => scala.Nil
-                                case ScalusList.Cons(h, t) => h :: toScalaList(t)
-                            }
-
-                            val forksTreeScala = toScalaList(currentChainState.forksTree)
-
-                            val canPromote = forksTreeScala.exists { branch =>
-                                val blocksScala = toScalaList(branch.recentBlocks)
-                                blocksScala.lastOption match {
-                                    case Some(oldestBlock) =>
-                                        val age = currentTime - oldestBlock.addedTime.toLong
+                            val canPromote =
+                                currentChainState.forksTree.oldestBlockTime match {
+                                    case Some(oldest) =>
+                                        val age = currentTime - oldest.toLong
                                         age >= challengeAgingSeconds
-                                    case scala.None => false
+                                    case None => false
                                 }
-                            }
 
                             if !canPromote then {
                                 System.err.println(
@@ -411,23 +403,19 @@ case class UpdateOracleCommand(
                                   s"  causing transactions to exceed Cardano's 16KB limit."
                                 )
                                 System.err.println()
-                                if forksTreeScala.nonEmpty then {
-                                    val oldestAddedTime = forksTreeScala
-                                        .flatMap(b => toScalaList(b.recentBlocks).lastOption)
-                                        .map(_.addedTime.toLong)
-                                        .minOption
-                                        .getOrElse(currentTime)
-                                    val timeUntilPromotion =
-                                        challengeAgingSeconds - (currentTime - oldestAddedTime)
-                                    if timeUntilPromotion > 0 then {
-                                        val minutes = timeUntilPromotion / 60
-                                        System.err.println(
-                                          s"  Promotion will be possible in ~$minutes minutes."
-                                        )
-                                        System.err.println(
-                                          s"  Wait for promotion, then run this command again."
-                                        )
-                                    }
+                                currentChainState.forksTree.oldestBlockTime.foreach {
+                                    oldestAddedTime =>
+                                        val timeUntilPromotion =
+                                            challengeAgingSeconds - (currentTime - oldestAddedTime.toLong)
+                                        if timeUntilPromotion > 0 then {
+                                            val minutes = timeUntilPromotion / 60
+                                            System.err.println(
+                                              s"  Promotion will be possible in ~$minutes minutes."
+                                            )
+                                            System.err.println(
+                                              s"  Wait for promotion, then run this command again."
+                                            )
+                                        }
                                 }
                                 System.err.println()
                                 System.err.println(s"  Or update in smaller chunks:")
@@ -539,6 +527,11 @@ case class UpdateOracleCommand(
                                       provider.cardanoInfo
                                     )
 
+                                // Compute parent path for header insertion
+                                val parentPath = currentState.forksTree.findTipPath
+
+                                val params = BitcoinContract.testParams
+
                                 if totalBatches == 1 then {
                                     println()
                                     println("Step 6: Calculating new ChainState after update...")
@@ -550,8 +543,10 @@ case class UpdateOracleCommand(
                                         OracleTransactions.computeUpdateWithProofs(
                                           currentState,
                                           headersList,
+                                          parentPath,
                                           validityTime,
-                                          currentMpf
+                                          currentMpf,
+                                          params
                                         )
                                     } catch {
                                         case e: Exception =>
@@ -581,6 +576,7 @@ case class UpdateOracleCommand(
                                   currentState,
                                   newChainState,
                                   headersList,
+                                  parentPath,
                                   validityTime,
                                   oracleConf.oracleTxOutRef,
                                   referenceScriptUtxo,

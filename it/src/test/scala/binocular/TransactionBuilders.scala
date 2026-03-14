@@ -5,7 +5,6 @@ import scalus.cardano.ledger.{Credential, Script, Utxo, Value}
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}
-import scalus.uplc.builtin.ByteString
 
 import scalus.utils.await
 
@@ -92,9 +91,9 @@ object TransactionBuilders {
               s"[UpdateOracle] Found script UTXO: ${scriptUtxo.input.transactionId.toHex}#${scriptUtxo.input.index}"
             )
 
-            // 2. Create UpdateOracle action as redeemer
-            val currentTime = BigInt(System.currentTimeMillis() / 1000)
-            val action = Action.UpdateOracle(blockHeaders, currentTime, ScalusList.Nil)
+            // 2. Create UpdateOracle redeemer
+            val parentPath = prevChainState.forksTree.findTipPath
+            val action = UpdateOracle(blockHeaders, parentPath, ScalusList.Nil)
             println(s"[UpdateOracle] Created redeemer with ${blockHeaders.length} headers")
 
             // 3. Calculate amount to lock (same as input)

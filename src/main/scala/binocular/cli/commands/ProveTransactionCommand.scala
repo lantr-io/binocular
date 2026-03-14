@@ -1,6 +1,6 @@
 package binocular.cli.commands
 
-import binocular.{reverse, BitcoinNodeConfig, BitcoinValidator, CardanoConfig, ChainState, MerkleTree, OracleConfig, SimpleBitcoinRpc}
+import binocular.{existsHash, reverse, BitcoinNodeConfig, CardanoConfig, ChainState, MerkleTree, OracleConfig, SimpleBitcoinRpc}
 import binocular.cli.{Command, CommandHelpers}
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.uplc.builtin.ByteString
@@ -276,10 +276,7 @@ case class ProveTransactionCommand(
 
                 val blockHashBytes = ByteString.fromHex(targetBlockHash).reverse
 
-                val blockInForksTree = chainState.forksTree.exists { branch =>
-                    branch.tipHash == blockHashBytes ||
-                    BitcoinValidator.existsHash(branch.recentBlocks, blockHashBytes)
-                }
+                val blockInForksTree = chainState.forksTree.existsHash(blockHashBytes)
 
                 if blockInForksTree then {
                     System.err.println(s"Block is still in fork tree (not yet confirmed)")

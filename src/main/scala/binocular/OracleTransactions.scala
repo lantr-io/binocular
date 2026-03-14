@@ -24,26 +24,12 @@ object OracleTransactions {
         Script.PlutusV3(BitcoinContract.makeScript(txOutRef).cborByteString)
     }
 
-    /** Deploy the oracle script to a UTxO as a reference script. This allows subsequent
-      * transactions to use the script without including it in the tx body, significantly reducing
-      * transaction size.
-      *
-      * @param signer
-      *   TransactionSigner to sign the transaction
-      * @param provider
-      *   BlockchainProvider for querying and submitting
-      * @param sponsorAddress
-      *   Address to pay fees from
-      * @param destinationAddress
-      *   Address to deploy reference script to
-      * @param timeout
-      *   Transaction timeout
-      * @return
-      *   Either error message or (txHash, outputIndex, savedOutput) of the reference script UTxO.
-      *   The savedOutput is the TransactionOutput we constructed, which includes scriptRef. Use it
-      *   to build the Utxo locally after tx confirmation, since chain queries may not return the
-      *   scriptRef field.
-      */
+    /** Get compiled PlutusV3 script for specific BitcoinValidatorParams */
+    def getPlutusScript(params: BitcoinValidatorParams): Script.PlutusV3 = {
+        Script.PlutusV3(BitcoinContract.makeScript(params).cborByteString)
+    }
+
+    /** Deploy the oracle script to a UTxO as a reference script. */
     def deployReferenceScript(
         signer: TransactionSigner,
         provider: BlockchainProvider,
@@ -84,19 +70,7 @@ object OracleTransactions {
         }
     }
 
-    /** Find existing reference script UTxOs at a given address
-      *
-      * Searches for UTxOs that contain the oracle script as a reference script.
-      *
-      * @param provider
-      *   BlockchainProvider
-      * @param searchAddress
-      *   Address to search for reference scripts
-      * @param timeout
-      *   Query timeout
-      * @return
-      *   List of (txHash, outputIndex) tuples for UTxOs with matching reference script.
-      */
+    /** Find existing reference script UTxOs at a given address */
     def findReferenceScriptUtxos(
         provider: BlockchainProvider,
         searchAddress: Address,
@@ -139,13 +113,7 @@ object OracleTransactions {
         matchingUtxos
     }
 
-    /** Compute the validity interval start time that will be used on-chain.
-      *
-      * @param cardanoInfo
-      *   CardanoInfo from BlockchainProvider
-      * @return
-      *   (validityInstant, timeInSeconds)
-      */
+    /** Compute the validity interval start time that will be used on-chain. */
     def computeValidityIntervalTime(
         cardanoInfo: CardanoInfo,
         targetTimeSeconds: Option[BigInt] = None
@@ -159,68 +127,71 @@ object OracleTransactions {
     def applyHeaders(
         currentState: ChainState,
         headers: ScalusList[BlockHeader],
-        currentTime: BigInt
+        parentPath: ScalusList[BigInt],
+        currentTime: BigInt,
+        params: BitcoinValidatorParams
     ): ChainState = {
-        BitcoinValidator.computeUpdateOracleState(
+        BitcoinValidator.computeUpdate(
           currentState,
-          headers,
+          UpdateOracle(headers, parentPath, ScalusList.Nil),
           currentTime,
-          ScalusList.Nil
+          params
         )
     }
 
-    /** Determine which blocks will be promoted when applying headers to the state. This mirrors the
-      * header processing + promotion logic from computeUpdateOracleState but is used off-chain only
-      * to pre-compute promoted blocks for proof generation.
-      */
+    /** Determine which blocks will be promoted when applying headers to the state. */
     def computePromotedBlocks(
         prevState: ChainState,
         blockHeaders: ScalusList[BlockHeader],
-        currentTime: BigInt
+        parentPath: ScalusList[BigInt],
+        currentTime: BigInt,
+        params: BitcoinValidatorParams
     ): ScalusList[BlockSummary] = {
-        val forksTreeAfterAddition = blockHeaders.foldLeft(prevState.forksTree) { (tree, header) =>
-            BitcoinValidator.addBlockToForksTree(tree, header, prevState, currentTime)
-        }
-        val (promotedBlocks, _) = BitcoinValidator.promoteQualifiedBlocks(
-          forksTreeAfterAddition,
-          prevState.blockHash,
-          prevState.blockHeight,
-          currentTime
+        val ctx0 = BitcoinValidator.initCtx(prevState)
+
+        // Insert headers into fork tree
+        val newTree = blockHeaders match
+            case ScalusList.Nil => prevState.forksTree
+            case _ =>
+                BitcoinValidator.validateAndInsert(
+                  prevState.forksTree,
+                  parentPath,
+                  blockHeaders,
+                  ctx0,
+                  currentTime
+                )
+
+        // Find best chain path and promote
+        val (_, bestDepth, bestPath) =
+            BitcoinValidator.bestChainPath(newTree, prevState.blockHeight, 0)
+
+        // Use a large maxPromotions to find all promotable blocks
+        val (promoted, _) = BitcoinValidator.promoteAndGC(
+          newTree,
+          ctx0,
+          bestPath,
+          bestDepth,
+          currentTime,
+          BigInt(1000), // large limit
+          params
         )
-        promotedBlocks
+        promoted
     }
 
-    /** Compute new ChainState with real MPF insert proofs.
-      *
-      * This is the primary off-chain function for updating the oracle when promotion may occur. It:
-      *   1. Determines which blocks will be promoted
-      *   2. Generates MPF non-membership proofs for each promoted block
-      *   3. Inserts promoted blocks into the off-chain MPF trie
-      *   4. Calls computeUpdateOracleState with the real proofs
-      *
-      * @param currentState
-      *   Current ChainState
-      * @param headers
-      *   Block headers to apply
-      * @param currentTime
-      *   Current time in seconds (POSIX time)
-      * @param offChainMpf
-      *   Current off-chain MPF trie (must match currentState.confirmedBlocksRoot)
-      * @return
-      *   (newState, mpfInsertProofs, updatedMpf)
-      */
+    /** Compute new ChainState with real MPF insert proofs. */
     def computeUpdateWithProofs(
         currentState: ChainState,
         headers: ScalusList[BlockHeader],
+        parentPath: ScalusList[BigInt],
         currentTime: BigInt,
-        offChainMpf: OffChainMPF
+        offChainMpf: OffChainMPF,
+        params: BitcoinValidatorParams
     ): (ChainState, ScalusList[ScalusList[ProofStep]], OffChainMPF) = {
         // 1. Determine which blocks will be promoted
-        val promotedBlocks = computePromotedBlocks(currentState, headers, currentTime)
+        val promotedBlocks =
+            computePromotedBlocks(currentState, headers, parentPath, currentTime, params)
 
         // 2. Generate MPF insert proofs for each promoted block.
-        // Each proof is a non-membership proof generated BEFORE inserting the block,
-        // which is what the on-chain MPF.insert expects.
         var mpf = offChainMpf
         val proofsBuilder = scala.collection.mutable.ListBuffer[ScalusList[ProofStep]]()
 
@@ -233,37 +204,17 @@ object OracleTransactions {
         val mpfProofs = ScalusList.from(proofsBuilder.toList)
 
         // 3. Compute the full state with real proofs
-        val newState = BitcoinValidator.computeUpdateOracleState(
+        val newState = BitcoinValidator.computeUpdate(
           currentState,
-          headers,
+          UpdateOracle(headers, parentPath, mpfProofs),
           currentTime,
-          mpfProofs
+          params
         )
 
         (newState, mpfProofs, mpf)
     }
 
-    /** Build and submit initialization transaction
-      *
-      * Creates a new oracle UTxO with initial ChainState datum.
-      *
-      * @param signer
-      *   TransactionSigner for signing the transaction
-      * @param provider
-      *   BlockchainProvider for querying and submitting
-      * @param scriptAddress
-      *   Oracle script address
-      * @param sponsorAddress
-      *   Address to pay fees from
-      * @param initialState
-      *   Initial ChainState datum
-      * @param lovelaceAmount
-      *   Amount of ADA to lock (default: 5 ADA)
-      * @param timeout
-      *   Transaction timeout
-      * @return
-      *   Either error message or transaction hash
-      */
+    /** Build and submit initialization transaction */
     def buildAndSubmitInitTransaction(
         signer: TransactionSigner,
         provider: BlockchainProvider,
@@ -296,35 +247,7 @@ object OracleTransactions {
         }
     }
 
-    /** Build and submit UpdateOracle transaction
-      *
-      * Updates the oracle with new Bitcoin block headers.
-      *
-      * @param signer
-      *   TransactionSigner for signing the transaction
-      * @param provider
-      *   BlockchainProvider for querying and submitting
-      * @param scriptAddress
-      *   Oracle script address
-      * @param sponsorAddress
-      *   Address to pay fees from
-      * @param oracleUtxo
-      *   Current oracle UTxO (input, output)
-      * @param currentChainState
-      *   Current ChainState datum
-      * @param newChainState
-      *   New ChainState datum (pre-computed)
-      * @param blockHeaders
-      *   Bitcoin block headers to submit
-      * @param validityIntervalTimeSeconds
-      *   The time (in seconds) used to compute newChainState
-      * @param referenceScriptUtxo
-      *   Optional reference script UTxO
-      * @param timeout
-      *   Transaction timeout
-      * @return
-      *   Either error message or transaction hash
-      */
+    /** Build and submit UpdateOracle transaction */
     def buildAndSubmitUpdateTransaction(
         signer: TransactionSigner,
         provider: BlockchainProvider,
@@ -334,6 +257,7 @@ object OracleTransactions {
         currentChainState: ChainState,
         newChainState: ChainState,
         blockHeaders: ScalusList[BlockHeader],
+        parentPath: ScalusList[BigInt],
         validityIntervalTimeSeconds: BigInt,
         oracleTxOutRef: TxOutRef,
         referenceScriptUtxo: Option[Utxo] = None,
@@ -370,32 +294,12 @@ object OracleTransactions {
             println(s"[DEBUG] Computing time that validator will see:")
             println(s"  validatorWillSeeTime (seconds): $validatorWillSeeTime")
 
-            // Verify time tolerance
-            val TimeToleranceSeconds = BitcoinValidator.TimeToleranceSeconds.toLong
-            val timeDiff =
-                if validityIntervalTimeSeconds > validatorWillSeeTime then
-                    validityIntervalTimeSeconds - validatorWillSeeTime
-                else validatorWillSeeTime - validityIntervalTimeSeconds
+            // Create UpdateOracle redeemer
+            val redeemer = UpdateOracle(blockHeaders, parentPath, mpfInsertProofs)
 
             println(
-              s"[DEBUG] Provided time: $validityIntervalTimeSeconds, Validator will see: $validatorWillSeeTime"
+              s"[DEBUG] New state forksTree block count: ${newChainState.forksTree.blockCount}"
             )
-            println(s"  Time difference: $timeDiff seconds")
-
-            if timeDiff > TimeToleranceSeconds then {
-                throw new RuntimeException(
-                  s"Time mismatch: provided time ($validityIntervalTimeSeconds) differs from tx.validRange time ($validatorWillSeeTime) by $timeDiff seconds (tolerance: $TimeToleranceSeconds s)."
-                )
-            }
-            println(s"  Time difference within tolerance - using provided time for redeemer")
-
-            val redeemerTime = validityIntervalTimeSeconds
-
-            // Create UpdateOracle action as redeemer
-            val action =
-                Action.UpdateOracle(blockHeaders, redeemerTime, mpfInsertProofs)
-
-            println(s"[DEBUG] New state forksTree size: ${newChainState.forksTree.size}")
 
             // Build the transaction
             var builder = TxBuilder(cardanoInfo)
@@ -420,11 +324,9 @@ object OracleTransactions {
 
             // Spend oracle UTxO with redeemer
             builder = if useRefScript then {
-                // Script resolved from references
-                builder.spend(oracleUtxo, action)
+                builder.spend(oracleUtxo, redeemer)
             } else {
-                // Attach script directly
-                builder.spend(oracleUtxo, action, script)
+                builder.spend(oracleUtxo, redeemer, script)
             }
 
             // Output new state with same value

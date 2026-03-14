@@ -1,10 +1,9 @@
 package binocular.cli.commands
 
-import binocular.{CardanoConfig, ChainState, OracleConfig}
+import binocular.*
 import binocular.cli.{Command, CommandHelpers}
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.uplc.builtin.Data.fromData
-import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 
 import scala.concurrent.{Await, ExecutionContext}
 import scala.concurrent.duration.*
@@ -88,24 +87,14 @@ case class VerifyOracleCommand(utxo: String) extends Command {
                                             println(s"  Block Height: ${chainState.blockHeight}")
                                             println(s"  Block Hash: ${chainState.blockHash.toHex}")
                                             println(
-                                              s"  Block Timestamp: ${chainState.blockTimestamp}"
-                                            )
-                                            println(
                                               s"  Current Target: ${chainState.currentTarget.toHex}"
                                             )
                                             println(
                                               s"  Recent Timestamps: ${chainState.recentTimestamps.size} entries"
                                             )
 
-                                            def toScalaList(
-                                                l: ScalusList[BigInt]
-                                            ): scala.List[BigInt] = l match {
-                                                case ScalusList.Nil        => scala.Nil
-                                                case ScalusList.Cons(h, t) => h :: toScalaList(t)
-                                            }
-                                            val timestamps = toScalaList(
-                                              chainState.recentTimestamps
-                                            )
+                                            val timestamps =
+                                                chainState.recentTimestamps.toScalaList
                                             println(s"    Values: ${timestamps.mkString(", ")}")
                                             val isSorted = timestamps.sliding(2).forall {
                                                 case Seq(a, b) => a >= b
@@ -123,22 +112,16 @@ case class VerifyOracleCommand(utxo: String) extends Command {
                                               s"  Confirmed Blocks Root: ${chainState.confirmedBlocksRoot.toHex}"
                                             )
                                             println(
-                                              s"  Forks Tree: ${chainState.forksTree.size} branches"
+                                              s"  Forks Tree: ${chainState.forksTree.blockCount} block(s)"
                                             )
 
                                             if chainState.forksTree.nonEmpty then {
                                                 println()
-                                                println("  Fork tree branches:")
-                                                chainState.forksTree.take(5).foreach { branch =>
-                                                    println(
-                                                      s"    - Branch tip: ${branch.tipHash.toHex.take(16)}..., height: ${branch.tipHeight}, chainwork: ${branch.tipChainwork}, blocks: ${branch.recentBlocks.size}"
-                                                    )
-                                                }
-                                                if chainState.forksTree.size > 5 then {
-                                                    println(
-                                                      s"    ... and ${chainState.forksTree.size - 5} more branches"
-                                                    )
-                                                }
+                                                println("  Fork tree:")
+                                                println(
+                                                  chainState.forksTree
+                                                      .displayTree(chainState.blockHeight, "    ")
+                                                )
                                             }
 
                                         case Failure(ex) =>

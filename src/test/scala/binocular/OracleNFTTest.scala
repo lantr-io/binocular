@@ -39,12 +39,9 @@ class OracleNFTTest extends AnyFunSuite, ScalusTest {
         val p = createProvider
         val (input, _) = p.findUtxos(Alice.address).await().toOption.get.head
         val txOutRef = TxOutRef(TxId(input.transactionId), BigInt(input.index))
-        val c = baseContract(txOutRef.toData)
+        val params = BitcoinContract.validatorParams(txOutRef)
+        val c = baseContract(params.toData)
         (c, c.script.scriptHash, c.address(env.network))
-    }
-
-    test(s"Oracle NFT script size is ${contract.script.script.size} bytes") {
-        assert(contract.script.script.size > 0)
     }
 
     test("mint succeeds when required UTxO is spent and exactly 1 token minted") {
@@ -71,7 +68,8 @@ class OracleNFTTest extends AnyFunSuite, ScalusTest {
           TxId(hex"1111111111111111111111111111111111111111111111111111111111111111"),
           BigInt(0)
         )
-        val fakeContract = baseContract(fakeTxOutRef.toData)
+        val fakeParams = BitcoinContract.validatorParams(fakeTxOutRef)
+        val fakeContract = baseContract(fakeParams.toData)
         val fakeScriptHash = fakeContract.script.scriptHash
         val fakeScriptAddr = fakeContract.address(env.network)
 

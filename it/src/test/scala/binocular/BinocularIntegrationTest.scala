@@ -164,8 +164,9 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
 
             // Calculate expected new state
             val headerList = prelude.List.single(header)
+            val parentPath = currentState.forksTree.findTipPath
             val newState =
-                OracleTransactions.applyHeaders(currentState, headerList, currentTime)
+                OracleTransactions.applyHeaders(currentState, headerList, parentPath, currentTime, BitcoinContract.testParams)
             println(s"  Expected new height: ${newState.blockHeight}")
 
             // Submit UpdateOracle transaction
@@ -213,12 +214,11 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
           blockHeight = genesisHeight,
           blockHash = genesisHash,
           currentTarget = genesisTarget,
-          blockTimestamp = genesisTimestamp,
           recentTimestamps = genesisRecentTimestamps,
           previousDifficultyAdjustmentTimestamp =
               genesisTimestamp - 600 * BitcoinHelpers.DifficultyAdjustmentInterval,
           confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(genesisHash),
-          forksTree = prelude.List.Nil
+          forksTree = ForkTree.End
         )
     }
 }

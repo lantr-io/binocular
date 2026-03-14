@@ -1,7 +1,7 @@
 package binocular
 package cli
 
-import binocular.{reverse, BitcoinChainState, BitcoinContract, BitcoinValidator, MerkleTree, OracleTransactions}
+import binocular.{reverse, BitcoinChainState, BitcoinContract, MerkleTree, OracleTransactions}
 import scalus.cardano.address.Address
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
@@ -104,12 +104,14 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
         println(s"  Using validity interval time: $validityTime")
 
         // Compute new state using the shared validator logic
+        val parentPath = initialState.forksTree.findTipPath
+        val params = BitcoinContract.testParams
         val newState =
-            BitcoinValidator.computeUpdateOracleState(initialState, headersList, validityTime, ScalusList.Nil)
+            OracleTransactions.applyHeaders(initialState, headersList, parentPath, validityTime, params)
         println(s"  Computed new state:")
         println(s"    Height: ${newState.blockHeight}")
         println(s"    Hash: ${newState.blockHash.toHex}")
-        println(s"    Forks tree size: ${newState.forksTree.size}")
+        println(s"    Forks tree size: ${newState.forksTree.blockCount}")
 
         println(s"[Test] Step 4: Submitting update transaction")
 
@@ -123,6 +125,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
           initialState,
           newState,
           headersList,
+          parentPath,
           validityTime,
           BitcoinContract.testTxOutRef
         )
@@ -146,7 +149,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
                 println(s"[Test] Updated ChainState verified:")
                 println(s"    Height: ${actualState.blockHeight}")
                 println(s"    Hash: ${actualState.blockHash.toHex}")
-                println(s"    Forks tree size: ${actualState.forksTree.size}")
+                println(s"    Forks tree size: ${actualState.forksTree.blockCount}")
 
                 // Verify the on-chain state matches our computed state
                 assert(
@@ -328,7 +331,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
             println(s"  Current state before batch:")
             println(s"    blockHeight: ${currentState.blockHeight}")
             println(s"    blockHash: ${currentState.blockHash.toHex}")
-            println(s"    forksTree size: ${currentState.forksTree.size}")
+            println(s"    forksTree size: ${currentState.forksTree.blockCount}")
             println(s"    confirmedBlocksRoot: ${currentState.confirmedBlocksRoot.toHex}")
 
             val headersList = ScalusList.from(batch.toList)
@@ -346,26 +349,26 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
             }
 
             // Compute new state with MPF proofs
+            val parentPath = currentState.forksTree.findTipPath
+            val params = BitcoinContract.testParams
             val (newState, mpfProofs, updatedMpf) = OracleTransactions.computeUpdateWithProofs(
               currentState,
               headersList,
+              parentPath,
               validityTime,
-              currentMpf
+              currentMpf,
+              params
             )
 
             println(s"  [Batch ${batchIndex + 1}] Off-chain computed state:")
             println(s"    blockHeight: ${newState.blockHeight}")
             println(s"    blockHash: ${newState.blockHash.toHex}")
-            println(s"    forksTree size: ${newState.forksTree.size}")
+            println(s"    forksTree size: ${newState.forksTree.blockCount}")
             println(s"    confirmedBlocksRoot: ${newState.confirmedBlocksRoot.toHex}")
 
-            // Log forksTree branches for debugging
-            println(s"  [Batch ${batchIndex + 1}] OFF-CHAIN forksTree branches:")
-            newState.forksTree.foreach { branch =>
-                println(
-                  s"    tip: ${branch.tipHash.toHex}, height: ${branch.tipHeight}, blocks: ${branch.recentBlocks.size}"
-                )
-            }
+            // Log forksTree for debugging
+            println(s"  [Batch ${batchIndex + 1}] OFF-CHAIN forksTree:")
+            println(newState.forksTree.displayTree(newState.blockHeight, "    "))
 
             // Submit update transaction (using reference script to reduce tx size)
             val updateTxResult = OracleTransactions.buildAndSubmitUpdateTransaction(
@@ -377,6 +380,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
               currentState,
               newState,
               headersList,
+              parentPath,
               validityTime,
               BitcoinContract.testTxOutRef,
               referenceScriptUtxo,
@@ -399,7 +403,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
                     println(s"  On-chain state after batch ${batchIndex + 1}:")
                     println(s"    blockHeight: ${actualOnChainState.blockHeight}")
                     println(s"    blockHash: ${actualOnChainState.blockHash.toHex}")
-                    println(s"    forksTree size: ${actualOnChainState.forksTree.size}")
+                    println(s"    forksTree size: ${actualOnChainState.forksTree.blockCount}")
                     println(
                       s"    confirmedBlocksRoot: ${actualOnChainState.confirmedBlocksRoot.toHex}"
                     )
@@ -407,14 +411,14 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
                     // Verify on-chain state matches what we computed off-chain
                     if actualOnChainState.blockHeight != newState.blockHeight ||
                         actualOnChainState.blockHash != newState.blockHash ||
-                        actualOnChainState.forksTree.size != newState.forksTree.size
+                        actualOnChainState.forksTree.blockCount != newState.forksTree.blockCount
                     then {
 
                         fail(
                           s"ERROR: On-chain state does not match off-chain computed state!\n" +
                               s"  This should be impossible - validator can only validate, not modify.\n" +
-                              s"  Off-chain: height=${newState.blockHeight}, hash=${newState.blockHash.toHex}, forksTree=${newState.forksTree.size}\n" +
-                              s"  On-chain:  height=${actualOnChainState.blockHeight}, hash=${actualOnChainState.blockHash.toHex}, forksTree=${actualOnChainState.forksTree.size}"
+                              s"  Off-chain: height=${newState.blockHeight}, hash=${newState.blockHash.toHex}, forksTree=${newState.forksTree.blockCount}\n" +
+                              s"  On-chain:  height=${actualOnChainState.blockHeight}, hash=${actualOnChainState.blockHash.toHex}, forksTree=${actualOnChainState.forksTree.blockCount}"
                         )
                     }
 
@@ -431,8 +435,8 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
         println(s"[Test] Step 3: Verifying promotion occurred")
         println(s"  Initial confirmed height: ${initialState.blockHeight}")
         println(s"  Final confirmed height: ${currentState.blockHeight}")
-        println(s"  Initial forks tree size: ${initialState.forksTree.size}")
-        println(s"  Final forks tree size: ${currentState.forksTree.size}")
+        println(s"  Initial forks tree size: ${initialState.forksTree.blockCount}")
+        println(s"  Final forks tree size: ${currentState.forksTree.blockCount}")
 
         // Verify that promotion occurred
         val heightIncrease = currentState.blockHeight - initialState.blockHeight
@@ -457,7 +461,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
         println(s"[Test] On-chain state after forced promotion:")
         println(s"    Height: ${actualState.blockHeight}")
         println(s"    Hash: ${actualState.blockHash.toHex}")
-        println(s"    Forks tree size: ${actualState.forksTree.size}")
+        println(s"    Forks tree size: ${actualState.forksTree.blockCount}")
         println(s"    Confirmed blocks root: ${actualState.confirmedBlocksRoot.toHex}")
 
         // Verify state matches expectations
@@ -533,10 +537,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
 
         // Verify block is not in forks tree (should be promoted to confirmed)
         val blockHashBytes = ByteString.fromHex(blockHash).reverse
-        val blockInForksTree = actualState.forksTree.exists { branch =>
-            branch.tipHash == blockHashBytes ||
-            BitcoinValidator.existsHash(branch.recentBlocks, blockHashBytes)
-        }
+        val blockInForksTree = actualState.forksTree.existsHash(blockHashBytes)
         assert(!blockInForksTree, "Block should not be in forks tree after promotion")
 
         println(s"[Test] Transaction is in confirmed block")

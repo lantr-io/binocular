@@ -5,17 +5,10 @@ import scalus.*
 import scalus.compiler.Options
 import scalus.compiler.sir.TargetLoweringBackend
 import scalus.uplc.PlutusV3
-import scalus.uplc.builtin.ByteString.hex
 import scalus.uplc.builtin.Data.toData
-import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 
 /** Test that changing compiler options actually affects the compiled validator size. */
 class CompilerOptionsTest extends AnyFunSuite {
-
-    val testTxOutRef: TxOutRef = TxOutRef(
-      TxId(hex"0000000000000000000000000000000000000000000000000000000000000000"),
-      BigInt(0)
-    )
 
     test("changing generateErrorTraces should change validator size") {
         // Compile with error traces enabled
@@ -39,9 +32,9 @@ class CompilerOptionsTest extends AnyFunSuite {
         }
 
         val programWithTraces =
-            (contractWithTraces.program.deBruijnedProgram $ testTxOutRef.toData).toProgram
+            (contractWithTraces.program.deBruijnedProgram $ BitcoinContract.testParams.toData).toProgram
         val programWithoutTraces =
-            (contractWithoutTraces.program.deBruijnedProgram $ testTxOutRef.toData).toProgram
+            (contractWithoutTraces.program.deBruijnedProgram $ BitcoinContract.testParams.toData).toProgram
 
         val sizeWithTraces = programWithTraces.flatEncoded.length
         val sizeWithoutTraces = programWithoutTraces.flatEncoded.length
@@ -83,9 +76,9 @@ class CompilerOptionsTest extends AnyFunSuite {
         }
 
         val programOptimized =
-            (contractOptimized.program.deBruijnedProgram $ testTxOutRef.toData).toProgram
+            (contractOptimized.program.deBruijnedProgram $ BitcoinContract.testParams.toData).toProgram
         val programUnoptimized =
-            (contractUnoptimized.program.deBruijnedProgram $ testTxOutRef.toData).toProgram
+            (contractUnoptimized.program.deBruijnedProgram $ BitcoinContract.testParams.toData).toProgram
 
         val sizeOptimized = programOptimized.flatEncoded.length
         val sizeUnoptimized = programUnoptimized.flatEncoded.length
@@ -109,7 +102,7 @@ class CompilerOptionsTest extends AnyFunSuite {
         }
 
         val freshProgram =
-            (freshContract.program.deBruijnedProgram $ testTxOutRef.toData).toProgram
+            (freshContract.program.deBruijnedProgram $ BitcoinContract.testParams.toData).toProgram
         val cachedProgram = BitcoinContract.bitcoinProgram
 
         val freshSize = freshProgram.flatEncoded.length

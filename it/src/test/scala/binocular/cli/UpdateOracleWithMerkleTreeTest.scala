@@ -3,7 +3,7 @@ package binocular.cli
 import binocular.*
 import scalus.cardano.address.Address
 import scalus.cardano.ledger.Utxo
-import scalus.uplc.builtin.{ByteString, Data}
+import scalus.uplc.builtin.Data
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.utils.await
 
@@ -112,8 +112,10 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
         // Calculate new state using shared validator logic
         val (_, validityTime) =
             OracleTransactions.computeValidityIntervalTime(ctx.provider.cardanoInfo)
+        val parentPath = initialState.forksTree.findTipPath
+        val params = BitcoinContract.testParams
         val newState =
-            BitcoinValidator.computeUpdateOracleState(initialState, headersList, validityTime, ScalusList.Nil)
+            OracleTransactions.applyHeaders(initialState, headersList, parentPath, validityTime, params)
 
         println(s"[Test] New state calculated:")
         println(s"    Old height: ${initialState.blockHeight}")
@@ -131,6 +133,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
           initialState,
           newState,
           headersList,
+          parentPath,
           validityTime,
           BitcoinContract.testTxOutRef
         )
@@ -162,12 +165,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
                 )
 
                 println(s"[Test] Step 6: Verifying forks tree structure")
-                val numBranches = chainState.forksTree.size
-                // Count total blocks across all branches
-                val totalBlocks = chainState.forksTree.foldLeft(BigInt(0)) { (acc, branch) =>
-                    acc + branch.recentBlocks.size
-                }
-                println(s"    Forks tree branches: $numBranches")
+                val totalBlocks = chainState.forksTree.blockCount
                 println(s"    Total blocks in forks tree: $totalBlocks")
                 assert(
                   totalBlocks == headers.size,

@@ -138,22 +138,19 @@ object BitcoinChainState {
             bits = rpcBitsToCompactBits(header.bits)
             // Block hash from RPC is in display order (big-endian), but we store it in internal order (little-endian)
             blockHash = ByteString.fromArray(header.hash.hexToBytes.reverse)
-            // Sort timestamps by value (descending) - required for median-time-past calculation
-            // Bitcoin allows out-of-order timestamps, so block height order != timestamp order
-            sortedTimestamps = recentTimestampsSeq.sortBy(-_) // Sort descending by timestamp value
-            // Convert to scalus List
-            recentTimestamps = sortedTimestamps.foldRight(prelude.List.Nil: prelude.List[BigInt])(
+            // Timestamps are in block order (newest first) — matching how the validator
+            // prepends each new block's timestamp during accumulation.
+            recentTimestamps = recentTimestampsSeq.foldRight(prelude.List.Nil: prelude.List[BigInt])(
               (ts, acc) => prelude.List.Cons(ts, acc)
             )
         } yield ChainState(
           blockHeight = blockHeight,
           blockHash = blockHash,
           currentTarget = bits,
-          blockTimestamp = BigInt(header.time),
           recentTimestamps = recentTimestamps,
           previousDifficultyAdjustmentTimestamp = BigInt(adjustmentHeader.time),
           confirmedBlocksRoot = mpfRootForSingleBlock(blockHash), // MPF trie with single block
-          forksTree = prelude.List.Nil // Initialize with empty forks tree
+          forksTree = ForkTree.End // Initialize with empty forks tree
         )
     }
 }

@@ -129,19 +129,28 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
           blockHeight = blockHeight,
           blockHash = blockHash,
           currentTarget = bits,
-          blockTimestamp = BigInt(header.time),
           recentTimestamps = prelude.List(BigInt(header.time)),
           previousDifficultyAdjustmentTimestamp = BigInt(adjustmentHeader.time),
           confirmedBlocksRoot =
               BitcoinChainState.mpfRootForSingleBlock(blockHash), // MPF trie with single block
-          forksTree = prelude.List.Nil // Initialize with empty forks tree
+          forksTree = ForkTree.End // Initialize with empty forks tree
         )
     }
 
     private def processHeader(currentState: ChainState, headerInfo: BlockHeaderInfo): ChainState =
         val header = convertHeader(headerInfo)
         val currentTime = BigInt(System.currentTimeMillis() / 1000)
-        BitcoinValidator.updateTip(currentState, header, currentTime)
+        val ctx = BitcoinValidator.initCtx(currentState)
+        val (summary, newCtx, _) = BitcoinValidator.validateBlock(header, ctx, currentTime)
+        ChainState(
+          blockHeight = newCtx.height,
+          blockHash = newCtx.lastBlockHash,
+          currentTarget = newCtx.currentBits,
+          recentTimestamps = newCtx.timestamps.take(BitcoinHelpers.MedianTimeSpan),
+          previousDifficultyAdjustmentTimestamp = newCtx.prevDiffAdjTimestamp,
+          confirmedBlocksRoot = currentState.confirmedBlocksRoot,
+          forksTree = currentState.forksTree
+        )
 
     private def syncLoop(height: Int, targetHeight: Int, currentState: ChainState): Future[Unit] =
         if height > targetHeight then Future.successful(())

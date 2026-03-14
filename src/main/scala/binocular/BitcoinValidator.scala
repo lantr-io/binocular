@@ -1,16 +1,18 @@
 package binocular
 
+import binocular.ForkTree.{Blocks, End, Fork}
 import scalus.uplc.builtin.*
 import scalus.uplc.builtin.Builtins.*
 import scalus.uplc.builtin.ByteString.*
 import scalus.uplc.builtin.Data.{toData, FromData, ToData}
-import scalus.cardano.onchain.plutus.v1.{Address, Credential, PolicyId, TokenName}
-import scalus.cardano.onchain.plutus.v2.{Interval, IntervalBoundType, OutputDatum}
-import scalus.cardano.onchain.plutus.v3.{DataParameterizedValidator, Datum, TxInInfo, TxInfo, TxOut, TxOutRef, Value}
+import scalus.cardano.onchain.plutus.v1.{Address, Credential, PolicyId, PosixTime, TokenName}
+import scalus.cardano.onchain.plutus.v2.{IntervalBoundType, OutputDatum}
+import scalus.cardano.onchain.plutus.v3.{DataParameterizedValidator, Datum, TxInfo, TxOut, TxOutRef, Value}
 import scalus.cardano.onchain.plutus.prelude.{List, *}
+import scalus.cardano.onchain.plutus.prelude.List.*
+import scalus.cardano.onchain.plutus.prelude.PairList.{PairCons, PairNil}
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry as MPF
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
-import scalus.cardano.onchain.plutus.prelude.PairList.{PairCons, PairNil}
 import scalus.compiler.Compile
 import scalus.{show as _, *}
 
@@ -24,6 +26,12 @@ type TxHash = ByteString // 32-byte SHA256d hash of transaction
 type MerkleRoot = ByteString // 32-byte Merkle tree root hash
 type CompactBits = ByteString // 4-byte compact difficulty target representation
 type BlockHeaderBytes = ByteString // 80-byte raw Bitcoin block header
+
+type PosixTimeSeconds = BigInt
+type Chainwork = BigInt
+type NonEmptyList[A] = List[A]
+type List11Timestamps = List[PosixTimeSeconds]
+type MPFRoot = ByteString
 
 case class CoinbaseTx(
     version: ByteString,
@@ -51,984 +59,805 @@ extension (bh: BlockHeader)
 
     inline def timestamp: BigInt = byteStringToInteger(false, bh.bytes.slice(68, 4))
 
-// ============================================================================
-// Optimized ForksTree Data Structures
-// ============================================================================
-// These structures reduce memory consumption by storing only fork points and
-// recent blocks instead of the entire unconfirmed chain history.
-
-/** Summary of a block with essential validation data. Stored in a sliding window (last 11 blocks)
-  * per branch for validation.
-  */
 case class BlockSummary(
     hash: BlockHash, // Block hash
-    height: BigInt, // Block height
-    chainwork: BigInt, // Cumulative chainwork at this block
-    timestamp: BigInt, // Bitcoin block timestamp (for median-time-past)
-    bits: CompactBits, // Difficulty target (for difficulty validation)
-    addedTime: BigInt // Cardano time when this block was added to forksTree
+    timestamp: PosixTime, // Bitcoin block timestamp (for median-time-past)
+    addedTimeSeconds: PosixTimeSeconds // Cardano time when this block was added to forksTree
 ) derives FromData,
       ToData
-@Compile
-object BlockSummary
 
-/** A complete chain branch from a fork point to its current tip. Maintains ALL blocks in the branch
-  * (newest first) for:
-  *   - Median-time-past validation (needs last 11 blocks)
-  *   - Promotion tracking (blocks are removed from list when promoted)
-  *   - Each block has individual addedTime for accurate challenge period enforcement
+/** Binary tree of unconfirmed block segments.
+  *
+  * '''Fork ordering invariant:''' `Fork(left = existing, right = new)`. Every fork-creating
+  * operation in [[BitcoinValidator.validateAndInsert]] places the pre-existing subtree on the left
+  * and the newly submitted branch on the right. This mirrors Bitcoin Core's first-seen preference:
+  * `CBlockIndexWorkComparator` (`blockstorage.cpp`) breaks equal-chainwork ties by `nSequenceId`,
+  * favoring whichever chain tip was received first. Since [[BitcoinValidator.bestChainPath]] uses
+  * `>=` when comparing left vs right chainwork, the left (existing/older) branch wins ties —
+  * achieving the same "never reorg to an equal-work competitor" behavior as Bitcoin Core.
   */
-case class ForkBranch(
-    tipHash: BlockHash, // Current tip of this branch
-    tipHeight: BigInt, // Height of tip
-    tipChainwork: BigInt, // Chainwork at tip
-    recentBlocks: List[
-      BlockSummary
-    ] // ALL blocks in branch (newest first), each with individual addedTime
-) derives FromData,
-      ToData
-@Compile
-object ForkBranch
+enum ForkTree derives FromData, ToData {
+    case Blocks(blocks: NonEmptyList[BlockSummary], chainwork: Chainwork, next: ForkTree)
+    case Fork(left: ForkTree, right: ForkTree)
+    case End
+}
 
 case class ChainState(
-    // Confirmed state
     blockHeight: BigInt,
     blockHash: BlockHash,
     currentTarget: CompactBits,
-    blockTimestamp: BigInt,
-    recentTimestamps: List[BigInt], // Newest first
-    previousDifficultyAdjustmentTimestamp: BigInt,
-    confirmedBlocksRoot: ByteString, // MPF root hash (32 bytes) for confirmed blocks trie
-
-    // Forks tree - each branch stores consecutive blocks from a fork point
-    // This reduces memory usage by ~90% compared to storing each block separately
-    // For a linear chain of 100 blocks: old approach = 100 entries, new approach = 1 branch
-    forksTree: List[ForkBranch] // All active fork branches (unsorted)
+    recentTimestamps: List11Timestamps,
+    previousDifficultyAdjustmentTimestamp: PosixTime,
+    confirmedBlocksRoot: MPFRoot,
+    forksTree: ForkTree
 ) derives FromData,
       ToData
 
-@Compile
-object ChainState
+/** Path element in [[ForkTree]] navigation. Interpretation depends on path type. */
+type PathElement = BigInt
 
-enum Action derives FromData, ToData:
-    /** Update the oracle with new block headers
-      * @param blockHeaders
-      *   \- new block headers to process (ordered from oldest to newest)
-      * @param currentTime
-      *   \- current on-chain time for validation in seconds since Unix epoch
-      * @param mpfInsertProofs
-      *   \- one MPF proof (List[ProofStep]) per promoted block, for inserting into confirmed trie
-      */
-    case UpdateOracle(
-        blockHeaders: List[BlockHeader],
-        currentTime: BigInt,
-        mpfInsertProofs: List[List[ProofStep]]
-    )
+/** Insertion path — navigates to a specific block within [[ForkTree]].
+  *
+  * Used by [[BitcoinValidator.validateAndInsert]] to find the parent block for new headers. One
+  * element is consumed per tree node:
+  *   - '''At `Blocks`''': element is a 0-based index into the block list. If index ==
+  *     blocks.length, all blocks are accumulated and traversal continues into `next`.
+  *   - '''At `Fork`''': 0 = left, 1 = right.
+  *   - '''Empty''': parent is the confirmed tip (no blocks in fork tree).
+  */
+type Path = List[PathElement]
 
-@Compile
-object Action
+/** Best-chain path — navigates through [[ForkTree]] forks to identify the winning chain.
+  *
+  * Produced by [[BitcoinValidator.bestChainPath]], consumed by [[BitcoinValidator.promoteAndGC]].
+  * Elements are produced/consumed '''only at `Fork` nodes''' (0 = left, 1 = right). `Blocks` nodes
+  * do not produce or consume path elements — `promoteAndGC` processes entire `Blocks` nodes
+  * (promoting eligible blocks), so block-level indexing is unnecessary.
+  */
+type BestPath = List[PathElement]
+
+case class UpdateOracle(
+    blockHeaders: List[BlockHeader],
+    parentPath: Path,
+    mpfInsertProofs: List[List[ProofStep]]
+) derives FromData,
+      ToData
+
+case class TraversalCtx(
+    timestamps: NonEmptyList[PosixTimeSeconds], // newest-first (prepended during accumulation)
+    height: BigInt,
+    currentBits: CompactBits,
+    prevDiffAdjTimestamp: PosixTimeSeconds,
+    lastBlockHash: BlockHash
+) derives FromData,
+      ToData
+
+case class BitcoinValidatorParams(
+    maturationConfirmations: BigInt,
+    challengeAging: BigInt,
+    oneShotTxOutRef: TxOutRef
+) derives FromData,
+      ToData
 
 @Compile
 object BitcoinValidator extends DataParameterizedValidator {
     import BitcoinHelpers.*
 
+    // Fork path directions
+    val LeftFork: BigInt = 0
+    val RightFork: BigInt = 1
+
     // ============================================================================
-    // ForkBranch Helper Functions
+    // TraversalCtx helpers
     // ============================================================================
-    // These functions work with the optimized ForkBranch structure where consecutive
-    // blocks in a fork are stored together, reducing memory usage by ~90%.
 
-    /** Find a branch by its tip hash. Returns the branch if found. Parent blocks are always tips of
-      * their branches (forks create new branches, so we only need to check tips).
-      */
-    def findBranch(
-        forksTree: List[ForkBranch],
-        blockHash: BlockHash
-    ): Option[ForkBranch] = {
-        def search(remaining: List[ForkBranch]): Option[ForkBranch] = {
-            remaining match
-                case List.Nil => Option.None
-                case List.Cons(branch, tail) =>
-                    if branch.tipHash == blockHash then Option.Some(branch)
-                    else search(tail)
-        }
-        search(forksTree)
-    }
-
-    /** Check if a block exists anywhere in the recentBlocks list by hash */
-    def existsHash(blocks: List[BlockSummary], hash: BlockHash): Boolean = {
-        def check(remaining: List[BlockSummary]): Boolean = {
-            remaining match
-                case List.Nil => false
-                case List.Cons(block, tail) =>
-                    if block.hash == hash then true
-                    else check(tail)
-        }
-        check(blocks)
-    }
-
-    /** Lookup a specific block in recentBlocks by hash */
-    def lookupInRecentBlocks(
-        blocks: List[BlockSummary],
-        hash: BlockHash
-    ): Option[BlockSummary] = {
-        def search(remaining: List[BlockSummary]): Option[BlockSummary] = {
-            remaining match
-                case List.Nil => Option.None
-                case List.Cons(block, tail) =>
-                    if block.hash == hash then Option.Some(block)
-                    else search(tail)
-        }
-        search(blocks)
-    }
-
-    /** Find a parent block anywhere in the forks tree.
+    /** Initialize traversal context from the confirmed state.
       *
-      * Returns the containing branch, the matching block summary, and whether the matching block is
-      * the current tip of that branch.
+      * The context starts at the confirmed tip, with height, bits, timestamps, and hash matching
+      * the confirmed chain. All tree traversal (accumulation, validation, chainwork) builds on top
+      * of this starting point.
       */
-    def lookupParentBlock(
-        forksTree: List[ForkBranch],
-        blockHash: BlockHash
-    ): Option[(ForkBranch, BlockSummary, Boolean)] = {
-        def search(
-            remaining: List[ForkBranch]
-        ): Option[(ForkBranch, BlockSummary, Boolean)] = {
-            remaining match
-                case List.Nil => Option.None
-                case List.Cons(branch, tail) =>
-                    lookupInRecentBlocks(branch.recentBlocks, blockHash) match
-                        case Option.Some(block) =>
-                            Option.Some((branch, block, branch.tipHash == blockHash))
-                        case Option.None =>
-                            search(tail)
-        }
+    def initCtx(state: ChainState): TraversalCtx =
+        TraversalCtx(
+          timestamps = state.recentTimestamps,
+          height = state.blockHeight,
+          currentBits = state.currentTarget,
+          prevDiffAdjTimestamp = state.previousDifficultyAdjustmentTimestamp,
+          lastBlockHash = state.blockHash
+        )
 
-        search(forksTree)
-    }
-
-    def lookupBlockByHeight(
-        blocks: List[BlockSummary],
-        height: BigInt
-    ): Option[BlockSummary] = {
-        def search(remaining: List[BlockSummary]): Option[BlockSummary] = {
-            remaining match
-                case List.Nil => Option.None
-                case List.Cons(block, tail) =>
-                    if block.height == height then Option.Some(block)
-                    else search(tail)
-        }
-
-        search(blocks)
-    }
-
-    /** Compute the expected difficulty bits for a block extending an unconfirmed parent block. */
-    def expectedNextBitsForParent(
-        confirmedState: ChainState,
-        parentBranch: ForkBranch,
-        parentBlock: BlockSummary
-    ): CompactBits = {
-        val nextHeight = parentBlock.height + 1
-
-        if nextHeight % DifficultyAdjustmentInterval != BigInt(0) then parentBlock.bits
-        else
-            val adjustmentStartHeight = nextHeight - DifficultyAdjustmentInterval
-            val adjustmentStartTimestamp =
-                if adjustmentStartHeight <= confirmedState.blockHeight then
-                    confirmedState.previousDifficultyAdjustmentTimestamp
-                else
-                    lookupBlockByHeight(parentBranch.recentBlocks, adjustmentStartHeight) match
-                        case Option.Some(block) => block.timestamp
-                        case Option.None =>
-                            fail("Difficulty adjustment start block not found in branch history")
-
-            getNextWorkRequired(
-              parentBlock.height,
-              parentBlock.bits,
-              parentBlock.timestamp,
-              adjustmentStartTimestamp
-            )
-    }
-
-    /** Extend a branch by adding a new block at the tip Updates tipHash, tipHeight, tipChainwork
-      * and prepends new block to recentBlocks Keeps ALL blocks in the branch until they are
-      * promoted
+    /** Accumulate one already-validated block into the traversal context.
+      *
+      * Replays difficulty computation without re-validating PoW or timestamps. Used when walking
+      * existing blocks in the tree (e.g. to build ctx before validating new headers, or to compute
+      * chainwork for a prefix during splits).
+      *
+      * At retarget boundaries (newHeight % 2016 == 0), updates `prevDiffAdjTimestamp` to this
+      * block's timestamp — it becomes `nFirstBlockTime` for the next retarget calculation.
       */
-    def extendBranch(
-        branch: ForkBranch,
-        newBlock: BlockSummary
-    ): ForkBranch = {
-        val newRecentBlocks = List.Cons(newBlock, branch.recentBlocks)
-        ForkBranch(
-          tipHash = newBlock.hash,
-          tipHeight = newBlock.height,
-          tipChainwork = newBlock.chainwork,
-          recentBlocks = newRecentBlocks
+    def accumulateBlock(ctx: TraversalCtx, block: BlockSummary): TraversalCtx = {
+        val newHeight = ctx.height + 1
+        // Compute expected bits for block at newHeight (same as getNextWorkRequired in Bitcoin Core)
+        val newBits = getNextWorkRequired(
+          ctx.height,
+          ctx.currentBits,
+          ctx.timestamps.head,
+          ctx.prevDiffAdjTimestamp
+        )
+        val newTimestamps = Cons(block.timestamp, ctx.timestamps)
+        // At retarget boundary: record this block's timestamp as the period start for next retarget
+        val newPrevDiffAdjTimestamp =
+            if newHeight % DifficultyAdjustmentInterval == BigInt(0) then block.timestamp
+            else ctx.prevDiffAdjTimestamp
+        TraversalCtx(
+          timestamps = newTimestamps,
+          height = newHeight,
+          currentBits = newBits,
+          prevDiffAdjTimestamp = newPrevDiffAdjTimestamp,
+          lastBlockHash = block.hash
         )
     }
 
-    /** Remove a branch from forksTree */
-    def removeBranch(
-        forksTree: List[ForkBranch],
-        branchToRemove: ForkBranch
-    ): List[ForkBranch] = {
-        def remove(
-            remaining: List[ForkBranch],
-            accumulated: List[ForkBranch]
-        ): List[ForkBranch] = {
-            remaining match
-                case List.Nil => accumulated.reverse
-                case List.Cons(branch, tail) =>
-                    if branch.tipHash == branchToRemove.tipHash then
-                        // Found it - skip this branch
-                        accumulated.reverse ++ tail
-                    else remove(tail, List.Cons(branch, accumulated))
-        }
-        remove(forksTree, List.Nil)
-    }
+    // ============================================================================
+    // Block validation
+    // ============================================================================
 
-    /** Update a branch in forksTree (remove old, add new) */
-    def updateBranch(
-        forksTree: List[ForkBranch],
-        oldBranch: ForkBranch,
-        newBranch: ForkBranch
-    ): List[ForkBranch] = {
-        List.Cons(newBranch, removeBranch(forksTree, oldBranch))
-    }
+    /** Insert element into an ascending-sorted list, maintaining ascending order. */
+    def insertAscending(x: BigInt, sorted: List[BigInt]): List[BigInt] = sorted match
+        case Nil                  => Cons(x, Nil)
+        case Cons(h, t) if x <= h => Cons(x, sorted)
+        case Cons(h, t)           => Cons(h, insertAscending(x, t))
 
-    // Binocular protocol parameters
-    val MaturationConfirmations: BigInt = 100 // Blocks needed for promotion to confirmed state
-    val TimeToleranceSeconds: BigInt =
-        1 * 60 * 60 // Maximum difference between redeemer time and validity interval time
-    val ChallengeAging: BigInt = 200 * 60 // 200 minutes in seconds (challenge period)
-    val StaleCompetingForkAge: BigInt = 400 * 60 // 400 minutes (2× challenge period)
-    val ChainworkGapThreshold: BigInt = 10 // Blocks worth of work for stale fork detection
-    val MaxForksTreeSize: BigInt = 180 // Maximum forks tree size before garbage collection
+    /** Sort a list of BigInts in ascending order using insertion sort. Efficient for small
+      * fixed-size lists (e.g. 11 timestamps for MTP calculation).
+      */
+    def insertionSort(xs: List[BigInt]): List[BigInt] =
+        xs.foldLeft(List.empty[BigInt])((sorted, x) => insertAscending(x, sorted))
 
-    def getMedianTimePastFromBlocks(
-        forkBlocks: List[BlockSummary],
-        confirmedTimestamps: List[BigInt]
-    ): BigInt = {
-        // Collect timestamps from fork blocks, then from confirmed state if needed
-        // Sort using insertion sort (efficient for n ≤ 11)
-        // Bitcoin allows out-of-order timestamps, so we must sort before finding median
-
-        @tailrec
-        def collect(
-            remaining: List[BlockSummary],
-            confirmed: List[BigInt],
-            sorted: List[BigInt],
-            count: BigInt
-        ): List[BigInt] =
-            if count >= MedianTimeSpan then sorted
-            else
-                remaining match
-                    case List.Cons(block, tail) =>
-                        collect(
-                          tail,
-                          confirmed,
-                          insertReverseSorted(block.timestamp, sorted),
-                          count + 1
-                        )
-                    case List.Nil =>
-                        // Fork exhausted, continue with confirmed timestamps
-                        confirmed match
-                            case List.Nil => sorted
-                            case List.Cons(ts, tail) =>
-                                collect(List.Nil, tail, insertReverseSorted(ts, sorted), count + 1)
-
-        val sortedTimestamps = collect(forkBlocks, confirmedTimestamps, List.Nil, 0)
-        getMedianTimePast(sortedTimestamps, sortedTimestamps.size)
-    }
-
-    // Canonical chain selection - matches Algorithm 9 in Whitepaper
-    // Selects the branch with highest cumulative chainwork at its tip
-    def selectCanonicalChain(
-        forksTree: List[ForkBranch]
-    ): Option[ForkBranch] =
-        // Find branch with maximum chainwork
-        def findMaxChainworkBranch(
-            branches: List[ForkBranch],
-            currentBest: Option[ForkBranch]
-        ): Option[ForkBranch] =
-            branches match
-                case List.Nil => currentBest
-                case List.Cons(branch, tail) =>
-                    val newBest = currentBest match
-                        case Option.None =>
-                            Option.Some(branch)
-                        case Option.Some(best) =>
-                            if branch.tipChainwork > best.tipChainwork then Option.Some(branch)
-                            else currentBest
-                    findMaxChainworkBranch(tail, newBest)
-
-        findMaxChainworkBranch(forksTree, Option.None)
-
-    // Add block to forks tree - matches Transition 1 in Whitepaper
-    def addBlockToForksTree(
-        forksTree: List[ForkBranch],
-        blockHeader: BlockHeader,
-        confirmedState: ChainState,
-        currentTime: BigInt
-    ): List[ForkBranch] =
-        val hash = blockHeaderHash(blockHeader)
+    /** Validate a single new block header against the traversal context. Returns the BlockSummary,
+      * updated context, and block proof (for chainwork accumulation).
+      */
+    def validateBlock(
+        header: BlockHeader,
+        ctx: TraversalCtx,
+        currentTime: PosixTimeSeconds
+    ): (BlockSummary, TraversalCtx, BigInt) = {
+        val hash = blockHeaderHash(header)
         val hashInt = byteStringToInteger(false, hash)
-        val prevHash = blockHeader.prevBlockHash
+        val bits = header.bits
+        val timestamps = ctx.timestamps
+        val height = ctx.height
+        val prevDiffAdjTimestamp = ctx.prevDiffAdjTimestamp
 
-        // Check if parent exists (in forksTree OR is confirmed tip)
-        val parentLookupOpt = lookupParentBlock(forksTree, prevHash)
-        val parentIsConfirmedTip = prevHash == confirmedState.blockHash
-        require(
-          parentLookupOpt.isDefined || parentIsConfirmedTip,
-          "Parent block not found"
-        )
-
-        // === SECURITY: Full block validation ===
-
-        // Calculate parent height and chainwork
-        val (
-          parentBranchOpt,
-          parentBlockOpt,
-          parentIsBranchTip,
-          parentHeight,
-          parentChainwork,
-          parentTimestamp,
-          parentBits
-        ) =
-            if parentIsConfirmedTip then
-                (
-                  Option.None,
-                  Option.None,
-                  false,
-                  confirmedState.blockHeight,
-                  calculateBlockProof(
-                    compactBitsToTarget(confirmedState.currentTarget)
-                  ), // Work for this block
-                  confirmedState.blockTimestamp,
-                  confirmedState.currentTarget
-                )
-            else
-                parentLookupOpt match
-                    case Option.Some((branch, block, isTip)) =>
-                        (
-                          Option.Some(branch),
-                          Option.Some(block),
-                          isTip,
-                          block.height,
-                          block.chainwork,
-                          block.timestamp,
-                          block.bits
-                        )
-                    case Option.None =>
-                        fail("Parent branch not found")
-
-        val blockHeight = parentHeight + 1
-
-        // 1. VALIDATE PROOF-OF-WORK
-        val target = compactBitsToTarget(blockHeader.bits)
+        // PoW validation — target is reused for block proof below
+        val target = compactBitsToTarget(bits)
         require(hashInt <= target, "Invalid proof-of-work")
         require(target <= PowLimit, "Target exceeds PowLimit")
 
-        // 2. VALIDATE DIFFICULTY
-        val expectedBits =
-            if parentIsConfirmedTip then
-                getNextWorkRequired(
-                  parentHeight,
-                  confirmedState.currentTarget,
-                  confirmedState.blockTimestamp,
-                  confirmedState.previousDifficultyAdjustmentTimestamp
-                )
-            else
-                parentBranchOpt match
-                    case Option.Some(parentBranch) =>
-                        parentBlockOpt match
-                            case Option.Some(parentBlock) =>
-                                expectedNextBitsForParent(
-                                  confirmedState,
-                                  parentBranch,
-                                  parentBlock
-                                )
-                            case Option.None =>
-                                fail("Parent block data not found")
-                    case Option.None =>
-                        fail("Parent branch data not found")
+        // Difficulty validation
+        val expectedBits = getNextWorkRequired(
+          height,
+          ctx.currentBits,
+          timestamps.head,
+          prevDiffAdjTimestamp
+        )
+        require(bits == expectedBits, "Invalid difficulty")
 
-        require(blockHeader.bits == expectedBits, "Invalid difficulty")
+        // MTP validation
+        val sortedTimestamps = insertionSort(timestamps.take(MedianTimeSpan))
+        val medianTimePast = sortedTimestamps.at(5)
+        val timestamp = header.timestamp
+        require(timestamp > medianTimePast, "Block timestamp not greater than MTP")
 
-        // 3. VALIDATE TIMESTAMP
-        val blockTime = blockHeader.timestamp
-        val medianTimePast =
-            if parentIsConfirmedTip then
-                getMedianTimePast(
-                  confirmedState.recentTimestamps,
-                  confirmedState.recentTimestamps.size
-                )
-            else
-                // For fork blocks, use branch's recentBlocks + confirmed timestamps for median-time-past
-                parentBranchOpt match
-                    case Option.Some(branch) =>
-                        getMedianTimePastFromBlocks(
-                          branch.recentBlocks,
-                          confirmedState.recentTimestamps
-                        )
-                    case Option.None => fail("Parent branch not found")
+        // Future time validation
+        require(
+          timestamp <= currentTime + MaxFutureBlockTime,
+          "Block timestamp too far in future"
+        )
 
-        require(blockTime > medianTimePast, "Block timestamp not greater than median time past")
-        require(blockTime <= currentTime + MaxFutureBlockTime, "Block timestamp too far in future")
+        // Parent hash validation
+        require(header.prevBlockHash == ctx.lastBlockHash, "Parent hash mismatch")
 
-        // 4. VALIDATE VERSION
-        require(blockHeader.version >= 4, "Outdated block version")
+        // Build new context
+        val newHeight = height + 1
+        val newTimestamps = Cons(timestamp, timestamps)
+        val newPrevDiffAdjTimestamp =
+            if newHeight % DifficultyAdjustmentInterval == BigInt(0) then timestamp
+            else prevDiffAdjTimestamp
 
-        // === End validation ===
-
-        // Calculate chainwork using Bitcoin Core's formula: 2^256 / (target + 1)
-        // Matches GetBlockProof() in Bitcoin Core's chain.cpp
-        val blockWork = calculateBlockProof(target)
-        val newChainwork = parentChainwork + blockWork
-
-        // Create BlockSummary for this block
-        val newBlock = BlockSummary(
+        val summary = BlockSummary(
           hash = hash,
-          height = blockHeight,
-          chainwork = newChainwork,
-          timestamp = blockTime,
-          bits = blockHeader.bits,
-          addedTime = currentTime // Cardano time when block added
+          timestamp = timestamp,
+          addedTimeSeconds = currentTime
         )
 
-        // Determine how to update forksTree based on parent location
-        if parentIsConfirmedTip then
-            // Parent is confirmed tip - create new branch
-            val newBranch = ForkBranch(
-              tipHash = hash,
-              tipHeight = blockHeight,
-              tipChainwork = newChainwork,
-              recentBlocks = List.single(newBlock)
-            )
-            List.Cons(newBranch, forksTree)
-        else
-            parentBranchOpt match
-                case Option.Some(parentBranch) =>
-                    if parentIsBranchTip then
-                        // Parent is branch tip - extend the branch
-                        val extendedBranch = extendBranch(parentBranch, newBlock)
-                        updateBranch(forksTree, parentBranch, extendedBranch)
-                    else
-                        // Parent is an internal block - create a competing branch from that point
-                        val newBranch = ForkBranch(
-                          tipHash = hash,
-                          tipHeight = blockHeight,
-                          tipChainwork = newChainwork,
-                          recentBlocks = List.single(newBlock)
-                        )
-                        List.Cons(newBranch, forksTree)
-                case Option.None =>
-                    fail("Parent branch not found")
+        val newCtx = TraversalCtx(
+          timestamps = newTimestamps,
+          height = newHeight,
+          currentBits = expectedBits,
+          prevDiffAdjTimestamp = newPrevDiffAdjTimestamp,
+          lastBlockHash = hash
+        )
 
-    // Block promotion (maturation) - matches Algorithm 10 in Whitepaper
-    // Returns (list of promoted blocks oldest-first, updated forks tree with promoted blocks removed)
-    def promoteQualifiedBlocks(
-        forksTree: List[ForkBranch],
-        confirmedTip: BlockHash,
-        confirmedHeight: BigInt,
-        currentTime: BigInt
-    ): (List[BlockSummary], List[ForkBranch]) =
-        // Find canonical branch
-        selectCanonicalChain(forksTree) match
-            case Option.None =>
-                // No blocks in forks tree
-                (List.Nil, forksTree)
-            case Option.Some(canonicalBranch) =>
-                // Split blocks into (remainingReverse, promoted) in a single pass
-                // recentBlocks is newest-first, so we traverse from newest to oldest
-                // Once we find a promotable block, all older blocks (rest of list) are also promotable
-                val canonicalTipHeight = canonicalBranch.tipHeight
+        // Block proof from target already computed for PoW validation
+        val blockProof = calculateBlockProof(target)
 
-                // Returns (remaining blocks reversed, promoted blocks oldest-first)
-                // When no promotion, remainingReverse is Nil and we use original recentBlocks
-                def splitPromotable(
-                    blocks: List[BlockSummary],
-                    remainingReverse: List[BlockSummary]
-                ): (List[BlockSummary], List[BlockSummary]) =
-                    blocks match
-                        case List.Nil => (remainingReverse, List.Nil)
-                        case List.Cons(block, tail) =>
-                            val depth = canonicalTipHeight - block.height
-                            val age = currentTime - block.addedTime
-
-                            if depth >= MaturationConfirmations && age >= ChallengeAging then
-                                // This block and all older blocks (tail) are promotable
-                                // Reverse tail and prepend this block to get oldest-first order
-                                def reverseAndPrepend(
-                                    bs: List[BlockSummary],
-                                    acc: List[BlockSummary]
-                                ): List[BlockSummary] =
-                                    bs match
-                                        case List.Nil => acc
-                                        case List.Cons(b, tailBs) =>
-                                            reverseAndPrepend(tailBs, List.Cons(b, acc))
-                                val promotedBlocks =
-                                    reverseAndPrepend(tail, List.Cons(block, List.Nil))
-                                (remainingReverse, promotedBlocks)
-                            else
-                                // Not yet promotable, add to remaining and continue
-                                splitPromotable(tail, List.Cons(block, remainingReverse))
-
-                val (remainingReverse, promotedBlocks) =
-                    splitPromotable(canonicalBranch.recentBlocks, List.Nil)
-
-                // Update forks tree based on promotion result
-                val updatedTree =
-                    if promotedBlocks.isEmpty then forksTree
-                    else if remainingReverse.isEmpty then
-                        // All blocks were promoted, remove the entire branch
-                        removeBranch(forksTree, canonicalBranch)
-                    else
-                        // Update branch with remaining blocks (need to reverse back)
-                        val updatedBranch = ForkBranch(
-                          tipHash = canonicalBranch.tipHash,
-                          tipHeight = canonicalBranch.tipHeight,
-                          tipChainwork = canonicalBranch.tipChainwork,
-                          recentBlocks = remainingReverse.reverse
-                        )
-                        updateBranch(forksTree, canonicalBranch, updatedBranch)
-
-                (promotedBlocks, updatedTree)
-
-    // Validate fork submission rule: must include canonical extension
-    // Prevents attack where adversary submits only forks to stall Oracle progress
-    def validateForkSubmission(
-        blockHeaders: List[BlockHeader],
-        forksTree: List[ForkBranch],
-        confirmedTip: BlockHash
-    ): Unit = {
-        // Note: Duplicate blocks are implicitly rejected by addBlockToForksTree
-        // because after adding the first block, its parent becomes unreachable
-        // (findBranch only finds tips, and the duplicate's parent is no longer a tip)
-
-        // Find current canonical tip hash
-        val canonicalTipHash = selectCanonicalChain(forksTree) match
-            case Option.Some(branch) => branch.tipHash
-            case Option.None         => confirmedTip
-
-        // RULE 2: Classify blocks: canonical extensions vs others (forks)
-        def classifyBlocks(
-            headers: List[BlockHeader],
-            canonicalExts: BigInt,
-            forkBlocks: BigInt
-        ): (BigInt, BigInt) = {
-            headers match
-                case List.Nil => (canonicalExts, forkBlocks)
-                case List.Cons(header, tail) =>
-                    val prevHash = header.prevBlockHash
-                    if prevHash == canonicalTipHash then
-                        // Extends current canonical tip
-                        classifyBlocks(tail, canonicalExts + 1, forkBlocks)
-                    else
-                        // Fork or extends non-canonical block
-                        classifyBlocks(tail, canonicalExts, forkBlocks + 1)
-        }
-
-        val (canonicalCount, forkCount) = classifyBlocks(blockHeaders, BigInt(0), BigInt(0))
-
-        // RULE 3: If submitting any forks, must include at least one canonical extension
-        if forkCount > BigInt(0) && canonicalCount == BigInt(0) then
-            fail("Fork submission must include canonical tip extension")
+        (summary, newCtx, blockProof)
     }
 
-    // Garbage collection - removes old dead fork branches to maintain bounded datum size
-    // With ForkBranch structure, GC is simpler: we remove entire branches that meet criteria
-    def garbageCollect(
-        forksTree: List[ForkBranch],
-        confirmedTip: BlockHash,
-        confirmedHeight: BigInt,
-        currentTime: BigInt
-    ): List[ForkBranch] = {
-        val currentSize = forksTree.size
-
-        if currentSize <= MaxForksTreeSize then
-            // No garbage collection needed
-            forksTree
-        else
-            // Find canonical branch
-            selectCanonicalChain(forksTree) match
-                case Option.None =>
-                    // No blocks in forks tree
-                    forksTree
-                case Option.Some(canonicalBranch) =>
-                    val canonicalTipHeight = canonicalBranch.tipHeight
-                    val canonicalTipChainwork = canonicalBranch.tipChainwork
-
-                    // Determine if a branch is removable
-                    def isRemovable(branch: ForkBranch): Boolean = {
-                        // Cannot remove canonical branch
-                        if branch.tipHash == canonicalBranch.tipHash then false
-                        else
-                            val heightGap = canonicalTipHeight - branch.tipHeight
-                            // Use the oldest block's addedTime (last in list) for age calculation
-                            val oldestBlockTime = branch.recentBlocks.lastOption
-                                .map(_.addedTime)
-                                .getOrElse(currentTime)
-                            val age = currentTime - oldestBlockTime
-                            val chainworkGap = canonicalTipChainwork - branch.tipChainwork
-
-                            // Criteria Set A: Old dead forks
-                            val isOldDeadFork =
-                                heightGap >= MaturationConfirmations &&
-                                    age >= ChallengeAging
-
-                            // Criteria Set B: Stale competing forks
-                            val isStaleCompetingFork =
-                                age >= StaleCompetingForkAge &&
-                                    chainworkGap >= (ChainworkGapThreshold * (PowLimit / compactBitsToTarget(
-                                      hex"1d00ffff"
-                                    )))
-
-                            // Criteria Set C: Competing long branches
-                            // If we have two very long branches competing, remove the one with less chainwork
-                            // This prevents the forksTree from filling up with competing long forks
-                            val isLongCompetingFork =
-                                age >= ChallengeAging &&
-                                    branch.tipHeight >= (confirmedHeight + MaturationConfirmations) &&
-                                    chainworkGap > BigInt(
-                                      0
-                                    ) // Any chainwork gap qualifies for removal after challenge period
-
-                            isOldDeadFork || isStaleCompetingFork || isLongCompetingFork
-                    }
-
-                    // Remove branches that meet criteria
-                    def performRemoval(
-                        branches: List[ForkBranch],
-                        targetSize: BigInt
-                    ): List[ForkBranch] = {
-                        // Filter out removable branches
-                        def filterBranches(
-                            remaining: List[ForkBranch],
-                            accumulated: List[ForkBranch]
-                        ): List[ForkBranch] = {
-                            remaining match
-                                case List.Nil => accumulated.reverse
-                                case List.Cons(branch, tail) =>
-                                    if isRemovable(branch) then filterBranches(tail, accumulated)
-                                    else filterBranches(tail, List.Cons(branch, accumulated))
-                        }
-
-                        val filtered = filterBranches(branches, List.Nil)
-
-                        // If still over size, keep only the N branches with highest chainwork
-                        if filtered.size > targetSize then
-                            // Manual selection sort - keep top N by chainwork
-                            def selectTopN(
-                                remaining: List[ForkBranch],
-                                selected: List[ForkBranch],
-                                count: BigInt
-                            ): List[ForkBranch] = {
-                                if count == BigInt(0) || remaining.isEmpty then selected
-                                else
-                                    // Find max chainwork in remaining
-                                    def findMax(
-                                        lst: List[ForkBranch],
-                                        currentMax: ForkBranch
-                                    ): ForkBranch = {
-                                        lst match
-                                            case List.Nil => currentMax
-                                            case List.Cons(b, tail) =>
-                                                if b.tipChainwork > currentMax.tipChainwork then
-                                                    findMax(tail, b)
-                                                else findMax(tail, currentMax)
-                                    }
-
-                                    val maxBranch = findMax(remaining.tail, remaining.head)
-
-                                    // Remove maxBranch from remaining
-                                    val newRemaining =
-                                        remaining.filter(b => b.tipHash != maxBranch.tipHash)
-
-                                    selectTopN(
-                                      newRemaining,
-                                      List.Cons(maxBranch, selected),
-                                      count - 1
-                                    )
-                            }
-
-                            selectTopN(filtered, List.Nil, targetSize)
-                        else filtered
-                    }
-
-                    performRemoval(forksTree, MaxForksTreeSize)
-    }
-
-    def updateTip(
-        prevState: ChainState,
-        blockHeader: BlockHeader,
-        currentTime: BigInt
-    ): ChainState =
-        val hash = blockHeaderHash(blockHeader)
-        val hashBigInt = byteStringToInteger(false, hash)
-        val blockTime = blockHeader.timestamp
-
-        // check previous block hash
-        val validPrevBlockHash = blockHeader.prevBlockHash == prevState.blockHash
-
-        // check proof of work - matches CheckProofOfWork() in pow.cpp:140-163
-        // FIXME: check if bits are valid
-        val compactTarget = blockHeader.bits
-        val target = compactBitsToTarget(compactTarget)
-        val validProofOfWork = hashBigInt <= target
-
-        // Difficulty validation - matches ContextualCheckBlockHeader() in validation.cpp:4165
-        val nextDifficulty = getNextWorkRequired(
-          prevState.blockHeight,
-          prevState.currentTarget,
-          prevState.blockTimestamp,
-          prevState.previousDifficultyAdjustmentTimestamp
-        )
-        val validDifficulty = compactTarget == nextDifficulty
-
-        // Check blockTime against median of last 11 blocks
-        // Matches ContextualCheckBlockHeader() in validation.cpp:4180-4182
-        val numTimestamps = prevState.recentTimestamps.size
-        val medianTimePast = getMedianTimePast(prevState.recentTimestamps, numTimestamps)
-        // verify the block timestamp
-        require(
-          blockTime <= currentTime + MaxFutureBlockTime,
-          "Block timestamp too far in the future"
-        )
-        require(
-          blockTime > medianTimePast,
-          "Block timestamp must be greater than median time of past 11 blocks"
-        )
-
-        val newDifficultyAdjustmentTimestamp =
-            if (prevState.blockHeight + 1) % DifficultyAdjustmentInterval == BigInt(0) then
-                blockTime
-            else prevState.previousDifficultyAdjustmentTimestamp
-
-        // Insert new blockTime maintaining reverse sort order
-        val withNewTimestamp = insertReverseSorted(blockTime, prevState.recentTimestamps)
-        val newTimestamps = withNewTimestamp.take(MedianTimeSpan)
-
-        // Reject blocks with outdated version
-        // Matches ContextualCheckBlockHeader() in validation.cpp:4201-4206
-        val validVersion = blockHeader.version >= 4
-        require(validVersion, "Block version is outdated")
-
-        val validBlockHeader = validPrevBlockHash.?
-            && validProofOfWork.?
-            && validDifficulty.?
-            && validVersion.?
-
-        require(validBlockHeader, "Block header is not valid")
-        ChainState(
-          blockHeight = prevState.blockHeight + 1,
-          blockHash = hash,
-          currentTarget = nextDifficulty,
-          blockTimestamp = blockTime,
-          recentTimestamps = newTimestamps,
-          previousDifficultyAdjustmentTimestamp = newDifficultyAdjustmentTimestamp,
-          confirmedBlocksRoot =
-              prevState.confirmedBlocksRoot, // Preserve confirmed blocks root (updated separately)
-          forksTree = prevState.forksTree // Preserve forks tree (will be updated separately)
-        )
-
-    def verifyNewTip(
-        intervalStartInSeconds: BigInt,
-        prevState: ChainState,
-        newState: Data,
-        blockHeader: BlockHeader
-    ): Unit =
-        val expectedNewState = updateTip(prevState, blockHeader, intervalStartInSeconds)
-        val validNewState = newState == expectedNewState.toData
-
-        require(validNewState, "New state does not match expected state")
-
-    /** Apply promoted blocks to the confirmed-state metadata in oldest-to-newest order. */
-    def applyPromotionsToConfirmedState(
-        confirmedState: ChainState,
-        promotedBlocks: List[BlockSummary]
-    ): ChainState = {
-        promotedBlocks.foldLeft(confirmedState) { (state, block) =>
-            val withNewTimestamp = insertReverseSorted(block.timestamp, state.recentTimestamps)
-            val newTimestamps = withNewTimestamp.take(MedianTimeSpan)
-            val newDifficultyAdjustmentTimestamp =
-                if block.height % DifficultyAdjustmentInterval == BigInt(0) then block.timestamp
-                else state.previousDifficultyAdjustmentTimestamp
-
-            ChainState(
-              blockHeight = block.height,
-              blockHash = block.hash,
-              currentTarget = block.bits,
-              blockTimestamp = block.timestamp,
-              recentTimestamps = newTimestamps,
-              previousDifficultyAdjustmentTimestamp = newDifficultyAdjustmentTimestamp,
-              confirmedBlocksRoot = state.confirmedBlocksRoot,
-              forksTree = state.forksTree
-            )
-        }
-    }
-
-    /** Compute the new ChainState after applying block headers. This function contains the core
-      * UpdateOracle logic and can be called both on-chain (from validator) and off-chain (for
-      * pre-computation).
+    /** Compute segment chainwork for a list of blocks by replaying difficulty from a
+      * [[TraversalCtx]].
       *
-      * @param prevState
-      *   Current ChainState
-      * @param blockHeaders
-      *   Block headers to apply
-      * @param currentTime
-      *   Current time in seconds (POSIX time)
-      * @return
-      *   New ChainState after applying headers
+      * Only used in rare cases where stored chainwork must be recomputed:
+      *   - '''Split insertion''': a Blocks node is split into prefix + suffix, and we need the
+      *     prefix's chainwork (suffix = original - prefix).
+      *   - '''Partial promotion''': some blocks are promoted from a Blocks node, and we need the
+      *     promoted blocks' chainwork (remaining = original - promoted).
+      *
+      * Not used in the common append case, where chainwork is simply `originalCw + newCw`.
       */
-    def computeUpdateOracleState(
-        prevState: ChainState,
-        blockHeaders: List[BlockHeader],
+    def computeChainwork(
+        blocks: NonEmptyList[BlockSummary],
+        ctx: TraversalCtx,
+        chainwork: Chainwork
+    ): BigInt = blocks match
+        case Nil => chainwork
+        case Cons(block, tail) =>
+            val bits = getNextWorkRequired(
+              ctx.height,
+              ctx.currentBits,
+              ctx.timestamps.head,
+              ctx.prevDiffAdjTimestamp
+            )
+            val newCtx = accumulateBlock(ctx, block)
+            computeChainwork(
+              tail,
+              newCtx,
+              chainwork + calculateBlockProof(compactBitsToTarget(bits))
+            )
+
+    /** Validate a list of headers (oldest-first), returning validated summaries and segment
+      * chainwork.
+      */
+    def validateAndCollectBlocks(
+        headers: List[BlockHeader],
+        ctx: TraversalCtx,
+        currentTime: BigInt
+    ): (List[BlockSummary], BigInt) = {
+        val (acc, _, cw) = headers.foldLeft((Nil: List[BlockSummary], ctx, BigInt(0))) {
+            case ((acc, currentCtx, chainwork), header) =>
+                val (summary, newCtx, blockProof) =
+                    validateBlock(header, currentCtx, currentTime)
+                (Cons(summary, acc), newCtx, chainwork + blockProof)
+        }
+        (acc.reverse, cw)
+    }
+
+    // ============================================================================
+    // Tree navigation, validation, and insertion (single traversal)
+    // ============================================================================
+
+    /** Navigate the fork tree along `path`, validate `headers`, and insert the resulting block
+      * summaries — all in a single traversal.
+      *
+      * Path semantics (one element consumed per tree node):
+      *   - '''Empty path''' (`Nil`): the parent is the confirmed tip (stored in `ctx`). Validate
+      *     headers and attach as a new branch at the tree root.
+      *   - '''At `Blocks(blocks, next)`''': `pathHead` is an index into `blocks`. If
+      *     `pathHead == blocks.length`, all blocks are accumulated and traversal continues into
+      *     `next`. Otherwise `blocks(pathHead)` is the parent block where new headers branch off.
+      *   - '''At `Fork(left, right)`''': `pathHead` selects a branch (`0` = left, `1` = right).
+      *
+      * @param tree
+      *   current fork tree (or subtree during recursion)
+      * @param path
+      *   navigation path to the parent block
+      * @param headers
+      *   new block headers to validate and insert (oldest first)
+      * @param ctx
+      *   accumulated traversal context up to the current tree node
+      * @param currentTime
+      *   current wall-clock time (seconds) for validation
+      * @return
+      *   updated fork tree with new blocks inserted
+      */
+    def validateAndInsert(
+        tree: ForkTree,
+        path: Path,
+        headers: List[BlockHeader],
+        ctx: TraversalCtx,
+        currentTime: BigInt
+    ): ForkTree = {
+        path match
+            case Nil =>
+                // Path is empty → parent is the confirmed tip (stored in ctx).
+                // Validate headers and attach as a new branch at the tree root.
+                val (newBlocks, newCw) =
+                    validateAndCollectBlocks(headers, ctx, currentTime)
+                val newBranch = Blocks(newBlocks, newCw, End)
+                tree match
+                    // First-ever insertion into an empty tree:
+                    //   End → Blocks([H1,H2], cw, End)
+                    case End => newBranch
+                    // Tree already has blocks from confirmed tip → create a fork.
+                    // Existing branch goes left, new branch goes right (Fork ordering invariant).
+                    //   Blocks([A,B], ..) → Fork(Blocks([A,B], ..), Blocks([H1,H2], cw, End))
+                    case existing => Fork(existing, newBranch)
+
+            case Cons(pathHead, pathTail) =>
+                validateAndInsertInPath(tree, headers, ctx, currentTime, pathHead, pathTail)
+    }
+
+    // ============================================================================
+    // Best chain selection
+    // ============================================================================
+
+    inline def validateAndInsertInPath(
+        tree: ForkTree,
+        headers: List[BlockHeader],
+        ctx: TraversalCtx,
         currentTime: BigInt,
-        mpfInsertProofs: List[List[ProofStep]]
-    ): ChainState = {
-        // scalus.prelude.log("computeUpdateOracleState START")
-        // scalus.prelude.log("INPUT prevState.forksTree.size:")
-        // scalus.prelude.log(scalus.prelude.show(prevState.forksTree.size))
-        // scalus.prelude.log("INPUT prevState.blockHeight:")
-        // scalus.prelude.log(scalus.prelude.show(prevState.blockHeight))
+        pathHead: PosixTimeSeconds,
+        pathTail: List[PosixTimeSeconds]
+    ) = {
+        tree match
+            case Blocks(blocks, originalCw, next) =>
+                // Walk the blocks list to find the insertion point at index pathHead.
+                // `count` tracks position, `prefix` accumulates blocks before pathHead
+                // (in reverse), `newCtx` accumulates traversal context.
+                def loop(
+                    count: BigInt,
+                    remaining: List[BlockSummary],
+                    prefix: List[BlockSummary],
+                    newCtx: TraversalCtx
+                ): ForkTree = {
+                    remaining match
+                        case Nil if count == pathHead =>
+                            // Pass-through: pathHead == blocks.length, all blocks consumed.
+                            // Continue navigation into the subtree `next`.
+                            // Example: Blocks([A,B,C], cw, Fork(..)), path=[3, 0, ..]
+                            //   → accumulate A,B,C, recurse into Fork(..) with path=[0, ..]
+                            Blocks(
+                              blocks,
+                              originalCw,
+                              validateAndInsert(
+                                next,
+                                pathTail,
+                                headers,
+                                newCtx,
+                                currentTime
+                              )
+                            )
+                        case Cons(block, tail) if count == pathHead =>
+                            // Found insertion point: block at index pathHead is the parent.
+                            val parentCtx = accumulateBlock(newCtx, block)
+                            val (newBlocks, newCw) =
+                                validateAndCollectBlocks(
+                                  headers,
+                                  parentCtx,
+                                  currentTime
+                                )
+                            val fullPrefix = prefix.reverse.prepended(block)
+                            tail match
+                                case Nil =>
+                                    next match
+                                        case End =>
+                                            // Append: parent is last block, no subtree.
+                                            // Blocks([A,B,C], cw, End), path=[2]
+                                            //   → Blocks([A,B,C,H1,H2], cw+newCw, End)
+                                            Blocks(
+                                              fullPrefix ++ newBlocks,
+                                              originalCw + newCw,
+                                              End
+                                            )
+                                        case _ =>
+                                            // Fork at end: parent is last block but subtree
+                                            // exists. Must split chainwork.
+                                            // Existing subtree goes left, new branch right
+                                            // (Fork ordering invariant).
+                                            // Blocks([A,B,C], cw, Fork(..)), path=[2]
+                                            //   → Blocks([A,B,C], prefCw,
+                                            //       Fork(Fork(..), Blocks([H1], newCw, End)))
+                                            val prefixCw =
+                                                computeChainwork(fullPrefix, ctx, BigInt(0))
+                                            Blocks(
+                                              fullPrefix,
+                                              prefixCw,
+                                              Fork(
+                                                next,
+                                                Blocks(newBlocks, newCw, End)
+                                              )
+                                            )
+                                case _ =>
+                                    // Mid-split: parent is in the middle of the block list.
+                                    // The Blocks node is split into prefix and suffix.
+                                    // Existing suffix goes left, new branch right
+                                    // (Fork ordering invariant).
+                                    // Blocks([A,B,C,D,E], cw, End), path=[2]
+                                    //   → Blocks([A,B,C], prefCw,
+                                    //       Fork(Blocks([D,E], cw-prefCw, End),
+                                    //            Blocks([H1,H2], newCw, End)))
+                                    val prefixCw =
+                                        computeChainwork(fullPrefix, ctx, BigInt(0))
+                                    Blocks(
+                                      fullPrefix,
+                                      prefixCw,
+                                      Fork(
+                                        Blocks(tail, originalCw - prefixCw, next),
+                                        Blocks(newBlocks, newCw, End)
+                                      )
+                                    )
+                        case Cons(block, tail) =>
+                            // Not at pathHead yet — accumulate block and advance counter.
+                            loop(
+                              count + 1,
+                              tail,
+                              Cons(block, prefix),
+                              accumulateBlock(newCtx, block)
+                            )
+                        case _ => fail("Path index out of bounds")
+                }
 
-        // Validate fork submission rule (prevents stalling attack and duplicates)
-        validateForkSubmission(blockHeaders, prevState.forksTree, prevState.blockHash)
+                loop(0, blocks, Nil, ctx)
 
-        // Validate non-empty block headers
-        require(!blockHeaders.isEmpty, "Empty block headers list")
-
-        // Process all block headers: add each to forks tree
-        def processHeaders(
-            headers: List[BlockHeader],
-            currentForksTree: List[ForkBranch]
-        ): List[ForkBranch] = {
-            headers match
-                case List.Nil =>
-                    // scalus.prelude.log("processHeaders done")
-                    currentForksTree
-                case List.Cons(header, tail) =>
-                    // scalus.prelude.log("processHeaders adding block")
-                    val updatedTree = addBlockToForksTree(
-                      currentForksTree,
-                      header,
-                      prevState,
-                      currentTime
+            case Fork(left, right) =>
+                // Consume path element: 0 → recurse left, else → recurse right.
+                if pathHead == LeftFork then
+                    Fork(
+                      validateAndInsert(
+                        left,
+                        pathTail,
+                        headers,
+                        ctx,
+                        currentTime
+                      ),
+                      right
                     )
-                    processHeaders(tail, updatedTree)
+                else
+                    Fork(
+                      left,
+                      validateAndInsert(
+                        right,
+                        pathTail,
+                        headers,
+                        ctx,
+                        currentTime
+                      )
+                    )
+
+            case End =>
+                fail("Path leads to End")
+    }
+
+    // ============================================================================
+    // Best chain selection
+    // ============================================================================
+
+    /** Find the best (highest cumulative chainwork) chain path through the tree.
+      *
+      * Returns `(chainwork, depth, path)` where:
+      *   - `chainwork` — total proof-of-work of the best chain (relative to confirmed tip)
+      *   - `depth` — height of the best chain's tip (confirmed height + unconfirmed blocks)
+      *   - `path` — [[BestPath]] to the best chain tip, used by [[promoteAndGC]]
+      *
+      * The path contains one element per Fork node encountered (0 = left, 1 = right). Blocks nodes
+      * do not consume or produce path elements — they simply add their stored chainwork and block
+      * count, then recurse into `next`.
+      *
+      * '''Tie-breaking: left (existing) branch wins (`>=`).''' This matches Bitcoin Core's
+      * `CBlockIndexWorkComparator` in `blockstorage.cpp`, which uses `nSequenceId` to prefer the
+      * first-seen chain when chainwork is equal. Since [[validateAndInsert]] always places existing
+      * branches left and new branches right, `>=` ensures the existing chain is never displaced by
+      * an equal-work competitor — consistent with Bitcoin Core never reorganizing to a same-work
+      * alternative.
+      *
+      * Example: `Fork(Blocks([A,B], 200, End), Blocks([C], 150, End))` with confirmed height 100
+      *   - Left: chainwork=200, depth=102, path=[]
+      *   - Right: chainwork=150, depth=101, path=[]
+      *   - Result: (200, 102, [0])
+      */
+    def bestChainPath(
+        tree: ForkTree,
+        height: BigInt,
+        chainwork: BigInt
+    ): (BigInt, BigInt, BestPath) = {
+        tree match
+            case Blocks(blocks, cw, next) =>
+                // Accumulate segment chainwork and block count, recurse into subtree.
+                bestChainPath(next, height + blocks.length, chainwork + cw)
+
+            case Fork(left, right) =>
+                // Recurse both branches, pick higher chainwork, prepend direction to path.
+                // >= means left (existing) wins ties — matches Bitcoin Core's first-seen rule
+                // (CBlockIndexWorkComparator in blockstorage.cpp).
+                val (leftWork, leftDepth, leftPath) = bestChainPath(left, height, chainwork)
+                val (rightWork, rightDepth, rightPath) = bestChainPath(right, height, chainwork)
+                if leftWork >= rightWork then (leftWork, leftDepth, Cons(LeftFork, leftPath))
+                else (rightWork, rightDepth, Cons(RightFork, rightPath))
+
+            case End =>
+                // Leaf — return accumulated totals, empty path.
+                (chainwork, height, Nil)
+    }
+
+    // ============================================================================
+    // Promotion and GC
+    // ============================================================================
+
+    /** Split a block list into promotable prefix and remaining suffix.
+      *
+      * Walks oldest→newest. A block is eligible for promotion if:
+      *   - `bestDepth - blockHeight >= params.maturationConfirmations` (e.g. 100 confirmations)
+      *   - `currentTime - addedTimeSeconds >= params.challengeAging` (e.g. 200 minutes on-chain)
+      *   - `maxPromotions > 0` (caller-imposed limit from number of MPF proofs provided)
+      *
+      * Stops at the first ineligible block. This is safe because blocks are ordered oldest→newest:
+      * each subsequent block has strictly less depth and same-or-less age, so if one fails either
+      * condition, all following blocks will too.
+      *
+      * @return
+      *   (promoted oldest-first, remaining oldest-first, ctx after promoted blocks)
+      */
+    def splitPromotable(
+        blocks: List[BlockSummary],
+        ctx: TraversalCtx,
+        bestDepth: BigInt,
+        currentTime: PosixTimeSeconds,
+        maxPromotions: BigInt,
+        params: BitcoinValidatorParams
+    ): (List[BlockSummary], List[BlockSummary], TraversalCtx) = {
+        blocks match
+            case Nil               => (Nil, Nil, ctx)
+            case Cons(block, tail) =>
+                // Promotion limit reached — treat remaining blocks as non-promotable.
+                if maxPromotions <= BigInt(0) then (Nil, blocks, ctx)
+                else
+                    val blockHeight = ctx.height + 1
+                    val depth = bestDepth - blockHeight
+                    val age = currentTime - block.addedTimeSeconds
+                    if depth >= params.maturationConfirmations && age >= params.challengeAging then
+                        // Block eligible — promote it and check next block.
+                        val newCtx = accumulateBlock(ctx, block)
+                        val (morePromoted, remaining, finalCtx) =
+                            splitPromotable(
+                              tail,
+                              newCtx,
+                              bestDepth,
+                              currentTime,
+                              maxPromotions - 1,
+                              params
+                            )
+                        (Cons(block, morePromoted), remaining, finalCtx)
+                    else
+                        // Block not eligible — stop. All following blocks are newer/shallower,
+                        // so they can't be eligible either.
+                        (Nil, blocks, ctx)
+    }
+
+    /** Promote eligible blocks and garbage-collect dead forks along the best chain path.
+      *
+      * Walks the tree following `bestPath` (from [[bestChainPath]]). At each node:
+      *   - '''Blocks''': tries to promote eligible blocks (up to `numPromotions`), then recurses
+      *     into the subtree for more promotions and/or GC.
+      *   - '''Fork''': follows the best branch (per `bestPath`), drops the other branch (GC). The
+      *     Fork node itself is eliminated — the surviving branch replaces it.
+      *   - '''End''': leaf, nothing to do.
+      *
+      * `bestPath` is consumed only at Fork nodes (matching [[bestChainPath]] which produces path
+      * elements only at Fork nodes). Blocks nodes pass `bestPath` through unchanged.
+      *
+      * @param numPromotions
+      *   maximum blocks to promote (= number of MPF proofs provided by submitter)
+      * @return
+      *   (promoted blocks oldest-first, cleaned tree with promoted blocks removed and dead forks
+      *   dropped)
+      */
+    def promoteAndGC(
+        tree: ForkTree,
+        ctx: TraversalCtx,
+        bestPath: BestPath,
+        bestDepth: BigInt,
+        currentTime: PosixTimeSeconds,
+        numPromotions: BigInt,
+        params: BitcoinValidatorParams
+    ): (List[BlockSummary], ForkTree) = {
+        tree match
+            case Blocks(blocks, cw, next) =>
+                val (promoted, remaining, newCtx) =
+                    splitPromotable(blocks, ctx, bestDepth, currentTime, numPromotions, params)
+                log("splitPromotable 2")
+                if promoted.isEmpty then
+                    // No promotion in this node (blocks too young/shallow, or limit reached).
+                    // Accumulate all blocks and recurse into subtree for GC.
+                    val fullCtx = blocks.foldLeft(ctx)(accumulateBlock)
+                    log("promoteAndGC fullCtx")
+                    val (nextPromoted, cleanedNext) =
+                        promoteAndGC(
+                          next,
+                          fullCtx,
+                          bestPath,
+                          bestDepth,
+                          currentTime,
+                          numPromotions,
+                          params
+                        )
+                    (nextPromoted, Blocks(blocks, cw, cleanedNext))
+                else if remaining.isEmpty then
+                    // All blocks in this node promoted. Consume node entirely and recurse
+                    // into subtree for more promotions (with decremented limit).
+                    val (nextPromoted, cleanedNext) =
+                        promoteAndGC(
+                          next,
+                          newCtx,
+                          bestPath,
+                          bestDepth,
+                          currentTime,
+                          numPromotions - promoted.length,
+                          params
+                        )
+                    (promoted ++ nextPromoted, cleanedNext)
+                else
+                    // Partial promotion: some blocks promoted, rest remain. Stop recursion —
+                    // remaining blocks and subtree stay as-is (subtree GC deferred to future tx).
+                    val promotedCw = computeChainwork(promoted, ctx, 0)
+                    log("promoteAndGC computeChainwork")
+                    (promoted, Blocks(remaining, cw - promotedCw, next))
+
+            case Fork(left, right) =>
+                // GC: follow the best branch, drop the other entirely.
+                require(!bestPath.isEmpty, "Best path exhausted at Fork")
+                val direction = bestPath.head
+                val pathTail = bestPath.tail
+                if direction == LeftFork then
+                    val (promoted, cleanedLeft) =
+                        promoteAndGC(
+                          left,
+                          ctx,
+                          pathTail,
+                          bestDepth,
+                          currentTime,
+                          numPromotions,
+                          params
+                        )
+                    (promoted, cleanedLeft)
+                else
+                    val (promoted, cleanedRight) =
+                        promoteAndGC(
+                          right,
+                          ctx,
+                          pathTail,
+                          bestDepth,
+                          currentTime,
+                          numPromotions,
+                          params
+                        )
+                    (promoted, cleanedRight)
+
+            case End =>
+                (Nil, End)
+    }
+
+    // ============================================================================
+    // Apply promotions to confirmed state
+    // ============================================================================
+
+    /** Apply promoted blocks to the confirmed state, updating the MPF root and building the new
+      * [[ChainState]].
+      */
+    def applyPromotions(
+        state: ChainState,
+        promoted: List[BlockSummary],
+        mpfProofs: List[List[ProofStep]],
+        ctx0: TraversalCtx,
+        cleanedTree: ForkTree
+    ): ChainState = {
+        def loop(
+            blocks: List[BlockSummary],
+            proofs: List[List[ProofStep]],
+            ctx: TraversalCtx,
+            mpfRoot: ByteString
+        ): (TraversalCtx, ByteString) = {
+            blocks match
+                case Nil =>
+                    proofs match
+                        case Nil => (ctx, mpfRoot)
+                        case _   => fail("MPF proof count mismatch")
+                case Cons(block, bTail) =>
+                    proofs match
+                        case Cons(proof, pTail) =>
+                            val newCtx = accumulateBlock(ctx, block)
+                            val newRoot =
+                                MPF(mpfRoot).insert(block.hash, block.hash, proof).root
+                            loop(bTail, pTail, newCtx, newRoot)
+                        case Nil => fail("MPF proof count mismatch")
         }
 
-        // scalus.prelude.log("processing headers")
-        val forksTreeAfterAddition = processHeaders(blockHeaders, prevState.forksTree)
-        // scalus.prelude.log("headers processed")
+        val (finalCtx, finalRoot) =
+            loop(promoted, mpfProofs, ctx0, state.confirmedBlocksRoot)
 
-        // Select canonical chain (highest chainwork)
-        // scalus.prelude.log("selecting canonical chain")
-        val canonicalBranchOpt = selectCanonicalChain(forksTreeAfterAddition)
-        val canonicalTipHash = canonicalBranchOpt match
-            case Option.Some(branch) =>
-                // scalus.prelude.log("canonical tip found")
-                branch.tipHash
-            case Option.None =>
-                // scalus.prelude.log("canonical tip is prev hash")
-                prevState.blockHash
-
-        // Promote qualified blocks (100+ confirmations AND 200+ min old)
-        // scalus.prelude.log("promoting qualified blocks")
-        val (promotedBlocks, forksTreeAfterPromotion) = promoteQualifiedBlocks(
-          forksTreeAfterAddition,
-          prevState.blockHash, // confirmedTip
-          prevState.blockHeight,
-          currentTime
+        ChainState(
+          blockHeight = finalCtx.height,
+          blockHash = finalCtx.lastBlockHash,
+          currentTarget = finalCtx.currentBits,
+          recentTimestamps = finalCtx.timestamps.take(MedianTimeSpan),
+          previousDifficultyAdjustmentTimestamp = finalCtx.prevDiffAdjTimestamp,
+          confirmedBlocksRoot = finalRoot,
+          forksTree = cleanedTree
         )
+    }
 
-        // if promotedBlocks.isEmpty then
-        //     scalus.prelude.log("no blocks promoted")
-        // else
-        //     scalus.prelude.log("blocks promoted")
+    // ============================================================================
+    // Main compute function
+    // ============================================================================
 
-        // Run garbage collection if forks tree exceeds size limit
-        val finalForksTree =
-            if forksTreeAfterPromotion.size > MaxForksTreeSize then
-                // scalus.prelude.log("running GC")
-                garbageCollect(
-                  forksTreeAfterPromotion,
-                  prevState.blockHash, // confirmedTip
-                  prevState.blockHeight,
+    /** Compute the new [[ChainState]] after applying an [[UpdateOracle]].
+      *
+      * Four phases:
+      *   1. '''Insert''': validate new block headers and insert into the fork tree
+      *   1. '''Best chain''': find the highest-chainwork path (single full tree traversal)
+      *   1. '''Promote + GC''': promote eligible blocks to confirmed state and drop dead forks
+      *      (single traversal along best path)
+      *   1. '''Apply''': update confirmed state with promoted blocks and MPF proofs
+      *
+      * Steps 2-4 are skipped when no MPF proofs are provided (header-only submission). When proofs
+      * are provided, the number of promoted blocks must match exactly.
+      */
+    def computeUpdate(
+        state: ChainState,
+        update: UpdateOracle,
+        currentTime: BigInt,
+        params: BitcoinValidatorParams
+    ): ChainState = {
+        val headers = update.blockHeaders
+        val ctx0 = initCtx(state)
+
+        // Step 1: Validate and insert new blocks into tree (or keep tree if no headers)
+        val newTree = headers match
+            case Nil => state.forksTree
+            case _ =>
+                validateAndInsert(
+                  state.forksTree,
+                  update.parentPath,
+                  headers,
+                  ctx0,
                   currentTime
                 )
-            else
-                // scalus.prelude.log("skipping GC")
-                forksTreeAfterPromotion
+        log("validateAndInsert")
 
-        // Compute new state
-        // If blocks were promoted, update confirmed state
-        // scalus.prelude.log("computing final state")
+        val promotionProofs = update.mpfInsertProofs
+        val numBlocksToPromote = promotionProofs.length
+        if numBlocksToPromote > BigInt(0) then
+            // Step 2: Find best chain by chainwork (single full traversal)
+            val (_, bestDepth, bestPath) = bestChainPath(newTree, state.blockHeight, BigInt(0))
+            log("bestChainPath")
 
-        // Log final forksTree size
-        val finalTreeSize = finalForksTree.size
-        // scalus.prelude.log("ON-CHAIN final forksTree size:")
-        // scalus.prelude.log(scalus.prelude.show(finalTreeSize))
+            // Step 3: Promote eligible blocks + GC dead forks (single traversal along bestPath)
+            val (promoted, cleanedTree) =
+                promoteAndGC(
+                  newTree,
+                  ctx0,
+                  bestPath,
+                  bestDepth,
+                  currentTime,
+                  numBlocksToPromote,
+                  params
+                )
+            log("promoteAndGC")
+            require(promoted.length == numBlocksToPromote, "Promoted block count mismatch")
 
-        if promotedBlocks.isEmpty then
-            // No promotion: only forks tree changed
-            // scalus.prelude.log("no promotion, returning state with updated forks")
-            ChainState(
-              blockHeight = prevState.blockHeight,
-              blockHash = prevState.blockHash,
-              currentTarget = prevState.currentTarget,
-              blockTimestamp = prevState.blockTimestamp,
-              recentTimestamps = prevState.recentTimestamps,
-              previousDifficultyAdjustmentTimestamp =
-                  prevState.previousDifficultyAdjustmentTimestamp,
-              confirmedBlocksRoot = prevState.confirmedBlocksRoot,
-              forksTree = finalForksTree
-            )
+            // Step 4: Apply promotions and set cleaned tree
+            val updatedState =
+                applyPromotions(state, promoted, promotionProofs, ctx0, cleanedTree)
+            log("applyPromotions")
+            updatedState
         else
-            // scalus.prelude.log("promotion occurred, updating confirmed state")
-            // Promotion occurred: update confirmed state
-            // Get the latest (newest) promoted block (last in oldest-first list)
-            val latestPromotedBlock = promotedBlocks.last
-
-            // Insert promoted blocks into MPF trie (in order from oldest to newest)
-            // Each insert proof must correspond to the trie state after previous inserts
-            def applyMpfInserts(
-                root: ByteString,
-                blocks: List[BlockSummary],
-                proofs: List[List[ProofStep]]
-            ): ByteString =
-                blocks match
-                    case List.Nil =>
-                        proofs match
-                            case List.Nil => root
-                            case _        => fail("MPF proof count mismatch")
-                    case List.Cons(block, bTail) =>
-                        proofs match
-                            case List.Cons(proof, pTail) =>
-                                val newRoot =
-                                    MPF(root).insert(block.hash, block.hash, proof).root
-                                applyMpfInserts(newRoot, bTail, pTail)
-                            case List.Nil => fail("MPF proof count mismatch")
-
-            val updatedRoot =
-                applyMpfInserts(prevState.confirmedBlocksRoot, promotedBlocks, mpfInsertProofs)
-
-            val updatedConfirmedState =
-                applyPromotionsToConfirmedState(prevState, promotedBlocks)
-
-            ChainState(
-              blockHeight = updatedConfirmedState.blockHeight,
-              blockHash = updatedConfirmedState.blockHash,
-              currentTarget = updatedConfirmedState.currentTarget,
-              blockTimestamp = updatedConfirmedState.blockTimestamp,
-              recentTimestamps = updatedConfirmedState.recentTimestamps,
-              previousDifficultyAdjustmentTimestamp =
-                  updatedConfirmedState.previousDifficultyAdjustmentTimestamp,
-              confirmedBlocksRoot = updatedRoot,
-              forksTree = finalForksTree
-            )
+            // No proofs → header-only submission, skip promotion and GC
+            state.copy(forksTree = newTree)
     }
+
+    // ============================================================================
+    // Spend entry point
+    // ============================================================================
 
     def findUniqueOutputFrom(outputs: List[TxOut], scriptAddress: Address): TxOut = {
         val matchingOutputs = outputs.filter(out => out.address === scriptAddress)
@@ -1036,82 +865,73 @@ object BitcoinValidator extends DataParameterizedValidator {
         matchingOutputs.head
     }
 
-    inline def update(
-        outRef: TxOutRef,
-        action: Action,
-        inputs: List[TxInInfo],
-        outputs: List[TxOut],
-        validRange: Interval
+    inline override def spend(
+        param: Data,
+        datum: Option[Datum],
+        redeemer: Datum,
+        tx: TxInfo,
+        outRef: TxOutRef
     ): Unit = {
-        val intervalStartInSeconds = validRange.from.boundType match
+        val params = param.to[BitcoinValidatorParams]
+        val update = redeemer.to[UpdateOracle]
+
+        val intervalStartInSeconds = tx.validRange.from.boundType match
             case IntervalBoundType.Finite(time) => time / 1000
             case _                              => fail("Must have finite interval start")
 
-        // Find the continuing output (output to the same script address)
+        val inputs = tx.inputs
+        val outputs = tx.outputs
+
+        // Find own input
         val ownInput = inputs
-            .find {
-                _.outRef === outRef
-            }
+            .find(_.outRef === outRef)
             .getOrFail("Input not found")
             .resolved
-        val prevState =
-            ownInput.datum match
-                case OutputDatum.OutputDatum(datum) =>
-                    datum.to[ChainState]
-                case _ => fail("No datum")
-        action match
-            case Action.UpdateOracle(blockHeaders, redeemerTime, mpfInsertProofs) =>
 
-                // Verify redeemer time is within tolerance of actual validity interval time
-                val timeDiff =
-                    if redeemerTime > intervalStartInSeconds then
-                        redeemerTime - intervalStartInSeconds
-                    else intervalStartInSeconds - redeemerTime
+        val prevState = ownInput.datum match
+            case OutputDatum.OutputDatum(d) => d.to[ChainState]
+            case _                          => fail("No inline datum")
 
-                require(
-                  timeDiff <= TimeToleranceSeconds,
-                  "Redeemer time too far from validity interval"
-                )
+        // Compute expected new state
+        val computedState = computeUpdate(prevState, update, intervalStartInSeconds, params)
 
-                // Compute the new state using time from redeemer (ensures offline/online consistency)
-                val computedState =
-                    computeUpdateOracleState(prevState, blockHeaders, redeemerTime, mpfInsertProofs)
+        // Find continuing output
+        val continuingOutput = findUniqueOutputFrom(outputs, ownInput.address)
 
-                val continuingOutput = findUniqueOutputFrom(outputs, ownInput.address)
+        // NFT preservation
+        require(
+          ownInput.value.withoutLovelace === continuingOutput.value.withoutLovelace,
+          "Non-ADA tokens must be preserved"
+        )
 
-                // NFT preservation check: non-ADA tokens must be preserved
-                require(
-                  ownInput.value.withoutLovelace === continuingOutput.value.withoutLovelace,
-                  "Non-ADA tokens must be preserved"
-                )
+        // Verify output datum matches computed state
+        val providedOutputDatum = continuingOutput.datum match
+            case OutputDatum.OutputDatum(d) => d
+            case _                          => fail("Continuing output must have inline datum")
 
-                // Extract the datum from the continuing output (provided by transaction builder)
-                val providedOutputDatum = continuingOutput.datum match
-                    case OutputDatum.OutputDatum(datum) => datum
-                    case _ => fail("Continuing output must have inline datum")
-
-                val computedStateDatum = computedState.toData
-
-                require(
-                  computedStateDatum == providedOutputDatum,
-                  "Computed state does not match provided output datum"
-                )
+        log("spend: providedOutputDatum")
+        require(
+          computedState.toData == providedOutputDatum,
+          "Computed state does not match provided output datum"
+        )
+        log("spend: computedState.toData == providedOutputDatum")
     }
 
     import StrictLookups.*
     // One-shot NFT minting policy
-    // param: TxOutRef that must be consumed to mint (one-shot guarantee)
+    // param: BitcoinValidatorParams containing the TxOutRef that must be consumed to mint
     // redeemer: BigInt index of the oracle output in tx.outputs
     inline override def mint(
-        oneShotTxOutRef: Data,
+        param: Data,
         redeemer: Data,
         policyId: PolicyId,
         tx: TxInfo
     ): Unit = {
+        val params = param.to[BitcoinValidatorParams]
         val minted = tx.mint.toSortedMap.lookupOrFail(policyId).toData
         if minted == SortedMap.singleton(ByteString.empty, BigInt(1)).toData then
             // ensure we spend the one-shot TxOutRef
-            tx.inputs.findOrFail(_.outRef.toData == oneShotTxOutRef)
+            tx.inputs.findOrFail(_.outRef.toData == params.oneShotTxOutRef.toData)
             // Verify oracle output contains the NFT at the specified index
             val outputIndex = redeemer.to[BigInt]
             val oracleOutput = tx.outputs !! outputIndex
@@ -1132,30 +952,6 @@ object BitcoinValidator extends DataParameterizedValidator {
               "can only mint 1 or burn 1 SP NFT"
             )
     }
-
-    // This one is for V3 lowering
-    inline override def spend(
-        param: Data,
-        datum: Option[Datum],
-        redeemer: Datum,
-        tx: TxInfo,
-        outRef: TxOutRef
-    ): Unit = {
-        val action = redeemer.to[Action]
-
-        val inputs = tx.inputs
-        val outputs = tx.outputs
-        val validRange = tx.validRange
-
-        update(outRef, action, inputs, outputs, validRange)
-    }
-
-    def reverse(bs: ByteString): ByteString =
-        val len = lengthOfByteString(bs)
-        def loop(idx: BigInt, acc: ByteString): ByteString =
-            if idx == len then acc
-            else loop(idx + 1, consByteString(bs.at(idx), acc))
-        loop(0, ByteString.empty)
 }
 
 /** Optimized utilities
@@ -1194,4 +990,111 @@ object StrictLookups {
             go(self.toPairList)
         }
     }
+}
+
+// ============================================================================
+// Off-chain ForkTree extension methods (not compiled to Plutus)
+// ============================================================================
+
+extension [A](list: List[A]) {
+    def toScalaList: scala.collection.immutable.List[A] = list match
+        case List.Nil            => scala.collection.immutable.Nil
+        case List.Cons(head, tl) => head :: tl.toScalaList
+}
+
+extension (tree: ForkTree) {
+
+    /** Total number of blocks in the tree. */
+    def blockCount: Int = tree match
+        case ForkTree.Blocks(blocks, _, next) => blocks.size.toInt + next.blockCount
+        case ForkTree.Fork(left, right)       => left.blockCount + right.blockCount
+        case ForkTree.End                     => 0
+
+    def nonEmpty: Boolean = tree != ForkTree.End
+
+    /** Check if a block hash exists anywhere in the tree. */
+    def existsHash(hash: BlockHash): Boolean = tree match
+        case ForkTree.Blocks(blocks, _, next) =>
+            blocks.exists(_.hash == hash) || next.existsHash(hash)
+        case ForkTree.Fork(left, right) =>
+            left.existsHash(hash) || right.existsHash(hash)
+        case ForkTree.End => false
+
+    /** Height of the best chain tip (confirmed height + unconfirmed blocks). */
+    def highestHeight(baseHeight: BigInt): BigInt = {
+        val (_, depth, _) = BitcoinValidator.bestChainPath(tree, baseHeight, 0)
+        depth
+    }
+
+    /** Earliest addedTimeSeconds among all blocks in the tree, or None if empty. */
+    def oldestBlockTime: scala.Option[BigInt] = tree match
+        case ForkTree.Blocks(blocks, _, next) =>
+            var min: scala.Option[BigInt] = scala.None
+            blocks.foreach { b =>
+                min = min match
+                    case scala.Some(v) => scala.Some(v.min(b.addedTimeSeconds))
+                    case scala.None    => scala.Some(b.addedTimeSeconds)
+            }
+            val minInNext = next.oldestBlockTime
+            (min, minInNext) match
+                case (scala.Some(a), scala.Some(b)) => scala.Some(a.min(b))
+                case (a, scala.None)                => a
+                case (scala.None, b)                => b
+        case ForkTree.Fork(left, right) =>
+            (left.oldestBlockTime, right.oldestBlockTime) match
+                case (scala.Some(a), scala.Some(b)) => scala.Some(a.min(b))
+                case (a, scala.None)                => a
+                case (scala.None, b)                => b
+        case ForkTree.End => scala.None
+
+    /** Flatten all blocks in the tree into a single list (depth-first order). */
+    def toBlockList: scala.collection.immutable.List[BlockSummary] = tree match
+        case ForkTree.Blocks(blocks, _, next) =>
+            blocks.toScalaList ++ next.toBlockList
+        case ForkTree.Fork(left, right) =>
+            left.toBlockList ++ right.toBlockList
+        case ForkTree.End => scala.collection.immutable.Nil
+
+    /** Compute the insertion path to the tip of the best chain.
+      *
+      * Produces a [[Path]] (not a [[BestPath]]). At each node:
+      *   - `Blocks(bs, _, next)` with `next == End`: emit `bs.length - 1` (last block is the
+      *     parent)
+      *   - `Blocks(bs, _, next)` with `next != End`: emit `bs.length` (pass-through) and recurse
+      *   - `Fork(left, right)`: pick highest-chainwork branch (left wins ties), emit 0/1 and
+      *     recurse
+      *   - `End`: emit nothing (empty tree — parent is the confirmed tip)
+      */
+    def findTipPath: List[BigInt] = tree match
+        case ForkTree.Blocks(blocks, _, next) =>
+            next match
+                case ForkTree.End =>
+                    // Last Blocks node — tip is the last block
+                    List(blocks.length - 1)
+                case _ =>
+                    // Pass through all blocks, recurse into subtree
+                    List.Cons(blocks.length, next.findTipPath)
+        case ForkTree.Fork(left, right) =>
+            val (leftWork, _, _) = BitcoinValidator.bestChainPath(left, 0, 0)
+            val (rightWork, _, _) = BitcoinValidator.bestChainPath(right, 0, 0)
+            if leftWork >= rightWork then List.Cons(BigInt(0), left.findTipPath)
+            else List.Cons(BigInt(1), right.findTipPath)
+        case ForkTree.End => List.Nil
+
+    /** Display tree structure for debugging/CLI output. */
+    def displayTree(baseHeight: BigInt, indent: String = ""): String = tree match
+        case ForkTree.Blocks(blocks, cw, next) =>
+            val first = blocks.head
+            val last = blocks.last
+            val firstHeight = baseHeight + 1
+            val lastHeight = baseHeight + blocks.size.toInt
+            val line =
+                s"${indent}Blocks[${blocks.size.toInt}] heights $firstHeight..$lastHeight, chainwork=$cw, tip=${last.hash.toHex.take(8)}..."
+            val nextStr = next.displayTree(lastHeight, indent)
+            if nextStr.isEmpty then line else line + "\n" + nextStr
+        case ForkTree.Fork(left, right) =>
+            val leftStr = left.displayTree(baseHeight, indent + "  L ")
+            val rightStr = right.displayTree(baseHeight, indent + "  R ")
+            s"${indent}Fork:\n$leftStr\n$rightStr"
+        case ForkTree.End => ""
 }

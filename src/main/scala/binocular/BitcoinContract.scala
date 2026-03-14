@@ -17,9 +17,21 @@ object BitcoinContract {
 
     lazy val contract = PlutusV3.compile(BitcoinValidator.validate)
 
-    /** Apply a TxOutRef parameter to get the final script */
+    /** Apply a BitcoinValidatorParams to get the final script */
+    def makeScript(params: BitcoinValidatorParams): Program =
+        (contract.program.deBruijnedProgram $ params.toData).toProgram
+
+    /** Convenience: apply just a TxOutRef with default params */
     def makeScript(txOutRef: TxOutRef): Program =
-        (contract.program.deBruijnedProgram $ txOutRef.toData).toProgram
+        makeScript(validatorParams(txOutRef))
+
+    /** Build default params from a TxOutRef */
+    def validatorParams(txOutRef: TxOutRef): BitcoinValidatorParams =
+        BitcoinValidatorParams(
+          maturationConfirmations = 100,
+          challengeAging = 200 * 60,
+          oneShotTxOutRef = txOutRef
+        )
 
     /** Dummy TxOutRef for tests */
     lazy val testTxOutRef: TxOutRef = TxOutRef(
@@ -27,6 +39,9 @@ object BitcoinContract {
       BigInt(0)
     )
 
+    /** Test params with dummy TxOutRef */
+    lazy val testParams: BitcoinValidatorParams = validatorParams(testTxOutRef)
+
     /** Test program with dummy parameter applied */
-    lazy val bitcoinProgram: Program = makeScript(testTxOutRef)
+    lazy val bitcoinProgram: Program = makeScript(testParams)
 }
