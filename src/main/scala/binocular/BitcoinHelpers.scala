@@ -7,7 +7,20 @@ import scalus.cardano.onchain.plutus.prelude.{List, Math, *}
 import scalus.cardano.onchain.plutus.prelude.Math.pow
 import scalus.*
 
+import scalus.uplc.builtin.Data.{FromData, ToData}
+import scalus.compiler.Compile
+
 import scala.annotation.tailrec
+
+case class CoinbaseTx(
+    version: ByteString,
+    inputScriptSigAndSequence: ByteString,
+    txOutsAndLockTime: ByteString
+) derives FromData,
+      ToData
+
+@Compile
+object CoinbaseTx
 
 @Compile
 object BitcoinHelpers {

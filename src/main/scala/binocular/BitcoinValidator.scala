@@ -33,16 +33,6 @@ type NonEmptyList[A] = List[A]
 type List11Timestamps = List[PosixTimeSeconds]
 type MPFRoot = ByteString
 
-case class CoinbaseTx(
-    version: ByteString,
-    inputScriptSigAndSequence: ByteString,
-    txOutsAndLockTime: ByteString
-) derives FromData,
-      ToData
-
-@Compile
-object CoinbaseTx
-
 case class BlockHeader(bytes: ByteString) derives FromData, ToData
 @Compile
 object BlockHeader
@@ -68,18 +58,29 @@ case class BlockSummary(
 
 /** Binary tree of unconfirmed block segments.
   *
-  * '''Fork ordering invariant:''' `Fork(left = existing, right = new)`. Every fork-creating
-  * operation in [[BitcoinValidator.validateAndInsert]] places the pre-existing subtree on the left
-  * and the newly submitted branch on the right. This mirrors Bitcoin Core's first-seen preference:
-  * `CBlockIndexWorkComparator` (`blockstorage.cpp`) breaks equal-chainwork ties by `nSequenceId`,
-  * favoring whichever chain tip was received first. Since [[BitcoinValidator.bestChainPath]] uses
-  * `>=` when comparing left vs right chainwork, the left (existing/older) branch wins ties —
-  * achieving the same "never reorg to an equal-work competitor" behavior as Bitcoin Core.
+  * ## Fork ordering invariant:
+  *
+  * `Fork(left = existing, right = new)`.
+  *
+  * Every fork-creating operation in [[BitcoinValidator.validateAndInsert]] places the pre-existing
+  * subtree on the left and the newly submitted branch on the right. This mirrors Bitcoin Core's
+  * first-seen preference: `CBlockIndexWorkComparator` (`blockstorage.cpp`) breaks equal-chainwork
+  * ties by `nSequenceId`, favoring whichever chain tip was received first.
+  *
+  * Since [[BitcoinValidator.bestChainPath]] uses `>=` when comparing left vs right chainwork, the
+  * left (existing/older) branch wins ties — achieving the same "never reorg to an equal-work
+  * competitor" behavior as Bitcoin Core.
   */
 enum ForkTree derives FromData, ToData {
     case Blocks(blocks: NonEmptyList[BlockSummary], chainwork: Chainwork, next: ForkTree)
     case Fork(left: ForkTree, right: ForkTree)
     case End
+
+    /** Total number of blocks in the tree. */
+    def blockCount: Int = this match
+        case ForkTree.Blocks(blocks, _, next) => blocks.size.toInt + next.blockCount
+        case ForkTree.Fork(left, right)       => left.blockCount + right.blockCount
+        case ForkTree.End                     => 0
 }
 
 case class ChainState(
@@ -996,19 +997,7 @@ object StrictLookups {
 // Off-chain ForkTree extension methods (not compiled to Plutus)
 // ============================================================================
 
-extension [A](list: List[A]) {
-    def toScalaList: scala.collection.immutable.List[A] = list match
-        case List.Nil            => scala.collection.immutable.Nil
-        case List.Cons(head, tl) => head :: tl.toScalaList
-}
-
 extension (tree: ForkTree) {
-
-    /** Total number of blocks in the tree. */
-    def blockCount: Int = tree match
-        case ForkTree.Blocks(blocks, _, next) => blocks.size.toInt + next.blockCount
-        case ForkTree.Fork(left, right)       => left.blockCount + right.blockCount
-        case ForkTree.End                     => 0
 
     def nonEmpty: Boolean = tree != ForkTree.End
 
