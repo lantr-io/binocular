@@ -3,6 +3,7 @@ package binocular
 import scalus.*
 import scalus.cardano.blueprint.{Blueprint, HasTypeDescription, Preamble, Validator}
 import scalus.cardano.ledger.MajorProtocolVersion
+import scalus.cardano.onchain.plutus.v1.PubKeyHash
 import scalus.cardano.onchain.plutus.v3.TxOutRef
 import scalus.compiler.Options
 import scalus.uplc.builtin.Data
@@ -22,12 +23,18 @@ object BitcoinContract {
     def makeContract(params: BitcoinValidatorParams): PlutusV3[Data => Unit] =
         contract(params.toData)
 
-    /** Build default params from a TxOutRef */
-    def validatorParams(txOutRef: TxOutRef): BitcoinValidatorParams =
+    /** Build default params from a TxOutRef and owner */
+    def validatorParams(
+        txOutRef: TxOutRef,
+        owner: PubKeyHash,
+        closureTimeout: BigInt = 30 * 24 * 60 * 60 // 30 days
+    ): BitcoinValidatorParams =
         BitcoinValidatorParams(
           maturationConfirmations = 100,
           challengeAging = 200 * 60,
-          oneShotTxOutRef = txOutRef
+          oneShotTxOutRef = txOutRef,
+          closureTimeout = closureTimeout,
+          owner = owner
         )
 
     lazy val blueprint: Blueprint = {
@@ -54,7 +61,7 @@ object BitcoinContract {
             Validator(
               title = title,
               description = Some(description),
-              redeemer = Some(summon[HasTypeDescription[UpdateOracle]].typeDescription),
+              redeemer = Some(summon[HasTypeDescription[OracleAction]].typeDescription),
               datum = Some(summon[HasTypeDescription[ChainState]].typeDescription),
               parameters = Some(scala.List(param)),
               compiledCode = Some(compiled.program.cborEncoded.toHex),

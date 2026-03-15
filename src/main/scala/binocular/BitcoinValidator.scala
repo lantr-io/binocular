@@ -5,7 +5,7 @@ import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry as MPF
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import scalus.cardano.onchain.plutus.prelude.List.*
 import scalus.cardano.onchain.plutus.prelude.{List, *}
-import scalus.cardano.onchain.plutus.v1.{Address, Credential, PolicyId, PosixTime}
+import scalus.cardano.onchain.plutus.v1.{Address, Credential, PolicyId, PosixTime, PubKeyHash}
 import scalus.cardano.onchain.plutus.v2.OutputDatum
 import scalus.cardano.onchain.plutus.v3.{DataParameterizedValidator, *}
 import scalus.compiler.Compile
@@ -199,12 +199,14 @@ type Path = List[PathElement]
   */
 type BestPath = List[PathElement]
 
-case class UpdateOracle(
-    blockHeaders: List[BlockHeader],
-    parentPath: Path,
-    mpfInsertProofs: List[List[ProofStep]]
-) derives FromData,
-      ToData
+enum OracleAction derives FromData, ToData {
+    case UpdateOracle(
+        blockHeaders: List[BlockHeader],
+        parentPath: Path,
+        mpfInsertProofs: List[List[ProofStep]]
+    )
+    case CloseOracle
+}
 
 case class TraversalCtx(
     timestamps: NonEmptyList[PosixTimeSeconds], // newest-first (prepended during accumulation)
@@ -219,6 +221,8 @@ case class BitcoinValidatorParams(
     maturationConfirmations: BigInt,
     challengeAging: BigInt,
     oneShotTxOutRef: TxOutRef,
+    closureTimeout: BigInt,
+    owner: PubKeyHash,
     testingMode: Boolean = false
 ) derives FromData,
       ToData
@@ -924,28 +928,29 @@ object BitcoinValidator extends DataParameterizedValidator {
       */
     def computeUpdate(
         state: ChainState,
-        update: UpdateOracle,
+        blockHeaders: List[BlockHeader],
+        parentPath: Path,
+        mpfInsertProofs: List[List[ProofStep]],
         currentTime: BigInt,
         params: BitcoinValidatorParams
     ): ChainState = {
-        val headers = update.blockHeaders
         val ctx0 = initCtx(state)
 
         // Step 1: Validate and insert new blocks into tree (or keep tree if no headers)
-        val newTree = headers match
+        val newTree = blockHeaders match
             case Nil => state.forkTree
             case _ =>
                 validateAndInsert(
                   state.forkTree,
-                  update.parentPath,
-                  headers,
+                  parentPath,
+                  blockHeaders,
                   ctx0,
                   currentTime,
                   params.testingMode
                 )
 //        log("validateAndInsert")
 
-        val promotionProofs = update.mpfInsertProofs
+        val promotionProofs = mpfInsertProofs
         val numBlocksToPromote = promotionProofs.length
         if numBlocksToPromote > BigInt(0) then
             // Step 2: Find best chain by chainwork (single full traversal)
@@ -988,7 +993,7 @@ object BitcoinValidator extends DataParameterizedValidator {
         outRef: TxOutRef
     ): Unit = {
         val params = param.to[BitcoinValidatorParams]
-        val update = redeemer.to[UpdateOracle]
+        val action = redeemer.to[OracleAction]
 
         val intervalStartMs = tx.validRange.from.finiteOrFail("Must have finite interval start")
         val intervalEndMs = tx.validRange.to.finiteOrFail("Must have finite interval end")
@@ -1010,38 +1015,62 @@ object BitcoinValidator extends DataParameterizedValidator {
             case OutputDatum.OutputDatum(d) => d.to[ChainState]
             case _                          => fail("No inline datum")
 
-        // Compute expected new chainState
-        val computedState = computeUpdate(chainState, update, intervalStartInSeconds, params)
+        action match
+            case OracleAction.UpdateOracle(blockHeaders, parentPath, mpfInsertProofs) =>
+                // Compute expected new chainState
+                val computedState =
+                    computeUpdate(
+                      chainState,
+                      blockHeaders,
+                      parentPath,
+                      mpfInsertProofs,
+                      intervalStartInSeconds,
+                      params
+                    )
 
-        // Find continuing output: address match + oracle NFT (NFT uniqueness replaces size check)
-        val continuingOutput = outputs
-            .find(out =>
-                out.address.toData == ownInput.address.toData
-                    && out.value.quantityOf(policyId, ByteString.empty) == BigInt(1)
-            )
-            .getOrFail("No continuing output with oracle NFT found")
+                // Find continuing output: address match + oracle NFT
+                val continuingOutput = outputs
+                    .find(out =>
+                        out.address.toData == ownInput.address.toData
+                            && out.value.quantityOf(policyId, ByteString.empty) == BigInt(1)
+                    )
+                    .getOrFail("No continuing output with oracle NFT found")
 
-        // NFT preservation
-        require(
-          ownInput.value.withoutLovelace.toData == continuingOutput.value.withoutLovelace.toData,
-          "Non-ADA tokens must be preserved"
-        )
+                // NFT preservation
+                require(
+                  ownInput.value.withoutLovelace.toData == continuingOutput.value.withoutLovelace.toData,
+                  "Non-ADA tokens must be preserved"
+                )
 
-        // ADA value can only increase (prevents draining oracle UTxO)
-        require(
-          continuingOutput.value.lovelaceAmount >= ownInput.value.lovelaceAmount,
-          "ADA value can only increase"
-        )
+                // ADA value can only increase (prevents draining oracle UTxO)
+                require(
+                  continuingOutput.value.lovelaceAmount >= ownInput.value.lovelaceAmount,
+                  "ADA value can only increase"
+                )
 
-        // Verify output datum matches computed chainState
-        val providedOutputDatum = continuingOutput.datum.toData
-        val expectedOutputDatum = OutputDatum.OutputDatum(computedState.toData).toData
-//        log("spend: providedOutputDatum")
-        require(
-          providedOutputDatum == expectedOutputDatum,
-          "Computed state does not match provided output datum"
-        )
-//        log("spend: computedState.toData == providedOutputDatum")
+                // Verify output datum matches computed chainState
+                val providedOutputDatum = continuingOutput.datum.toData
+                val expectedOutputDatum = OutputDatum.OutputDatum(computedState.toData).toData
+                require(
+                  providedOutputDatum == expectedOutputDatum,
+                  "Computed state does not match provided output datum"
+                )
+
+            case OracleAction.CloseOracle =>
+                // 1. Staleness check: last confirmed block timestamp must be > closureTimeout ago
+                require(
+                  intervalStartInSeconds - chainState.recentTimestamps.head > params.closureTimeout,
+                  "Oracle is not stale"
+                )
+                // 2. Owner authorization
+                require(tx.isSignedBy(params.owner), "Not signed by oracle owner")
+                // 3. NFT must be burned
+                require(
+                  tx.mint.tokens(policyId).toData == SortedMap
+                      .singleton(ByteString.empty, BigInt(-1))
+                      .toData,
+                  "Must burn oracle NFT"
+                )
     }
 
     import StrictLookups.*

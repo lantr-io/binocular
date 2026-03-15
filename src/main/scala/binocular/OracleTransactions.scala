@@ -6,6 +6,7 @@ import scalus.cardano.ledger.{CardanoInfo, PlutusScript, Script, ScriptHash, Scr
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}
 import scalus.uplc.builtin.Data
+import binocular.OracleAction.*
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
@@ -113,7 +114,9 @@ object OracleTransactions {
     ): ChainState = {
         BitcoinValidator.computeUpdate(
           currentState,
-          UpdateOracle(headers, parentPath, ScalusList.Nil),
+          headers,
+          parentPath,
+          ScalusList.Nil,
           currentTime,
           params
         )
@@ -186,7 +189,9 @@ object OracleTransactions {
         // 3. Compute the full state with real proofs
         val newState = BitcoinValidator.computeUpdate(
           currentState,
-          UpdateOracle(headers, parentPath, mpfProofs),
+          headers,
+          parentPath,
+          mpfProofs,
           currentTime,
           params
         )
@@ -305,6 +310,63 @@ object OracleTransactions {
             case Failure(ex) =>
                 Left(
                   s"Error building UpdateOracle transaction: ${ex.getMessage}\n${ex.getStackTrace.take(5).mkString("\n")}"
+                )
+        }
+    }
+
+    /** Build and submit CloseOracle transaction to close a stale oracle and burn the NFT. */
+    def buildAndSubmitCloseTransaction(
+        signer: TransactionSigner,
+        provider: BlockchainProvider,
+        scriptAddress: Address,
+        sponsorAddress: Address,
+        oracleUtxo: Utxo,
+        script: Script.PlutusV3,
+        referenceScriptUtxo: Option[Utxo] = None,
+        timeout: Duration = 120.seconds
+    ): Either[String, String] = {
+        given ec: ExecutionContext = provider.executionContext
+        Try {
+            val cardanoInfo = provider.cardanoInfo
+
+            val (validityInstant, _) =
+                computeValidityIntervalTime(cardanoInfo)
+
+            val redeemer = OracleAction.CloseOracle
+
+            var builder = TxBuilder(cardanoInfo)
+
+            val useRefScript = referenceScriptUtxo.exists(_.output.scriptRef.isDefined)
+            if useRefScript then {
+                builder = builder.references(referenceScriptUtxo.get)
+            }
+
+            builder = if useRefScript then {
+                builder.spend(oracleUtxo, redeemer)
+            } else {
+                builder.spend(oracleUtxo, redeemer, script)
+            }
+
+            // Burn the NFT (quantity -1)
+            val burnAssets = Map(scalus.cardano.ledger.AssetName.empty -> -1L)
+            builder = builder.mint(script, burnAssets, redeemer)
+
+            val validToInstant =
+                validityInstant.plusMillis(BitcoinValidator.MaxValidityWindow.toLong)
+            builder = builder
+                .payTo(sponsorAddress, Value(oracleUtxo.output.value.coin))
+                .validFrom(validityInstant)
+                .validTo(validToInstant)
+
+            val completedBuilder = builder.complete(provider, sponsorAddress).await(timeout)
+            val tx = completedBuilder.sign(signer).transaction
+
+            submitTx(provider, tx, timeout)
+        } match {
+            case Success(result) => result
+            case Failure(ex) =>
+                Left(
+                  s"Error building CloseOracle transaction: ${ex.getMessage}\n${ex.getStackTrace.take(5).mkString("\n")}"
                 )
         }
     }

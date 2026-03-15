@@ -6,6 +6,8 @@ import scalus.cardano.ledger.{AssetName, Coin, Credential, Script, TransactionHa
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
+import scalus.cardano.onchain.plutus.v1.PubKeyHash
+import scalus.testing.kit.Party
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import scalus.cardano.txbuilder.TxBuilder
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
@@ -306,10 +308,13 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
           TxId(seedInput.transactionId),
           BigInt(seedInput.index)
         )
+        val testOwner = PubKeyHash(Party.Alice.addrKeyHash)
         val params = BitcoinValidatorParams(
           maturationConfirmations = 100,
           challengeAging = 30,
-          oneShotTxOutRef = txOutRef
+          oneShotTxOutRef = txOutRef,
+          closureTimeout = 30 * 24 * 60 * 60,
+          owner = testOwner
         )
 
         val script = BitcoinContract.makeContract(params).script

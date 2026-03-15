@@ -1,7 +1,8 @@
 package binocular
 
 import scalus.cardano.address.{Address, Network}
-import scalus.cardano.ledger.{Credential, Script, ScriptHash}
+import scalus.cardano.ledger.Credential
+import scalus.cardano.onchain.plutus.v1.PubKeyHash
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import com.typesafe.config.{Config, ConfigFactory}
 import scalus.uplc.builtin.ByteString
@@ -100,6 +101,7 @@ object OracleConfig {
       *
       * Expected environment variables:
       *   - ORACLE_TX_OUT_REF: TxOutRef for NFT minting (format: txhash#index)
+      *   - ORACLE_OWNER_PKH: Hex-encoded 28-byte PubKeyHash of oracle owner
       *   - ORACLE_START_HEIGHT: Optional starting block height
       *   - ORACLE_MAX_HEADERS_PER_TX: Maximum headers per transaction (default: 10)
       *   - ORACLE_POLL_INTERVAL: Poll interval in seconds (default: 60)
@@ -124,6 +126,16 @@ object OracleConfig {
             case _ => return Left("ORACLE_TX_OUT_REF environment variable not set")
         }
 
+        val ownerPkhStr = sys.env.get("ORACLE_OWNER_PKH") match {
+            case Some(s) if s.nonEmpty => s
+            case _ => return Left("ORACLE_OWNER_PKH environment variable not set")
+        }
+        val ownerPkh = Try(PubKeyHash(ByteString.fromHex(ownerPkhStr))) match {
+            case Success(pkh) => pkh
+            case Failure(ex) =>
+                return Left(s"Invalid ORACLE_OWNER_PKH: ${ex.getMessage}")
+        }
+
         val startHeight = sys.env.get("ORACLE_START_HEIGHT").flatMap(s => Try(s.toLong).toOption)
         val maxHeadersPerTx = sys.env
             .get("ORACLE_MAX_HEADERS_PER_TX")
@@ -141,7 +153,7 @@ object OracleConfig {
         for {
             network <- CardanoNetwork.fromString(networkStr)
             txOutRef <- parseTxOutRef(txOutRefStr)
-            params = BitcoinContract.validatorParams(txOutRef)
+            params = BitcoinContract.validatorParams(txOutRef, ownerPkh)
             config = OracleConfig(
               network,
               params,
@@ -161,6 +173,7 @@ object OracleConfig {
       * binocular {
       *   oracle {
       *     tx-out-ref = "txhash#index"
+      *     owner-pkh = "hex-encoded-28-byte-pubkeyhash"
       *     start-height = 800000  # optional
       *     max-headers-per-tx = 10
       *     poll-interval = 60
@@ -189,6 +202,15 @@ object OracleConfig {
                 )
             }
 
+            val ownerPkhStr = if oracleConfig.hasPath("owner-pkh") then {
+                oracleConfig.getString("owner-pkh")
+            } else {
+                return Left(
+                  "binocular.oracle.owner-pkh not set in config"
+                )
+            }
+            val ownerPkh = PubKeyHash(ByteString.fromHex(ownerPkhStr))
+
             val startHeight = if oracleConfig.hasPath("start-height") then {
                 Some(oracleConfig.getLong("start-height"))
             } else {
@@ -213,7 +235,7 @@ object OracleConfig {
             for {
                 network <- CardanoNetwork.fromString(cardanoNetwork)
                 txOutRef <- parseTxOutRef(txOutRefStr)
-                params = BitcoinContract.validatorParams(txOutRef)
+                params = BitcoinContract.validatorParams(txOutRef, ownerPkh)
                 oracleConf = OracleConfig(
                   network,
                   params,

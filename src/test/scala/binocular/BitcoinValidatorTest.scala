@@ -21,7 +21,10 @@ import scalus.uplc.eval.*
 
 import java.time.Instant
 import binocular.ForkTree.*
+import binocular.OracleAction.*
 import scalus.cardano.address.{ShelleyAddress, ShelleyDelegationPart, ShelleyPaymentPart}
+import scalus.cardano.onchain.plutus.v1.PubKeyHash
+import scalus.testing.kit.Party
 
 class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyChecks {
     private given env: CardanoInfo = CardanoInfo.mainnet
@@ -36,10 +39,14 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
       BigInt(0)
     )
 
+    private val testOwner = PubKeyHash(Party.Alice.addrKeyHash)
+
     private val testParams = BitcoinValidatorParams(
       maturationConfirmations = 100,
       challengeAging = 200 * 60, // 200 minutes in seconds
-      oneShotTxOutRef = testTxOutRef
+      oneShotTxOutRef = testTxOutRef,
+      closureTimeout = 30 * 24 * 60 * 60, // 30 days
+      owner = testOwner
     )
 
     private val testContract = {
@@ -232,7 +239,14 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
               mpfInsertProofs = prelude.List.Nil
             )
             val expectedState =
-                BitcoinValidator.computeUpdate(prevState, update, lastTimestamp, testParams)
+                BitcoinValidator.computeUpdate(
+                  state = prevState,
+                  blockHeaders = headersScalus,
+                  parentPath = prelude.List.Nil,
+                  mpfInsertProofs = prelude.List.Nil,
+                  currentTime = lastTimestamp,
+                  params = testParams
+                )
 
 //            pprint.pprintln(expectedState)
 
@@ -337,13 +351,15 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         val lastPreloadFixture = BlockFixture.load(baseHeight + preloadCount)
         val preloadTime = BigInt(lastPreloadFixture.timestamp)
 
-        val preloadUpdate = UpdateOracle(
-          blockHeaders = preloadHeadersScalus,
-          parentPath = prelude.List.Nil,
-          mpfInsertProofs = prelude.List.Nil
-        )
         val stateWith100Blocks =
-            BitcoinValidator.computeUpdate(initialState, preloadUpdate, preloadTime, testParams)
+            BitcoinValidator.computeUpdate(
+              state = initialState,
+              blockHeaders = preloadHeadersScalus,
+              parentPath = prelude.List.Nil,
+              mpfInsertProofs = prelude.List.Nil,
+              currentTime = preloadTime,
+              params = testParams
+            )
 
         val input = Input(
           TransactionHash.fromHex(
@@ -443,7 +459,14 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
               mpfInsertProofs = mpfProofsScalus
             )
             val expectedState =
-                BitcoinValidator.computeUpdate(stateWith100Blocks, update, currentTime, testParams)
+                BitcoinValidator.computeUpdate(
+                  state = stateWith100Blocks,
+                  blockHeaders = newHeadersScalus,
+                  parentPath = parentPath,
+                  mpfInsertProofs = mpfProofsScalus,
+                  currentTime = currentTime,
+                  params = testParams
+                )
 
             val redeemer = update.toData
             val inputValue = nftValue(5)
@@ -644,7 +667,14 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
           mpfInsertProofs = prelude.List.Nil
         )
         val expectedState =
-            BitcoinValidator.computeUpdate(prevState, update, currentTime, testParams)
+            BitcoinValidator.computeUpdate(
+              state = prevState,
+              blockHeaders = headersScalus,
+              parentPath = prelude.List.Nil,
+              mpfInsertProofs = prelude.List.Nil,
+              currentTime = currentTime,
+              params = testParams
+            )
 
         val input = Input(
           TransactionHash.fromHex(
@@ -724,7 +754,14 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
           mpfInsertProofs = prelude.List.Nil
         )
         val expectedState =
-            BitcoinValidator.computeUpdate(prevState, update, currentTime, testParams)
+            BitcoinValidator.computeUpdate(
+              state = prevState,
+              blockHeaders = headersScalus,
+              parentPath = prelude.List.Nil,
+              mpfInsertProofs = prelude.List.Nil,
+              currentTime = currentTime,
+              params = testParams
+            )
 
         val input = Input(
           TransactionHash.fromHex(
@@ -807,13 +844,15 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         val lastPreloadFixture = BlockFixture.load(baseHeight + preloadCount)
         val preloadTime = BigInt(lastPreloadFixture.timestamp)
 
-        val preloadUpdate = UpdateOracle(
-          blockHeaders = preloadHeadersScalus,
-          parentPath = prelude.List.Nil,
-          mpfInsertProofs = prelude.List.Nil
-        )
         val stateWith100Blocks =
-            BitcoinValidator.computeUpdate(initialState, preloadUpdate, preloadTime, testParams)
+            BitcoinValidator.computeUpdate(
+              state = initialState,
+              blockHeaders = preloadHeadersScalus,
+              parentPath = prelude.List.Nil,
+              mpfInsertProofs = prelude.List.Nil,
+              currentTime = preloadTime,
+              params = testParams
+            )
 
         // Add 1 new header (866981) and promote 1 block
         val newHeader = BlockFixture.loadWithHeader(baseHeight + preloadCount + 1)._2
@@ -870,7 +909,14 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
           mpfInsertProofs = mpfProofsScalus
         )
         val expectedState =
-            BitcoinValidator.computeUpdate(stateWith100Blocks, update, currentTime, testParams)
+            BitcoinValidator.computeUpdate(
+              state = stateWith100Blocks,
+              blockHeaders = newHeadersScalus,
+              parentPath = parentPath,
+              mpfInsertProofs = mpfProofsScalus,
+              currentTime = currentTime,
+              params = testParams
+            )
 
         val input = Input(
           TransactionHash.fromHex(
@@ -988,7 +1034,14 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
           mpfInsertProofs = prelude.List.Nil
         )
         val expectedState =
-            BitcoinValidator.computeUpdate(prevState, update, currentTime, testParams)
+            BitcoinValidator.computeUpdate(
+              state = prevState,
+              blockHeaders = headersScalus,
+              parentPath = prelude.List.Nil,
+              mpfInsertProofs = prelude.List.Nil,
+              currentTime = currentTime,
+              params = testParams
+            )
 
         val input = Input(
           TransactionHash.fromHex(
@@ -1089,6 +1142,206 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         assert(
           result.isFailure,
           "Decreasing ADA value must be rejected"
+        )
+    }
+
+    // =========================================================================
+    // CloseOracle tests
+    // =========================================================================
+
+    /** Shared setup for CloseOracle tests. Creates a stale oracle with recentTimestamps.head set to
+      * `lastBlockTimestamp`. Returns everything needed to build a close transaction.
+      */
+    private def closeOracleSetup(lastBlockTimestamp: BigInt) = {
+        val prevState = ChainState(
+          blockHeight = 866880,
+          blockHash = ByteString.unsafeFromArray(Array.fill(32)(0: Byte)),
+          currentTarget = ByteString.unsafeFromArray(Array.fill(4)(0xff.toByte)),
+          recentTimestamps =
+              prelude.List.from((0 until 11).map(i => lastBlockTimestamp - i * 600).toList),
+          previousDifficultyAdjustmentTimestamp = lastBlockTimestamp - 11 * 600,
+          confirmedBlocksRoot = ByteString.unsafeFromArray(Array.fill(32)(0: Byte)),
+          forkTree = ForkTree.End
+        )
+
+        val input = Input(
+          TransactionHash.fromHex(
+            "1ab6879fc08345f51dc9571ac4f530bf8673e0d798758c470f9af6f98e2f3982"
+          ),
+          0
+        )
+        val refScriptUtxo = Utxo(
+          Input(
+            TransactionHash.fromHex(
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            0
+          ),
+          Output(
+            testScriptAddr,
+            Value.ada(10),
+            None,
+            Some(ScriptRef(testContract.script))
+          )
+        )
+
+        (prevState, input, refScriptUtxo)
+    }
+
+    test("CloseOracle succeeds when oracle is stale and signed by owner") {
+        // Oracle's last confirmed block timestamp is 60 days ago
+        val lastBlockTimestamp = BigInt(1700000000)
+        val currentTime = lastBlockTimestamp + 60 * 24 * 60 * 60 // 60 days later
+
+        val (prevState, input, refScriptUtxo) = closeOracleSetup(lastBlockTimestamp)
+
+        val inputValue = nftValue(5)
+        val utxo = Utxo(
+          input,
+          Output(testScriptAddr, inputValue, DatumOption.Inline(prevState.toData))
+        )
+        val utxos: Utxos =
+            Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
+
+        val redeemer = OracleAction.CloseOracle.toData
+        val validFrom = Instant.ofEpochSecond(currentTime.toLong)
+        val validTo = validFrom.plusSeconds(600)
+
+        val draft = txBuilder
+            .references(refScriptUtxo, testContract)
+            .spend(utxo, redeemer)
+            .mint(testContract, Map(AssetName.empty -> -1L), redeemer)
+            .requireSignature(
+              Party.Alice.addrKeyHash
+            )
+            .validFrom(validFrom)
+            .validTo(validTo)
+            .draft
+
+        val scriptContext = draft.getScriptContextV3(utxos, ForSpend(input))
+        val result = testProgram.applyArg(scriptContext.toData).evaluateDebug
+
+        assert(
+          result.isSuccess,
+          s"CloseOracle should succeed when stale + signed + NFT burned, but got: $result"
+        )
+    }
+
+    test("CloseOracle fails when oracle is not stale") {
+        // Oracle's last confirmed block timestamp is recent (only 1 day ago)
+        val lastBlockTimestamp = BigInt(1700000000)
+        val currentTime = lastBlockTimestamp + 1 * 24 * 60 * 60 // only 1 day later (< 30 days)
+
+        val (prevState, input, refScriptUtxo) = closeOracleSetup(lastBlockTimestamp)
+
+        val inputValue = nftValue(5)
+        val utxo = Utxo(
+          input,
+          Output(testScriptAddr, inputValue, DatumOption.Inline(prevState.toData))
+        )
+        val utxos: Utxos =
+            Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
+
+        val redeemer = OracleAction.CloseOracle.toData
+        val validFrom = Instant.ofEpochSecond(currentTime.toLong)
+        val validTo = validFrom.plusSeconds(600)
+
+        val draft = txBuilder
+            .references(refScriptUtxo, testContract)
+            .spend(utxo, redeemer)
+            .mint(testContract, Map(AssetName.empty -> -1L), redeemer)
+            .requireSignature(
+              Party.Alice.addrKeyHash
+            )
+            .validFrom(validFrom)
+            .validTo(validTo)
+            .draft
+
+        val scriptContext = draft.getScriptContextV3(utxos, ForSpend(input))
+        val result = testProgram.applyArg(scriptContext.toData).evaluateDebug
+
+        assert(
+          result.isFailure,
+          "CloseOracle should fail when oracle is not stale"
+        )
+    }
+
+    test("CloseOracle fails when not signed by owner") {
+        val lastBlockTimestamp = BigInt(1700000000)
+        val currentTime = lastBlockTimestamp + 60 * 24 * 60 * 60
+
+        val (prevState, input, refScriptUtxo) = closeOracleSetup(lastBlockTimestamp)
+
+        val inputValue = nftValue(5)
+        val utxo = Utxo(
+          input,
+          Output(testScriptAddr, inputValue, DatumOption.Inline(prevState.toData))
+        )
+        val utxos: Utxos =
+            Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
+
+        val redeemer = OracleAction.CloseOracle.toData
+        val validFrom = Instant.ofEpochSecond(currentTime.toLong)
+        val validTo = validFrom.plusSeconds(600)
+
+        // Use a wrong signer (different key hash)
+        val wrongSigner = scalus.cardano.ledger.AddrKeyHash(
+          hex"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        )
+
+        val draft = txBuilder
+            .references(refScriptUtxo, testContract)
+            .spend(utxo, redeemer)
+            .mint(testContract, Map(AssetName.empty -> -1L), redeemer)
+            .requireSignature(wrongSigner)
+            .validFrom(validFrom)
+            .validTo(validTo)
+            .draft
+
+        val scriptContext = draft.getScriptContextV3(utxos, ForSpend(input))
+        val result = testProgram.applyArg(scriptContext.toData).evaluateDebug
+
+        assert(
+          result.isFailure,
+          "CloseOracle should fail when not signed by oracle owner"
+        )
+    }
+
+    test("CloseOracle fails when NFT is not burned") {
+        val lastBlockTimestamp = BigInt(1700000000)
+        val currentTime = lastBlockTimestamp + 60 * 24 * 60 * 60
+
+        val (prevState, input, refScriptUtxo) = closeOracleSetup(lastBlockTimestamp)
+
+        val inputValue = nftValue(5)
+        val utxo = Utxo(
+          input,
+          Output(testScriptAddr, inputValue, DatumOption.Inline(prevState.toData))
+        )
+        val utxos: Utxos =
+            Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
+
+        val redeemer = OracleAction.CloseOracle.toData
+        val validFrom = Instant.ofEpochSecond(currentTime.toLong)
+        val validTo = validFrom.plusSeconds(600)
+
+        // No mint/burn — NFT is not burned
+        val draft = txBuilder
+            .references(refScriptUtxo, testContract)
+            .spend(utxo, redeemer)
+            .requireSignature(
+              Party.Alice.addrKeyHash
+            )
+            .validFrom(validFrom)
+            .validTo(validTo)
+            .draft
+
+        val scriptContext = draft.getScriptContextV3(utxos, ForSpend(input))
+        val result = testProgram.applyArg(scriptContext.toData).evaluateDebug
+
+        assert(
+          result.isFailure,
+          "CloseOracle should fail when NFT is not burned"
         )
     }
 

@@ -3,6 +3,7 @@ package binocular
 import binocular.BitcoinHelpers.*
 import binocular.ForkTree.*
 import org.scalacheck.Gen
+import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 import scalus.cardano.onchain.plutus.prelude
@@ -108,13 +109,15 @@ class ForkTreePropertyTest
         .deBruijnedProgram
 
     private lazy val computeUpdateCEK = PlutusV3
-        .compile { (d1: Data, d2: Data, d3: Data, d4: Data) =>
+        .compile { (d1: Data, d2: Data, d3: Data, d4: Data, d5: Data, d6: Data) =>
             BitcoinValidator
                 .computeUpdate(
                   d1.to[ChainState],
-                  d2.to[UpdateOracle],
-                  d3.to[BigInt],
-                  d4.to[BitcoinValidatorParams]
+                  d2.to[prelude.List[BlockHeader]],
+                  d3.to[Path],
+                  d4.to[prelude.List[prelude.List[ProofStep]]],
+                  d5.to[BigInt],
+                  d6.to[BitcoinValidatorParams]
                 )
                 .toData
         }
@@ -779,14 +782,16 @@ class ForkTreePropertyTest
             val ctx = BitcoinValidator.initCtx(state)
             val headers = genFakeHeaderChain(n, ctx, state.recentTimestamps.head + 1000).sample.get
             val headersPL = PList.from(headers)
-            val update = UpdateOracle(
-              blockHeaders = headersPL,
-              parentPath = PNil,
-              mpfInsertProofs = PNil
-            )
             val currentTime = state.recentTimestamps.head + 1000
             val newState =
-                BitcoinValidator.computeUpdate(state, update, currentTime, testingParams)
+                BitcoinValidator.computeUpdate(
+                  state = state,
+                  blockHeaders = headersPL,
+                  parentPath = PNil,
+                  mpfInsertProofs = PNil,
+                  currentTime = currentTime,
+                  params = testingParams
+                )
             // Confirmed state fields unchanged
             assert(newState.blockHeight == state.blockHeight)
             assert(newState.blockHash == state.blockHash)
@@ -800,7 +805,9 @@ class ForkTreePropertyTest
             assertCEKData(
               computeUpdateCEK,
               state.toData,
-              update.toData,
+              headersPL.toData,
+              (PNil: PList[BigInt]).toData,
+              (PNil: PList[PList[ProofStep]]).toData,
               currentTime.toData,
               testingParams.toData
             )(newState.toData)
@@ -813,21 +820,25 @@ class ForkTreePropertyTest
             val ctx = BitcoinValidator.initCtx(state)
             val headers = genFakeHeaderChain(n, ctx, state.recentTimestamps.head + 1000).sample.get
             val headersPL = PList.from(headers)
-            val update = UpdateOracle(
-              blockHeaders = headersPL,
-              parentPath = PNil,
-              mpfInsertProofs = PNil
-            )
             val currentTime = state.recentTimestamps.head + 1000
             val newState =
-                BitcoinValidator.computeUpdate(state, update, currentTime, testingParams)
+                BitcoinValidator.computeUpdate(
+                  state = state,
+                  blockHeaders = headersPL,
+                  parentPath = PNil,
+                  mpfInsertProofs = PNil,
+                  currentTime = currentTime,
+                  params = testingParams
+                )
             assert(newState.forkTree != state.forkTree || n == 0)
             assert(newState.forkTree.nonEmpty)
             // CEK
             assertCEKData(
               computeUpdateCEK,
               state.toData,
-              update.toData,
+              headersPL.toData,
+              (PNil: PList[BigInt]).toData,
+              (PNil: PList[PList[ProofStep]]).toData,
               currentTime.toData,
               testingParams.toData
             )(newState.toData)
@@ -841,13 +852,15 @@ class ForkTreePropertyTest
             val currentTime = state.recentTimestamps.head + 1000
             val headers = genFakeHeaderChain(n, ctx, currentTime).sample.get
             val headersPL = PList.from(headers)
-            val update = UpdateOracle(
-              blockHeaders = headersPL,
-              parentPath = PNil,
-              mpfInsertProofs = PNil
-            )
             val newState =
-                BitcoinValidator.computeUpdate(state, update, currentTime, testingParams)
+                BitcoinValidator.computeUpdate(
+                  state = state,
+                  blockHeaders = headersPL,
+                  parentPath = PNil,
+                  mpfInsertProofs = PNil,
+                  currentTime = currentTime,
+                  params = testingParams
+                )
             headers.foreach { header =>
                 val hash = blockHeaderHash(header)
                 assert(
@@ -859,7 +872,9 @@ class ForkTreePropertyTest
             assertCEKData(
               computeUpdateCEK,
               state.toData,
-              update.toData,
+              headersPL.toData,
+              (PNil: PList[BigInt]).toData,
+              (PNil: PList[PList[ProofStep]]).toData,
               currentTime.toData,
               testingParams.toData
             )(newState.toData)
@@ -873,21 +888,25 @@ class ForkTreePropertyTest
 
         // Insert first batch
         val headers1 = genFakeHeaderChain(2, ctx, currentTime).sample.get
-        val update1 = UpdateOracle(
+        val state1 = BitcoinValidator.computeUpdate(
+          state = state,
           blockHeaders = PList.from(headers1),
           parentPath = PNil,
-          mpfInsertProofs = PNil
+          mpfInsertProofs = PNil,
+          currentTime = currentTime,
+          params = testingParams
         )
-        val state1 = BitcoinValidator.computeUpdate(state, update1, currentTime, testingParams)
 
         // Insert second batch branching from confirmed tip (creates a fork)
         val headers2 = genFakeHeaderChain(2, ctx, currentTime).sample.get
-        val update2 = UpdateOracle(
+        val state2 = BitcoinValidator.computeUpdate(
+          state = state1,
           blockHeaders = PList.from(headers2),
           parentPath = PNil,
-          mpfInsertProofs = PNil
+          mpfInsertProofs = PNil,
+          currentTime = currentTime,
+          params = testingParams
         )
-        val state2 = BitcoinValidator.computeUpdate(state1, update2, currentTime, testingParams)
 
         // The result should be Fork(existing, new)
         state2.forkTree match
@@ -905,20 +924,24 @@ class ForkTreePropertyTest
 
     test("computeUpdate - empty update: state unchanged") {
         val state = makeTestChainState()
-        val update = UpdateOracle(
-          blockHeaders = PNil,
-          parentPath = PNil,
-          mpfInsertProofs = PNil
-        )
         val currentTime = state.recentTimestamps.head + 1000
         val newState =
-            BitcoinValidator.computeUpdate(state, update, currentTime, testingParams)
+            BitcoinValidator.computeUpdate(
+              state = state,
+              blockHeaders = PNil,
+              parentPath = PNil,
+              mpfInsertProofs = PNil,
+              currentTime = currentTime,
+              params = testingParams
+            )
         assert(newState == state)
         // CEK
         assertCEKData(
           computeUpdateCEK,
           state.toData,
-          update.toData,
+          (PNil: PList[BlockHeader]).toData,
+          (PNil: PList[BigInt]).toData,
+          (PNil: PList[PList[ProofStep]]).toData,
           currentTime.toData,
           testingParams.toData
         )(newState.toData)
@@ -936,13 +959,15 @@ class ForkTreePropertyTest
             // Extend at the tip: path = [99] (last block index)
             val parentPath = PList(BigInt(99))
             val currentTime = stateWith100.recentTimestamps.head + 1100
-            val update = UpdateOracle(
-              blockHeaders = PList.from(newHeaders),
-              parentPath = parentPath,
-              mpfInsertProofs = PNil
-            )
             val newState =
-                BitcoinValidator.computeUpdate(stateWith100, update, currentTime, testingParams)
+                BitcoinValidator.computeUpdate(
+                  state = stateWith100,
+                  blockHeaders = PList.from(newHeaders),
+                  parentPath = parentPath,
+                  mpfInsertProofs = PNil,
+                  currentTime = currentTime,
+                  params = testingParams
+                )
 
             // Tree should still be linear with 100 + numNew blocks
             assert(newState.forkTree.blockCount == 100 + numNew)
@@ -971,13 +996,15 @@ class ForkTreePropertyTest
             val forkHeaders = genFakeHeaderChain(2, ctxAtForkPoint, currentTime).sample.get
 
             val parentPath = PList(BigInt(forkPoint))
-            val update = UpdateOracle(
-              blockHeaders = PList.from(forkHeaders),
-              parentPath = parentPath,
-              mpfInsertProofs = PNil
-            )
             val newState =
-                BitcoinValidator.computeUpdate(stateWith100, update, currentTime, testingParams)
+                BitcoinValidator.computeUpdate(
+                  state = stateWith100,
+                  blockHeaders = PList.from(forkHeaders),
+                  parentPath = parentPath,
+                  mpfInsertProofs = PNil,
+                  currentTime = currentTime,
+                  params = testingParams
+                )
 
             // Tree should have a fork: prefix [0..forkPoint] then Fork(suffix, newBranch)
             newState.forkTree match
@@ -1017,25 +1044,29 @@ class ForkTreePropertyTest
 
         // First extend to 101 blocks
         val extensionHeaders = genFakeHeaderChain(1, ctxAtTip, currentTime).sample.get
-        val extUpdate = UpdateOracle(
-          blockHeaders = PList.from(extensionHeaders),
-          parentPath = PList(BigInt(99)),
-          mpfInsertProofs = PNil
-        )
         val stateWith101 =
-            BitcoinValidator.computeUpdate(stateWith100, extUpdate, currentTime, testingParams)
+            BitcoinValidator.computeUpdate(
+              state = stateWith100,
+              blockHeaders = PList.from(extensionHeaders),
+              parentPath = PList(BigInt(99)),
+              mpfInsertProofs = PNil,
+              currentTime = currentTime,
+              params = testingParams
+            )
         assert(stateWith101.forkTree.blockCount == 101)
 
         // Now fork at block 95 in the 101-block chain (mid-split)
         val ctxAt95 = allBlocks.take(96).foldLeft(ctx0)(BitcoinValidator.accumulateBlock)
         val forkHeaders = genFakeHeaderChain(2, ctxAt95, currentTime).sample.get
-        val update = UpdateOracle(
-          blockHeaders = PList.from(forkHeaders),
-          parentPath = PList(BigInt(95)),
-          mpfInsertProofs = PNil
-        )
         val forkedState =
-            BitcoinValidator.computeUpdate(stateWith101, update, currentTime, testingParams)
+            BitcoinValidator.computeUpdate(
+              state = stateWith101,
+              blockHeaders = PList.from(forkHeaders),
+              parentPath = PList(BigInt(95)),
+              mpfInsertProofs = PNil,
+              currentTime = currentTime,
+              params = testingParams
+            )
 
         // Should be: Blocks(96 blocks, .., Fork(Blocks(5), Blocks(2)))
         forkedState.forkTree match
@@ -1069,13 +1100,15 @@ class ForkTreePropertyTest
             val forkHeaders = genFakeHeaderChain(1, ctxAtFork, currentTime).sample.get
 
             val parentPath = PList(BigInt(forkPoint))
-            val update = UpdateOracle(
-              blockHeaders = PList.from(forkHeaders),
-              parentPath = parentPath,
-              mpfInsertProofs = PNil
-            )
             val forkedState =
-                BitcoinValidator.computeUpdate(stateWith100, update, currentTime, testingParams)
+                BitcoinValidator.computeUpdate(
+                  state = stateWith100,
+                  blockHeaders = PList.from(forkHeaders),
+                  parentPath = parentPath,
+                  mpfInsertProofs = PNil,
+                  currentTime = currentTime,
+                  params = testingParams
+                )
 
             // Best chain should follow the left (original/longer) branch
             val (bestCw, bestDepth, bestPath) =
@@ -1141,13 +1174,15 @@ class ForkTreePropertyTest
         val currentTime = addedTimeBase + 50000
         val forkHeaders = genFakeHeaderChain(2, ctxAt2, currentTime).sample.get
 
-        val forkUpdate = UpdateOracle(
-          blockHeaders = PList.from(forkHeaders),
-          parentPath = PList(BigInt(2)),
-          mpfInsertProofs = PNil
-        )
         val forkedState =
-            BitcoinValidator.computeUpdate(stateWith103, forkUpdate, currentTime, testingParams)
+            BitcoinValidator.computeUpdate(
+              state = stateWith103,
+              blockHeaders = PList.from(forkHeaders),
+              parentPath = PList(BigInt(2)),
+              mpfInsertProofs = PNil,
+              currentTime = currentTime,
+              params = testingParams
+            )
 
         // Verify: 3 prefix + Fork(100 main, 2 fork) = 105 blocks total
         assert(forkedState.forkTree.blockCount == 105)
@@ -1208,12 +1243,14 @@ class ForkTreePropertyTest
         val ctxAtTip99 = blocks99.foldLeft(ctx0)(BitcoinValidator.accumulateBlock)
         val time2 = addedTimeBase + 50000
         val ext2Headers = genFakeHeaderChain(4, ctxAtTip99, time2).sample.get
-        val ext2Update = UpdateOracle(
+        val state103 = BitcoinValidator.computeUpdate(
+          state = state99,
           blockHeaders = PList.from(ext2Headers),
           parentPath = PList(BigInt(98)),
-          mpfInsertProofs = PNil
+          mpfInsertProofs = PNil,
+          currentTime = time2,
+          params = testingParams
         )
-        val state103 = BitcoinValidator.computeUpdate(state99, ext2Update, time2, testingParams)
         assert(state103.forkTree.blockCount == 103)
 
         // Step 3: Create a short fork at block 2 (early fork for easy GC)
@@ -1221,12 +1258,14 @@ class ForkTreePropertyTest
         val ctxAt2 = blocks103.take(3).foldLeft(ctx0)(BitcoinValidator.accumulateBlock)
         val time3 = addedTimeBase + 50100
         val forkHeaders = genFakeHeaderChain(1, ctxAt2, time3).sample.get
-        val forkUpdate = UpdateOracle(
+        val stateForked = BitcoinValidator.computeUpdate(
+          state = state103,
           blockHeaders = PList.from(forkHeaders),
           parentPath = PList(BigInt(2)),
-          mpfInsertProofs = PNil
+          mpfInsertProofs = PNil,
+          currentTime = time3,
+          params = testingParams
         )
-        val stateForked = BitcoinValidator.computeUpdate(state103, forkUpdate, time3, testingParams)
         assert(stateForked.forkTree.blockCount == 104)
 
         // Step 4: Extend main chain by 1 more (→ 104 in main branch)
@@ -1237,13 +1276,15 @@ class ForkTreePropertyTest
         // To extend main branch tip: pass through 3, enter left fork, go to last block (index 99)
         val extHeaders = genFakeHeaderChain(1, ctxAtTip103, time4).sample.get
         val extPath = PList.from(scala.List(BigInt(3), BigInt(0), BigInt(99)))
-        val extUpdate = UpdateOracle(
-          blockHeaders = PList.from(extHeaders),
-          parentPath = extPath,
-          mpfInsertProofs = PNil
-        )
         val stateExtended =
-            BitcoinValidator.computeUpdate(stateForked, extUpdate, time4, testingParams)
+            BitcoinValidator.computeUpdate(
+              state = stateForked,
+              blockHeaders = PList.from(extHeaders),
+              parentPath = extPath,
+              mpfInsertProofs = PNil,
+              currentTime = time4,
+              params = testingParams
+            )
         assert(stateExtended.forkTree.blockCount == 105) // 104 main + 1 fork
 
         // Step 5: Promote with aged blocks
@@ -1324,13 +1365,15 @@ class ForkTreePropertyTest
             if backward then hasBackward = true
 
             // Should always succeed regardless of backward timestamps
-            val update = UpdateOracle(
-              blockHeaders = PList.from(headers),
-              parentPath = PNil,
-              mpfInsertProofs = PNil
-            )
             val newState =
-                BitcoinValidator.computeUpdate(state, update, currentTime, testingParams)
+                BitcoinValidator.computeUpdate(
+                  state = state,
+                  blockHeaders = PList.from(headers),
+                  parentPath = PNil,
+                  mpfInsertProofs = PNil,
+                  currentTime = currentTime,
+                  params = testingParams
+                )
             assert(newState.forkTree.blockCount == headers.size)
         }
         // Our generator produces backward timestamps ~30% of the time,

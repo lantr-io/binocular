@@ -128,11 +128,13 @@ object BitcoinDependentLockApp {
                 BitcoinContract.makeContract(oracleConf.params).script.scriptHash
             case Left(_) =>
                 // Fallback: use dummy TxOutRef for local script hash computation
+                import scalus.cardano.onchain.plutus.v1.PubKeyHash
                 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
                 import scalus.uplc.builtin.ByteString as BS
                 val dummyTxOutRef = TxOutRef(TxId(BS.fill(32, 0)), BigInt(0))
+                val dummyOwner = PubKeyHash(BS.fill(28, 0))
                 BitcoinContract
-                    .makeContract(BitcoinContract.validatorParams(dummyTxOutRef))
+                    .makeContract(BitcoinContract.validatorParams(dummyTxOutRef, dummyOwner))
                     .script
                     .scriptHash
         }

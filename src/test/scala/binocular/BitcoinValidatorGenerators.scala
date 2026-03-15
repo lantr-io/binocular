@@ -6,7 +6,9 @@ import org.scalacheck.Gen
 import scalus.cardano.onchain.plutus.prelude
 import scalus.cardano.onchain.plutus.prelude.List as PList
 import scalus.cardano.onchain.plutus.prelude.List.Cons
+import scalus.cardano.onchain.plutus.v1.PubKeyHash
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
+import scalus.testing.kit.Party
 import scalus.uplc.builtin.Builtins.*
 import scalus.uplc.builtin.ByteString
 import scalus.uplc.builtin.ByteString.hex
@@ -230,11 +232,15 @@ trait BitcoinValidatorGenerators extends scalus.uplc.test.ArbitraryInstances {
       BigInt(0)
     )
 
+    val testOwner: PubKeyHash = PubKeyHash(Party.Alice.addrKeyHash)
+
     def testParams(testingMode: Boolean = false): BitcoinValidatorParams =
         BitcoinValidatorParams(
           maturationConfirmations = 100,
           challengeAging = 200 * 60,
           oneShotTxOutRef = testTxOutRef,
+          closureTimeout = 30 * 24 * 60 * 60,
+          owner = testOwner,
           testingMode = testingMode
         )
 
@@ -278,13 +284,15 @@ trait BitcoinValidatorGenerators extends scalus.uplc.test.ArbitraryInstances {
         // addedTimeBase is used as the Cardano observation time (= currentTime for each batch).
         val currentTime = addedTimeBase
         val headers = genFakeHeaderChain(numBlocks, ctx0, currentTime).sample.get
-        val update = UpdateOracle(
-          blockHeaders = PList.from(headers),
-          parentPath = PList.Nil,
-          mpfInsertProofs = PList.Nil
-        )
         val state =
-            BitcoinValidator.computeUpdate(state0, update, currentTime, testingParams)
+            BitcoinValidator.computeUpdate(
+              state = state0,
+              blockHeaders = PList.from(headers),
+              parentPath = PList.Nil,
+              mpfInsertProofs = PList.Nil,
+              currentTime = currentTime,
+              params = testingParams
+            )
         (state, headers)
     }
 

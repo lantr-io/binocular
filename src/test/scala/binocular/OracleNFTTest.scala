@@ -3,6 +3,8 @@ package binocular
 import org.scalatest.funsuite.AnyFunSuite
 import scalus.cardano.ledger.*
 import scalus.cardano.node.Emulator
+import scalus.cardano.onchain.plutus.v1.PubKeyHash
+import scalus.testing.kit.Party
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import scalus.cardano.txbuilder.RedeemerPurpose.ForMint
 import scalus.cardano.txbuilder.txBuilder
@@ -29,6 +31,7 @@ class OracleNFTTest extends AnyFunSuite, ScalusTest {
 
     private given env: CardanoInfo = TestUtil.testEnvironment
     private val baseContract = BitcoinContract.contract.withErrorTraces
+    private val testOwner = PubKeyHash(Party.Alice.addrKeyHash)
 
     private def createProvider: Emulator =
         Emulator.withAddresses(Seq(Alice.address))
@@ -39,7 +42,7 @@ class OracleNFTTest extends AnyFunSuite, ScalusTest {
         val p = createProvider
         val (input, _) = p.findUtxos(Alice.address).await().toOption.get.head
         val txOutRef = TxOutRef(TxId(input.transactionId), BigInt(input.index))
-        val params = BitcoinContract.validatorParams(txOutRef)
+        val params = BitcoinContract.validatorParams(txOutRef, testOwner)
         val c = baseContract(params.toData)
         (c, c.script.scriptHash, c.address(env.network))
     }
@@ -68,7 +71,7 @@ class OracleNFTTest extends AnyFunSuite, ScalusTest {
           TxId(hex"1111111111111111111111111111111111111111111111111111111111111111"),
           BigInt(0)
         )
-        val fakeParams = BitcoinContract.validatorParams(fakeTxOutRef)
+        val fakeParams = BitcoinContract.validatorParams(fakeTxOutRef, testOwner)
         val fakeContract = baseContract(fakeParams.toData)
         val fakeScriptHash = fakeContract.script.scriptHash
         val fakeScriptAddr = fakeContract.address(env.network)

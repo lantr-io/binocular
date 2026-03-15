@@ -1167,10 +1167,15 @@ class OldValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckProper
     // ===== NFT PRESERVATION TESTS =====
 
     private val nftPolicyIdScriptHash: ScriptHash = {
+        import scalus.cardano.onchain.plutus.v1.PubKeyHash
         val params = BitcoinValidatorParams(
           maturationConfirmations = 100,
           challengeAging = 200 * 60,
-          oneShotTxOutRef = OldBitcoinContract.testTxOutRef
+          oneShotTxOutRef = OldBitcoinContract.testTxOutRef,
+          closureTimeout = 30 * 24 * 60 * 60,
+          owner = PubKeyHash(
+            hex"00000000000000000000000000000000000000000000000000000000"
+          )
         )
         BitcoinContract.makeContract(params).script.scriptHash
     }
