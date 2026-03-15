@@ -45,9 +45,6 @@ object BitcoinContract {
     /** Test params with dummy TxOutRef */
     lazy val testParams: BitcoinValidatorParams = validatorParams(testTxOutRef)
 
-    /** Test program with dummy parameter applied */
-    lazy val bitcoinProgram: Program = makeScript(testParams)
-
     lazy val blueprint: Blueprint = {
         val title = "Binocular – a trustless Bitcoin Oracle"
         val description =
