@@ -261,10 +261,9 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
           headers,
           parentPath,
           validityTime,
-          params.oneShotTxOutRef,
+          script,
           referenceScriptUtxo,
-          mpfInsertProofs = mpfInsertProofs,
-          scriptOverride = Some(script)
+          mpfInsertProofs = mpfInsertProofs
         )
 
         updateResult match {
@@ -313,8 +312,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
           oneShotTxOutRef = txOutRef
         )
 
-        val program = BitcoinContract.makeScript(params)
-        val script = Script.PlutusV3(program.cborByteString)
+        val script = BitcoinContract.makeContract(params).script
         val scriptHash = script.scriptHash
         val scriptAddress = Address(Network.Testnet, Credential.ScriptHash(scriptHash))
 
@@ -497,8 +495,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
           ctx.provider,
           ctx.alice.address,
           scriptAddress,
-          itParams.oneShotTxOutRef,
-          scriptOverride = Some(itScript)
+          itScript
         )
 
         val referenceScriptUtxo: Option[Utxo] = refScriptResult match {

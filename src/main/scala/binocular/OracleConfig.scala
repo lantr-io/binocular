@@ -2,9 +2,10 @@ package binocular
 
 import scalus.cardano.address.{Address, Network}
 import scalus.cardano.ledger.{Credential, Script, ScriptHash}
-import scalus.cardano.onchain.plutus.v3.TxOutRef
-import scalus.uplc.Program
+import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import com.typesafe.config.{Config, ConfigFactory}
+import scalus.uplc.builtin.ByteString
+
 import scala.util.{Failure, Success, Try}
 
 /** Configuration for Binocular Oracle
@@ -19,9 +20,6 @@ import scala.util.{Failure, Success, Try}
   *
   * Examples:
   * {{{
-  * // Mainnet oracle (address derived automatically)
-  * val config = OracleConfig.forNetwork(CardanoNetwork.Mainnet)
-  *
   * // From environment variables
   * OracleConfig.fromEnv()
   *
@@ -31,15 +29,15 @@ import scala.util.{Failure, Success, Try}
   */
 case class OracleConfig(
     network: CardanoNetwork,
+    params: BitcoinValidatorParams,
     startHeight: Option[Long] = None,
     maxHeadersPerTx: Int = 10,
     pollInterval: Int = 60,
-    transactionTimeout: Int = 120, // seconds - used for tx building, submission, UTxO polling
-    oracleTxOutRef: TxOutRef = BitcoinContract.testTxOutRef
+    transactionTimeout: Int = 120 // seconds - used for tx building, submission, UTxO polling
 ) {
 
     /** Get the script address derived from BitcoinValidator script hash */
-    lazy val scriptAddress: String = OracleConfig.deriveScriptAddress(network, oracleTxOutRef)
+    lazy val scriptAddress: String = OracleConfig.deriveScriptAddress(network, params)
 
     /** Validate configuration */
     def validate(): Either[String, Unit] = {
@@ -68,29 +66,9 @@ case class OracleConfig(
 
 object OracleConfig {
 
-    /** Get the parameterized program for a specific TxOutRef */
-    def getProgram(txOutRef: TxOutRef): Program = {
-        BitcoinContract.makeScript(txOutRef)
-    }
-
-    /** Get the script CBOR hex from compiled script. */
-    def getScriptCborHex(txOutRef: TxOutRef): String = {
-        getProgram(txOutRef).doubleCborHex
-    }
-
-    /** Get the PlutusScript from the compiled BitcoinValidator */
-    def getPlutusScript(txOutRef: TxOutRef): Script.PlutusV3 = {
-        Script.PlutusV3(getProgram(txOutRef).cborByteString)
-    }
-
-    /** Get the script hash */
-    def getScriptHash(txOutRef: TxOutRef): ScriptHash = {
-        getPlutusScript(txOutRef).scriptHash
-    }
-
     /** Derive script address from compiled BitcoinValidator for given network. */
-    def deriveScriptAddress(network: CardanoNetwork, txOutRef: TxOutRef): String = {
-        val scriptHash = getScriptHash(txOutRef)
+    def deriveScriptAddress(network: CardanoNetwork, params: BitcoinValidatorParams): String = {
+        val scriptHash = BitcoinContract.makeContract(params).script.scriptHash
 
         val scalusNetwork = network match {
             case CardanoNetwork.Mainnet => Network.Mainnet
@@ -104,9 +82,24 @@ object OracleConfig {
         address.asInstanceOf[scalus.cardano.address.ShelleyAddress].toBech32.get
     }
 
+    /** Parse a TxOutRef from string format "txhash#index" */
+    private def parseTxOutRef(s: String): Either[String, TxOutRef] = {
+        s.split("#") match {
+            case Array(txHash, idx) =>
+                Try {
+                    TxOutRef(TxId(ByteString.fromHex(txHash)), BigInt(idx.toInt))
+                } match {
+                    case Success(ref) => Right(ref)
+                    case Failure(ex)  => Left(s"Invalid TxOutRef format '$s': ${ex.getMessage}")
+                }
+            case _ => Left(s"Invalid TxOutRef format '$s'. Expected: <txhash>#<index>")
+        }
+    }
+
     /** Load from environment variables
       *
       * Expected environment variables:
+      *   - ORACLE_TX_OUT_REF: TxOutRef for NFT minting (format: txhash#index)
       *   - ORACLE_START_HEIGHT: Optional starting block height
       *   - ORACLE_MAX_HEADERS_PER_TX: Maximum headers per transaction (default: 10)
       *   - ORACLE_POLL_INTERVAL: Poll interval in seconds (default: 60)
@@ -126,6 +119,11 @@ object OracleConfig {
             case (None, false)  => return Left("CARDANO_NETWORK environment variable not set")
         }
 
+        val txOutRefStr = sys.env.get("ORACLE_TX_OUT_REF") match {
+            case Some(s) if s.nonEmpty => s
+            case _ => return Left("ORACLE_TX_OUT_REF environment variable not set")
+        }
+
         val startHeight = sys.env.get("ORACLE_START_HEIGHT").flatMap(s => Try(s.toLong).toOption)
         val maxHeadersPerTx = sys.env
             .get("ORACLE_MAX_HEADERS_PER_TX")
@@ -142,8 +140,11 @@ object OracleConfig {
 
         for {
             network <- CardanoNetwork.fromString(networkStr)
+            txOutRef <- parseTxOutRef(txOutRefStr)
+            params = BitcoinContract.validatorParams(txOutRef)
             config = OracleConfig(
               network,
+              params,
               startHeight,
               maxHeadersPerTx,
               pollInterval,
@@ -159,6 +160,7 @@ object OracleConfig {
       * {{{
       * binocular {
       *   oracle {
+      *     tx-out-ref = "txhash#index"
       *     start-height = 800000  # optional
       *     max-headers-per-tx = 10
       *     poll-interval = 60
@@ -177,6 +179,14 @@ object OracleConfig {
                 config.getString("binocular.cardano.network")
             } else {
                 "mainnet"
+            }
+
+            val txOutRefStr = if oracleConfig.hasPath("tx-out-ref") then {
+                oracleConfig.getString("tx-out-ref")
+            } else {
+                return Left(
+                  "binocular.oracle.tx-out-ref not set in config"
+                )
             }
 
             val startHeight = if oracleConfig.hasPath("start-height") then {
@@ -202,8 +212,11 @@ object OracleConfig {
 
             for {
                 network <- CardanoNetwork.fromString(cardanoNetwork)
+                txOutRef <- parseTxOutRef(txOutRefStr)
+                params = BitcoinContract.validatorParams(txOutRef)
                 oracleConf = OracleConfig(
                   network,
+                  params,
                   startHeight,
                   maxHeadersPerTx,
                   pollInterval,
@@ -221,21 +234,5 @@ object OracleConfig {
     /** Load configuration with priority: environment variables > application.conf */
     def load(): Either[String, OracleConfig] = {
         fromEnv().orElse(fromConfig())
-    }
-
-    /** Create oracle config for a specific network
-      *
-      * Script address is automatically derived from the BitcoinValidator.
-      *
-      * @param network
-      *   Cardano network
-      * @param startHeight
-      *   Optional starting Bitcoin block height
-      */
-    def forNetwork(
-        network: CardanoNetwork,
-        startHeight: Option[Long] = None
-    ): OracleConfig = {
-        OracleConfig(network, startHeight)
     }
 }

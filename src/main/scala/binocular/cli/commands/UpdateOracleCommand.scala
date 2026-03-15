@@ -84,12 +84,13 @@ case class UpdateOracleCommand(
                 println("Step 3: Checking for reference script...")
 
                 val scriptAddress = Address.fromBech32(oracleConf.scriptAddress)
+                val script = BitcoinContract.makeContract(oracleConf.params).script
                 val referenceScriptUtxo: Option[Utxo] =
                     try {
                         val existingRefs = OracleTransactions.findReferenceScriptUtxos(
                           provider,
                           scriptAddress,
-                          oracleConf.oracleTxOutRef,
+                          script.scriptHash,
                           timeout
                         )
 
@@ -121,7 +122,7 @@ case class UpdateOracleCommand(
                                   provider,
                                   sponsorAddress,
                                   scriptAddress,
-                                  oracleConf.oracleTxOutRef,
+                                  script,
                                   timeout
                                 ) match {
                                     case Right((deployTxHash, deployOutputIdx, savedOutput)) =>
@@ -375,8 +376,7 @@ case class UpdateOracleCommand(
                         val maxBlocksPerCommand = 100
                         if numBlocks > maxBlocksPerCommand then {
                             val currentTime = System.currentTimeMillis() / 1000
-                            val params = BitcoinContract.testParams
-                            val challengeAgingSeconds = params.challengeAging.toLong
+                            val challengeAgingSeconds = oracleConf.params.challengeAging.toLong
 
                             val canPromote =
                                 currentChainState.forkTree.oldestBlockTime match {
@@ -524,8 +524,6 @@ case class UpdateOracleCommand(
                                 // Compute parent path for header insertion
                                 val parentPath = currentState.forkTree.findTipPath
 
-                                val params = BitcoinContract.testParams
-
                                 if totalBatches == 1 then {
                                     println()
                                     println("Step 6: Calculating new ChainState after update...")
@@ -540,7 +538,7 @@ case class UpdateOracleCommand(
                                           parentPath,
                                           validityTime,
                                           currentMpf,
-                                          params
+                                          oracleConf.params
                                         )
                                     } catch {
                                         case e: Exception =>
@@ -572,7 +570,7 @@ case class UpdateOracleCommand(
                                   headersList,
                                   parentPath,
                                   validityTime,
-                                  oracleConf.oracleTxOutRef,
+                                  script,
                                   referenceScriptUtxo,
                                   timeout,
                                   mpfProofs

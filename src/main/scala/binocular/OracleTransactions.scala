@@ -2,8 +2,7 @@ package binocular
 
 import binocular.util.SlotConfigHelper
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{CardanoInfo, PlutusScript, Script, ScriptRef, Transaction, TransactionOutput, Utxo, Utxos, Value}
-import scalus.cardano.onchain.plutus.v3.TxOutRef
+import scalus.cardano.ledger.{CardanoInfo, PlutusScript, Script, ScriptHash, ScriptRef, Transaction, TransactionOutput, Utxo, Utxos, Value}
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}
 import scalus.uplc.builtin.Data
@@ -20,30 +19,17 @@ import scalus.utils.await
 /** Helper functions for building oracle transactions */
 object OracleTransactions {
 
-    /** Get compiled PlutusV3 script for a specific TxOutRef parameter */
-    def getPlutusScript(txOutRef: TxOutRef): Script.PlutusV3 = {
-        Script.PlutusV3(BitcoinContract.makeScript(txOutRef).cborByteString)
-    }
-
-    /** Get compiled PlutusV3 script for specific BitcoinValidatorParams */
-    def getPlutusScript(params: BitcoinValidatorParams): Script.PlutusV3 = {
-        Script.PlutusV3(BitcoinContract.makeScript(params).cborByteString)
-    }
-
     /** Deploy the oracle script to a UTxO as a reference script. */
     def deployReferenceScript(
         signer: TransactionSigner,
         provider: BlockchainProvider,
         sponsorAddress: Address,
         destinationAddress: Address,
-        oracleTxOutRef: TxOutRef,
-        timeout: Duration = 120.seconds,
-        scriptOverride: Option[Script.PlutusV3] = None
+        script: Script.PlutusV3,
+        timeout: Duration = 120.seconds
     ): Either[String, (String, Int, TransactionOutput)] = {
         given ec: ExecutionContext = provider.executionContext
         Try {
-            val script = scriptOverride.getOrElse(getPlutusScript(oracleTxOutRef))
-
             val output = TransactionOutput.Babbage(
               address = destinationAddress,
               value = Value.lovelace(50_000_000), // 50 ADA
@@ -73,12 +59,10 @@ object OracleTransactions {
     def findReferenceScriptUtxos(
         provider: BlockchainProvider,
         searchAddress: Address,
-        oracleTxOutRef: TxOutRef,
+        expectedScriptHash: ScriptHash,
         timeout: Duration = 30.seconds
     ): List[(String, Int)] = {
         given ec: ExecutionContext = provider.executionContext
-        val script = getPlutusScript(oracleTxOutRef)
-        val expectedScriptHash = script.scriptHash
 
         println(
           s"Searching for reference script UTxOs at address: ${searchAddress.encode.getOrElse("?")}"
@@ -252,16 +236,13 @@ object OracleTransactions {
         blockHeaders: ScalusList[BlockHeader],
         parentPath: ScalusList[BigInt],
         validityIntervalTimeSeconds: BigInt,
-        oracleTxOutRef: TxOutRef,
+        script: Script.PlutusV3,
         referenceScriptUtxo: Option[Utxo] = None,
         timeout: Duration = 120.seconds,
-        mpfInsertProofs: ScalusList[ScalusList[ProofStep]] = ScalusList.Nil,
-        scriptOverride: Option[Script.PlutusV3] = None
+        mpfInsertProofs: ScalusList[ScalusList[ProofStep]] = ScalusList.Nil
     ): Either[String, String] = {
         given ec: ExecutionContext = provider.executionContext
         Try {
-            val script = scriptOverride.getOrElse(getPlutusScript(oracleTxOutRef))
-
             // Verify that the input UTxO's datum matches currentChainState
             val inputData = oracleUtxo.output.requireInlineDatum
             val inputState = inputData.to[ChainState]

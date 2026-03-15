@@ -1166,8 +1166,14 @@ class OldValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckProper
 
     // ===== NFT PRESERVATION TESTS =====
 
-    private val nftPolicyIdScriptHash: ScriptHash =
-        OracleConfig.getScriptHash(OldBitcoinContract.testTxOutRef)
+    private val nftPolicyIdScriptHash: ScriptHash = {
+        val params = BitcoinValidatorParams(
+          maturationConfirmations = 100,
+          challengeAging = 200 * 60,
+          oneShotTxOutRef = OldBitcoinContract.testTxOutRef
+        )
+        BitcoinContract.makeContract(params).script.scriptHash
+    }
 
     private def nftValue(lovelace: Long = 5_000_000): Value =
         Value.asset(nftPolicyIdScriptHash, AssetName.empty, 1, Coin(lovelace))

@@ -1,6 +1,6 @@
 package binocular.example
 
-import binocular.{reverse, BitcoinContract, BitcoinNodeConfig, BlockHeader, CardanoConfig, CardanoNetwork, MerkleTree, OracleConfig, SimpleBitcoinRpc, TransactionVerifierContract, TxVerifierDatum, TxVerifierRedeemer, WalletConfig}
+import binocular.{reverse, BitcoinContract, BitcoinNodeConfig, BlockHeader, CardanoConfig, CardanoNetwork, MerkleTree, SimpleBitcoinRpc, TransactionVerifierContract, TxVerifierDatum, TxVerifierRedeemer, WalletConfig}
 import scalus.cardano.address.{Address, Network}
 import scalus.cardano.ledger.{Credential, Script, ScriptRef, TransactionHash, TransactionInput, TransactionOutput, Utxo, Utxos, Value}
 import scalus.cardano.node.{BlockchainProvider, UtxoSource}
@@ -165,7 +165,11 @@ object BitcoinDependentLockApp {
     }
 
     private def computeOracleScriptHashFromScript(): ByteString = {
-        OracleConfig.getScriptHash(BitcoinContract.testTxOutRef)
+        // Use a dummy TxOutRef for local script hash computation
+        import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
+        import scalus.uplc.builtin.ByteString as BS
+        val dummyTxOutRef = TxOutRef(TxId(BS.fill(32)(0)), BigInt(0))
+        BitcoinContract.makeContract(BitcoinContract.validatorParams(dummyTxOutRef)).script.scriptHash
     }
 
     def showInfo(): Int = {
