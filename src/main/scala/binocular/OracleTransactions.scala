@@ -36,11 +36,12 @@ object OracleTransactions {
         sponsorAddress: Address,
         destinationAddress: Address,
         oracleTxOutRef: TxOutRef,
-        timeout: Duration = 120.seconds
+        timeout: Duration = 120.seconds,
+        scriptOverride: Option[Script.PlutusV3] = None
     ): Either[String, (String, Int, TransactionOutput)] = {
         given ec: ExecutionContext = provider.executionContext
         Try {
-            val script = getPlutusScript(oracleTxOutRef)
+            val script = scriptOverride.getOrElse(getPlutusScript(oracleTxOutRef))
 
             val output = TransactionOutput.Babbage(
               address = destinationAddress,
@@ -262,11 +263,12 @@ object OracleTransactions {
         oracleTxOutRef: TxOutRef,
         referenceScriptUtxo: Option[Utxo] = None,
         timeout: Duration = 120.seconds,
-        mpfInsertProofs: ScalusList[ScalusList[ProofStep]] = ScalusList.Nil
+        mpfInsertProofs: ScalusList[ScalusList[ProofStep]] = ScalusList.Nil,
+        scriptOverride: Option[Script.PlutusV3] = None
     ): Either[String, String] = {
         given ec: ExecutionContext = provider.executionContext
         Try {
-            val script = getPlutusScript(oracleTxOutRef)
+            val script = scriptOverride.getOrElse(getPlutusScript(oracleTxOutRef))
 
             // Verify that the input UTxO's datum matches currentChainState
             val inputData = oracleUtxo.output.requireInlineDatum
@@ -282,24 +284,17 @@ object OracleTransactions {
                 )
             }
 
-            println(s"[DEBUG] Verified input UTXO datum matches currentChainState")
-
             val cardanoInfo = provider.cardanoInfo
-            val slotConfig = cardanoInfo.slotConfig
 
             // Compute validity interval time from current time
             val (validityInstant, validatorWillSeeTime) =
-                computeValidityIntervalTime(cardanoInfo, Some(validityIntervalTimeSeconds))
-
-            println(s"[DEBUG] Computing time that validator will see:")
-            println(s"  validatorWillSeeTime (seconds): $validatorWillSeeTime")
+                computeValidityIntervalTime(
+                  cardanoInfo,
+                  Some(validityIntervalTimeSeconds)
+                )
 
             // Create UpdateOracle redeemer
             val redeemer = UpdateOracle(blockHeaders, parentPath, mpfInsertProofs)
-
-            println(
-              s"[DEBUG] New state forkTree block count: ${newChainState.forkTree.blockCount}"
-            )
 
             // Build the transaction
             var builder = TxBuilder(cardanoInfo)
@@ -309,17 +304,7 @@ object OracleTransactions {
 
             // Add reference script if available and valid
             if useRefScript then {
-                val refUtxo = referenceScriptUtxo.get
-                println(
-                  s"[DEBUG] Using reference script from UTxO: ${refUtxo.input.transactionId.toHex}:${refUtxo.input.index}"
-                )
-                builder = builder.references(refUtxo)
-            } else {
-                if referenceScriptUtxo.isDefined then
-                    println(
-                      s"[DEBUG] Reference UTxO has no scriptRef, falling back to attached script"
-                    )
-                else println(s"[DEBUG] No reference script UTxO, attaching script directly")
+                builder = builder.references(referenceScriptUtxo.get)
             }
 
             // Spend oracle UTxO with redeemer
@@ -338,13 +323,12 @@ object OracleTransactions {
                 .validFrom(validityInstant)
                 .validTo(validToInstant)
 
-            val tx = Await
+            val completedBuilder = Await
                 .result(
                   builder.complete(provider, sponsorAddress),
                   timeout
                 )
-                .sign(signer)
-                .transaction
+            val tx = completedBuilder.sign(signer).transaction
 
             submitTx(provider, tx, timeout)
         } match {

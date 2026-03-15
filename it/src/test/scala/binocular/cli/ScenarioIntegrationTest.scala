@@ -1,8 +1,7 @@
 package binocular
 package cli
 
-import binocular.{reverse, BitcoinChainState, BitcoinContract, MerkleTree, OracleTransactions}
-import scalus.cardano.address.Address
+import binocular.{reverse, BitcoinChainState, BitcoinContract, IntegrationTestContract, MerkleTree, OracleTransactions}
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.uplc.builtin.{ByteString, Data}
@@ -52,9 +51,9 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
             )
             .await(30.seconds)
 
-        val scriptAddress = Address.fromBech32(
-          binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
-        )
+        val scriptAddress = IntegrationTestContract.testnetScriptAddress
+        val itParams = IntegrationTestContract.itParams
+        val itScript = IntegrationTestContract.itPlutusScript
 
         // Submit init transaction
         val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
@@ -105,9 +104,8 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
 
         // Compute new state using the shared validator logic
         val parentPath = initialState.forkTree.findTipPath
-        val params = BitcoinContract.testParams
         val newState =
-            OracleTransactions.applyHeaders(initialState, headersList, parentPath, validityTime, params)
+            OracleTransactions.applyHeaders(initialState, headersList, parentPath, validityTime, itParams)
         println(s"  Computed new state:")
         println(s"    Height: ${newState.blockHeight}")
         println(s"    Hash: ${newState.blockHash.toHex}")
@@ -127,7 +125,8 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
           headersList,
           parentPath,
           validityTime,
-          BitcoinContract.testTxOutRef
+          BitcoinContract.testTxOutRef,
+          scriptOverride = Some(itScript)
         )
 
         updateTxResult match {
@@ -193,9 +192,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
             )
             .await(30.seconds)
 
-        val scriptAddress = Address.fromBech32(
-          binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
-        )
+        val scriptAddress = IntegrationTestContract.testnetScriptAddress
 
         val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
           ctx.alice.signer,
@@ -255,9 +252,9 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
             )
             .await(30.seconds)
 
-        val scriptAddress = Address.fromBech32(
-          binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
-        )
+        val scriptAddress = IntegrationTestContract.testnetScriptAddress
+        val itParams = IntegrationTestContract.itParams
+        val itScript = IntegrationTestContract.itPlutusScript
 
         // Submit init transaction
         val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
@@ -286,7 +283,8 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
           ctx.provider,
           ctx.alice.address,
           scriptAddress, // Deploy to script address
-          BitcoinContract.testTxOutRef
+          BitcoinContract.testTxOutRef,
+          scriptOverride = Some(itScript)
         )
 
         val referenceScriptUtxo: Option[Utxo] = refScriptResult match {
@@ -336,28 +334,20 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
 
             val headersList = ScalusList.from(batch.toList)
 
-            // Use current time for all batches except the last one
-            // For the last batch, use time + 25 minutes to trigger promotion
-            // (ChallengeAging is 20 minutes, TimeToleranceSeconds is 1 hour, so 25 min works)
-            val validityTime: BigInt = if batchIndex == batches.size - 1 then {
-                val currentTime = System.currentTimeMillis() / 1000
-                val advancedTime = BigInt(currentTime) + BigInt(25 * 60) // 25 minutes ahead
-                println(s"  Final batch: using advanced time to trigger promotion (+25 min)")
-                advancedTime
-            } else {
+            // IT challengeAging is 30 seconds - blocks from early batches naturally age
+            // during processing (~40s total). No time advancement needed.
+            val validityTime: BigInt =
                 OracleTransactions.computeValidityIntervalTime(ctx.provider.cardanoInfo)._2
-            }
 
             // Compute new state with MPF proofs
             val parentPath = currentState.forkTree.findTipPath
-            val params = BitcoinContract.testParams
             val (newState, mpfProofs, updatedMpf) = OracleTransactions.computeUpdateWithProofs(
               currentState,
               headersList,
               parentPath,
               validityTime,
               currentMpf,
-              params
+              itParams
             )
 
             println(s"  [Batch ${batchIndex + 1}] Off-chain computed state:")
@@ -384,7 +374,8 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
               validityTime,
               BitcoinContract.testTxOutRef,
               referenceScriptUtxo,
-              mpfInsertProofs = mpfProofs
+              mpfInsertProofs = mpfProofs,
+              scriptOverride = Some(itScript)
             )
 
             updateTxResult match {

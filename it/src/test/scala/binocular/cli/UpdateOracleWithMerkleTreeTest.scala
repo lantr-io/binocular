@@ -1,11 +1,11 @@
 package binocular.cli
 
 import binocular.*
-import scalus.cardano.address.Address
 import scalus.cardano.ledger.Utxo
 import scalus.uplc.builtin.Data
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.utils.await
+import binocular.IntegrationTestContract
 
 import scala.concurrent.duration.*
 import scala.concurrent.{ExecutionContext, Future}
@@ -49,9 +49,9 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
             )
             .await(30.seconds)
 
-        val scriptAddress = Address.fromBech32(
-          binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
-        )
+        val scriptAddress = IntegrationTestContract.testnetScriptAddress
+        val itParams = IntegrationTestContract.itParams
+        val itScript = IntegrationTestContract.itPlutusScript
 
         // Submit init transaction
         val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
@@ -113,9 +113,8 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
         val (_, validityTime) =
             OracleTransactions.computeValidityIntervalTime(ctx.provider.cardanoInfo)
         val parentPath = initialState.forkTree.findTipPath
-        val params = BitcoinContract.testParams
         val newState =
-            OracleTransactions.applyHeaders(initialState, headersList, parentPath, validityTime, params)
+            OracleTransactions.applyHeaders(initialState, headersList, parentPath, validityTime, itParams)
 
         println(s"[Test] New state calculated:")
         println(s"    Old height: ${initialState.blockHeight}")
@@ -135,7 +134,8 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
           headersList,
           parentPath,
           validityTime,
-          BitcoinContract.testTxOutRef
+          BitcoinContract.testTxOutRef,
+          scriptOverride = Some(itScript)
         )
 
         updateTxResult match {

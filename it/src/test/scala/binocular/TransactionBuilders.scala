@@ -1,7 +1,8 @@
 package binocular
 
-import scalus.cardano.address.{Address, Network}
-import scalus.cardano.ledger.{Credential, Script, Utxo, Value}
+import binocular.util.SlotConfigHelper
+import scalus.cardano.address.Address
+import scalus.cardano.ledger.{Script, Utxo, Value}
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}
@@ -21,20 +22,9 @@ import scala.concurrent.ExecutionContext
   */
 object TransactionBuilders {
 
-    /** Get the compiled BitcoinValidator as PlutusV3 script */
+    /** Get the compiled BitcoinValidator as PlutusV3 script (IT-specific, changPV) */
     def compiledBitcoinScript(): Script.PlutusV3 = {
-        BitcoinContract.contract.script
-    }
-
-    /** Create a script address from the PlutusV3 script
-      *
-      * @param network
-      *   Scalus network (Testnet/Mainnet)
-      */
-    def getScriptAddress(network: Network): Address = {
-        val script = compiledBitcoinScript()
-        val credential = Credential.ScriptHash(script.scriptHash)
-        Address(network, credential)
+        IntegrationTestContract.itPlutusScript
     }
 
     /** Build UpdateOracle transaction
@@ -101,9 +91,17 @@ object TransactionBuilders {
             println(s"[UpdateOracle] Locking $lovelaceAmount lovelace at script")
 
             // 4. Build transaction using TxBuilder
+            // Validator requires finite validity interval <= MaxValidityWindow (10 min)
+            val (validityInstant, _) =
+                SlotConfigHelper.computeValidityIntervalTime(cardanoInfo)
+            val validToInstant =
+                validityInstant.plusMillis(BitcoinValidator.MaxValidityWindow.toLong)
+
             val tx = TxBuilder(cardanoInfo)
                 .spend(scriptUtxo, action, script)
                 .payTo(scriptAddress, scriptUtxo.output.value, newChainState)
+                .validFrom(validityInstant)
+                .validTo(validToInstant)
                 .complete(provider, sponsorAddress)
                 .await(60.seconds)
                 .sign(signer)

@@ -1,7 +1,6 @@
 package binocular.cli
 
-import binocular.{BitcoinChainState, ChainState, OracleTransactions}
-import scalus.cardano.address.Address
+import binocular.{BitcoinChainState, ChainState, IntegrationTestContract, OracleTransactions}
 import scalus.uplc.builtin.Data
 import scalus.utils.await
 
@@ -50,9 +49,7 @@ class InitOracleCommandIntegrationTest extends CliIntegrationTestBase {
         println(s"  Hash: ${initialState.blockHash.toHex}")
 
         // Build and submit init transaction
-        val scriptAddress = Address.fromBech32(
-          binocular.OracleConfig(network = binocular.CardanoNetwork.Testnet).scriptAddress
-        )
+        val scriptAddress = IntegrationTestContract.testnetScriptAddress
 
         val txResult = OracleTransactions.buildAndSubmitInitTransaction(
           ctx.alice.signer,
@@ -127,8 +124,8 @@ class InitOracleCommandIntegrationTest extends CliIntegrationTestBase {
                 assert(
                   e.getMessage.contains("No such file") || e.getMessage.contains(
                     "not found"
-                  ) || e.getMessage
-                      .contains("FileNotFoundException")
+                  ) || e.getMessage.contains("FileNotFoundException")
+                    || e.getMessage.contains("block_999999999")
                 )
         }
     }

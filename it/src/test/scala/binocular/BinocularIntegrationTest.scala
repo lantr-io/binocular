@@ -28,10 +28,10 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
       reuseContainer = true
     )
 
-    // Get the actual script address from compiled BitcoinValidator
-    lazy val bitcoinScript: Script.PlutusV3 = TransactionBuilders.compiledBitcoinScript()
+    // Get the actual script address from compiled BitcoinValidator (IT-specific, changPV)
+    lazy val bitcoinScript: Script.PlutusV3 = IntegrationTestContract.itPlutusScript
 
-    lazy val scriptAddress: Address = TransactionBuilders.getScriptAddress(Network.Testnet)
+    lazy val scriptAddress: Address = IntegrationTestContract.testnetScriptAddress
 
     test("Bitcoin script compiles and has valid address") {
         // Verify script compiles
@@ -41,7 +41,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         val addr = scriptAddress.encode.getOrElse("?")
         assert(addr.startsWith("addr_test1"), s"Should be testnet address, got: $addr")
         println(s"Compiled Bitcoin validator script address: $addr")
-        println(s"Script size: ${BitcoinContract.bitcoinProgram.flatEncoded.length} bytes")
+        println(s"Script size: ${IntegrationTestContract.itPlutusScript.script.size} bytes")
     }
 
     ignore("Yaci DevKit container starts and has funded account") {
@@ -157,7 +157,8 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         println(s"\nSubmitting ${remainingHeaders.length} headers sequentially...")
 
         var currentState = genesisState
-        val currentTime = BigInt(System.currentTimeMillis() / 1000)
+        val (_, currentTime) =
+            OracleTransactions.computeValidityIntervalTime(ctx.provider.cardanoInfo)
 
         remainingHeaders.zipWithIndex.foreach { case (header, idx) =>
             println(s"\n--- Submitting header ${idx + 1}/${remainingHeaders.length} ---")
@@ -166,7 +167,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
             val headerList = prelude.List.single(header)
             val parentPath = currentState.forkTree.findTipPath
             val newState =
-                OracleTransactions.applyHeaders(currentState, headerList, parentPath, currentTime, BitcoinContract.testParams)
+                OracleTransactions.applyHeaders(currentState, headerList, parentPath, currentTime, IntegrationTestContract.itParams)
             println(s"  Expected new height: ${newState.blockHeight}")
 
             // Submit UpdateOracle transaction

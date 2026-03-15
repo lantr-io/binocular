@@ -8,7 +8,12 @@ import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 import scalus.cardano.onchain.plutus.prelude
 import scalus.cardano.onchain.plutus.prelude.List as PList
 import scalus.cardano.onchain.plutus.prelude.List.{Cons, Nil as PNil}
+import scalus.compiler.Options
+import scalus.uplc.{Constant, DeBruijnedProgram, PlutusV3, Term}
 import scalus.uplc.builtin.Builtins.*
+import scalus.uplc.builtin.Data
+import scalus.uplc.builtin.Data.{to, toData}
+import scalus.uplc.eval.{PlutusVM, Result}
 
 class ForkTreePropertyTest
     extends AnyFunSuite
@@ -18,6 +23,103 @@ class ForkTreePropertyTest
     // Increase minSuccessful for better coverage on most tests
     implicit override val generatorDrivenConfig: PropertyCheckConfiguration =
         PropertyCheckConfiguration(minSuccessful = 100)
+
+    // ============================================================================
+    // CEK testing infrastructure
+    // ============================================================================
+
+    private given Options = Options.release
+    private given PlutusVM = PlutusVM.makePlutusV3VM()
+
+    // Use Term.evaluateDebug (not DeBruijnedProgram.evaluateDebug) because
+    // script-level evaluation enforces Unit return, but our test programs return Data.
+    private def evalCEK(program: DeBruijnedProgram, args: Data*): Result = {
+        val applied = args.foldLeft(program)(_ $ _)
+        applied.term.evaluateDebug
+    }
+
+    private def assertCEKSuccess(program: DeBruijnedProgram, args: Data*): Unit =
+        evalCEK(program, args*) match
+            case _: Result.Success => ()
+            case f: Result.Failure =>
+                fail(s"CEK evaluation failed: ${f.exception}\nlogs: ${f.logs.mkString("\n")}")
+
+    private def assertCEKData(program: DeBruijnedProgram, args: Data*)(
+        expectedData: Data
+    ): Unit =
+        evalCEK(program, args*) match
+            case s: Result.Success =>
+                s.term match
+                    case Term.Const(Constant.Data(data), _) =>
+                        assert(data == expectedData, "CEK result doesn't match JVM")
+                    case other =>
+                        fail(s"CEK returned non-Data term: $other")
+            case f: Result.Failure =>
+                fail(s"CEK evaluation failed: ${f.exception}\nlogs: ${f.logs.mkString("\n")}")
+
+    // Compiled programs for CEK evaluation
+    private lazy val insertAscendingCEK = PlutusV3
+        .compile { (d1: Data, d2: Data) =>
+            BitcoinValidator.insertAscending(d1.to[BigInt], d2.to[PList[BigInt]]).toData
+        }
+        .program
+        .deBruijnedProgram
+
+    private lazy val insertionSortCEK = PlutusV3
+        .compile { (d: Data) =>
+            BitcoinValidator.insertionSort(d.to[PList[BigInt]]).toData
+        }
+        .program
+        .deBruijnedProgram
+
+    private lazy val compactBitsToTargetCEK = PlutusV3
+        .compile { (d: Data) =>
+            compactBitsToTarget(d.to[CompactBits]).toData
+        }
+        .program
+        .deBruijnedProgram
+
+    private lazy val targetToCompactByteStringCEK = PlutusV3
+        .compile { (d: Data) =>
+            targetToCompactByteString(d.to[BigInt]).toData
+        }
+        .program
+        .deBruijnedProgram
+
+    private lazy val calculateBlockProofCEK = PlutusV3
+        .compile { (d: Data) =>
+            calculateBlockProof(d.to[BigInt]).toData
+        }
+        .program
+        .deBruijnedProgram
+
+    private lazy val accumulateBlockCEK = PlutusV3
+        .compile { (d1: Data, d2: Data) =>
+            BitcoinValidator.accumulateBlock(d1.to[TraversalCtx], d2.to[BlockSummary]).toData
+        }
+        .program
+        .deBruijnedProgram
+
+    private lazy val bestChainPathCEK = PlutusV3
+        .compile { (d1: Data, d2: Data, d3: Data) =>
+            BitcoinValidator.bestChainPath(d1.to[ForkTree], d2.to[BigInt], d3.to[BigInt])
+        }
+        .program
+        .deBruijnedProgram
+
+    private lazy val computeUpdateCEK = PlutusV3
+        .compile { (d1: Data, d2: Data, d3: Data, d4: Data) =>
+            BitcoinValidator
+                .computeUpdate(
+                  d1.to[ChainState],
+                  d2.to[UpdateOracle],
+                  d3.to[BigInt],
+                  d4.to[BitcoinValidatorParams]
+                )
+                .toData
+        }
+        .program
+        .deBruijnedProgram
 
     // ============================================================================
     // insertAscending properties
@@ -31,6 +133,8 @@ class ForkTreePropertyTest
             val result = BitcoinValidator.insertAscending(x, sorted)
             val resultScala = result.toScalaList
             assert(resultScala == resultScala.sorted)
+            // CEK
+            assertCEKData(insertAscendingCEK, x.toData, sorted.toData)(result.toData)
         }
     }
 
@@ -41,6 +145,8 @@ class ForkTreePropertyTest
         forAll(genSortedList, Gen.choose(-1000L, 1000L).map(BigInt(_))) { (sorted, x) =>
             val result = BitcoinValidator.insertAscending(x, sorted)
             assert(result.length == sorted.length + 1)
+            // CEK
+            assertCEKData(insertAscendingCEK, x.toData, sorted.toData)(result.toData)
         }
     }
 
@@ -54,6 +160,8 @@ class ForkTreePropertyTest
             val expectedMultiset =
                 (sorted.toScalaList :+ x).groupBy(identity).view.mapValues(_.size).toMap
             assert(resultMultiset == expectedMultiset)
+            // CEK
+            assertCEKData(insertAscendingCEK, x.toData, sorted.toData)(result.toData)
         }
     }
 
@@ -64,6 +172,8 @@ class ForkTreePropertyTest
                 val result = BitcoinValidator.insertAscending(x, sorted)
                 val resultScala = result.toScalaList
                 assert(resultScala == resultScala.sorted)
+                // CEK
+                assertCEKData(insertAscendingCEK, x.toData, sorted.toData)(result.toData)
             }
         }
     }
@@ -82,6 +192,13 @@ class ForkTreePropertyTest
             val result2 =
                 BitcoinValidator.insertAscending(a, BitcoinValidator.insertAscending(b, sorted))
             assert(result1.toScalaList.sorted == result2.toScalaList.sorted)
+            // CEK - verify both orderings produce same result
+            assertCEKData(insertAscendingCEK, a.toData, sorted.toData)(
+              BitcoinValidator.insertAscending(a, sorted).toData
+            )
+            assertCEKData(insertAscendingCEK, b.toData, sorted.toData)(
+              BitcoinValidator.insertAscending(b, sorted).toData
+            )
         }
     }
 
@@ -95,6 +212,8 @@ class ForkTreePropertyTest
             val result = BitcoinValidator.insertionSort(input)
             val resultScala = result.toScalaList
             assert(resultScala == resultScala.sorted)
+            // CEK
+            assertCEKData(insertionSortCEK, input.toData)(result.toData)
         }
     }
 
@@ -103,6 +222,8 @@ class ForkTreePropertyTest
             val input = PList.from(xs)
             val result = BitcoinValidator.insertionSort(input)
             assert(result.length == input.length)
+            // CEK
+            assertCEKData(insertionSortCEK, input.toData)(result.toData)
         }
     }
 
@@ -111,6 +232,8 @@ class ForkTreePropertyTest
             val input = PList.from(xs)
             val result = BitcoinValidator.insertionSort(input)
             assert(result.toScalaList.sorted == input.toScalaList.sorted)
+            // CEK
+            assertCEKData(insertionSortCEK, input.toData)(result.toData)
         }
     }
 
@@ -119,6 +242,8 @@ class ForkTreePropertyTest
             val input = PList.from(xs)
             val result = BitcoinValidator.insertionSort(input)
             assert(result.toScalaList == xs.sorted)
+            // CEK
+            assertCEKData(insertionSortCEK, input.toData)(result.toData)
         }
     }
 
@@ -135,6 +260,9 @@ class ForkTreePropertyTest
               target == targetBack,
               s"bits=${bits.toHex}, target=$target, roundtripped=${roundtripped.toHex}"
             )
+            // CEK
+            assertCEKData(compactBitsToTargetCEK, bits.toData)(target.toData)
+            assertCEKData(targetToCompactByteStringCEK, target.toData)(roundtripped.toData)
         }
     }
 
@@ -142,6 +270,8 @@ class ForkTreePropertyTest
         forAll(genCompactBits) { bits =>
             val target = compactBitsToTarget(bits)
             assert(target <= PowLimit)
+            // CEK
+            assertCEKData(compactBitsToTargetCEK, bits.toData)(target.toData)
         }
     }
 
@@ -149,6 +279,8 @@ class ForkTreePropertyTest
         forAll(genCompactBits) { bits =>
             val target = compactBitsToTarget(bits)
             assert(target >= 0)
+            // CEK
+            assertCEKData(compactBitsToTargetCEK, bits.toData)(target.toData)
         }
     }
 
@@ -165,6 +297,9 @@ class ForkTreePropertyTest
                 val proof2 = calculateBlockProof(target2)
                 if target1 > target2 then assert(proof1 < proof2)
                 else assert(proof1 > proof2)
+                // CEK
+                assertCEKData(calculateBlockProofCEK, target1.toData)(proof1.toData)
+                assertCEKData(calculateBlockProofCEK, target2.toData)(proof2.toData)
             }
         }
     }
@@ -175,6 +310,8 @@ class ForkTreePropertyTest
             whenever(target > 0) {
                 val proof = calculateBlockProof(target)
                 assert(proof > 0)
+                // CEK
+                assertCEKData(calculateBlockProofCEK, target.toData)(proof.toData)
             }
         }
     }
@@ -186,6 +323,8 @@ class ForkTreePropertyTest
                 val proof = calculateBlockProof(target)
                 val expected = TwoTo256 / (target + 1)
                 assert(proof == expected)
+                // CEK
+                assertCEKData(calculateBlockProofCEK, target.toData)(proof.toData)
             }
         }
     }
@@ -199,6 +338,8 @@ class ForkTreePropertyTest
             val block = genBlockSummaryWithId(1, 1700000000L, 1700000000L)
             val newCtx = BitcoinValidator.accumulateBlock(ctx, block)
             assert(newCtx.height == ctx.height + 1)
+            // CEK
+            assertCEKData(accumulateBlockCEK, ctx.toData, block.toData)(newCtx.toData)
         }
     }
 
@@ -207,6 +348,8 @@ class ForkTreePropertyTest
             val block = genBlockSummaryWithId(42, 1700000000L, 1700000000L)
             val newCtx = BitcoinValidator.accumulateBlock(ctx, block)
             assert(newCtx.lastBlockHash == block.hash)
+            // CEK
+            assertCEKData(accumulateBlockCEK, ctx.toData, block.toData)(newCtx.toData)
         }
     }
 
@@ -215,6 +358,8 @@ class ForkTreePropertyTest
             val block = genBlockSummaryWithId(1, 1700000000L, 1700000000L)
             val newCtx = BitcoinValidator.accumulateBlock(ctx, block)
             assert(newCtx.timestamps.head == block.timestamp)
+            // CEK
+            assertCEKData(accumulateBlockCEK, ctx.toData, block.toData)(newCtx.toData)
         }
     }
 
@@ -233,6 +378,8 @@ class ForkTreePropertyTest
                 val block = genBlockSummaryWithId(1, 1700001000L, 1700001000L)
                 val newCtx = BitcoinValidator.accumulateBlock(ctx, block)
                 assert(newCtx.prevDiffAdjTimestamp == block.timestamp)
+                // CEK
+                assertCEKData(accumulateBlockCEK, ctx.toData, block.toData)(newCtx.toData)
             }
         }
     }
@@ -242,6 +389,8 @@ class ForkTreePropertyTest
             val block = genBlockSummaryWithId(1, 1700000000L, 1700000000L)
             val newCtx = BitcoinValidator.accumulateBlock(ctx, block)
             assert(newCtx.prevDiffAdjTimestamp == ctx.prevDiffAdjTimestamp)
+            // CEK
+            assertCEKData(accumulateBlockCEK, ctx.toData, block.toData)(newCtx.toData)
         }
     }
 
@@ -257,6 +406,8 @@ class ForkTreePropertyTest
             // Should not throw — accumulateBlock doesn't check MTP
             val newCtx = BitcoinValidator.accumulateBlock(ctx, block)
             assert(newCtx.height == ctx.height + 1)
+            // CEK
+            assertCEKData(accumulateBlockCEK, ctx.toData, block.toData)(newCtx.toData)
         }
     }
 
@@ -273,6 +424,8 @@ class ForkTreePropertyTest
             assert(resCw == cw)
             assert(resH == h)
             assert(resPath == PNil)
+            // CEK
+            assertCEKSuccess(bestChainPathCEK, End.toData, h.toData, cw.toData)
         }
     }
 
@@ -284,6 +437,8 @@ class ForkTreePropertyTest
                     assert(resCw == cw)
                     assert(resDepth == baseH + blocks.length)
                     assert(resPath == PNil) // no forks → empty path
+                    // CEK
+                    assertCEKSuccess(bestChainPathCEK, tree.toData, baseH.toData, BigInt(0).toData)
                 case _ => // skip if generator produced something unexpected
         }
     }
@@ -300,6 +455,8 @@ class ForkTreePropertyTest
                 )
                 val (_, _, path) = BitcoinValidator.bestChainPath(tree, 0, 0)
                 assert(path.head == BitcoinValidator.LeftFork)
+                // CEK
+                assertCEKSuccess(bestChainPathCEK, tree.toData, BigInt(0).toData, BigInt(0).toData)
             }
         }
     }
@@ -316,6 +473,8 @@ class ForkTreePropertyTest
                 )
                 val (_, _, path) = BitcoinValidator.bestChainPath(tree, 0, 0)
                 assert(path.head == BitcoinValidator.RightFork)
+                // CEK
+                assertCEKSuccess(bestChainPathCEK, tree.toData, BigInt(0).toData, BigInt(0).toData)
             }
         }
     }
@@ -335,6 +494,8 @@ class ForkTreePropertyTest
                 case End                => 0
 
             assert(path.length == countForksOnPath(tree, path))
+            // CEK
+            assertCEKSuccess(bestChainPathCEK, tree.toData, BigInt(0).toData, BigInt(0).toData)
         }
     }
 
@@ -342,6 +503,8 @@ class ForkTreePropertyTest
         forAll(genForkTree(3), Gen.choose(100L, 1000L).map(BigInt(_))) { (tree, baseH) =>
             val (_, depth, _) = BitcoinValidator.bestChainPath(tree, baseH, 0)
             assert(depth == tree.highestHeight(baseH))
+            // CEK
+            assertCEKSuccess(bestChainPathCEK, tree.toData, baseH.toData, BigInt(0).toData)
         }
     }
 
@@ -350,6 +513,8 @@ class ForkTreePropertyTest
             val r1 = BitcoinValidator.bestChainPath(tree, h, 0)
             val r2 = BitcoinValidator.bestChainPath(tree, h, 0)
             assert(r1 == r2)
+            // CEK
+            assertCEKSuccess(bestChainPathCEK, tree.toData, h.toData, BigInt(0).toData)
         }
     }
 
@@ -631,6 +796,14 @@ class ForkTreePropertyTest
               newState.previousDifficultyAdjustmentTimestamp == state.previousDifficultyAdjustmentTimestamp
             )
             assert(newState.confirmedBlocksRoot == state.confirmedBlocksRoot)
+            // CEK
+            assertCEKData(
+              computeUpdateCEK,
+              state.toData,
+              update.toData,
+              currentTime.toData,
+              testingParams.toData
+            )(newState.toData)
         }
     }
 
@@ -650,6 +823,14 @@ class ForkTreePropertyTest
                 BitcoinValidator.computeUpdate(state, update, currentTime, testingParams)
             assert(newState.forkTree != state.forkTree || n == 0)
             assert(newState.forkTree.nonEmpty)
+            // CEK
+            assertCEKData(
+              computeUpdateCEK,
+              state.toData,
+              update.toData,
+              currentTime.toData,
+              testingParams.toData
+            )(newState.toData)
         }
     }
 
@@ -674,6 +855,14 @@ class ForkTreePropertyTest
                   s"hash ${hash.toHex} not found in resulting tree"
                 )
             }
+            // CEK
+            assertCEKData(
+              computeUpdateCEK,
+              state.toData,
+              update.toData,
+              currentTime.toData,
+              testingParams.toData
+            )(newState.toData)
         }
     }
 
@@ -725,6 +914,14 @@ class ForkTreePropertyTest
         val newState =
             BitcoinValidator.computeUpdate(state, update, currentTime, testingParams)
         assert(newState == state)
+        // CEK
+        assertCEKData(
+          computeUpdateCEK,
+          state.toData,
+          update.toData,
+          currentTime.toData,
+          testingParams.toData
+        )(newState.toData)
     }
 
     // ============================================================================
