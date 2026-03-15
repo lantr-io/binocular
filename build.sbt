@@ -51,7 +51,7 @@ lazy val example = (project in file("example"))
     .dependsOn(binocular)
     .settings(
       name := "binocular-example",
-      addCompilerPlugin("org.scalus" %% "scalus-plugin_3.3.7" % scalusVersion),
+      addCompilerPlugin("org.scalus" % "scalus-plugin_3.3.7" % scalusVersion),
       Compile / mainClass := Some("binocular.example.bitcoinDependentLock")
     )
 
