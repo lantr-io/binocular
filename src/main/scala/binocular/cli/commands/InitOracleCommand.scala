@@ -5,9 +5,10 @@ import binocular.cli.Command
 import scalus.cardano.address.Address
 import scalus.cardano.txbuilder.TransactionSigner
 
-import scala.concurrent.{Await, ExecutionContext}
+import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
 import scala.util.boundary, boundary.break
+import scalus.utils.await
 
 /** Initialize new oracle from Bitcoin block */
 case class InitOracleCommand(startBlock: Option[Long]) extends Command {
@@ -100,7 +101,7 @@ case class InitOracleCommand(startBlock: Option[Long]) extends Command {
         val initialStateFuture = BitcoinChainState.getInitialChainState(rpc, blockHeight.toInt)
         val initialState =
             try {
-                Await.result(initialStateFuture, 30.seconds)
+                initialStateFuture.await(30.seconds)
             } catch {
                 case e: Exception =>
                     System.err.println(s"Error fetching Bitcoin block: ${e.getMessage}")

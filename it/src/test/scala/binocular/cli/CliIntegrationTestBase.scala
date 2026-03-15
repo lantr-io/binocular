@@ -13,7 +13,7 @@ import scalus.uplc.builtin.Data.toData
 import scalus.utils.await
 
 import scala.concurrent.duration.*
-import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.concurrent.{ExecutionContext, Future}
 import scala.io.Source
 import upickle.default.*
 
@@ -330,16 +330,13 @@ trait CliIntegrationTestBase extends AnyFunSuite with YaciDevKit {
         // Build init tx: spend seed + mint NFT + pay to script
         val oracleValue = Value.asset(scriptHash, AssetName.empty, 1, Coin(lovelaceAmount))
 
-        val tx = Await
-            .result(
-              TxBuilder(ctx.provider.cardanoInfo)
-                  .spend(seedUtxo)
-                  .collaterals(seedUtxo)
-                  .mint(script, Map(AssetName.empty -> 1L), _ => BigInt(0).toData)
-                  .payTo(scriptAddress, oracleValue, genesisState)
-                  .complete(ctx.provider, ctx.alice.address),
-              120.seconds
-            )
+        val tx = TxBuilder(ctx.provider.cardanoInfo)
+            .spend(seedUtxo)
+            .collaterals(seedUtxo)
+            .mint(script, Map(AssetName.empty -> 1L), _ => BigInt(0).toData)
+            .payTo(scriptAddress, oracleValue, genesisState)
+            .complete(ctx.provider, ctx.alice.address)
+            .await(120.seconds)
             .sign(ctx.alice.signer)
             .transaction
 

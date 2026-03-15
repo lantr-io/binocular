@@ -12,9 +12,10 @@ import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 
 import java.time.Instant
-import scala.concurrent.{Await, ExecutionContext}
+import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
 import scala.util.{Failure, Success, Try}
+import scalus.utils.await
 
 /** Helper functions for building oracle transactions */
 object OracleTransactions {
@@ -50,13 +51,10 @@ object OracleTransactions {
               scriptRef = Some(ScriptRef(script))
             )
 
-            val tx = Await
-                .result(
-                  TxBuilder(provider.cardanoInfo)
-                      .output(output)
-                      .complete(provider, sponsorAddress),
-                  timeout
-                )
+            val tx = TxBuilder(provider.cardanoInfo)
+                .output(output)
+                .complete(provider, sponsorAddress)
+                .await(timeout)
                 .sign(signer)
                 .transaction
 
@@ -87,10 +85,7 @@ object OracleTransactions {
         )
         println(s"Expected script hash: ${expectedScriptHash.toHex}")
 
-        val utxosResult = Await.result(
-          provider.findUtxos(searchAddress),
-          timeout
-        )
+        val utxosResult = provider.findUtxos(searchAddress).await(timeout)
 
         val utxos: Utxos = utxosResult match {
             case Right(u)  => u
@@ -227,13 +222,10 @@ object OracleTransactions {
     ): Either[String, String] = {
         given ec: ExecutionContext = provider.executionContext
         Try {
-            val tx = Await
-                .result(
-                  TxBuilder(provider.cardanoInfo)
-                      .payTo(scriptAddress, Value.lovelace(lovelaceAmount), initialState)
-                      .complete(provider, sponsorAddress),
-                  timeout
-                )
+            val tx = TxBuilder(provider.cardanoInfo)
+                .payTo(scriptAddress, Value.lovelace(lovelaceAmount), initialState)
+                .complete(provider, sponsorAddress)
+                .await(timeout)
                 .sign(signer)
                 .transaction
 
@@ -323,11 +315,7 @@ object OracleTransactions {
                 .validFrom(validityInstant)
                 .validTo(validToInstant)
 
-            val completedBuilder = Await
-                .result(
-                  builder.complete(provider, sponsorAddress),
-                  timeout
-                )
+            val completedBuilder = builder.complete(provider, sponsorAddress).await(timeout)
             val tx = completedBuilder.sign(signer).transaction
 
             submitTx(provider, tx, timeout)
@@ -347,7 +335,7 @@ object OracleTransactions {
         timeout: Duration = 120.seconds
     ): Either[String, String] = {
         given ec: ExecutionContext = provider.executionContext
-        val result = Await.result(provider.submit(tx), timeout)
+        val result = provider.submit(tx).await(timeout)
         result match {
             case Left(err)     => Left(s"Submission failed: $err")
             case Right(txHash) => Right(txHash.toHex)

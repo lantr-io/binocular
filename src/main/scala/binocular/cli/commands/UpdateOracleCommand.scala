@@ -11,9 +11,10 @@ import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 import scalus.utils.Hex.hexToBytes
 
 import scala.concurrent.duration.*
-import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.concurrent.{ExecutionContext, Future}
 import scala.util.boundary
 import scala.util.boundary.break
+import scalus.utils.await
 
 /** Update oracle with new Bitcoin blocks */
 case class UpdateOracleCommand(
@@ -102,10 +103,8 @@ case class UpdateOracleCommand(
                                   TransactionHash.fromHex(refTxHash),
                                   refOutputIdx
                                 )
-                                val utxoResult = Await.result(
-                                  provider.findUtxo(refInput),
-                                  timeout
-                                )
+                                val utxoResult =
+                                    provider.findUtxo(refInput).await(timeout)
                                 utxoResult match {
                                     case Right(u) => Some(u)
                                     case Left(_)  => None
@@ -147,10 +146,8 @@ case class UpdateOracleCommand(
                                             Thread.sleep(2000)
                                             attempts += 1
                                             try {
-                                                val result = Await.result(
-                                                  provider.findUtxo(refInput),
-                                                  timeout
-                                                )
+                                                val result =
+                                                    provider.findUtxo(refInput).await(timeout)
                                                 result match {
                                                     case Right(_) =>
                                                         confirmed = true
@@ -201,7 +198,7 @@ case class UpdateOracleCommand(
 
                 val utxosResult =
                     try {
-                        Await.result(provider.findUtxos(scriptAddress), timeout)
+                        provider.findUtxos(scriptAddress).await(timeout)
                     } catch {
                         case e: Exception =>
                             System.err.println(s"  Error fetching UTxOs: ${e.getMessage}")
@@ -307,10 +304,7 @@ case class UpdateOracleCommand(
                                     (startHeight to currentChainState.blockHeight.toLong).toList
                                 val rebuiltMpf =
                                     try {
-                                        Await.result(
-                                          rebuildMpf(heights, OffChainMPF.empty),
-                                          120.seconds
-                                        )
+                                        rebuildMpf(heights, OffChainMPF.empty).await(120.seconds)
                                     } catch {
                                         case e: Exception =>
                                             System.err.println(
@@ -359,7 +353,7 @@ case class UpdateOracleCommand(
                                 val rpc = new SimpleBitcoinRpc(btcConf)
                                 val infoFuture = rpc.getBlockchainInfo()
                                 try {
-                                    val info = Await.result(infoFuture, 30.seconds)
+                                    val info = infoFuture.await(30.seconds)
                                     info.blocks.toLong
                                 } catch {
                                     case e: Exception =>
@@ -507,7 +501,7 @@ case class UpdateOracleCommand(
 
                                 val headers: Seq[BlockHeader] =
                                     try {
-                                        Await.result(headersFuture, 60.seconds)
+                                        headersFuture.await(60.seconds)
                                     } catch {
                                         case e: Exception =>
                                             System.err.println(
@@ -612,10 +606,9 @@ case class UpdateOracleCommand(
                                                 attempts += 1
 
                                                 try {
-                                                    val result = Await.result(
-                                                      provider.findUtxo(newOracleInput),
-                                                      timeout
-                                                    )
+                                                    val result = provider
+                                                        .findUtxo(newOracleInput)
+                                                        .await(timeout)
                                                     result match {
                                                         case Right(u) =>
                                                             utxoAvailable = Some(u)
@@ -652,10 +645,9 @@ case class UpdateOracleCommand(
                                                 walletAttempts += 1
 
                                                 try {
-                                                    val walletUtxosResult = Await.result(
-                                                      provider.findUtxos(sponsorAddress),
-                                                      timeout
-                                                    )
+                                                    val walletUtxosResult = provider
+                                                        .findUtxos(sponsorAddress)
+                                                        .await(timeout)
                                                     walletUtxosResult match {
                                                         case Right(utxos) =>
                                                             val hasNewUtxo = utxos.exists {

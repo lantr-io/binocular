@@ -5,9 +5,10 @@ import binocular.cli.{Command, CommandHelpers}
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.uplc.builtin.Data.fromData
 
-import scala.concurrent.{Await, ExecutionContext}
+import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
 import scala.util.{Failure, Success, Try}
+import scalus.utils.await
 
 /** Verify oracle UTxO and validate state */
 case class VerifyOracleCommand(utxo: String) extends Command {
@@ -41,10 +42,8 @@ case class VerifyOracleCommand(utxo: String) extends Command {
                             // Fetch specific UTxO
                             val input =
                                 TransactionInput(TransactionHash.fromHex(txHash), outputIndex)
-                            val utxoResult = Await.result(
-                              provider.findUtxo(input),
-                              30.seconds
-                            )
+                            val utxoResult =
+                                provider.findUtxo(input).await(30.seconds)
 
                             val foundUtxo: Utxo = utxoResult match {
                                 case Right(u) => u

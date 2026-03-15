@@ -5,8 +5,9 @@ import binocular.cli.{Command, CommandHelpers}
 import scalus.cardano.address.Address
 import scalus.cardano.ledger.Utxo
 
-import scala.concurrent.{Await, ExecutionContext}
+import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
+import scalus.utils.await
 
 /** List oracle UTxOs on Cardano */
 case class ListOraclesCommand(limit: Int) extends Command {
@@ -33,10 +34,8 @@ case class ListOraclesCommand(limit: Int) extends Command {
                             println()
 
                             val address = Address.fromBech32(scriptAddress)
-                            val utxosResult = Await.result(
-                              provider.findUtxos(address),
-                              30.seconds
-                            )
+                            val utxosResult =
+                                provider.findUtxos(address).await(30.seconds)
 
                             val allUtxos: List[Utxo] = utxosResult match {
                                 case Right(u) =>

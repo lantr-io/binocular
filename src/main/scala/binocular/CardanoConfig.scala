@@ -4,9 +4,10 @@ import scalus.cardano.address.Network
 import scalus.cardano.node.{BlockchainProvider, BlockfrostProvider}
 import com.typesafe.config.{Config, ConfigFactory}
 
-import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration.*
 import scala.util.{Failure, Success, Try}
+import scalus.utils.await
 
 /** Configuration for Cardano network connection
   *
@@ -56,7 +57,7 @@ case class CardanoConfig(
                             case CardanoNetwork.Testnet =>
                                 BlockfrostProvider.preview(blockfrost.projectId)
                         }
-                        Await.result(future, 30.seconds)
+                        future.await(30.seconds)
                     } match {
                         case Success(provider) => Right(provider)
                         case Failure(ex) =>

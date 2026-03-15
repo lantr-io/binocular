@@ -5,8 +5,9 @@ import binocular.cli.{Command, CommandHelpers}
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.uplc.builtin.ByteString
 
-import scala.concurrent.{Await, ExecutionContext}
+import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
+import scalus.utils.await
 
 /** Prove Bitcoin transaction inclusion via oracle */
 case class ProveTransactionCommand(
@@ -95,7 +96,7 @@ case class ProveTransactionCommand(
 
                 val input =
                     TransactionInput(TransactionHash.fromHex(oracleTxHash), oracleOutputIndex)
-                val utxoResult = Await.result(provider.findUtxo(input), 30.seconds)
+                val utxoResult = provider.findUtxo(input).await(30.seconds)
 
                 val utxo = utxoResult match {
                     case Right(u) => u
@@ -244,7 +245,7 @@ case class ProveTransactionCommand(
                             println(s"Step 4: Fetching Bitcoin transaction $btcTxId...")
                             val txInfo =
                                 try {
-                                    Await.result(rpc.getRawTransaction(btcTxId), 30.seconds)
+                                    rpc.getRawTransaction(btcTxId).await(30.seconds)
                                 } catch {
                                     case e: Exception =>
                                         val msg = e.getMessage
@@ -285,7 +286,7 @@ case class ProveTransactionCommand(
 
                 val blockHeader =
                     try {
-                        Await.result(rpc.getBlockHeader(targetBlockHash), 30.seconds)
+                        rpc.getBlockHeader(targetBlockHash).await(30.seconds)
                     } catch {
                         case e: Exception =>
                             System.err.println(s"Error fetching block header: ${e.getMessage}")
@@ -307,7 +308,7 @@ case class ProveTransactionCommand(
 
                 val blockInfo =
                     try {
-                        Await.result(rpc.getBlock(targetBlockHash), 60.seconds)
+                        rpc.getBlock(targetBlockHash).await(60.seconds)
                     } catch {
                         case e: Exception =>
                             System.err.println(s"Error fetching block: ${e.getMessage}")
@@ -375,7 +376,7 @@ case class ProveTransactionCommand(
                         // We don't know the exact start, so fetch a reasonable range
                         // In practice, the oracle tracks from its genesis block
                         // For now, verify that the target block hash is in the trie
-                        val hash = Await.result(rpc.getBlockHash(blockHeader.height), 30.seconds)
+                        val hash = rpc.getBlockHash(blockHeader.height).await(30.seconds)
                         val blockHashBytes = ByteString.fromHex(hash).reverse
                         if blockHashBytes != targetBlockHashBytes then {
                             System.err.println(
@@ -400,7 +401,7 @@ case class ProveTransactionCommand(
 
                 val rawBlockHeader =
                     try {
-                        Await.result(rpc.getBlockHeaderRaw(targetBlockHash), 30.seconds)
+                        rpc.getBlockHeaderRaw(targetBlockHash).await(30.seconds)
                     } catch {
                         case e: Exception =>
                             System.err.println(s"Error fetching raw block header: ${e.getMessage}")
