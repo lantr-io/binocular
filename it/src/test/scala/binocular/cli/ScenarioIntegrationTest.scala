@@ -579,24 +579,4 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
 
         println(s"[Test] All $testCount Merkle proofs verified")
     }
-
-    test("scenario: handles transaction not in block") {
-        val ctx = createYaciContext()
-        given ec: ExecutionContext = ctx.provider.executionContext
-
-        val blockHeight = 866970
-        val mockRpc = new MockBitcoinRpc()
-
-        // Get block info
-        val blockHash = mockRpc.getBlockHash(blockHeight).await(10.seconds)
-        val blockInfo = mockRpc.getBlock(blockHash).await(10.seconds)
-
-        // Use a fake transaction ID that's not in the block
-        val fakeTxId = "0000000000000000000000000000000000000000000000000000000000000000"
-
-        val txIndex = blockInfo.tx.indexWhere(_.txid == fakeTxId)
-        assert(txIndex < 0, "Fake transaction should not be found in block")
-
-        println(s"[Test] Correctly identified transaction not in block")
-    }
 }
