@@ -72,19 +72,19 @@ enum ForkTree derives FromData, ToData {
 
     /** Total number of blocks in the tree. */
     def blockCount: Int = this match
-        case ForkTree.Blocks(blocks, _, next) => blocks.size.toInt + next.blockCount
-        case ForkTree.Fork(left, right)       => left.blockCount + right.blockCount
-        case ForkTree.End                     => 0
+        case Blocks(blocks, _, next) => blocks.size.toInt + next.blockCount
+        case Fork(left, right)       => left.blockCount + right.blockCount
+        case End                     => 0
 
-    def nonEmpty: Boolean = this != ForkTree.End
+    def nonEmpty: Boolean = this != End
 
     /** Check if a block hash exists anywhere in the tree. */
     def existsHash(hash: BlockHash): Boolean = this match
-        case ForkTree.Blocks(blocks, _, next) =>
+        case Blocks(blocks, _, next) =>
             blocks.exists(_.hash == hash) || next.existsHash(hash)
-        case ForkTree.Fork(left, right) =>
+        case Fork(left, right) =>
             left.existsHash(hash) || right.existsHash(hash)
-        case ForkTree.End => false
+        case End => false
 
     /** Height of the best chain tip (confirmed height + unconfirmed blocks). */
     def highestHeight(baseHeight: BigInt): BigInt = {
@@ -94,7 +94,7 @@ enum ForkTree derives FromData, ToData {
 
     /** Earliest addedTimeSeconds among all blocks in the tree, or None if empty. */
     def oldestBlockTime: scala.Option[BigInt] = this match
-        case ForkTree.Blocks(blocks, _, next) =>
+        case Blocks(blocks, _, next) =>
             var min: scala.Option[BigInt] = scala.None
             blocks.foreach { b =>
                 min = min match
@@ -106,20 +106,20 @@ enum ForkTree derives FromData, ToData {
                 case (scala.Some(a), scala.Some(b)) => scala.Some(a.min(b))
                 case (a, scala.None)                => a
                 case (scala.None, b)                => b
-        case ForkTree.Fork(left, right) =>
+        case Fork(left, right) =>
             (left.oldestBlockTime, right.oldestBlockTime) match
                 case (scala.Some(a), scala.Some(b)) => scala.Some(a.min(b))
                 case (a, scala.None)                => a
                 case (scala.None, b)                => b
-        case ForkTree.End => scala.None
+        case End => scala.None
 
     /** Flatten all blocks in the tree into a single list (depth-first order). */
     def toBlockList: scala.collection.immutable.List[BlockSummary] = this match
-        case ForkTree.Blocks(blocks, _, next) =>
+        case Blocks(blocks, _, next) =>
             blocks.toScalaList ++ next.toBlockList
-        case ForkTree.Fork(left, right) =>
+        case Fork(left, right) =>
             left.toBlockList ++ right.toBlockList
-        case ForkTree.End => scala.collection.immutable.Nil
+        case End => scala.collection.immutable.Nil
 
     /** Compute the insertion path to the tip of the best chain.
       *
@@ -132,24 +132,24 @@ enum ForkTree derives FromData, ToData {
       *   - `End`: emit nothing (empty tree — parent is the confirmed tip)
       */
     def findTipPath: List[BigInt] = this match
-        case ForkTree.Blocks(blocks, _, next) =>
+        case Blocks(blocks, _, next) =>
             next match
-                case ForkTree.End =>
+                case End =>
                     // Last Blocks node — tip is the last block
                     List(blocks.length - 1)
                 case _ =>
                     // Pass through all blocks, recurse into subtree
                     List.Cons(blocks.length, next.findTipPath)
-        case ForkTree.Fork(left, right) =>
+        case Fork(left, right) =>
             val (leftWork, _, _) = BitcoinValidator.bestChainPath(left, 0, 0)
             val (rightWork, _, _) = BitcoinValidator.bestChainPath(right, 0, 0)
             if leftWork >= rightWork then List.Cons(BigInt(0), left.findTipPath)
             else List.Cons(BigInt(1), right.findTipPath)
-        case ForkTree.End => List.Nil
+        case End => List.Nil
 
     /** Display tree structure for debugging/CLI output. */
     def displayTree(baseHeight: BigInt, indent: String = ""): String = this match
-        case ForkTree.Blocks(blocks, cw, next) =>
+        case Blocks(blocks, cw, next) =>
             val first = blocks.head
             val last = blocks.last
             val firstHeight = baseHeight + 1
@@ -158,11 +158,11 @@ enum ForkTree derives FromData, ToData {
                 s"${indent}Blocks[${blocks.size.toInt}] heights $firstHeight..$lastHeight, chainwork=$cw, tip=${last.hash.toHex.take(8)}..."
             val nextStr = next.displayTree(lastHeight, indent)
             if nextStr.isEmpty then line else line + "\n" + nextStr
-        case ForkTree.Fork(left, right) =>
+        case Fork(left, right) =>
             val leftStr = left.displayTree(baseHeight, indent + "  L ")
             val rightStr = right.displayTree(baseHeight, indent + "  R ")
             s"${indent}Fork:\n$leftStr\n$rightStr"
-        case ForkTree.End => ""
+        case End => ""
 }
 
 case class ChainState(
@@ -980,12 +980,6 @@ object BitcoinValidator extends DataParameterizedValidator {
     // Spend entry point
     // ============================================================================
 
-    def findUniqueOutputFrom(outputs: List[TxOut], scriptAddress: Address): TxOut = {
-        val matchingOutputs = outputs.filter(out => out.address === scriptAddress)
-        require(matchingOutputs.size == BigInt(1), "There must be exactly one continuing output")
-        matchingOutputs.head
-    }
-
     inline override def spend(
         param: Data,
         datum: Option[Datum],
@@ -1007,35 +1001,44 @@ object BitcoinValidator extends DataParameterizedValidator {
         val outputs = tx.outputs
 
         // Find own input
-        val ownInput = inputs
-            .find(_.outRef === outRef)
-            .getOrFail("Input not found")
-            .resolved
+        val ownInput = inputs.find(_.outRef === outRef).getOrFail("Input not found").resolved
 
-        val prevState = ownInput.datum match
+        // Extract policy ID (= script hash) for oracle NFT lookup
+        val Credential.ScriptCredential(policyId) = ownInput.address.credential: @unchecked
+
+        val chainState = ownInput.datum match
             case OutputDatum.OutputDatum(d) => d.to[ChainState]
             case _                          => fail("No inline datum")
 
-        // Compute expected new state
-        val computedState = computeUpdate(prevState, update, intervalStartInSeconds, params)
+        // Compute expected new chainState
+        val computedState = computeUpdate(chainState, update, intervalStartInSeconds, params)
 
-        // Find continuing output
-        val continuingOutput = findUniqueOutputFrom(outputs, ownInput.address)
+        // Find continuing output: address match + oracle NFT (NFT uniqueness replaces size check)
+        val continuingOutput = outputs
+            .find(out =>
+                out.address.toData == ownInput.address.toData
+                    && out.value.quantityOf(policyId, ByteString.empty) == BigInt(1)
+            )
+            .getOrFail("No continuing output with oracle NFT found")
 
         // NFT preservation
         require(
-          ownInput.value.withoutLovelace === continuingOutput.value.withoutLovelace,
+          ownInput.value.withoutLovelace.toData == continuingOutput.value.withoutLovelace.toData,
           "Non-ADA tokens must be preserved"
         )
 
-        // Verify output datum matches computed state
-        val providedOutputDatum = continuingOutput.datum match
-            case OutputDatum.OutputDatum(d) => d
-            case _                          => fail("Continuing output must have inline datum")
+        // ADA value can only increase (prevents draining oracle UTxO)
+        require(
+          continuingOutput.value.lovelaceAmount >= ownInput.value.lovelaceAmount,
+          "ADA value can only increase"
+        )
 
+        // Verify output datum matches computed chainState
+        val providedOutputDatum = continuingOutput.datum.toData
+        val expectedOutputDatum = OutputDatum.OutputDatum(computedState.toData).toData
 //        log("spend: providedOutputDatum")
         require(
-          computedState.toData == providedOutputDatum,
+          providedOutputDatum == expectedOutputDatum,
           "Computed state does not match provided output datum"
         )
 //        log("spend: computedState.toData == providedOutputDatum")
@@ -1052,23 +1055,23 @@ object BitcoinValidator extends DataParameterizedValidator {
         tx: TxInfo
     ): Unit = {
         val params = param.to[BitcoinValidatorParams]
-        val minted = tx.mint.toSortedMap.lookupOrFail(policyId).toData
+        val minted = tx.mint.tokens(policyId).toData
         if minted == SortedMap.singleton(ByteString.empty, BigInt(1)).toData then
             // ensure we spend the one-shot TxOutRef
             tx.inputs.findOrFail(_.outRef.toData == params.oneShotTxOutRef.toData)
             // Verify oracle output contains the NFT at the specified index
             val outputIndex = redeemer.to[BigInt]
-            val oracleOutput = tx.outputs !! outputIndex
+            val oracleOutput = tx.outputs.at(outputIndex)
+            val expectedValue = Value.unsafeFromList(List((policyId, List(ByteString.empty -> 1))))
             require(
-              oracleOutput.value.existingQuantityOf(policyId, ByteString.empty) == BigInt(1),
-              "Oracle output must contain NFT"
+              oracleOutput.value.withoutLovelace.toData == expectedValue.toData,
+              "Oracle output must contain NFT and no other tokens"
             )
             // Verify oracle output goes to this script's address (policyId == script hash)
+            val expectedAddress = Address(Credential.ScriptCredential(policyId), Option.None)
             require(
-              oracleOutput.address.credential.toData == Credential
-                  .ScriptCredential(policyId)
-                  .toData,
-              "Oracle output must go to script address"
+              oracleOutput.address.toData == expectedAddress.toData,
+              "Oracle output must go to script address without staking"
             )
         else
             require(

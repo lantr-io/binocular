@@ -21,6 +21,7 @@ import scalus.uplc.eval.*
 
 import java.time.Instant
 import binocular.ForkTree.*
+import scalus.cardano.address.{ShelleyAddress, ShelleyDelegationPart, ShelleyPaymentPart}
 
 class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyChecks {
     private given env: CardanoInfo = CardanoInfo.mainnet
@@ -47,7 +48,12 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         PlutusV3.compile(BitcoinValidator.validate).withErrorTraces(testParams.toData)
     }
     private val testScriptAddr = testContract.address(env.network)
+    private val testScriptHash = testContract.script.scriptHash
     private val testProgram = testContract.program.deBruijnedProgram
+
+    /** Create a Value with ADA + the oracle NFT (1 token at policyId = script hash). */
+    private def nftValue(adaAmount: Long): Value =
+        Value.asset(testScriptHash, AssetName.empty, 1, Coin.ada(adaAmount))
 
     private def chainStateWithTree(tree: ForkTree): ChainState =
         ChainState(
@@ -233,7 +239,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             val redeemer = update.toData
 //            pprint.pprintln(redeemer)
 
-            val inputValue = Value.ada(5)
+            val inputValue = nftValue(5)
             val utxo = Utxo(
               input,
               Output(
@@ -440,7 +446,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
                 BitcoinValidator.computeUpdate(stateWith100Blocks, update, currentTime, testParams)
 
             val redeemer = update.toData
-            val inputValue = Value.ada(5)
+            val inputValue = nftValue(5)
             val utxo = Utxo(
               input,
               Output(
@@ -660,7 +666,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             Some(ScriptRef(testContract.script))
           )
         )
-        val inputValue = Value.ada(5)
+        val inputValue = nftValue(5)
         val utxo = Utxo(
           input,
           Output(testScriptAddr, inputValue, DatumOption.Inline(prevState.toData))
@@ -680,7 +686,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         val result = testProgram.applyArg(scriptContext.toData).evaluateDebug
 
         assert(
-          result.isInstanceOf[Result.Failure],
+          result.isFailure,
           "Unbounded validity interval (no validTo) must be rejected"
         )
     }
@@ -740,7 +746,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             Some(ScriptRef(testContract.script))
           )
         )
-        val inputValue = Value.ada(5)
+        val inputValue = nftValue(5)
         val utxo = Utxo(
           input,
           Output(testScriptAddr, inputValue, DatumOption.Inline(prevState.toData))
@@ -763,7 +769,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         val result = testProgram.applyArg(scriptContext.toData).evaluateDebug
 
         assert(
-          result.isInstanceOf[Result.Failure],
+          result.isFailure,
           "Validity interval wider than MaxValidityWindow must be rejected"
         )
     }
@@ -888,7 +894,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
           )
         )
 
-        val inputValue = Value.ada(5)
+        val inputValue = nftValue(5)
         val utxo = Utxo(
           input,
           Output(
@@ -942,6 +948,182 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
                 assert(sizePct <= 100, "Tx size exceeded")
             case r: Result.Failure =>
                 fail(s"Evaluation failed: $r")
+    }
+
+    // =========================================================================
+    // Oracle UTxO safety tests
+    // =========================================================================
+
+    /** Shared setup for safety tests: creates prevState, update, expectedState, input,
+      * refScriptUtxo for a single-header submission. Returns everything needed to build a
+      * transaction.
+      */
+    private def safetyTestSetup() = {
+        val baseHeight = 866880
+        val (baseFixture, _) = BlockFixture.loadWithHeader(baseHeight)
+        val confirmedTip = ByteString.fromHex(baseFixture.hash).reverse
+        val bits = ByteString.fromHex(baseFixture.bits).reverse
+        val baseTimestamp = BigInt(baseFixture.timestamp)
+        val recentTimestamps =
+            prelude.List.from((0 until 11).map(i => baseTimestamp - i * 600).toList)
+
+        val prevState = ChainState(
+          blockHeight = baseFixture.height,
+          blockHash = confirmedTip,
+          currentTarget = bits,
+          recentTimestamps = recentTimestamps,
+          previousDifficultyAdjustmentTimestamp = baseTimestamp,
+          confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(confirmedTip),
+          forkTree = End
+        )
+
+        val header = BlockFixture.loadWithHeader(baseHeight + 1)._2
+        val headersScalus = prelude.List(header)
+        val fixture = BlockFixture.load(baseHeight + 1)
+        val currentTime = BigInt(fixture.timestamp)
+
+        val update = UpdateOracle(
+          blockHeaders = headersScalus,
+          parentPath = prelude.List.Nil,
+          mpfInsertProofs = prelude.List.Nil
+        )
+        val expectedState =
+            BitcoinValidator.computeUpdate(prevState, update, currentTime, testParams)
+
+        val input = Input(
+          TransactionHash.fromHex(
+            "1ab6879fc08345f51dc9571ac4f530bf8673e0d798758c470f9af6f98e2f3982"
+          ),
+          0
+        )
+        val refScriptUtxo = Utxo(
+          Input(
+            TransactionHash.fromHex(
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            0
+          ),
+          Output(
+            testScriptAddr,
+            Value.ada(10),
+            None,
+            Some(ScriptRef(testContract.script))
+          )
+        )
+
+        (prevState, update, expectedState, currentTime, input, refScriptUtxo)
+    }
+
+    test("Safety - staking address cannot change during oracle updates") {
+        // The continuing output is found by address match + oracle NFT.
+        // If someone tries to redirect the output to an address WITH a staking credential
+        // (same script hash but different staking part), the address check rejects it.
+        val (prevState, update, expectedState, currentTime, input, refScriptUtxo) =
+            safetyTestSetup()
+
+        val inputValue = nftValue(5)
+        val utxo = Utxo(
+          input,
+          Output(testScriptAddr, inputValue, DatumOption.Inline(prevState.toData))
+        )
+        val utxos: Utxos =
+            Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
+
+        // Build an output address with same script hash but WITH a staking credential
+        val fakeStakeKeyHash =
+            StakeKeyHash.fromByteString(ByteString.unsafeFromArray(Array.fill(28)(0xab.toByte)))
+        val addrWithStaking = ShelleyAddress(
+          env.network,
+          ShelleyPaymentPart.Script(testContract.script.scriptHash),
+          ShelleyDelegationPart.Key(fakeStakeKeyHash)
+        )
+
+        val validFrom = Instant.ofEpochSecond(currentTime.toLong)
+        val validTo = validFrom.plusSeconds(600)
+        val draft = txBuilder
+            .references(refScriptUtxo, testContract)
+            .spend(utxo, update.toData)
+            .payTo(addrWithStaking, inputValue, expectedState.toData)
+            .validFrom(validFrom)
+            .validTo(validTo)
+            .draft
+
+        val scriptContext = draft.getScriptContextV3(utxos, ForSpend(input))
+        val result = testProgram.applyArg(scriptContext.toData).evaluateDebug
+
+        assert(
+          result.isFailure,
+          "Output to a different address (with staking credential) must be rejected"
+        )
+    }
+
+    test("Safety - ADA value can only increase during oracle updates") {
+        // The oracle UTxO's ADA value must not decrease during updates.
+        // This prevents draining the oracle UTxO.
+        val (prevState, update, expectedState, currentTime, input, refScriptUtxo) =
+            safetyTestSetup()
+
+        val inputValue = nftValue(10)
+        val decreasedValue = nftValue(5) // less ADA than input
+
+        val utxo = Utxo(
+          input,
+          Output(testScriptAddr, inputValue, DatumOption.Inline(prevState.toData))
+        )
+        val utxos: Utxos =
+            Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
+
+        val validFrom = Instant.ofEpochSecond(currentTime.toLong)
+        val validTo = validFrom.plusSeconds(600)
+        val draft = txBuilder
+            .references(refScriptUtxo, testContract)
+            .spend(utxo, update.toData)
+            .payTo(testScriptAddr, decreasedValue, expectedState.toData)
+            .validFrom(validFrom)
+            .validTo(validTo)
+            .draft
+
+        val scriptContext = draft.getScriptContextV3(utxos, ForSpend(input))
+        val result = testProgram.applyArg(scriptContext.toData).evaluateDebug
+
+        assert(
+          result.isFailure,
+          "Decreasing ADA value must be rejected"
+        )
+    }
+
+    test("Safety - ADA value increase is allowed during oracle updates") {
+        // Positive test: increasing ADA should succeed.
+        val (prevState, update, expectedState, currentTime, input, refScriptUtxo) =
+            safetyTestSetup()
+
+        val inputValue = nftValue(5)
+        val increasedValue = nftValue(10) // more ADA than input
+
+        val utxo = Utxo(
+          input,
+          Output(testScriptAddr, inputValue, DatumOption.Inline(prevState.toData))
+        )
+        val utxos: Utxos =
+            Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
+
+        val validFrom = Instant.ofEpochSecond(currentTime.toLong)
+        val validTo = validFrom.plusSeconds(600)
+        val draft = txBuilder
+            .references(refScriptUtxo, testContract)
+            .spend(utxo, update.toData)
+            .payTo(testScriptAddr, increasedValue, expectedState.toData)
+            .validFrom(validFrom)
+            .validTo(validTo)
+            .draft
+
+        val scriptContext = draft.getScriptContextV3(utxos, ForSpend(input))
+        val result = testProgram.applyArg(scriptContext.toData).evaluateDebug
+
+        assert(
+          result.isSuccess,
+          s"Increasing ADA value must be allowed, but got: $result"
+        )
     }
 
 }

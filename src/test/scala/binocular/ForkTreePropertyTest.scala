@@ -48,8 +48,8 @@ class ForkTreePropertyTest
         expectedData: Data
     ): Unit =
         evalCEK(program, args*) match
-            case s: Result.Success =>
-                s.term match
+            case Result.Success(term, _, _, _) =>
+                term match
                     case Term.Const(Constant.Data(data), _) =>
                         assert(data == expectedData, "CEK result doesn't match JVM")
                     case other =>
