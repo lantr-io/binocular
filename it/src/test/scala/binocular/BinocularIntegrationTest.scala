@@ -313,7 +313,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
           oneShotTxOutRef = txOutRef
         )
 
-        val program = IntegrationTestContract.makeScript(params)
+        val program = BitcoinContract.makeScript(params)
         val script = Script.PlutusV3(program.cborByteString)
         val scriptHash = script.scriptHash
         val scriptAddress = Address(Network.Testnet, Credential.ScriptHash(scriptHash))
