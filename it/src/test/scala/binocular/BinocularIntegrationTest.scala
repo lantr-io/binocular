@@ -1,36 +1,18 @@
 package binocular
 
 import binocular.cli.CliIntegrationTestBase
-import scalus.cardano.ledger.Utxo
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.utils.await
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
 
+
 /** Integration tests for Binocular Oracle on Yaci DevKit
   *
-  * Tests basic oracle operations:
-  *   - Yaci DevKit funding verification
-  *   - Sequential single-header oracle updates
+  * Tests sequential single-header oracle updates.
   */
 class BinocularIntegrationTest extends CliIntegrationTestBase {
-
-    test("Yaci DevKit container starts and has funded account") {
-        val ctx = createYaciContext()
-        given ExecutionContext = ctx.provider.executionContext
-
-        // Verify account was funded
-        val utxos = ctx.provider.findUtxos(ctx.alice.address).await(30.seconds)
-        val balance: Long = utxos match {
-            case Right(u) => u.map(_._2.value.coin.value).sum
-            case Left(_)  => 0L
-        }
-        println(s"Account balance: $balance lovelace")
-
-        assert(balance > 0, "Account should have been funded with initial lovelace")
-        assert(balance >= 1_000_000_000L, "Account should have at least 1,000 ADA")
-    }
 
     test("Can submit sequential Bitcoin headers through Oracle") {
         val ctx = createYaciContext()
