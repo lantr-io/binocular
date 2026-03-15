@@ -1,7 +1,7 @@
 package binocular
 package cli
 
-import binocular.{reverse, BitcoinChainState, BitcoinContract, IntegrationTestContract, MerkleTree, OracleTransactions}
+import binocular.{reverse, BitcoinChainState, IntegrationTestContract, MerkleTree, OracleTransactions}
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.uplc.builtin.{ByteString, Data}
@@ -51,28 +51,9 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
             )
             .await(30.seconds)
 
-        val scriptAddress = IntegrationTestContract.testnetScriptAddress
-        val itParams = IntegrationTestContract.itParams
-        val itScript = IntegrationTestContract.itPlutusScript
-
-        // Submit init transaction
-        val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
-          ctx.alice.signer,
-          ctx.provider,
-          scriptAddress,
-          ctx.alice.address,
-          initialState
-        )
-
-        val oracleUtxo = initTxResult match {
-            case Right(txHash) =>
-                println(s"[Test] Oracle initialized: $txHash")
-                waitForTransaction(ctx.provider, txHash, maxAttempts = 30)
-                Thread.sleep(2000) // Wait for indexing
-                findOracleUtxo(ctx.provider, scriptAddress, txHash)
-            case Left(err) =>
-                fail(s"Failed to initialize oracle: $err")
-        }
+        // Initialize oracle with NFT minting (required by spend validator)
+        val (oracleUtxo, itScript, scriptAddress, itParams) =
+            initOracleWithNft(ctx, initialState)
 
         println(
           s"[Test] Step 2: Fetching headers for blocks ${startHeight + 1} to $updateToHeight"
@@ -125,7 +106,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
           headersList,
           parentPath,
           validityTime,
-          BitcoinContract.testTxOutRef,
+          itParams.oneShotTxOutRef,
           scriptOverride = Some(itScript)
         )
 
@@ -252,28 +233,10 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
             )
             .await(30.seconds)
 
-        val scriptAddress = IntegrationTestContract.testnetScriptAddress
-        val itParams = IntegrationTestContract.itParams
-        val itScript = IntegrationTestContract.itPlutusScript
-
-        // Submit init transaction
-        val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
-          ctx.alice.signer,
-          ctx.provider,
-          scriptAddress,
-          ctx.alice.address,
-          initialState
-        )
-
-        var currentOracleUtxo: Utxo = initTxResult match {
-            case Right(txHash) =>
-                println(s"[Test] Oracle initialized: $txHash")
-                waitForTransaction(ctx.provider, txHash, maxAttempts = 30)
-                Thread.sleep(2000)
-                findOracleUtxo(ctx.provider, scriptAddress, txHash)
-            case Left(err) =>
-                fail(s"Failed to initialize oracle: $err")
-        }
+        // Initialize oracle with NFT minting (required by spend validator)
+        val (initOracleUtxo, itScript, scriptAddress, itParams) =
+            initOracleWithNft(ctx, initialState)
+        var currentOracleUtxo: Utxo = initOracleUtxo
 
         // Deploy reference script to reduce transaction size
         // Deploy to script address to avoid collateral conflicts with account's UTxOs
@@ -283,7 +246,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
           ctx.provider,
           ctx.alice.address,
           scriptAddress, // Deploy to script address
-          BitcoinContract.testTxOutRef,
+          itParams.oneShotTxOutRef,
           scriptOverride = Some(itScript)
         )
 
@@ -372,7 +335,7 @@ class ScenarioIntegrationTest extends CliIntegrationTestBase {
               headersList,
               parentPath,
               validityTime,
-              BitcoinContract.testTxOutRef,
+              itParams.oneShotTxOutRef,
               referenceScriptUtxo,
               mpfInsertProofs = mpfProofs,
               scriptOverride = Some(itScript)

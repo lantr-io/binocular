@@ -1,16 +1,19 @@
 package binocular.cli
 
-import binocular.{BitcoinNodeConfig, BlockFixture, BlockHeaderInfo, BlockInfo, BlockchainInfo, CardanoConfig, OracleConfig, RawTransactionInfo, TransactionInfo, WalletConfig}
+import binocular.{BitcoinNodeConfig, BitcoinValidatorParams, BlockFixture, BlockHeaderInfo, BlockInfo, BlockchainInfo, CardanoConfig, IntegrationTestContract, OracleConfig, OracleTransactions, RawTransactionInfo, TransactionInfo, WalletConfig}
 import org.scalatest.funsuite.AnyFunSuite
-import scalus.cardano.address.Address
-import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
+import scalus.cardano.address.{Address, Network}
+import scalus.cardano.ledger.{AssetName, Coin, Credential, Script, TransactionHash, TransactionInput, Utxo, Value}
 import scalus.cardano.node.BlockchainProvider
+import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
+import scalus.cardano.txbuilder.TxBuilder
 import scalus.testing.integration.YaciTestContext
 import scalus.testing.yaci.{YaciConfig, YaciDevKit}
+import scalus.uplc.builtin.Data.toData
 import scalus.utils.await
 
 import scala.concurrent.duration.*
-import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.io.Source
 import upickle.default.*
 
@@ -281,5 +284,75 @@ trait CliIntegrationTestBase extends AnyFunSuite with YaciDevKit {
         )
 
         (bitcoinConfig, cardanoConfig, oracleConfig, walletConfig)
+    }
+
+    /** Initialize oracle with NFT minting using a real one-shot UTxO from Alice's wallet.
+      *
+      * The spend validator requires the oracle UTxO to contain the NFT (policyId = script hash,
+      * empty token name). This helper:
+      *   1. Finds a seed UTxO from Alice
+      *   2. Creates BitcoinValidatorParams with that UTxO as one-shot ref
+      *   3. Compiles the script with those params
+      *   4. Builds init tx: consume seed + mint NFT + pay NFT+lovelace to script
+      *
+      * @return
+      *   (oracleUtxo, script, scriptAddress, params)
+      */
+    protected def initOracleWithNft(
+        ctx: YaciTestContext,
+        genesisState: binocular.ChainState,
+        lovelaceAmount: Long = 5_000_000L
+    ): (Utxo, Script.PlutusV3, Address, BitcoinValidatorParams) = {
+        given ec: ExecutionContext = ctx.provider.executionContext
+
+        // Find a seed UTxO from Alice's wallet
+        val aliceUtxos = ctx.provider.findUtxos(ctx.alice.address).await(30.seconds)
+        val (seedInput, seedOutput) = aliceUtxos.toOption.get.head
+        val seedUtxo = Utxo(seedInput, seedOutput)
+
+        // Create params with real one-shot TxOutRef
+        val txOutRef = TxOutRef(
+          TxId(seedInput.transactionId),
+          BigInt(seedInput.index)
+        )
+        val params = BitcoinValidatorParams(
+          maturationConfirmations = 100,
+          challengeAging = 30, // Short for IT
+          oneShotTxOutRef = txOutRef
+        )
+
+        // Compile script with these params
+        val program = IntegrationTestContract.makeScript(params)
+        val script = Script.PlutusV3(program.cborByteString)
+        val scriptHash = script.scriptHash
+        val scriptAddress = Address(Network.Testnet, Credential.ScriptHash(scriptHash))
+
+        // Build init tx: spend seed + mint NFT + pay to script
+        val oracleValue = Value.asset(scriptHash, AssetName.empty, 1, Coin(lovelaceAmount))
+
+        val tx = Await
+            .result(
+              TxBuilder(ctx.provider.cardanoInfo)
+                  .spend(seedUtxo)
+                  .collaterals(seedUtxo)
+                  .mint(script, Map(AssetName.empty -> 1L), _ => BigInt(0).toData)
+                  .payTo(scriptAddress, oracleValue, genesisState)
+                  .complete(ctx.provider, ctx.alice.address),
+              120.seconds
+            )
+            .sign(ctx.alice.signer)
+            .transaction
+
+        val txHash = OracleTransactions.submitTx(ctx.provider, tx) match {
+            case Right(h)  => h
+            case Left(err) => throw new RuntimeException(s"Failed to init oracle with NFT: $err")
+        }
+
+        println(s"[initOracleWithNft] Oracle initialized: $txHash")
+        waitForTransaction(ctx.provider, txHash, maxAttempts = 30)
+        Thread.sleep(2000) // Wait for indexing
+
+        val oracleUtxo = findOracleUtxo(ctx.provider, scriptAddress, txHash)
+        (oracleUtxo, script, scriptAddress, params)
     }
 }

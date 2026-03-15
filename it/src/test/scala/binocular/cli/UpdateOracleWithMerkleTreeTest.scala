@@ -1,11 +1,9 @@
 package binocular.cli
 
 import binocular.*
-import scalus.cardano.ledger.Utxo
 import scalus.uplc.builtin.Data
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.utils.await
-import binocular.IntegrationTestContract
 
 import scala.concurrent.duration.*
 import scala.concurrent.{ExecutionContext, Future}
@@ -49,28 +47,9 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
             )
             .await(30.seconds)
 
-        val scriptAddress = IntegrationTestContract.testnetScriptAddress
-        val itParams = IntegrationTestContract.itParams
-        val itScript = IntegrationTestContract.itPlutusScript
-
-        // Submit init transaction
-        val initTxResult = OracleTransactions.buildAndSubmitInitTransaction(
-          ctx.alice.signer,
-          ctx.provider,
-          scriptAddress,
-          ctx.alice.address,
-          initialState
-        )
-
-        val oracleUtxo: Utxo = initTxResult match {
-            case Right(txHash) =>
-                println(s"[Test] Oracle initialized: $txHash")
-                waitForTransaction(ctx.provider, txHash, maxAttempts = 30)
-                Thread.sleep(2000) // Wait for indexing
-                findOracleUtxo(ctx.provider, scriptAddress, txHash)
-            case Left(err) =>
-                fail(s"Failed to initialize oracle: $err")
-        }
+        // Initialize oracle with NFT minting (required by spend validator)
+        val (oracleUtxo, itScript, scriptAddress, itParams) =
+            initOracleWithNft(ctx, initialState)
 
         // Verify initial MPF root state
         val initialChainState = oracleUtxo.output.inlineDatum.get.to[ChainState]
@@ -134,7 +113,7 @@ class UpdateOracleWithMerkleTreeTest extends CliIntegrationTestBase {
           headersList,
           parentPath,
           validityTime,
-          BitcoinContract.testTxOutRef,
+          itParams.oneShotTxOutRef,
           scriptOverride = Some(itScript)
         )
 
