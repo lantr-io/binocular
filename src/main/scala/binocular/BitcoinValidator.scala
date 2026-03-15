@@ -327,22 +327,18 @@ object BitcoinValidator extends DataParameterizedValidator {
         // PoW validation — target is reused for block proof below
         val target = compactBitsToTarget(bits)
 
+        // Difficulty validation
+        val expectedBits = getNextWorkRequired(
+          height,
+          ctx.currentBits,
+          timestamps.head,
+          prevDiffAdjTimestamp
+        )
+
         if !testingMode then
             require(hashInt <= target, "Invalid proof-of-work")
             require(target <= PowLimit, "Target exceeds PowLimit")
-
-        // Difficulty validation
-        val expectedBits =
-            if testingMode then bits
-            else
-                val eb = getNextWorkRequired(
-                  height,
-                  ctx.currentBits,
-                  timestamps.head,
-                  prevDiffAdjTimestamp
-                )
-                require(bits == eb, "Invalid difficulty")
-                eb
+            require(bits == expectedBits, "Invalid difficulty")
 
         // MTP validation
         val sortedTimestamps = insertionSort(timestamps.take(MedianTimeSpan))
@@ -474,7 +470,7 @@ object BitcoinValidator extends DataParameterizedValidator {
         path: Path,
         headers: List[BlockHeader],
         ctx: TraversalCtx,
-        currentTime: BigInt,
+        currentTime: PosixTimeSeconds,
         testingMode: Boolean = false
     ): ForkTree = {
         path match
@@ -513,9 +509,9 @@ object BitcoinValidator extends DataParameterizedValidator {
         tree: ForkTree,
         headers: List[BlockHeader],
         ctx: TraversalCtx,
-        currentTime: BigInt,
-        pathHead: PosixTimeSeconds,
-        pathTail: List[PosixTimeSeconds],
+        currentTime: PosixTimeSeconds,
+        pathHead: PathElement,
+        pathTail: Path,
         testingMode: Boolean = false
     ) = {
         tree match
