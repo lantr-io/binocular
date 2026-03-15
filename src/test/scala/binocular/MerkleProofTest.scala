@@ -13,7 +13,7 @@ import scalus.uplc.builtin.Builtins.sha2_256
   *   3. Verifying proofs against the Merkle root
   *   4. Integration with real Bitcoin block data
   */
-class MerkleProofSpec extends AnyFunSuite {
+class MerkleProofTest extends AnyFunSuite {
 
     test("simple merkle tree with 2 transactions") {
         // Minimal case: 2 transactions
@@ -163,36 +163,5 @@ class MerkleProofSpec extends AnyFunSuite {
         val builderRoot = builder.getMerkleRoot
 
         assert(builderRoot == treeRoot)
-    }
-}
-
-/** Integration tests using real Bitcoin block data.
-  *
-  * These tests require Bitcoin RPC connection and demonstrate:
-  *   1. Fetching real block data from Bitcoin network
-  *   2. Extracting transaction hashes
-  *   3. Verifying Merkle proofs against actual block headers
-  */
-class MerkleProofRpcIntegrationSpec extends AnyFunSuite {
-
-    // These tests are marked as integration tests and will be skipped in regular unit test runs
-    // To run: sbt "testOnly *MerkleProofRpcIntegrationSpec"
-
-    // Test will be implemented when RPC configuration is available
-    ignore("verify merkle proof for real Bitcoin transaction") {
-        // TODO: Implement with Bitcoin RPC client
-        // 1. Connect to Bitcoin node
-        // 2. Fetch a block (e.g., block 100,000)
-        // 3. Extract all transaction hashes
-        // 4. Build Merkle tree
-        // 5. Verify tree root matches block header's merkleroot field
-        // 6. Generate proof for specific transaction
-        // 7. Verify proof
-    }
-
-    ignore("verify coinbase transaction in real block") {
-        // TODO: Implement coinbase-specific test
-        // Coinbase is always at index 0
-        // Special handling for witness commitment in coinbase
     }
 }
