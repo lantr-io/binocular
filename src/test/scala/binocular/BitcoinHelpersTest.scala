@@ -1,16 +1,20 @@
 package binocular
 
+import binocular.BitcoinHelpers.*
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 import scalus.*
+import scalus.cardano.onchain.plutus.prelude
+import scalus.compiler.Options
 import scalus.testing.kit.ScalusTest
+import scalus.uplc.Term.asTerm
 import scalus.uplc.builtin.ByteString.hex
 import scalus.uplc.builtin.{Builtins, ByteString}
-import scalus.cardano.onchain.plutus.prelude
-import binocular.BitcoinHelpers.*
+import scalus.uplc.eval.{PlutusVM, Result}
+import scalus.uplc.{Constant, PlutusV3, Term}
+import upickle.default.*
 
 import java.nio.file.{Files, Path}
-import upickle.default.*
 
 class BitcoinHelpersTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyChecks {
 
@@ -381,5 +385,63 @@ class BitcoinHelpersTest extends AnyFunSuite with ScalusTest with ScalaCheckProp
               currentTarget,
           "Height 1000 should not trigger difficulty adjustment"
         )
+    }
+
+    test("targetToCompactBits V1 vs V2 (findFirstSetBit) - CEK ExUnits comparison") {
+        // TODO: better test coverage
+        given Options = Options.release
+        given PlutusVM = PlutusVM.makePlutusV3VM()
+
+        val v1CEK = PlutusV3.compile { targetToCompactBits }.program
+        val v2CEK = PlutusV3.compile { targetToCompactBitsV2 }.program
+
+        val testCases = Seq(
+          ("zero", BigInt(0)),
+          ("small: 0x12", BigInt(0x12)),
+          ("2-byte: 0x1234", BigInt(0x1234)),
+          ("3-byte: 0x123456", BigInt(0x123456)),
+          ("4-byte: 0x12345600", BigInt(0x12345600L)),
+          (
+            "max target (PowLimit)",
+            BigInt("00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 16)
+          ),
+          (
+            "large: 0x1234560000...0",
+            BigInt(
+              "1234560000000000000000000000000000000000000000000000000000000000",
+              16
+            )
+          ),
+          (
+            "real block 865494 target",
+            compactBitsToTarget(hex"17030ecd".reverse)
+          )
+        )
+
+        println(
+          f"${"Test case"}%-30s | ${"V1 (recursive)"}%-30s | ${"V2 (findFirstSetBit)"}%-30s | ${"Savings"}%-20s"
+        )
+        println("-" * 115)
+
+        for (name, target) <- testCases do
+            val arg = target
+            val r1 = (v1CEK $ arg.asTerm).term.evaluateDebug
+            val r2 = (v2CEK $ arg.asTerm).term.evaluateDebug
+
+            (r1, r2) match
+                case (Result.Success(t1, b1, _, _), Result.Success(t2, b2, _, _)) =>
+                    // Verify both produce the same result
+                    assert(t1 == t2, s"$name: V1 and V2 produced different results")
+                    val cpuSaved = b1.steps - b2.steps
+                    val memSaved = b1.memory - b2.memory
+                    val cpuPct = if b1.steps > 0 then cpuSaved * 100.0 / b1.steps else 0.0
+                    val memPct = if b1.memory > 0 then memSaved * 100.0 / b1.memory else 0.0
+                    println(
+                      f"$name%-30s | cpu=${b1.steps}%10d mem=${b1.memory}%8d | cpu=${b2.steps}%10d mem=${b2.memory}%8d | cpu=$cpuPct%+.1f%% mem=$memPct%+.1f%%"
+                    )
+                case (Result.Failure(e1, _, _, _), _) =>
+                    fail(s"$name: V1 failed: $e1")
+                case (_, Result.Failure(e2, _, _, _)) =>
+                    fail(s"$name: V2 failed: $e2")
     }
 }

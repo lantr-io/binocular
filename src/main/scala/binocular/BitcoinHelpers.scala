@@ -130,6 +130,28 @@ object BitcoinHelpers {
             finalCompact + (finalSize * BigInt(0x1000000)) // size << 24
     }
 
+    /** Converts target value to compact bits using findFirstSetBit builtin.
+      *
+      * Same as [[targetToCompactBits]] but replaces the recursive findSignificantBytes loop with a
+      * single findFirstSetBit builtin call. On a little-endian 32-byte representation,
+      * findFirstSetBit scans from the most-significant end, so `32 - result / 8` gives nSize.
+      */
+    def targetToCompactBitsV2(target: BigInt): BigInt = {
+        if target == BigInt(0) then 0
+        else
+            val targetBytes = integerToByteString(false, 32, target)
+            val nSize = BigInt(32) - findFirstSetBit(targetBytes) / 8
+
+            val nCompact =
+                if nSize <= 3 then target * pow(256, 3 - nSize)
+                else target / pow(BigInt(256), nSize - 3)
+
+            val (finalSize, finalCompact) =
+                if nCompact >= BigInt(0x800000) then (nSize + 1, nCompact / BigInt(256))
+                else (nSize, nCompact)
+            finalCompact + (finalSize * BigInt(0x1000000))
+    }
+
     /** Converts target value to little-endian compact bits representation
       *
       * Matches `arith_uint256::GetCompact()` in arith_uint256.cpp
