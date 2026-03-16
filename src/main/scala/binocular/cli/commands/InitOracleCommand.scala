@@ -1,6 +1,6 @@
 package binocular.cli.commands
 
-import binocular.{BitcoinChainState, BitcoinNodeConfig, CardanoConfig, OracleConfig, OracleTransactions, SimpleBitcoinRpc, WalletConfig}
+import binocular.*
 import binocular.cli.Command
 import scalus.cardano.address.Address
 import scalus.cardano.txbuilder.TransactionSigner
@@ -11,44 +11,43 @@ import scala.util.boundary, boundary.break
 import scalus.utils.await
 
 /** Initialize new oracle from Bitcoin block */
-case class InitOracleCommand(startBlock: Option[Long]) extends Command {
+case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) extends Command {
 
-    override def execute(): Int = {
+    override def execute(config: BinocularConfig): Int = {
         println("Initializing new oracle...")
+        if dryRun then println("  (dry-run mode - will not submit)")
         println()
 
-        // Load configurations
-        val bitcoinConfig = BitcoinNodeConfig.load()
-        val cardanoConfig = CardanoConfig.load()
-        val oracleConfig = OracleConfig.load()
-        val walletConfig = WalletConfig.load()
+        val btcConf = config.bitcoinNode
+        val cardanoConf = config.cardano
+        val oracleConf = config.oracle
+        val walletConf = config.wallet
 
-        (bitcoinConfig, cardanoConfig, oracleConfig, walletConfig) match {
-            case (Right(btcConf), Right(cardanoConf), Right(oracleConf), Right(walletConf)) =>
-                initializeOracle(btcConf, cardanoConf, oracleConf, walletConf)
-
-            case (Left(err), _, _, _) =>
-                System.err.println(s"Error loading Bitcoin config: $err")
-                1
-            case (_, Left(err), _, _) =>
-                System.err.println(s"Error loading Cardano config: $err")
-                1
-            case (_, _, Left(err), _) =>
-                System.err.println(s"Error loading Oracle config: $err")
-                1
-            case (_, _, _, Left(err)) =>
-                System.err.println(s"Error loading Wallet config: $err")
-                1
+        val params = oracleConf.toBitcoinValidatorParams() match {
+            case Right(p) => p
+            case Left(err) =>
+                System.err.println(s"Error: $err")
+                return 1
         }
+
+        val oracleScriptAddress = oracleConf.scriptAddress(cardanoConf.cardanoNetwork) match {
+            case Right(addr) => addr
+            case Left(err) =>
+                System.err.println(s"Error deriving script address: $err")
+                return 1
+        }
+
+        initializeOracle(btcConf, cardanoConf, oracleConf, walletConf, params, oracleScriptAddress)
     }
 
     private def initializeOracle(
         btcConf: BitcoinNodeConfig,
         cardanoConf: CardanoConfig,
         oracleConf: OracleConfig,
-        walletConf: WalletConfig
+        walletConf: WalletConfig,
+        params: BitcoinValidatorParams,
+        oracleScriptAddress: String
     ): Int = boundary {
-        // Determine start block height
         val blockHeight = startBlock.orElse(oracleConf.startHeight).getOrElse {
             System.err.println("Error: No start block height specified")
             System.err.println("  Use --start-block <HEIGHT> or configure ORACLE_START_HEIGHT")
@@ -58,13 +57,11 @@ case class InitOracleCommand(startBlock: Option[Long]) extends Command {
         println(s"Start Block Height: $blockHeight")
         println(s"Bitcoin Network: ${btcConf.network}")
         println(s"Cardano Network: ${cardanoConf.network}")
-        println(s"Oracle Address: ${oracleConf.scriptAddress}")
+        println(s"Oracle Address: $oracleScriptAddress")
         println()
 
-        // Set up execution context
         given ec: ExecutionContext = ExecutionContext.global
 
-        // Create HD account and signer
         val hdAccount = walletConf.createHdAccount() match {
             case Right(acc) =>
                 val addr = acc.baseAddress(cardanoConf.scalusNetwork).toBech32.getOrElse("?")
@@ -77,7 +74,6 @@ case class InitOracleCommand(startBlock: Option[Long]) extends Command {
         val signer = new TransactionSigner(Set(hdAccount.paymentKeyPair))
         val sponsorAddress = hdAccount.baseAddress(cardanoConf.scalusNetwork)
 
-        // Create Cardano blockchain provider
         val provider = cardanoConf.createBlockchainProvider() match {
             case Right(p) =>
                 println(s"Connected to Cardano backend (${cardanoConf.backend})")
@@ -90,14 +86,12 @@ case class InitOracleCommand(startBlock: Option[Long]) extends Command {
         println()
         println("Step 1: Connecting to Bitcoin RPC...")
 
-        // Create Bitcoin RPC client
         val rpc = new SimpleBitcoinRpc(btcConf)
 
         println(s"Connected to Bitcoin node at ${btcConf.url}")
         println()
         println(s"Step 2: Fetching initial chain state from block $blockHeight...")
 
-        // Fetch initial chain state
         val initialStateFuture = BitcoinChainState.getInitialChainState(rpc, blockHeight.toInt)
         val initialState =
             try {
@@ -120,7 +114,6 @@ case class InitOracleCommand(startBlock: Option[Long]) extends Command {
         println(s"  Current Target: ${initialState.currentTarget.toHex}")
         println(s"  Recent Timestamps: ${initialState.recentTimestamps.size} entries")
 
-        // Validate timestamps
         val requiredTimestamps = 11
         if initialState.recentTimestamps.size < requiredTimestamps then {
             System.err.println(s"Error: Insufficient timestamps for median-time-past validation")
@@ -131,11 +124,19 @@ case class InitOracleCommand(startBlock: Option[Long]) extends Command {
         }
         println(s"Validated: All $requiredTimestamps timestamps present for median-time-past")
 
+        if dryRun then {
+            println()
+            println("Dry-run complete. Transaction would initialize oracle with:")
+            println(s"  Block Height: ${initialState.blockHeight}")
+            println(s"  Block Hash: ${initialState.blockHash.toHex}")
+            println(s"  Oracle Address: $oracleScriptAddress")
+            return 0
+        }
+
         println()
         println("Step 3: Building and submitting Cardano transaction...")
 
-        // Build and submit transaction
-        val scriptAddress = Address.fromBech32(oracleConf.scriptAddress)
+        val scriptAddress = Address.fromBech32(oracleScriptAddress)
         val txResult = OracleTransactions.buildAndSubmitInitTransaction(
           signer,
           provider,
@@ -150,7 +151,7 @@ case class InitOracleCommand(startBlock: Option[Long]) extends Command {
                 println()
                 println("Oracle initialized successfully!")
                 println(s"  Transaction Hash: $txHash")
-                println(s"  Oracle Address: ${oracleConf.scriptAddress}")
+                println(s"  Oracle Address: $oracleScriptAddress")
                 println()
                 println("Next steps:")
                 println(s"  1. Wait for transaction confirmation")

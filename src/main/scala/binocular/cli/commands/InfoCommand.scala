@@ -1,34 +1,69 @@
 package binocular.cli.commands
 
-import binocular.{CardanoConfig, OracleConfig}
+import binocular.*
 import binocular.cli.Command
 
-/** Display oracle information (script address, network, backend) */
+/** Display oracle configuration and information (merged with old ConfigCommand) */
 case class InfoCommand() extends Command {
 
-    override def execute(): Int = {
+    override def execute(config: BinocularConfig): Int = {
         println("Binocular Bitcoin Oracle")
         println("=" * 60)
 
-        // Load configuration
-        val oracleConfig = OracleConfig.load()
-        val cardanoConfig = CardanoConfig.load()
+        val btc = config.bitcoinNode
+        val cardano = config.cardano
+        val oracle = config.oracle
+        val wallet = config.wallet
 
-        (oracleConfig, cardanoConfig) match {
-            case (Right(oracle), Right(cardano)) =>
-                println(s"Network:        ${oracle.network}")
-                println(s"Script Address: ${oracle.scriptAddress}")
-                println(s"Backend:        ${cardano.backend}")
-                println(s"Start Height:   ${oracle.startHeight.getOrElse("not set")}")
-                0
+        println()
+        println("[Bitcoin Node]")
+        println(s"  URL: ${if btc.url.nonEmpty then btc.url else "(not set)"}")
+        println(s"  Network: ${btc.network}")
 
-            case (Left(err), _) =>
-                System.err.println(s"Error loading oracle config: $err")
-                1
+        println()
+        println("[Cardano]")
+        println(s"  Network: ${cardano.network}")
+        println(s"  Backend: ${cardano.backend}")
+        println(
+          s"  Blockfrost Project ID: ${
+                  if cardano.blockfrostProjectId.length > 8
+                  then cardano.blockfrostProjectId.take(8) + "***"
+                  else "(not set)"
+              }"
+        )
 
-            case (_, Left(err)) =>
-                System.err.println(s"Error loading cardano config: $err")
-                1
+        println()
+        println("[Oracle]")
+        println(
+          s"  TX Out Ref: ${if oracle.txOutRef.nonEmpty then oracle.txOutRef else "(not set)"}"
+        )
+        println(
+          s"  Owner PKH: ${if oracle.ownerPkh.nonEmpty then oracle.ownerPkh else "(not set)"}"
+        )
+        oracle.toBitcoinValidatorParams() match {
+            case Right(params) =>
+                val addr = oracle.scriptAddress(cardano.cardanoNetwork)
+                println(s"  Script Address: ${addr.getOrElse("(error)")}")
+                println(s"  Maturation Confirmations: ${params.maturationConfirmations}")
+                println(s"  Challenge Aging: ${params.challengeAging}")
+                println(s"  Closure Timeout: ${params.closureTimeout}")
+            case Left(_) =>
+                println("  Script Address: (oracle not configured)")
         }
+        println(s"  Start Height: ${oracle.startHeight.getOrElse("(not set)")}")
+        println(s"  Max Headers/TX: ${oracle.maxHeadersPerTx}")
+        println(s"  Poll Interval: ${oracle.pollInterval}s")
+        println(s"  Retry Interval: ${oracle.retryInterval}s")
+        println(s"  Transaction Timeout: ${oracle.transactionTimeout}s")
+
+        println()
+        println("[Wallet]")
+        println(s"  $wallet")
+        wallet.getAddress(cardano.scalusNetwork) match {
+            case Right(addr) => println(s"  Address: $addr")
+            case Left(_)     => println("  Address: (wallet not configured)")
+        }
+
+        0
     }
 }

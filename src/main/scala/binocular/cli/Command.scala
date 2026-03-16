@@ -8,17 +8,19 @@ import scala.util.Try
 
 /** Base trait for all CLI commands
   *
-  * Each command implements this trait and provides its execution logic. This allows for better
-  * separation of concerns, easier testing, and cleaner maintainability.
+  * Each command implements this trait and provides its execution logic. Commands receive a
+  * BinocularConfig loaded at startup.
   */
 trait Command {
 
     /** Execute the command
       *
+      * @param config
+      *   The loaded BinocularConfig
       * @return
       *   Exit code (0 for success, non-zero for error)
       */
-    def execute(): Int
+    def execute(config: BinocularConfig): Int
 }
 
 /** Represents a validated oracle UTxO with its parsed ChainState */
@@ -34,13 +36,7 @@ case class ValidOracleUtxo(
 /** Helper utilities for commands */
 object CommandHelpers {
 
-    /** Parse UTxO reference string (TX_HASH:OUTPUT_INDEX)
-      *
-      * @param utxo
-      *   UTxO reference string
-      * @return
-      *   Either error message or (txHash, outputIndex)
-      */
+    /** Parse UTxO reference string (TX_HASH:OUTPUT_INDEX) */
     def parseUtxo(utxo: String): Either[String, (String, Int)] = {
         val parts = utxo.split(":")
         if parts.length != 2 then {
@@ -53,13 +49,7 @@ object CommandHelpers {
         }
     }
 
-    /** Print error and exit
-      *
-      * @param message
-      *   Error message
-      * @param exitCode
-      *   Exit code (default: 1)
-      */
+    /** Print error and exit */
     def exitWithError(message: String, exitCode: Int = 1): Nothing = {
         System.err.println(s"Error: $message")
         System.exit(exitCode)

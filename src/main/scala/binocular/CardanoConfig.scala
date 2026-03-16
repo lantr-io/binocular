@@ -1,74 +1,59 @@
 package binocular
 
+import pureconfig.*
 import scalus.cardano.address.Network
 import scalus.cardano.node.{BlockchainProvider, BlockfrostProvider}
-import com.typesafe.config.{Config, ConfigFactory}
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration.*
 import scala.util.{Failure, Success, Try}
 import scalus.utils.await
 
-/** Configuration for Cardano network connection
+/** Configuration for Cardano network connection.
   *
-  * Supports Blockfrost backend only. Koios and Ogmios are no longer supported.
-  *
-  * Example usage:
-  * {{{
-  * // Load from config file or environment variables
-  * val config = CardanoConfig.load() match {
-  *   case Right(cfg) => cfg
-  *   case Left(error) => sys.error(s"Config error: $error")
-  * }
-  *
-  * // Get BlockchainProvider
-  * val provider = config.createBlockchainProvider() match {
-  *   case Right(p) => p
-  *   case Left(error) => sys.error(s"Provider error: $error")
-  * }
-  * }}}
+  * Loaded automatically by PureConfig from reference.conf / application.conf / env vars.
   */
 case class CardanoConfig(
-    backend: CardanoBackend,
-    network: CardanoNetwork,
-    blockfrost: BlockfrostConfig,
-    yaci: Option[YaciConfig] = None
-) {
+    network: String = "mainnet",
+    backend: String = "blockfrost",
+    blockfrostProjectId: String = ""
+) derives ConfigReader {
 
     /** Create BlockchainProvider based on configured backend type */
     def createBlockchainProvider()(using
         ec: ExecutionContext
     ): Either[String, BlockchainProvider] = {
-        backend match {
-            case CardanoBackend.Blockfrost =>
-                if blockfrost.projectId.isEmpty || blockfrost.projectId == "changeme" then {
-                    Left(
-                      "Blockfrost backend requires valid project ID. Set BLOCKFROST_PROJECT_ID or configure binocular.cardano.blockfrost.project-id"
-                    )
-                } else {
-                    Try {
-                        val future: Future[BlockfrostProvider] = network match {
-                            case CardanoNetwork.Mainnet =>
-                                BlockfrostProvider.mainnet(blockfrost.projectId)
-                            case CardanoNetwork.Preprod =>
-                                BlockfrostProvider.preprod(blockfrost.projectId)
-                            case CardanoNetwork.Preview =>
-                                BlockfrostProvider.preview(blockfrost.projectId)
-                            case CardanoNetwork.Testnet =>
-                                BlockfrostProvider.preview(blockfrost.projectId)
-                        }
-                        future.await(30.seconds)
-                    } match {
-                        case Success(provider) => Right(provider)
-                        case Failure(ex) =>
-                            Left(s"Failed to create Blockfrost provider: ${ex.getMessage}")
-                    }
+        if blockfrostProjectId.isEmpty || blockfrostProjectId == "changeme" then {
+            Left(
+              "Blockfrost backend requires valid project ID. Set BLOCKFROST_PROJECT_ID or configure binocular.cardano.blockfrost-project-id"
+            )
+        } else {
+            Try {
+                val future: Future[BlockfrostProvider] = cardanoNetwork match {
+                    case CardanoNetwork.Mainnet =>
+                        BlockfrostProvider.mainnet(blockfrostProjectId)
+                    case CardanoNetwork.Preprod =>
+                        BlockfrostProvider.preprod(blockfrostProjectId)
+                    case CardanoNetwork.Preview =>
+                        BlockfrostProvider.preview(blockfrostProjectId)
+                    case CardanoNetwork.Testnet =>
+                        BlockfrostProvider.preview(blockfrostProjectId)
                 }
+                future.await(30.seconds)
+            } match {
+                case Success(provider) => Right(provider)
+                case Failure(ex) =>
+                    Left(s"Failed to create Blockfrost provider: ${ex.getMessage}")
+            }
         }
     }
 
+    /** Parse network string to CardanoNetwork enum */
+    def cardanoNetwork: CardanoNetwork =
+        CardanoNetwork.fromString(network).getOrElse(CardanoNetwork.Mainnet)
+
     /** Get Scalus Network for this configuration */
-    def scalusNetwork: Network = network match {
+    def scalusNetwork: Network = cardanoNetwork match {
         case CardanoNetwork.Mainnet => Network.Mainnet
         case CardanoNetwork.Preprod => Network.Testnet
         case CardanoNetwork.Preview => Network.Testnet
@@ -77,24 +62,19 @@ case class CardanoConfig(
 
     /** Validate configuration */
     def validate(): Either[String, Unit] = {
-        backend match {
-            case CardanoBackend.Blockfrost =>
-                if blockfrost.projectId.isEmpty || blockfrost.projectId == "changeme" then {
-                    Left("Blockfrost project ID must be configured")
-                } else {
-                    Right(())
-                }
+        if blockfrostProjectId.isEmpty || blockfrostProjectId == "changeme" then {
+            Left("Blockfrost project ID must be configured")
+        } else {
+            Right(())
         }
     }
 
     override def toString: String = {
-        val maskedBlockfrostId =
-            if blockfrost.projectId.length > 8 then blockfrost.projectId.take(8) + "***"
+        val maskedId =
+            if blockfrostProjectId.length > 8 then blockfrostProjectId.take(8) + "***"
             else "***"
-
-        s"CardanoConfig(backend=$backend, network=$network, blockfrost=BlockfrostConfig($maskedBlockfrostId))"
+        s"CardanoConfig(backend=$backend, network=$network, blockfrostProjectId=$maskedId)"
     }
-
 }
 
 /** Cardano backend types */
@@ -125,111 +105,5 @@ object CardanoNetwork {
         case "testnet" => Right(Testnet)
         case _ =>
             Left(s"Unknown Cardano network: $s. Valid options: mainnet, preprod, preview, testnet")
-    }
-}
-
-/** Blockfrost backend configuration */
-case class BlockfrostConfig(
-    projectId: String
-)
-
-case class YaciConfig(
-    apiUrl: String,
-    fetchSlotConfig: Boolean = true
-)
-
-object CardanoConfig {
-
-    /** Load configuration from environment variables
-      *
-      * Environment variables:
-      *   - CARDANO_BACKEND: blockfrost (default: blockfrost)
-      *   - CARDANO_NETWORK: mainnet, preprod, preview, or testnet (default: mainnet)
-      *   - BLOCKFROST_PROJECT_ID: Blockfrost project ID
-      */
-    def fromEnv(): Either[String, CardanoConfig] = {
-        val backendStr = sys.env.getOrElse("CARDANO_BACKEND", "blockfrost")
-        val networkStr = sys.env.getOrElse("CARDANO_NETWORK", "mainnet")
-
-        for {
-            backend <- CardanoBackend.fromString(backendStr)
-            network <- CardanoNetwork.fromString(networkStr)
-        } yield {
-            CardanoConfig(
-              backend = backend,
-              network = network,
-              blockfrost = BlockfrostConfig(
-                projectId = sys.env.getOrElse("BLOCKFROST_PROJECT_ID", "changeme")
-              )
-            )
-        }
-    }
-
-    /** Load configuration from application.conf file
-      *
-      * Reads from binocular.cardano configuration section.
-      */
-    def fromConfig(config: Config = ConfigFactory.load()): Either[String, CardanoConfig] = {
-        Try {
-            val cardanoConfig = config.getConfig("binocular.cardano")
-
-            val backendStr = cardanoConfig.getString("backend")
-            val networkStr = cardanoConfig.getString("network")
-
-            for {
-                backend <- CardanoBackend.fromString(backendStr)
-                network <- CardanoNetwork.fromString(networkStr)
-            } yield {
-                CardanoConfig(
-                  backend = backend,
-                  network = network,
-                  blockfrost = BlockfrostConfig(
-                    projectId = cardanoConfig.getString("blockfrost.project-id")
-                  )
-                )
-            }
-        } match {
-            case Success(result) => result
-            case Failure(ex) =>
-                Left(s"Failed to load Cardano config from application.conf: ${ex.getMessage}")
-        }
-    }
-
-    /** Load configuration with priority: environment variables > application.conf
-      *
-      * Tries environment variables first, falls back to application.conf.
-      */
-    def load(): Either[String, CardanoConfig] = {
-        // Try environment variables first
-        val envConfig = fromEnv()
-
-        // If env config has a valid backend configuration, use it
-        envConfig match {
-            case Right(cfg)
-                if cfg.backend == CardanoBackend.Blockfrost &&
-                    cfg.blockfrost.projectId != "changeme" =>
-                Right(cfg)
-            case _ =>
-                // Fall back to config file
-                fromConfig()
-        }
-    }
-
-    /** Create Blockfrost configuration for a specific network
-      *
-      * @param network
-      *   Cardano network (mainnet, preprod, preview, testnet)
-      * @param projectId
-      *   Blockfrost project ID
-      */
-    def blockfrost(
-        network: CardanoNetwork,
-        projectId: String
-    ): CardanoConfig = {
-        CardanoConfig(
-          backend = CardanoBackend.Blockfrost,
-          network = network,
-          blockfrost = BlockfrostConfig(projectId)
-        )
     }
 }

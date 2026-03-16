@@ -1,6 +1,6 @@
 package binocular.example
 
-import binocular.{reverse, BitcoinContract, BitcoinNodeConfig, BlockHeader, CardanoConfig, ChainState, MerkleTree, OracleConfig, SimpleBitcoinRpc, TransactionVerifierContract, TxVerifierDatum, TxVerifierRedeemer, WalletConfig}
+import binocular.{reverse, BinocularConfig, BitcoinContract, BlockHeader, ChainState, MerkleTree, SimpleBitcoinRpc, TransactionVerifierContract, TxVerifierDatum, TxVerifierRedeemer}
 import scalus.cardano.address.{Address, Network}
 import scalus.cardano.ledger.{AssetName, Credential, Script, Utxo, Value}
 import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}
@@ -123,21 +123,29 @@ object BitcoinDependentLockApp {
     }
 
     private def computeOracleScriptHashFromScript(): ByteString = {
-        OracleConfig.load() match {
-            case Right(oracleConf) =>
-                BitcoinContract.makeContract(oracleConf.params).script.scriptHash
-            case Left(_) =>
-                // Fallback: use dummy TxOutRef for local script hash computation
-                import scalus.cardano.onchain.plutus.v1.PubKeyHash
-                import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
-                import scalus.uplc.builtin.ByteString as BS
-                val dummyTxOutRef = TxOutRef(TxId(BS.fill(32, 0)), BigInt(0))
-                val dummyOwner = PubKeyHash(BS.fill(28, 0))
-                BitcoinContract
-                    .makeContract(BitcoinContract.validatorParams(dummyTxOutRef, dummyOwner))
-                    .script
-                    .scriptHash
+        val config = try { BinocularConfig.load() } catch { case _: Exception => null }
+        if config != null then {
+            config.oracle.toBitcoinValidatorParams() match {
+                case Right(params) =>
+                    BitcoinContract.makeContract(params).script.scriptHash
+                case Left(_) =>
+                    computeDummyOracleScriptHash()
+            }
+        } else {
+            computeDummyOracleScriptHash()
         }
+    }
+
+    private def computeDummyOracleScriptHash(): ByteString = {
+        import scalus.cardano.onchain.plutus.v1.PubKeyHash
+        import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
+        import scalus.uplc.builtin.ByteString as BS
+        val dummyTxOutRef = TxOutRef(TxId(BS.fill(32, 0)), BigInt(0))
+        val dummyOwner = PubKeyHash(BS.fill(28, 0))
+        BitcoinContract
+            .makeContract(BitcoinContract.validatorParams(dummyTxOutRef, dummyOwner))
+            .script
+            .scriptHash
     }
 
     def showInfo(): Int = {
@@ -183,94 +191,89 @@ object BitcoinDependentLockApp {
         println(s"  Amount:       $amountLovelace lovelace (${amountLovelace / 1000000.0} ADA)")
         println()
 
-        val cardanoConfig = CardanoConfig.load()
-        val walletConfig = WalletConfig.load()
+        val config = try { BinocularConfig.load() } catch {
+            case e: Exception =>
+                System.err.println(s"Error loading config: ${e.getMessage}")
+                return 1
+        }
+        val cardanoConf = config.cardano
+        val walletConf = config.wallet
 
-        (cardanoConfig, walletConfig) match {
-            case (Right(cardanoConf), Right(walletConf)) =>
-                given ec: ExecutionContext = ExecutionContext.global
+        given ec: ExecutionContext = ExecutionContext.global
 
-                val hdAccount = walletConf.createHdAccount() match {
-                    case Right(acc) =>
-                        val addr = acc
-                            .baseAddress(cardanoConf.scalusNetwork)
-                            .asInstanceOf[scalus.cardano.address.ShelleyAddress]
-                            .toBech32
-                            .get
-                        println(s"Wallet loaded: $addr")
-                        acc
-                    case Left(err) =>
-                        System.err.println(s"Error creating wallet: $err")
-                        return 1
-                }
-                val signer = new TransactionSigner(Set(hdAccount.paymentKeyPair))
-                val sponsorAddress = hdAccount.baseAddress(cardanoConf.scalusNetwork)
-
-                val provider = cardanoConf.createBlockchainProvider() match {
-                    case Right(p) =>
-                        println(s"Connected to Cardano backend")
-                        p
-                    case Left(err) =>
-                        System.err.println(s"Error creating backend: $err")
-                        return 1
-                }
-
-                val verifierAddress = getVerifierAddress(cardanoConf.scalusNetwork)
-                val verifierAddressBech32 = verifierAddress
+        val hdAccount = walletConf.createHdAccount() match {
+            case Right(acc) =>
+                val addr = acc
+                    .baseAddress(cardanoConf.scalusNetwork)
                     .asInstanceOf[scalus.cardano.address.ShelleyAddress]
                     .toBech32
                     .get
+                println(s"Wallet loaded: $addr")
+                acc
+            case Left(err) =>
+                System.err.println(s"Error creating wallet: $err")
+                return 1
+        }
+        val signer = new TransactionSigner(Set(hdAccount.paymentKeyPair))
+        val sponsorAddress = hdAccount.baseAddress(cardanoConf.scalusNetwork)
 
-                val oracleScriptHash = getOracleScriptHash()
+        val provider = cardanoConf.createBlockchainProvider() match {
+            case Right(p) =>
+                println(s"Connected to Cardano backend")
+                p
+            case Left(err) =>
+                System.err.println(s"Error creating backend: $err")
+                return 1
+        }
 
-                println(s"Verifier address: $verifierAddressBech32")
-                println(s"Oracle script hash: ${oracleScriptHash.toHex}")
-                println()
+        val verifierAddress = getVerifierAddress(cardanoConf.scalusNetwork)
+        val verifierAddressBech32 = verifierAddress
+            .asInstanceOf[scalus.cardano.address.ShelleyAddress]
+            .toBech32
+            .get
 
-                // Create datum
-                val txHash = ByteString.fromHex(btcTxId).reverse
-                val blockHashBytes = ByteString.fromHex(blockHash).reverse
+        val oracleScriptHash = getOracleScriptHash()
 
-                val datum = TxVerifierDatum(
-                  expectedTxHash = txHash,
-                  expectedBlockHash = blockHashBytes,
-                  oracleScriptHash = oracleScriptHash
-                )
+        println(s"Verifier address: $verifierAddressBech32")
+        println(s"Oracle script hash: ${oracleScriptHash.toHex}")
+        println()
 
-                println("Building lock transaction...")
+        // Create datum
+        val txHash = ByteString.fromHex(btcTxId).reverse
+        val blockHashBytes = ByteString.fromHex(blockHash).reverse
 
-                try {
-                    val tx = TxBuilder(provider.cardanoInfo)
-                        .payTo(verifierAddress, Value.lovelace(amountLovelace), datum)
-                        .complete(provider, sponsorAddress)
-                        .await(60.seconds)
-                        .sign(signer)
-                        .transaction
+        val datum = TxVerifierDatum(
+          expectedTxHash = txHash,
+          expectedBlockHash = blockHashBytes,
+          oracleScriptHash = oracleScriptHash
+        )
 
-                    val result = provider.submit(tx).await(30.seconds)
-                    result match {
-                        case Right(resultTxHash) =>
-                            val hash = resultTxHash.toHex
-                            println()
-                            println("Funds locked successfully!")
-                            println(s"  Transaction: $hash")
-                            println(s"  Locked UTxO: $hash:0")
-                            0
-                        case Left(err) =>
-                            System.err.println(s"Lock transaction failed: $err")
-                            1
-                    }
-                } catch {
-                    case e: Exception =>
-                        System.err.println(s"Error building transaction: ${e.getMessage}")
-                        1
-                }
+        println("Building lock transaction...")
 
-            case (Left(err), _) =>
-                System.err.println(s"Error loading Cardano config: $err")
-                1
-            case (_, Left(err)) =>
-                System.err.println(s"Error loading Wallet config: $err")
+        try {
+            val tx = TxBuilder(provider.cardanoInfo)
+                .payTo(verifierAddress, Value.lovelace(amountLovelace), datum)
+                .complete(provider, sponsorAddress)
+                .await(60.seconds)
+                .sign(signer)
+                .transaction
+
+            val result = provider.submit(tx).await(30.seconds)
+            result match {
+                case Right(resultTxHash) =>
+                    val hash = resultTxHash.toHex
+                    println()
+                    println("Funds locked successfully!")
+                    println(s"  Transaction: $hash")
+                    println(s"  Locked UTxO: $hash:0")
+                    0
+                case Left(err) =>
+                    System.err.println(s"Lock transaction failed: $err")
+                    1
+            }
+        } catch {
+            case e: Exception =>
+                System.err.println(s"Error building transaction: ${e.getMessage}")
                 1
         }
     }
@@ -288,42 +291,45 @@ object BitcoinDependentLockApp {
                 return 1
         }
 
-        val bitcoinConfig = BitcoinNodeConfig.load()
-        val cardanoConfig = CardanoConfig.load()
-        val oracleConfig = OracleConfig.load()
-        val walletConfig = WalletConfig.load()
+        val config = try { BinocularConfig.load() } catch {
+            case e: Exception =>
+                System.err.println(s"Error loading config: ${e.getMessage}")
+                return 1
+        }
+        val btcConf = config.bitcoinNode
+        val cardanoConf = config.cardano
+        val oracleConf = config.oracle
+        val walletConf = config.wallet
 
-        (bitcoinConfig, cardanoConfig, oracleConfig, walletConfig) match {
-            case (Right(btcConf), Right(cardanoConf), Right(oracleConf), Right(walletConf)) =>
-                given ec: ExecutionContext = ExecutionContext.global
+        given ec: ExecutionContext = ExecutionContext.global
 
-                val hdAccount = walletConf.createHdAccount() match {
-                    case Right(acc) =>
-                        val addr = acc
-                            .baseAddress(cardanoConf.scalusNetwork)
-                            .asInstanceOf[scalus.cardano.address.ShelleyAddress]
-                            .toBech32
-                            .get
-                        println(s"Wallet loaded: $addr")
-                        acc
-                    case Left(err) =>
-                        System.err.println(s"Error creating wallet: $err")
-                        return 1
-                }
-                val signer = new TransactionSigner(Set(hdAccount.paymentKeyPair))
-                val sponsorAddress = hdAccount.baseAddress(cardanoConf.scalusNetwork)
+        val hdAccount = walletConf.createHdAccount() match {
+            case Right(acc) =>
+                val addr = acc
+                    .baseAddress(cardanoConf.scalusNetwork)
+                    .asInstanceOf[scalus.cardano.address.ShelleyAddress]
+                    .toBech32
+                    .get
+                println(s"Wallet loaded: $addr")
+                acc
+            case Left(err) =>
+                System.err.println(s"Error creating wallet: $err")
+                return 1
+        }
+        val signer = new TransactionSigner(Set(hdAccount.paymentKeyPair))
+        val sponsorAddress = hdAccount.baseAddress(cardanoConf.scalusNetwork)
 
-                val provider = cardanoConf.createBlockchainProvider() match {
-                    case Right(p) =>
-                        println(s"Connected to Cardano backend")
-                        p
-                    case Left(err) =>
-                        System.err.println(s"Error creating backend: $err")
-                        return 1
-                }
+        val provider = cardanoConf.createBlockchainProvider() match {
+            case Right(p) =>
+                println(s"Connected to Cardano backend")
+                p
+            case Left(err) =>
+                System.err.println(s"Error creating backend: $err")
+                return 1
+        }
 
-                val script = getVerifierScript()
-                val verifierAddress = getVerifierAddress(cardanoConf.scalusNetwork)
+        val script = getVerifierScript()
+        val verifierAddress = getVerifierAddress(cardanoConf.scalusNetwork)
 
                 // Step 1: Fetch locked UTxO and parse datum
                 println("Step 1: Fetching locked UTxO...")
@@ -363,9 +369,21 @@ object BitcoinDependentLockApp {
                 println()
                 println("Step 2: Finding oracle UTxO by NFT...")
 
+                val params = oracleConf.toBitcoinValidatorParams() match {
+                    case Right(p) => p
+                    case Left(err) =>
+                        System.err.println(s"Error parsing oracle params: $err")
+                        return 1
+                }
                 val oracleScriptHash =
-                    BitcoinContract.makeContract(oracleConf.params).script.scriptHash
-                val oracleAddress = Address.fromBech32(oracleConf.scriptAddress)
+                    BitcoinContract.makeContract(params).script.scriptHash
+                val oracleScriptAddressBech32 = oracleConf.scriptAddress(cardanoConf.cardanoNetwork) match {
+                    case Right(addr) => addr
+                    case Left(err) =>
+                        System.err.println(s"Error deriving oracle script address: $err")
+                        return 1
+                }
+                val oracleAddress = Address.fromBech32(oracleScriptAddressBech32)
 
                 val oracleUtxosResult =
                     provider.findUtxos(oracleAddress).await(30.seconds)
@@ -386,7 +404,7 @@ object BitcoinDependentLockApp {
                         u
                     case None =>
                         System.err.println(
-                          s"Oracle UTxO with NFT not found at ${oracleConf.scriptAddress}"
+                          s"Oracle UTxO with NFT not found at $oracleScriptAddressBech32"
                         )
                         return 1
                 }
@@ -589,19 +607,5 @@ object BitcoinDependentLockApp {
                         e.printStackTrace()
                         1
                 }
-
-            case (Left(err), _, _, _) =>
-                System.err.println(s"Error loading Bitcoin config: $err")
-                1
-            case (_, Left(err), _, _) =>
-                System.err.println(s"Error loading Cardano config: $err")
-                1
-            case (_, _, Left(err), _) =>
-                System.err.println(s"Error loading Oracle config: $err")
-                1
-            case (_, _, _, Left(err)) =>
-                System.err.println(s"Error loading Wallet config: $err")
-                1
-        }
     }
 }

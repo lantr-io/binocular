@@ -1,6 +1,6 @@
 package binocular.cli.commands
 
-import binocular.{reverse, BitcoinNodeConfig, CardanoConfig, ChainState, MerkleTree, OracleConfig, SimpleBitcoinRpc}
+import binocular.{reverse, BinocularConfig, ChainState, MerkleTree, SimpleBitcoinRpc}
 import binocular.cli.{Command, CommandHelpers}
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.uplc.builtin.ByteString
@@ -22,7 +22,7 @@ case class ProveTransactionCommand(
     private def isOfflineMode: Boolean =
         blockHash.isDefined && txIndex.isDefined && proof.isDefined && merkleRoot.isDefined
 
-    override def execute(): Int = {
+    override def execute(config: BinocularConfig): Int = {
         println(s"Proving Bitcoin transaction inclusion...")
         println(s"  Oracle UTxO: $utxo")
         println(s"  Bitcoin TX: $btcTxId")
@@ -33,7 +33,6 @@ case class ProveTransactionCommand(
         if isOfflineMode then println(s"  Mode: OFFLINE (no Bitcoin RPC)")
         println()
 
-        // Validate block hash if provided
         blockHash match {
             case Some(hash) if hash.length != 64 =>
                 System.err.println(
@@ -71,64 +70,59 @@ case class ProveTransactionCommand(
                 System.err.println(s"Error: $err")
                 return 1
             case Right((oracleTxHash, oracleOutputIndex)) =>
-                if isOfflineMode then proveTransactionOffline(oracleTxHash, oracleOutputIndex)
-                else proveTransactionOnline(oracleTxHash, oracleOutputIndex)
+                if isOfflineMode then
+                    proveTransactionOffline(oracleTxHash, oracleOutputIndex, config)
+                else proveTransactionOnline(oracleTxHash, oracleOutputIndex, config)
         }
     }
 
     private def fetchOracleUtxo(
         oracleTxHash: String,
-        oracleOutputIndex: Int
-    ): Either[Int, (scalus.cardano.node.BlockchainProvider, Utxo, ChainState, OracleConfig)] = {
-        val cardanoConfig = CardanoConfig.load()
-        val oracleConfig = OracleConfig.load()
+        oracleOutputIndex: Int,
+        config: BinocularConfig
+    ): Either[Int, (scalus.cardano.node.BlockchainProvider, Utxo, ChainState)] = {
+        val cardanoConf = config.cardano
 
-        (cardanoConfig, oracleConfig) match {
-            case (Right(cardanoConf), Right(oracleConf)) =>
-                given ec: ExecutionContext = ExecutionContext.global
+        given ec: ExecutionContext = ExecutionContext.global
 
-                val provider = cardanoConf.createBlockchainProvider() match {
-                    case Right(p) => p
-                    case Left(err) =>
-                        System.err.println(s"Error creating blockchain provider: $err")
-                        return Left(1)
-                }
-
-                val input =
-                    TransactionInput(TransactionHash.fromHex(oracleTxHash), oracleOutputIndex)
-                val utxoResult = provider.findUtxo(input).await(30.seconds)
-
-                val utxo = utxoResult match {
-                    case Right(u) => u
-                    case Left(_) =>
-                        System.err.println(
-                          s"Oracle UTxO not found: $oracleTxHash:$oracleOutputIndex"
-                        )
-                        return Left(1)
-                }
-
-                val chainState =
-                    try {
-                        val data = utxo.output.requireInlineDatum
-                        data.to[ChainState]
-                    } catch {
-                        case e: Exception =>
-                            System.err.println(s"Error parsing ChainState datum: ${e.getMessage}")
-                            return Left(1)
-                    }
-
-                Right((provider, utxo, chainState, oracleConf))
-
-            case (Left(err), _) =>
-                System.err.println(s"Error loading Cardano config: $err")
-                Left(1)
-            case (_, Left(err)) =>
-                System.err.println(s"Error loading Oracle config: $err")
-                Left(1)
+        val provider = cardanoConf.createBlockchainProvider() match {
+            case Right(p) => p
+            case Left(err) =>
+                System.err.println(s"Error creating blockchain provider: $err")
+                return Left(1)
         }
+
+        val input =
+            TransactionInput(TransactionHash.fromHex(oracleTxHash), oracleOutputIndex)
+        val utxoResult = provider.findUtxo(input).await(30.seconds)
+
+        val utxo = utxoResult match {
+            case Right(u) => u
+            case Left(_) =>
+                System.err.println(
+                  s"Oracle UTxO not found: $oracleTxHash:$oracleOutputIndex"
+                )
+                return Left(1)
+        }
+
+        val chainState =
+            try {
+                val data = utxo.output.requireInlineDatum
+                data.to[ChainState]
+            } catch {
+                case e: Exception =>
+                    System.err.println(s"Error parsing ChainState datum: ${e.getMessage}")
+                    return Left(1)
+            }
+
+        Right((provider, utxo, chainState))
     }
 
-    private def proveTransactionOffline(oracleTxHash: String, oracleOutputIndex: Int): Int = {
+    private def proveTransactionOffline(
+        oracleTxHash: String,
+        oracleOutputIndex: Int,
+        config: BinocularConfig
+    ): Int = {
         val targetBlockHash = blockHash.get
         val targetTxIndex = txIndex.get
         val proofHashes = proof.get
@@ -156,9 +150,9 @@ case class ProveTransactionCommand(
 
         println("Step 1: Loading Cardano configuration...")
 
-        fetchOracleUtxo(oracleTxHash, oracleOutputIndex) match {
+        fetchOracleUtxo(oracleTxHash, oracleOutputIndex, config) match {
             case Left(exitCode) => exitCode
-            case Right((_, _, chainState, _)) =>
+            case Right((_, _, chainState)) =>
                 println(s"Oracle state:")
                 println(s"  Block Height: ${chainState.blockHeight}")
                 println(s"  Block Hash: ${chainState.blockHash.toHex}")
@@ -207,24 +201,29 @@ case class ProveTransactionCommand(
         }
     }
 
-    private def proveTransactionOnline(oracleTxHash: String, oracleOutputIndex: Int): Int = {
-        val bitcoinConfig = BitcoinNodeConfig.load()
+    private def proveTransactionOnline(
+        oracleTxHash: String,
+        oracleOutputIndex: Int,
+        config: BinocularConfig
+    ): Int = {
+        val btcConf = config.bitcoinNode
+        val oracleConf = config.oracle
+        val cardanoConf = config.cardano
 
-        bitcoinConfig match {
+        val oracleScriptAddress = oracleConf.scriptAddress(cardanoConf.cardanoNetwork) match {
+            case Right(addr) => addr
             case Left(err) =>
-                System.err.println(s"Error loading Bitcoin config: $err")
+                System.err.println(s"Error deriving script address: $err")
                 return 1
-            case _ =>
         }
-        val btcConf = bitcoinConfig.toOption.get
 
         println("Step 1: Loading configurations...")
         println(s"  Bitcoin Node: ${btcConf.url}")
 
-        fetchOracleUtxo(oracleTxHash, oracleOutputIndex) match {
+        fetchOracleUtxo(oracleTxHash, oracleOutputIndex, config) match {
             case Left(exitCode) => exitCode
-            case Right((_, _, chainState, oracleConf)) =>
-                println(s"  Oracle Address: ${oracleConf.scriptAddress}")
+            case Right((_, _, chainState)) =>
+                println(s"  Oracle Address: $oracleScriptAddress")
                 println()
                 println(s"Oracle state:")
                 println(s"  Block Height: ${chainState.blockHeight}")
@@ -352,7 +351,6 @@ case class ProveTransactionCommand(
 
                 println(s"  Merkle proof verified locally")
 
-                // Step 8: Build MPF membership proof for block in Oracle's confirmed trie
                 println()
                 println("Step 8: Building MPF membership proof for Oracle's confirmed trie...")
 
@@ -362,20 +360,10 @@ case class ProveTransactionCommand(
                 println(s"  Oracle confirmed height: $confirmedHeight")
                 println(s"  Oracle confirmed root: ${chainState.confirmedBlocksRoot.toHex}")
 
-                // Reconstruct off-chain MPF trie from confirmed block hashes
-                // We need all confirmed block hashes to rebuild the trie
-                // The first confirmed block is at height (confirmedHeight - N + 1) where N is unknown
-                // For now, we build from the genesis block to confirmedHeight
-                // TODO: optimize by tracking the first confirmed block height
                 println(s"  Reconstructing off-chain MPF trie from Bitcoin RPC...")
 
-                // Build the off-chain trie by inserting all confirmed blocks
-                // We fetch from RPC and insert each block hash
                 val confirmedBlockHashes =
                     try {
-                        // We don't know the exact start, so fetch a reasonable range
-                        // In practice, the oracle tracks from its genesis block
-                        // For now, verify that the target block hash is in the trie
                         val hash = rpc.getBlockHash(blockHeader.height).await(30.seconds)
                         val blockHashBytes = ByteString.fromHex(hash).reverse
                         if blockHashBytes != targetBlockHashBytes then {
@@ -384,8 +372,6 @@ case class ProveTransactionCommand(
                             )
                             return 1
                         }
-                        // For a full implementation, we would rebuild the entire MPF trie
-                        // and generate the proof. For now, just verify the block exists.
                         println(s"  Block ${blockHeader.height} verified on Bitcoin network")
                         scala.List(blockHashBytes)
                     } catch {
@@ -408,7 +394,6 @@ case class ProveTransactionCommand(
                             return 1
                     }
 
-                // Output proofs
                 println()
                 println("=" * 70)
                 println("TRANSACTION VERIFICATION (MPF)")

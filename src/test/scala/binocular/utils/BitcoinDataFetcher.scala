@@ -1,6 +1,6 @@
 package binocular.utils
 
-import binocular.{BitcoinNodeConfig, MerkleTree, SimpleBitcoinRpc}
+import binocular.{BinocularConfig, BitcoinNodeConfig, MerkleTree, SimpleBitcoinRpc}
 import org.apache.pekko.actor.ActorSystem
 import scalus.uplc.builtin.ByteString
 import upickle.default.*
@@ -130,16 +130,9 @@ object BitcoinDataFetcher {
         println()
 
         // Load configuration
-        val config = BitcoinNodeConfig.load() match {
-            case Right(cfg) =>
-                println(s"✓ Loaded Bitcoin RPC config: $cfg")
-                println()
-                cfg
-            case Left(error) =>
-                System.err.println(s"✗ Failed to load Bitcoin RPC configuration: $error")
-                System.err.println("\nSee usage above for configuration options.")
-                sys.exit(1)
-        }
+        val config = BinocularConfig.load().bitcoinNode
+        println(s"✓ Loaded Bitcoin RPC config: $config")
+        println()
 
         given system: ActorSystem = ActorSystem("bitcoin-data-fetcher")
         given ec: ExecutionContext = system.dispatcher

@@ -195,20 +195,10 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
 object HeaderSyncWithRpc {
     def main(args: Array[String]): Unit =
 
-        // Load Bitcoin node configuration
-        val config = BitcoinNodeConfig.load() match {
-            case Right(cfg) =>
-                println(s"✓ Loaded Bitcoin node config: $cfg")
-                cfg
-            case Left(error) =>
-                System.err.println(s"✗ Failed to load Bitcoin node configuration: $error")
-                System.err.println("\nPlease configure Bitcoin node connection via:")
-                System.err.println(
-                  "  1. Environment variables: BITCOIN_NODE_URL, BITCOIN_NODE_USER, BITCOIN_NODE_PASSWORD"
-                )
-                System.err.println("  2. application.conf: binocular.bitcoin-node.*")
-                sys.exit(1)
-        }
+        // Load Bitcoin node configuration via PureConfig
+        val fullConfig = BinocularConfig.load()
+        val config = fullConfig.bitcoinNode
+        println(s"✓ Loaded Bitcoin node config: $config")
 
         // Validate configuration
         config.validate() match {

@@ -13,6 +13,7 @@ Global / onChangedBuildSource := ReloadOnSourceChanges
 
 // Root project (binocular)
 lazy val binocular = (project in file("."))
+    .enablePlugins(BuildInfoPlugin)
     .settings(
       name := "binocular",
       Test / parallelExecution := false,
@@ -30,7 +31,10 @@ lazy val binocular = (project in file("."))
           case "application.conf"                  => MergeStrategy.concat
           case _                                   => MergeStrategy.first
       },
-      assembly / mainClass := Some("binocular.main")
+      assembly / mainClass := Some("binocular.main"),
+      // BuildInfo
+      buildInfoKeys := Seq[BuildInfoKey](name, version),
+      buildInfoPackage := "binocular"
     )
 
 // Integration test project
@@ -63,7 +67,9 @@ lazy val coreDependencies = Seq(
   "org.scalus" %% "scalus" % scalusVersion,
   "com.lihaoyi" %% "upickle" % "4.4.3",
   "com.typesafe" % "config" % "1.4.6", // Configuration library
-  "org.slf4j" % "slf4j-simple" % "2.0.17",
+  "ch.qos.logback" % "logback-classic" % "1.5.32",
+  "com.typesafe.scala-logging" %% "scala-logging" % "3.9.6",
+  "com.github.pureconfig" %% "pureconfig-core" % "0.17.10",
   "org.bouncycastle" % "bcprov-jdk18on" % "1.83",
   ("org.bitcoin-s" % "bitcoin-s-bitcoind-rpc_2.13" % "1.9.11").excludeAll(
     ExclusionRule(organization = "com.lihaoyi", name = "upickle_2.13"),
