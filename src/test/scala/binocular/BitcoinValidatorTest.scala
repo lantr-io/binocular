@@ -1379,4 +1379,88 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         )
     }
 
+    // =========================================================================
+    // Full chain validation across all test fixtures
+    // =========================================================================
+
+    /** Validate a contiguous run of blocks using BitcoinValidator.validateBlock.
+      *
+      * Checks PoW, difficulty, MTP, future-time, and parent-hash for every block. At retarget
+      * boundaries (height % 2016 == 0) the difficulty transition is validated against the real
+      * Bitcoin chain.
+      *
+      * @param startHeight
+      *   confirmed tip height (first block in the run, used as initial state)
+      * @param endHeight
+      *   last block height to validate (inclusive)
+      * @param prevDiffAdjTimestamp
+      *   timestamp of the epoch-start block for the epoch containing startHeight
+      */
+    private def validateBlockRange(
+        startHeight: Int,
+        endHeight: Int,
+        prevDiffAdjTimestamp: BigInt
+    ): Int = {
+        val (startFixture, _) = BlockFixture.loadWithHeader(startHeight)
+        val startHash = ByteString.fromHex(startFixture.hash).reverse
+        val startBits = ByteString.fromHex(startFixture.bits).reverse
+        val startTimestamp = BigInt(startFixture.timestamp)
+
+        // Build recent timestamps: real tip timestamp + 10 synthetic predecessors.
+        // Only used for MTP of the first ~10 blocks; real timestamps accumulate quickly.
+        val recentTimestamps = prelude.List.from(
+          (0 until 11).map(i => startTimestamp - i * 600).toList
+        )
+
+        var ctx = TraversalCtx(
+          timestamps = recentTimestamps,
+          height = BigInt(startHeight),
+          currentBits = startBits,
+          prevDiffAdjTimestamp = prevDiffAdjTimestamp,
+          lastBlockHash = startHash
+        )
+
+        val totalBlocks = endHeight - startHeight
+        var validatedCount = 0
+
+        for height <- (startHeight + 1) to endHeight do {
+            val (fixture, header) = BlockFixture.loadWithHeader(height)
+            val currentTime = BigInt(fixture.timestamp)
+
+            val (summary, newCtx, blockProof) =
+                BitcoinValidator.validateBlock(header, ctx, currentTime)
+
+            assert(
+              summary.hash.reverse.toHex == fixture.hash,
+              s"Hash mismatch at height $height"
+            )
+
+            ctx = newCtx
+            validatedCount += 1
+        }
+
+        assert(validatedCount == totalBlocks, s"Expected $totalBlocks blocks, got $validatedCount")
+        validatedCount
+    }
+
+    test(
+      "Full chain validation - 205 fixture blocks pass Bitcoin consensus (PoW, difficulty, MTP)"
+    ) {
+        // Validates 866870-867075: 205 real Bitcoin mainnet blocks crossing the retarget
+        // boundary at 866880 (= 2016 * 430). Each block is checked for: proof-of-work,
+        // difficulty, median-time-past, future-time, and parent-hash continuity.
+
+        val startHeight = 866870
+        val endHeight = 867075
+
+        // prevDiffAdjTimestamp = timestamp of block 864864 (= 2016 * 429), the epoch-start block.
+        // Real Bitcoin mainnet value fetched from mempool.space API.
+        val prevDiffAdj = BigInt(1728456399) // block 864864 timestamp
+
+        val validated = validateBlockRange(startHeight, endHeight, prevDiffAdj)
+        println(s"  Validated $validated blocks ($startHeight-$endHeight)")
+
+        assert(validated == 205, s"Expected 205 validated blocks, got $validated")
+    }
+
 }
