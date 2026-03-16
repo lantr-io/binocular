@@ -3,7 +3,7 @@ package binocular.cli.commands
 import binocular.*
 import binocular.cli.Command
 
-/** Display oracle configuration and information (merged with old ConfigCommand) */
+/** Display oracle configuration and information */
 case class InfoCommand() extends Command {
 
     override def execute(config: BinocularConfig): Int = {

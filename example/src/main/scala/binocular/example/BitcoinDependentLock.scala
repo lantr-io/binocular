@@ -85,7 +85,7 @@ object BitcoinDependentLockApp {
     def executeCommand(cmd: Cmd): Int = cmd match {
         case Cmd.Lock(btcTxId, blockHash, amount) => lockFunds(btcTxId, blockHash, amount)
         case Cmd.Unlock(utxo)                     => unlockFunds(utxo)
-        case Cmd.Info                              => showInfo()
+        case Cmd.Info                             => showInfo()
     }
 
     /** Get the TransactionVerifier as a PlutusV3 script */
@@ -123,16 +123,18 @@ object BitcoinDependentLockApp {
     }
 
     private def computeOracleScriptHashFromScript(): ByteString = {
-        val config = try { BinocularConfig.load() } catch { case _: Exception => null }
-        if config != null then {
-            config.oracle.toBitcoinValidatorParams() match {
-                case Right(params) =>
-                    BitcoinContract.makeContract(params).script.scriptHash
-                case Left(_) =>
-                    computeDummyOracleScriptHash()
-            }
-        } else {
-            computeDummyOracleScriptHash()
+        val configOpt = try { Some(BinocularConfig.load()) }
+        catch { case _: Exception => None }
+        configOpt match {
+            case Some(config) =>
+                config.oracle.toBitcoinValidatorParams() match {
+                    case Right(params) =>
+                        BitcoinContract.makeContract(params).script.scriptHash
+                    case Left(_) =>
+                        computeDummyOracleScriptHash()
+                }
+            case None =>
+                computeDummyOracleScriptHash()
         }
     }
 
@@ -191,11 +193,13 @@ object BitcoinDependentLockApp {
         println(s"  Amount:       $amountLovelace lovelace (${amountLovelace / 1000000.0} ADA)")
         println()
 
-        val config = try { BinocularConfig.load() } catch {
-            case e: Exception =>
-                System.err.println(s"Error loading config: ${e.getMessage}")
-                return 1
-        }
+        val config =
+            try { BinocularConfig.load() }
+            catch {
+                case e: Exception =>
+                    System.err.println(s"Error loading config: ${e.getMessage}")
+                    return 1
+            }
         val cardanoConf = config.cardano
         val walletConf = config.wallet
 
@@ -291,11 +295,13 @@ object BitcoinDependentLockApp {
                 return 1
         }
 
-        val config = try { BinocularConfig.load() } catch {
-            case e: Exception =>
-                System.err.println(s"Error loading config: ${e.getMessage}")
-                return 1
-        }
+        val config =
+            try { BinocularConfig.load() }
+            catch {
+                case e: Exception =>
+                    System.err.println(s"Error loading config: ${e.getMessage}")
+                    return 1
+            }
         val btcConf = config.bitcoinNode
         val cardanoConf = config.cardano
         val oracleConf = config.oracle
@@ -331,281 +337,281 @@ object BitcoinDependentLockApp {
         val script = getVerifierScript()
         val verifierAddress = getVerifierAddress(cardanoConf.scalusNetwork)
 
-                // Step 1: Fetch locked UTxO and parse datum
-                println("Step 1: Fetching locked UTxO...")
+        // Step 1: Fetch locked UTxO and parse datum
+        println("Step 1: Fetching locked UTxO...")
 
-                val utxosResult = provider.findUtxos(verifierAddress).await(30.seconds)
-                val allUtxos: List[Utxo] = utxosResult match {
-                    case Right(u) => u.map { case (input, output) => Utxo(input, output) }.toList
-                    case Left(err) =>
-                        System.err.println(s"Error fetching UTxOs: $err")
-                        return 1
-                }
+        val utxosResult = provider.findUtxos(verifierAddress).await(30.seconds)
+        val allUtxos: List[Utxo] = utxosResult match {
+            case Right(u) => u.map { case (input, output) => Utxo(input, output) }.toList
+            case Left(err) =>
+                System.err.println(s"Error fetching UTxOs: $err")
+                return 1
+        }
 
-                val utxoToSpend = allUtxos.find(u =>
-                    u.input.transactionId.toHex == txHash && u.input.index == outputIndex
-                ) match {
-                    case Some(u) =>
-                        println(s"  Found locked UTxO")
-                        u
-                    case None =>
-                        System.err.println(s"UTxO not found: $utxo")
-                        return 1
-                }
+        val utxoToSpend = allUtxos.find(u =>
+            u.input.transactionId.toHex == txHash && u.input.index == outputIndex
+        ) match {
+            case Some(u) =>
+                println(s"  Found locked UTxO")
+                u
+            case None =>
+                System.err.println(s"UTxO not found: $utxo")
+                return 1
+        }
 
-                val datum =
-                    try {
-                        utxoToSpend.output.requireInlineDatum.to[TxVerifierDatum]
-                    } catch {
-                        case e: Exception =>
-                            System.err.println(s"Error parsing TxVerifierDatum: ${e.getMessage}")
-                            return 1
-                    }
+        val datum =
+            try {
+                utxoToSpend.output.requireInlineDatum.to[TxVerifierDatum]
+            } catch {
+                case e: Exception =>
+                    System.err.println(s"Error parsing TxVerifierDatum: ${e.getMessage}")
+                    return 1
+            }
 
-                println(s"  Expected TX hash:    ${datum.expectedTxHash.reverse.toHex}")
-                println(s"  Expected block hash: ${datum.expectedBlockHash.reverse.toHex}")
+        println(s"  Expected TX hash:    ${datum.expectedTxHash.reverse.toHex}")
+        println(s"  Expected block hash: ${datum.expectedBlockHash.reverse.toHex}")
 
-                // Step 2: Find oracle UTxO by NFT at oracle script address
-                println()
-                println("Step 2: Finding oracle UTxO by NFT...")
+        // Step 2: Find oracle UTxO by NFT at oracle script address
+        println()
+        println("Step 2: Finding oracle UTxO by NFT...")
 
-                val params = oracleConf.toBitcoinValidatorParams() match {
-                    case Right(p) => p
-                    case Left(err) =>
-                        System.err.println(s"Error parsing oracle params: $err")
-                        return 1
-                }
-                val oracleScriptHash =
-                    BitcoinContract.makeContract(params).script.scriptHash
-                val oracleScriptAddressBech32 = oracleConf.scriptAddress(cardanoConf.cardanoNetwork) match {
-                    case Right(addr) => addr
-                    case Left(err) =>
-                        System.err.println(s"Error deriving oracle script address: $err")
-                        return 1
-                }
-                val oracleAddress = Address.fromBech32(oracleScriptAddressBech32)
+        val params = oracleConf.toBitcoinValidatorParams() match {
+            case Right(p) => p
+            case Left(err) =>
+                System.err.println(s"Error parsing oracle params: $err")
+                return 1
+        }
+        val oracleScriptHash =
+            BitcoinContract.makeContract(params).script.scriptHash
+        val oracleScriptAddressBech32 = oracleConf.scriptAddress(cardanoConf.cardanoNetwork) match {
+            case Right(addr) => addr
+            case Left(err) =>
+                System.err.println(s"Error deriving oracle script address: $err")
+                return 1
+        }
+        val oracleAddress = Address.fromBech32(oracleScriptAddressBech32)
 
-                val oracleUtxosResult =
-                    provider.findUtxos(oracleAddress).await(30.seconds)
-                val oracleUtxos: List[Utxo] = oracleUtxosResult match {
-                    case Right(u) => u.map { case (input, output) => Utxo(input, output) }.toList
-                    case Left(err) =>
-                        System.err.println(s"Error fetching oracle UTxOs: $err")
-                        return 1
-                }
+        val oracleUtxosResult =
+            provider.findUtxos(oracleAddress).await(30.seconds)
+        val oracleUtxos: List[Utxo] = oracleUtxosResult match {
+            case Right(u) => u.map { case (input, output) => Utxo(input, output) }.toList
+            case Left(err) =>
+                System.err.println(s"Error fetching oracle UTxOs: $err")
+                return 1
+        }
 
-                val oracleUtxo: Utxo = oracleUtxos.find(u =>
-                    u.output.value.hasAsset(oracleScriptHash, AssetName.empty)
-                ) match {
-                    case Some(u) =>
-                        val ref =
-                            s"${u.input.transactionId.toHex}:${u.input.index}"
-                        println(s"  Found oracle UTxO: $ref")
-                        u
-                    case None =>
-                        System.err.println(
-                          s"Oracle UTxO with NFT not found at $oracleScriptAddressBech32"
-                        )
-                        return 1
-                }
+        val oracleUtxo: Utxo = oracleUtxos.find(u =>
+            u.output.value.hasAsset(oracleScriptHash, AssetName.empty)
+        ) match {
+            case Some(u) =>
+                val ref =
+                    s"${u.input.transactionId.toHex}:${u.input.index}"
+                println(s"  Found oracle UTxO: $ref")
+                u
+            case None =>
+                System.err.println(
+                  s"Oracle UTxO with NFT not found at $oracleScriptAddressBech32"
+                )
+                return 1
+        }
 
-                val oracleState =
-                    try {
-                        oracleUtxo.output.requireInlineDatum.to[ChainState]
-                    } catch {
-                        case e: Exception =>
-                            System.err.println(s"Error parsing ChainState: ${e.getMessage}")
-                            return 1
-                    }
+        val oracleState =
+            try {
+                oracleUtxo.output.requireInlineDatum.to[ChainState]
+            } catch {
+                case e: Exception =>
+                    System.err.println(s"Error parsing ChainState: ${e.getMessage}")
+                    return 1
+            }
 
-                println(s"  Oracle confirmed height: ${oracleState.blockHeight}")
-                println(s"  Oracle confirmed hash:   ${oracleState.blockHash.toHex}")
+        println(s"  Oracle confirmed height: ${oracleState.blockHeight}")
+        println(s"  Oracle confirmed hash:   ${oracleState.blockHash.toHex}")
 
-                // Step 3: Fetch block from Bitcoin RPC and build tx merkle proof
-                println()
-                println("Step 3: Fetching block from Bitcoin RPC...")
+        // Step 3: Fetch block from Bitcoin RPC and build tx merkle proof
+        println()
+        println("Step 3: Fetching block from Bitcoin RPC...")
 
-                val rpc = new SimpleBitcoinRpc(btcConf)
+        val rpc = new SimpleBitcoinRpc(btcConf)
 
-                // Convert expected block hash to display-order hex for RPC
-                val blockHashHex = datum.expectedBlockHash.reverse.toHex
-                val expectedTxHashHex = datum.expectedTxHash.reverse.toHex
+        // Convert expected block hash to display-order hex for RPC
+        val blockHashHex = datum.expectedBlockHash.reverse.toHex
+        val expectedTxHashHex = datum.expectedTxHash.reverse.toHex
 
-                val blockInfo =
-                    try {
-                        rpc.getBlock(blockHashHex).await(60.seconds)
-                    } catch {
-                        case e: Exception =>
-                            System.err.println(
-                              s"Error fetching block $blockHashHex: ${e.getMessage}"
-                            )
-                            return 1
-                    }
-
-                println(s"  Block height: ${blockInfo.height}")
-                println(s"  Transactions: ${blockInfo.tx.size}")
-
-                // Find the transaction index
-                val txIndex = blockInfo.tx.indexWhere(_.txid == expectedTxHashHex)
-                if txIndex < 0 then {
+        val blockInfo =
+            try {
+                rpc.getBlock(blockHashHex).await(60.seconds)
+            } catch {
+                case e: Exception =>
                     System.err.println(
-                      s"Transaction $expectedTxHashHex not found in block $blockHashHex"
+                      s"Error fetching block $blockHashHex: ${e.getMessage}"
                     )
                     return 1
+            }
+
+        println(s"  Block height: ${blockInfo.height}")
+        println(s"  Transactions: ${blockInfo.tx.size}")
+
+        // Find the transaction index
+        val txIndex = blockInfo.tx.indexWhere(_.txid == expectedTxHashHex)
+        if txIndex < 0 then {
+            System.err.println(
+              s"Transaction $expectedTxHashHex not found in block $blockHashHex"
+            )
+            return 1
+        }
+        println(s"  TX index: $txIndex")
+
+        // Build tx merkle proof
+        val txHashes = blockInfo.tx.map(t => ByteString.fromHex(t.txid).reverse)
+        val merkleTree = MerkleTree.fromHashes(txHashes)
+        val txMerkleProof = merkleTree.makeMerkleProof(txIndex)
+        val txMerkleProofList = ScalusList.from(txMerkleProof.toList)
+
+        println(s"  TX merkle proof size: ${txMerkleProof.size} hashes")
+
+        // Step 4: Fetch raw block header
+        println()
+        println("Step 4: Fetching raw block header...")
+
+        val blockHeaderHex =
+            try {
+                rpc.getBlockHeaderRaw(blockHashHex).await(30.seconds)
+            } catch {
+                case e: Exception =>
+                    System.err.println(
+                      s"Error fetching block header: ${e.getMessage}"
+                    )
+                    return 1
+            }
+
+        val blockHeader = BlockHeader(ByteString.fromHex(blockHeaderHex))
+        println(s"  Block header: ${blockHeaderHex.take(40)}...")
+
+        // Step 5: Reconstruct off-chain MPF and generate membership proof
+        println()
+        println("Step 5: Reconstructing MPF and generating membership proof...")
+
+        val initialMpf =
+            OffChainMPF.empty.insert(oracleState.blockHash, oracleState.blockHash)
+        val offChainMpf: OffChainMPF =
+            if initialMpf.rootHash == oracleState.confirmedBlocksRoot then
+                println(s"  MPF state: single confirmed block")
+                initialMpf
+            else
+                // Previous promotions occurred - rebuild MPF from Bitcoin RPC
+                val startHeight = oracleConf.startHeight match {
+                    case Some(h) => h
+                    case None =>
+                        System.err.println(
+                          s"  Error: Previous promotions detected but ORACLE_START_HEIGHT not configured."
+                        )
+                        return 1
                 }
-                println(s"  TX index: $txIndex")
-
-                // Build tx merkle proof
-                val txHashes = blockInfo.tx.map(t => ByteString.fromHex(t.txid).reverse)
-                val merkleTree = MerkleTree.fromHashes(txHashes)
-                val txMerkleProof = merkleTree.makeMerkleProof(txIndex)
-                val txMerkleProofList = ScalusList.from(txMerkleProof.toList)
-
-                println(s"  TX merkle proof size: ${txMerkleProof.size} hashes")
-
-                // Step 4: Fetch raw block header
-                println()
-                println("Step 4: Fetching raw block header...")
-
-                val blockHeaderHex =
+                println(
+                  s"  Rebuilding MPF from blocks $startHeight to ${oracleState.blockHeight}..."
+                )
+                def rebuildMpf(
+                    heights: List[Long],
+                    mpf: OffChainMPF
+                ): Future[OffChainMPF] = {
+                    heights match {
+                        case Nil => Future.successful(mpf)
+                        case h :: tail =>
+                            for {
+                                hashHex <- rpc.getBlockHash(h.toInt)
+                                blockHash =
+                                    ByteString.fromArray(hashHex.hexToBytes.reverse)
+                                updatedMpf = mpf.insert(blockHash, blockHash)
+                                result <- rebuildMpf(tail, updatedMpf)
+                            } yield result
+                    }
+                }
+                val heights =
+                    (startHeight to oracleState.blockHeight.toLong).toList
+                val rebuiltMpf =
                     try {
-                        rpc.getBlockHeaderRaw(blockHashHex).await(30.seconds)
+                        rebuildMpf(heights, OffChainMPF.empty).await(120.seconds)
                     } catch {
                         case e: Exception =>
                             System.err.println(
-                              s"Error fetching block header: ${e.getMessage}"
+                              s"  Error rebuilding MPF: ${e.getMessage}"
                             )
                             return 1
                     }
-
-                val blockHeader = BlockHeader(ByteString.fromHex(blockHeaderHex))
-                println(s"  Block header: ${blockHeaderHex.take(40)}...")
-
-                // Step 5: Reconstruct off-chain MPF and generate membership proof
-                println()
-                println("Step 5: Reconstructing MPF and generating membership proof...")
-
-                val initialMpf =
-                    OffChainMPF.empty.insert(oracleState.blockHash, oracleState.blockHash)
-                val offChainMpf: OffChainMPF =
-                    if initialMpf.rootHash == oracleState.confirmedBlocksRoot then
-                        println(s"  MPF state: single confirmed block")
-                        initialMpf
-                    else
-                        // Previous promotions occurred - rebuild MPF from Bitcoin RPC
-                        val startHeight = oracleConf.startHeight match {
-                            case Some(h) => h
-                            case None =>
-                                System.err.println(
-                                  s"  Error: Previous promotions detected but ORACLE_START_HEIGHT not configured."
-                                )
-                                return 1
-                        }
-                        println(
-                          s"  Rebuilding MPF from blocks $startHeight to ${oracleState.blockHeight}..."
-                        )
-                        def rebuildMpf(
-                            heights: List[Long],
-                            mpf: OffChainMPF
-                        ): Future[OffChainMPF] = {
-                            heights match {
-                                case Nil => Future.successful(mpf)
-                                case h :: tail =>
-                                    for {
-                                        hashHex <- rpc.getBlockHash(h.toInt)
-                                        blockHash =
-                                            ByteString.fromArray(hashHex.hexToBytes.reverse)
-                                        updatedMpf = mpf.insert(blockHash, blockHash)
-                                        result <- rebuildMpf(tail, updatedMpf)
-                                    } yield result
-                            }
-                        }
-                        val heights =
-                            (startHeight to oracleState.blockHeight.toLong).toList
-                        val rebuiltMpf =
-                            try {
-                                rebuildMpf(heights, OffChainMPF.empty).await(120.seconds)
-                            } catch {
-                                case e: Exception =>
-                                    System.err.println(
-                                      s"  Error rebuilding MPF: ${e.getMessage}"
-                                    )
-                                    return 1
-                            }
-                        if rebuiltMpf.rootHash != oracleState.confirmedBlocksRoot then {
-                            System.err.println(
-                              s"  Error: Rebuilt MPF root does not match on-chain confirmedBlocksRoot."
-                            )
-                            System.err.println(
-                              s"  Expected: ${oracleState.confirmedBlocksRoot.toHex}"
-                            )
-                            System.err.println(s"  Got: ${rebuiltMpf.rootHash.toHex}")
-                            return 1
-                        }
-                        println(s"  MPF rebuilt successfully (${heights.size} blocks)")
-                        rebuiltMpf
-
-                // Generate block membership proof
-                val blockMpfProof =
-                    try {
-                        offChainMpf.proveMembership(datum.expectedBlockHash)
-                    } catch {
-                        case e: NoSuchElementException =>
-                            System.err.println(
-                              s"  Error: Block ${datum.expectedBlockHash.reverse.toHex} not found in Oracle's confirmed blocks."
-                            )
-                            System.err.println(
-                              s"  The block may not yet be confirmed in the Oracle."
-                            )
-                            return 1
-                    }
-
-                println(s"  Block MPF proof size: ${blockMpfProof.length} steps")
-
-                // Step 6: Build and submit unlock transaction
-                println()
-                println("Step 6: Building unlock transaction...")
-
-                val redeemerValue = TxVerifierRedeemer(
-                  txIndex = BigInt(txIndex),
-                  txMerkleProof = txMerkleProofList,
-                  blockMpfProof = blockMpfProof,
-                  blockHeader = blockHeader
-                )
-
-                try {
-                    val tx = TxBuilder(provider.cardanoInfo)
-                        .references(oracleUtxo)
-                        .spend(utxoToSpend, redeemerValue, script)
-                        .payTo(sponsorAddress, utxoToSpend.output.value)
-                        .complete(provider, sponsorAddress)
-                        .await(60.seconds)
-                        .sign(signer)
-                        .transaction
-
-                    val result = provider.submit(tx).await(30.seconds)
-                    result match {
-                        case Right(resultTxHash) =>
-                            val hash = resultTxHash.toHex
-                            println()
-                            println("Funds unlocked successfully!")
-                            println(s"  Transaction: $hash")
-                            println()
-                            println("The on-chain validator verified:")
-                            println("  1. The block is confirmed in the Binocular Oracle")
-                            println("  2. The block header hashes to the expected block hash")
-                            println("  3. The transaction is included in the block")
-                            0
-                        case Left(err) =>
-                            System.err.println()
-                            System.err.println(s"Unlock transaction failed: $err")
-                            1
-                    }
-                } catch {
-                    case e: Exception =>
-                        System.err.println(s"Error building transaction: ${e.getMessage}")
-                        e.printStackTrace()
-                        1
+                if rebuiltMpf.rootHash != oracleState.confirmedBlocksRoot then {
+                    System.err.println(
+                      s"  Error: Rebuilt MPF root does not match on-chain confirmedBlocksRoot."
+                    )
+                    System.err.println(
+                      s"  Expected: ${oracleState.confirmedBlocksRoot.toHex}"
+                    )
+                    System.err.println(s"  Got: ${rebuiltMpf.rootHash.toHex}")
+                    return 1
                 }
+                println(s"  MPF rebuilt successfully (${heights.size} blocks)")
+                rebuiltMpf
+
+        // Generate block membership proof
+        val blockMpfProof =
+            try {
+                offChainMpf.proveMembership(datum.expectedBlockHash)
+            } catch {
+                case e: NoSuchElementException =>
+                    System.err.println(
+                      s"  Error: Block ${datum.expectedBlockHash.reverse.toHex} not found in Oracle's confirmed blocks."
+                    )
+                    System.err.println(
+                      s"  The block may not yet be confirmed in the Oracle."
+                    )
+                    return 1
+            }
+
+        println(s"  Block MPF proof size: ${blockMpfProof.length} steps")
+
+        // Step 6: Build and submit unlock transaction
+        println()
+        println("Step 6: Building unlock transaction...")
+
+        val redeemerValue = TxVerifierRedeemer(
+          txIndex = BigInt(txIndex),
+          txMerkleProof = txMerkleProofList,
+          blockMpfProof = blockMpfProof,
+          blockHeader = blockHeader
+        )
+
+        try {
+            val tx = TxBuilder(provider.cardanoInfo)
+                .references(oracleUtxo)
+                .spend(utxoToSpend, redeemerValue, script)
+                .payTo(sponsorAddress, utxoToSpend.output.value)
+                .complete(provider, sponsorAddress)
+                .await(60.seconds)
+                .sign(signer)
+                .transaction
+
+            val result = provider.submit(tx).await(30.seconds)
+            result match {
+                case Right(resultTxHash) =>
+                    val hash = resultTxHash.toHex
+                    println()
+                    println("Funds unlocked successfully!")
+                    println(s"  Transaction: $hash")
+                    println()
+                    println("The on-chain validator verified:")
+                    println("  1. The block is confirmed in the Binocular Oracle")
+                    println("  2. The block header hashes to the expected block hash")
+                    println("  3. The transaction is included in the block")
+                    0
+                case Left(err) =>
+                    System.err.println()
+                    System.err.println(s"Unlock transaction failed: $err")
+                    1
+            }
+        } catch {
+            case e: Exception =>
+                System.err.println(s"Error building transaction: ${e.getMessage}")
+                e.printStackTrace()
+                1
+        }
     }
 }

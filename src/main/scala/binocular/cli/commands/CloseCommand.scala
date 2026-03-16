@@ -2,20 +2,18 @@ package binocular.cli.commands
 
 import binocular.*
 import binocular.cli.{Command, CommandHelpers}
-import scalus.cardano.address.Address
+import com.typesafe.scalalogging.LazyLogging
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
-import scalus.cardano.txbuilder.TransactionSigner
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
 import scalus.utils.await
 
 /** Close oracle, burn NFT, return min_ada */
-case class CloseCommand(utxo: String) extends Command {
+case class CloseCommand(utxo: String) extends Command with LazyLogging {
 
     override def execute(config: BinocularConfig): Int = {
-        println(s"Closing oracle at $utxo...")
-        println()
+        logger.info(s"Closing oracle at $utxo...")
 
         CommandHelpers.parseUtxo(utxo) match {
             case Left(err) =>
@@ -27,83 +25,44 @@ case class CloseCommand(utxo: String) extends Command {
     }
 
     private def closeOracle(txHash: String, outputIndex: Int, config: BinocularConfig): Int = {
-        val cardanoConf = config.cardano
-        val oracleConf = config.oracle
-        val walletConf = config.wallet
+        given ec: ExecutionContext = ExecutionContext.global
+        val timeout = config.oracle.transactionTimeout.seconds
 
-        val params = oracleConf.toBitcoinValidatorParams() match {
-            case Right(p) => p
+        val setup = CommandHelpers.setupOracle(config) match {
+            case Right(s) => s
             case Left(err) =>
                 System.err.println(s"Error: $err")
                 return 1
         }
 
-        val oracleScriptAddress = oracleConf.scriptAddress(cardanoConf.cardanoNetwork) match {
-            case Right(addr) => addr
-            case Left(err) =>
-                System.err.println(s"Error deriving script address: $err")
-                return 1
-        }
-
-        given ec: ExecutionContext = ExecutionContext.global
-        val timeout = oracleConf.transactionTimeout.seconds
-
-        val hdAccount = walletConf.createHdAccount() match {
-            case Right(acc) => acc
-            case Left(err) =>
-                System.err.println(s"Error creating wallet account: $err")
-                return 1
-        }
-        val signer = new TransactionSigner(Set(hdAccount.paymentKeyPair))
-        val sponsorAddress = hdAccount.baseAddress(cardanoConf.scalusNetwork)
-
-        val provider = cardanoConf.createBlockchainProvider() match {
-            case Right(p) => p
-            case Left(err) =>
-                System.err.println(s"Error creating blockchain provider: $err")
-                return 1
-        }
-
         // Fetch oracle UTxO
         val input = TransactionInput(TransactionHash.fromHex(txHash), outputIndex)
-        val oracleUtxo: Utxo = provider.findUtxo(input).await(timeout) match {
+        val oracleUtxo: Utxo = setup.provider.findUtxo(input).await(timeout) match {
             case Right(u) => u
-            case Left(err) =>
+            case Left(_) =>
                 System.err.println(s"Error: Oracle UTxO not found at $txHash:$outputIndex")
                 return 1
         }
 
-        println(s"Found oracle UTxO: $txHash:$outputIndex")
-
-        val scriptAddress = Address.fromBech32(oracleScriptAddress)
-        val script = BitcoinContract.makeContract(params).script
+        logger.info(s"Found oracle UTxO: $txHash:$outputIndex")
 
         // Find reference script
-        val referenceScriptUtxo: Option[Utxo] = {
-            val refs = OracleTransactions.findReferenceScriptUtxos(
-              provider,
-              scriptAddress,
-              script.scriptHash,
-              timeout
-            )
-            refs.headOption.flatMap { case (refHash, refIdx) =>
-                val refInput = TransactionInput(TransactionHash.fromHex(refHash), refIdx)
-                provider.findUtxo(refInput).await(timeout) match {
-                    case Right(u) => Some(u)
-                    case Left(_)  => None
-                }
-            }
-        }
+        val referenceScriptUtxo = CommandHelpers.findReferenceScriptUtxo(
+          setup.provider,
+          setup.scriptAddress,
+          setup.script.scriptHash,
+          timeout
+        )
 
-        println("Building close transaction...")
+        logger.info("Building close transaction...")
 
         OracleTransactions.buildAndSubmitCloseTransaction(
-          signer,
-          provider,
-          scriptAddress,
-          sponsorAddress,
+          setup.signer,
+          setup.provider,
+          setup.scriptAddress,
+          setup.sponsorAddress,
           oracleUtxo,
-          script,
+          setup.script,
           referenceScriptUtxo,
           timeout
         ) match {

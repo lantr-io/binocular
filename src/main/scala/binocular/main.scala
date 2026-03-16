@@ -9,5 +9,5 @@ import binocular.cli.CliApp
   */
 @main def main(args: String*): Unit = {
     val exitCode = CliApp.run(args)
-    System.exit(exitCode)
+    if exitCode != 0 then throw new RuntimeException(s"Exit code: $exitCode")
 }

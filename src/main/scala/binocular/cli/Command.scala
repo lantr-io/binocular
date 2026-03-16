@@ -1,10 +1,20 @@
 package binocular.cli
 
 import binocular.*
-import scalus.cardano.ledger.Utxo
+import scalus.cardano.address.Address
+import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
+import scalus.cardano.node.BlockchainProvider
+import scalus.cardano.txbuilder.TransactionSigner
+import scalus.cardano.wallet.hd.HdAccount
+import scalus.uplc.builtin.ByteString
 import scalus.uplc.builtin.Data.fromData
+import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
+import scalus.utils.Hex.hexToBytes
 
+import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.duration.*
 import scala.util.Try
+import scalus.utils.await
 
 /** Base trait for all CLI commands
   *
@@ -22,6 +32,18 @@ trait Command {
       */
     def execute(config: BinocularConfig): Int
 }
+
+/** Common setup context for commands that interact with the oracle on-chain */
+case class OracleSetup(
+    params: BitcoinValidatorParams,
+    scriptAddress: Address,
+    scriptAddressBech32: String,
+    script: scalus.cardano.ledger.Script.PlutusV3,
+    hdAccount: HdAccount,
+    signer: TransactionSigner,
+    sponsorAddress: Address,
+    provider: BlockchainProvider
+)
 
 /** Represents a validated oracle UTxO with its parsed ChainState */
 case class ValidOracleUtxo(
@@ -47,13 +69,6 @@ object CommandHelpers {
                 case None        => Left(s"Invalid output index: ${parts(1)}")
             }
         }
-    }
-
-    /** Print error and exit */
-    def exitWithError(message: String, exitCode: Int = 1): Nothing = {
-        System.err.println(s"Error: $message")
-        System.exit(exitCode)
-        throw new RuntimeException() // Never reached
     }
 
     /** Check if a UTxO is an oracle UTxO (has inline datum, no reference script) */
@@ -88,4 +103,136 @@ object CommandHelpers {
     /** Filter list of UTxOs to only valid oracle UTxOs */
     def filterValidOracleUtxos(utxos: List[Utxo]): List[ValidOracleUtxo] =
         utxos.flatMap(tryValidateOracleUtxo)
+
+    /** Set up all the common oracle infrastructure (params, wallet, provider, script).
+      *
+      * Returns Left(error) on any setup failure.
+      */
+    def setupOracle(
+        config: BinocularConfig
+    )(using ExecutionContext): Either[String, OracleSetup] = {
+        for {
+            params <- config.oracle.toBitcoinValidatorParams()
+            addrBech32 <- config.oracle.scriptAddress(config.cardano.cardanoNetwork)
+            hdAccount <- config.wallet.createHdAccount()
+            provider <- config.cardano.createBlockchainProvider()
+        } yield {
+            val signer = new TransactionSigner(Set(hdAccount.paymentKeyPair))
+            val sponsorAddress = hdAccount.baseAddress(config.cardano.scalusNetwork)
+            val scriptAddress = Address.fromBech32(addrBech32)
+            val script = BitcoinContract.makeContract(params).script
+            OracleSetup(
+              params,
+              scriptAddress,
+              addrBech32,
+              script,
+              hdAccount,
+              signer,
+              sponsorAddress,
+              provider
+            )
+        }
+    }
+
+    /** Find existing reference script UTxO (first match). */
+    def findReferenceScriptUtxo(
+        provider: BlockchainProvider,
+        scriptAddress: Address,
+        scriptHash: scalus.cardano.ledger.ScriptHash,
+        timeout: Duration
+    )(using ExecutionContext): Option[Utxo] = {
+        val refs = OracleTransactions.findReferenceScriptUtxos(
+          provider,
+          scriptAddress,
+          scriptHash,
+          timeout
+        )
+        refs.headOption.flatMap { case (refHash, refIdx) =>
+            val refInput = TransactionInput(TransactionHash.fromHex(refHash), refIdx)
+            provider.findUtxo(refInput).await(timeout) match {
+                case Right(u) => Some(u)
+                case Left(_)  => None
+            }
+        }
+    }
+
+    /** Poll for a UTxO to become available on-chain. */
+    def waitForUtxo(
+        provider: BlockchainProvider,
+        input: TransactionInput,
+        timeout: Duration,
+        maxAttempts: Int = 30,
+        sleepMs: Long = 1000
+    )(using ExecutionContext): Option[Utxo] = {
+        var result: Option[Utxo] = None
+        var attempts = 0
+        while result.isEmpty && attempts < maxAttempts do {
+            Thread.sleep(sleepMs)
+            attempts += 1
+            try {
+                provider.findUtxo(input).await(timeout) match {
+                    case Right(u) => result = Some(u)
+                    case Left(_)  =>
+                }
+            } catch { case _: Exception => }
+        }
+        result
+    }
+
+    /** Reconstruct off-chain MPF from Bitcoin RPC by re-inserting all confirmed block hashes. */
+    def rebuildMpf(
+        rpc: SimpleBitcoinRpc,
+        startHeight: Long,
+        endHeight: Long,
+        expectedRoot: ByteString
+    )(using ExecutionContext): Either[String, OffChainMPF] = {
+        def loop(heights: List[Long], mpf: OffChainMPF): Future[OffChainMPF] = {
+            heights match {
+                case Nil => Future.successful(mpf)
+                case h :: tail =>
+                    for {
+                        hashHex <- rpc.getBlockHash(h.toInt)
+                        blockHash = ByteString.fromArray(hashHex.hexToBytes.reverse)
+                        updatedMpf = mpf.insert(blockHash, blockHash)
+                        result <- loop(tail, updatedMpf)
+                    } yield result
+            }
+        }
+        val heights = (startHeight to endHeight).toList
+        try {
+            val rebuilt = loop(heights, OffChainMPF.empty).await(120.seconds)
+            if rebuilt.rootHash != expectedRoot then
+                Left(
+                  s"Rebuilt MPF root does not match on-chain confirmedBlocksRoot. " +
+                      s"Expected: ${expectedRoot.toHex}, got: ${rebuilt.rootHash.toHex}"
+                )
+            else Right(rebuilt)
+        } catch {
+            case e: Exception => Left(s"Error rebuilding MPF: ${e.getMessage}")
+        }
+    }
+
+    /** Reconstruct off-chain MPF, checking first if the state has only a single block. */
+    def reconstructMpf(
+        rpc: SimpleBitcoinRpc,
+        chainState: ChainState,
+        startHeight: Option[Long]
+    )(using ExecutionContext): Either[String, OffChainMPF] = {
+        val initialMpf = OffChainMPF.empty.insert(chainState.blockHash, chainState.blockHash)
+        if initialMpf.rootHash == chainState.confirmedBlocksRoot then Right(initialMpf)
+        else
+            startHeight match {
+                case None =>
+                    Left(
+                      "Previous promotions detected but ORACLE_START_HEIGHT not configured"
+                    )
+                case Some(h) =>
+                    rebuildMpf(
+                      rpc,
+                      h,
+                      chainState.blockHeight.toLong,
+                      chainState.confirmedBlocksRoot
+                    )
+            }
+    }
 }

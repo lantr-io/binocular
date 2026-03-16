@@ -209,9 +209,8 @@ object CliApp {
                               proof,
                               merkleRoot
                             )
-                        case _ =>
-                            // Version/Blueprint already handled above
-                            return 0
+                        case Cmd.Version | Cmd.Blueprint =>
+                            return 0 // unreachable: handled above
                     }
 
                     commandImpl.execute(config)

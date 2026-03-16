@@ -1,9 +1,8 @@
 package binocular.cli.commands
 
 import binocular.*
-import binocular.cli.Command
-import scalus.cardano.address.Address
-import scalus.cardano.txbuilder.TransactionSigner
+import binocular.cli.{Command, CommandHelpers}
+import com.typesafe.scalalogging.LazyLogging
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
@@ -11,91 +10,49 @@ import scala.util.boundary, boundary.break
 import scalus.utils.await
 
 /** Initialize new oracle from Bitcoin block */
-case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) extends Command {
+case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
+    extends Command
+    with LazyLogging {
 
-    override def execute(config: BinocularConfig): Int = {
+    override def execute(config: BinocularConfig): Int = boundary {
         println("Initializing new oracle...")
         if dryRun then println("  (dry-run mode - will not submit)")
         println()
 
-        val btcConf = config.bitcoinNode
-        val cardanoConf = config.cardano
-        val oracleConf = config.oracle
-        val walletConf = config.wallet
+        given ec: ExecutionContext = ExecutionContext.global
+        val timeout = config.oracle.transactionTimeout.seconds
 
-        val params = oracleConf.toBitcoinValidatorParams() match {
-            case Right(p) => p
+        val setup = CommandHelpers.setupOracle(config) match {
+            case Right(s) => s
             case Left(err) =>
                 System.err.println(s"Error: $err")
-                return 1
+                break(1)
         }
 
-        val oracleScriptAddress = oracleConf.scriptAddress(cardanoConf.cardanoNetwork) match {
-            case Right(addr) => addr
-            case Left(err) =>
-                System.err.println(s"Error deriving script address: $err")
-                return 1
-        }
-
-        initializeOracle(btcConf, cardanoConf, oracleConf, walletConf, params, oracleScriptAddress)
-    }
-
-    private def initializeOracle(
-        btcConf: BitcoinNodeConfig,
-        cardanoConf: CardanoConfig,
-        oracleConf: OracleConfig,
-        walletConf: WalletConfig,
-        params: BitcoinValidatorParams,
-        oracleScriptAddress: String
-    ): Int = boundary {
-        val blockHeight = startBlock.orElse(oracleConf.startHeight).getOrElse {
+        val blockHeight = startBlock.orElse(config.oracle.startHeight).getOrElse {
             System.err.println("Error: No start block height specified")
             System.err.println("  Use --start-block <HEIGHT> or configure ORACLE_START_HEIGHT")
             break(1)
         }
 
+        val walletAddr =
+            setup.hdAccount.baseAddress(config.cardano.scalusNetwork).toBech32.getOrElse("?")
         println(s"Start Block Height: $blockHeight")
-        println(s"Bitcoin Network: ${btcConf.network}")
-        println(s"Cardano Network: ${cardanoConf.network}")
-        println(s"Oracle Address: $oracleScriptAddress")
+        println(s"Bitcoin Network: ${config.bitcoinNode.network}")
+        println(s"Cardano Network: ${config.cardano.network}")
+        println(s"Oracle Address: ${setup.scriptAddressBech32}")
+        println(s"Wallet loaded: $walletAddr")
         println()
 
-        given ec: ExecutionContext = ExecutionContext.global
-
-        val hdAccount = walletConf.createHdAccount() match {
-            case Right(acc) =>
-                val addr = acc.baseAddress(cardanoConf.scalusNetwork).toBech32.getOrElse("?")
-                println(s"Wallet loaded: $addr")
-                acc
-            case Left(err) =>
-                System.err.println(s"Error creating wallet account: $err")
-                break(1)
-        }
-        val signer = new TransactionSigner(Set(hdAccount.paymentKeyPair))
-        val sponsorAddress = hdAccount.baseAddress(cardanoConf.scalusNetwork)
-
-        val provider = cardanoConf.createBlockchainProvider() match {
-            case Right(p) =>
-                println(s"Connected to Cardano backend (${cardanoConf.backend})")
-                p
-            case Left(err) =>
-                System.err.println(s"Error creating blockchain provider: $err")
-                break(1)
-        }
-
-        println()
         println("Step 1: Connecting to Bitcoin RPC...")
-
-        val rpc = new SimpleBitcoinRpc(btcConf)
-
-        println(s"Connected to Bitcoin node at ${btcConf.url}")
+        val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
+        println(s"Connected to Bitcoin node at ${config.bitcoinNode.url}")
         println()
         println(s"Step 2: Fetching initial chain state from block $blockHeight...")
 
-        val initialStateFuture = BitcoinChainState.getInitialChainState(rpc, blockHeight.toInt)
         val initialState =
             try {
-                initialStateFuture.await(30.seconds)
+                BitcoinChainState.getInitialChainState(rpc, blockHeight.toInt).await(30.seconds)
             } catch {
                 case e: Exception =>
                     System.err.println(s"Error fetching Bitcoin block: ${e.getMessage}")
@@ -103,7 +60,7 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
                     println("Make sure:")
                     println("  1. Bitcoin node is running and accessible")
                     println("  2. RPC credentials are correct")
-                    println("  3. Block height $blockHeight exists")
+                    println(s"  3. Block height $blockHeight exists")
                     break(1)
             }
 
@@ -129,29 +86,26 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
             println("Dry-run complete. Transaction would initialize oracle with:")
             println(s"  Block Height: ${initialState.blockHeight}")
             println(s"  Block Hash: ${initialState.blockHash.toHex}")
-            println(s"  Oracle Address: $oracleScriptAddress")
-            return 0
+            println(s"  Oracle Address: ${setup.scriptAddressBech32}")
+            break(0)
         }
 
         println()
         println("Step 3: Building and submitting Cardano transaction...")
 
-        val scriptAddress = Address.fromBech32(oracleScriptAddress)
-        val txResult = OracleTransactions.buildAndSubmitInitTransaction(
-          signer,
-          provider,
-          scriptAddress,
-          sponsorAddress,
+        OracleTransactions.buildAndSubmitInitTransaction(
+          setup.signer,
+          setup.provider,
+          setup.scriptAddress,
+          setup.sponsorAddress,
           initialState,
-          timeout = oracleConf.transactionTimeout.seconds
-        )
-
-        txResult match {
+          timeout = timeout
+        ) match {
             case Right(txHash) =>
                 println()
                 println("Oracle initialized successfully!")
                 println(s"  Transaction Hash: $txHash")
-                println(s"  Oracle Address: $oracleScriptAddress")
+                println(s"  Oracle Address: ${setup.scriptAddressBech32}")
                 println()
                 println("Next steps:")
                 println(s"  1. Wait for transaction confirmation")
