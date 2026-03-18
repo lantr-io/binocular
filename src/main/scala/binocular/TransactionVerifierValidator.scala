@@ -48,11 +48,13 @@ case class TxVerifierRedeemer(
     txMerkleProof: List[TxHash],
     blockMpfProof: List[ProofStep],
     blockHeader: BlockHeader
-) derives FromData,
-      ToData
+) derives FromData
 
 @Compile
-object TxVerifierRedeemer
+object TxVerifierRedeemer {
+    // Manual ToData until scalus upgrades with opaque type support in ToData macro
+    given ToData[TxVerifierRedeemer] = ToData.derived
+}
 
 /** A validator that verifies Bitcoin transaction inclusion using the Binocular Oracle.
   *

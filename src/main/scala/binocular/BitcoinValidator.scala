@@ -35,21 +35,24 @@ case class CoinbaseTx(
 @Compile
 object CoinbaseTx
 
-case class BlockHeader(bytes: ByteString) derives FromData, ToData
+opaque type BlockHeader = ByteString
+
 @Compile
-object BlockHeader
+object BlockHeader {
+    def apply(bytes: ByteString): BlockHeader = bytes
 
-extension (bh: BlockHeader)
-    inline def version: BigInt =
-        byteStringToInteger(false, bh.bytes.slice(0, 4))
+    given FromData[BlockHeader] = (d: Data) => unBData(d)
+    given ToData[BlockHeader] = (a: BlockHeader) => bData(a)
 
-    inline def prevBlockHash: BlockHash = bh.bytes.slice(4, 32)
-
-    inline def bits: CompactBits = bh.bytes.slice(72, 4)
-
-    inline def merkleRoot: MerkleRoot = bh.bytes.slice(36, 32)
-
-    inline def timestamp: BigInt = byteStringToInteger(false, bh.bytes.slice(68, 4))
+    extension (bh: BlockHeader)
+        def bytes: ByteString = bh
+        def version: BigInt =
+            byteStringToInteger(false, bh.slice(0, 4))
+        def prevBlockHash: BlockHash = bh.slice(4, 32)
+        def bits: CompactBits = bh.slice(72, 4)
+        def merkleRoot: MerkleRoot = bh.slice(36, 32)
+        def timestamp: BigInt = byteStringToInteger(false, bh.slice(68, 4))
+}
 
 // ============================================================================
 // Optimized ForksTree Data Structures
