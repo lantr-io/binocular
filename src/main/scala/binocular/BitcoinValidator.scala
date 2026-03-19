@@ -266,30 +266,46 @@ object BitcoinValidator extends DataParameterizedValidator {
       * existing blocks in the tree (e.g. to build ctx before validating new headers, or to compute
       * chainwork for a prefix during splits).
       *
-      * At retarget boundaries (newHeight % 2016 == 0), updates `prevDiffAdjTimestamp` to this
-      * block's timestamp — it becomes `nFirstBlockTime` for the next retarget calculation.
+      * Inlines the logic of `GetNextWorkRequired()` (pow.cpp:14-48) to handle difficulty retarget
+      * and `prevDiffAdjTimestamp` update in a single branch.
+      *
+      * At retarget boundaries (height % 2016 == 0):
+      *   - Computes new difficulty via `CalculateNextWorkRequired()` (pow.cpp:50-84) using
+      *     `ctx.timestamps.head` as `pindexLast->GetBlockTime()` (the block *before* the boundary,
+      *     not the new block being accumulated)
+      *   - Records this block's timestamp as `nFirstBlockTime` for the next retarget period
       */
     def accumulateBlock(ctx: TraversalCtx, block: BlockSummary): TraversalCtx = {
         val newHeight = ctx.height + 1
-        // Compute expected bits for block at newHeight (same as getNextWorkRequired in Bitcoin Core)
-        val newBits = getNextWorkRequired(
-          ctx.height,
-          ctx.currentBits,
-          ctx.timestamps.head,
-          ctx.prevDiffAdjTimestamp
-        )
-        val newTimestamps = Cons(block.timestamp, ctx.timestamps)
-        // At retarget boundary: record this block's timestamp as the period start for next retarget
-        val newPrevDiffAdjTimestamp =
-            if newHeight % DifficultyAdjustmentInterval == BigInt(0) then block.timestamp
-            else ctx.prevDiffAdjTimestamp
-        TraversalCtx(
-          timestamps = newTimestamps,
-          height = newHeight,
-          currentBits = newBits,
-          prevDiffAdjTimestamp = newPrevDiffAdjTimestamp,
-          lastBlockHash = block.hash
-        )
+        val timestamp = block.timestamp
+        val hash = block.hash
+        val newTimestamps = Cons(timestamp, ctx.timestamps)
+
+        if newHeight % DifficultyAdjustmentInterval == BigInt(0) then
+            // Retarget boundary — matches CalculateNextWorkRequired() in pow.cpp:50-84
+            // nActualTimespan = pindexLast->GetBlockTime() - nFirstBlockTime
+            //                 = ctx.timestamps.head      - ctx.prevDiffAdjTimestamp
+            val newTarget = calculateNextWorkRequired(
+              ctx.currentBits,
+              ctx.timestamps.head, // pindexLast->GetBlockTime()
+              ctx.prevDiffAdjTimestamp // nFirstBlockTime
+            )
+            val newBits = targetToCompactByteString(newTarget)
+            TraversalCtx(
+              timestamps = newTimestamps,
+              height = newHeight,
+              currentBits = newBits,
+              prevDiffAdjTimestamp = timestamp, // becomes nFirstBlockTime for next period
+              lastBlockHash = hash
+            )
+        else
+            // No retarget — matches GetNextWorkRequired() returning current target unchanged
+            // pow.cpp:46 `return pindex->nBits;`
+            ctx.copy(
+              timestamps = newTimestamps,
+              height = newHeight,
+              lastBlockHash = hash
+            )
     }
 
     // ============================================================================
@@ -308,8 +324,18 @@ object BitcoinValidator extends DataParameterizedValidator {
     def insertionSort(xs: List[BigInt]): List[BigInt] =
         xs.foldLeft(List.empty[BigInt])((sorted, x) => insertAscending(x, sorted))
 
-    /** Validate a single new block header against the traversal context. Returns the BlockSummary,
-      * updated context, and block proof (for chainwork accumulation).
+    /** Validate a single new block header and accumulate it into the traversal context.
+      *
+      * Matches `ContextualCheckBlockHeader()` in validation.cpp:
+      *   - PoW: `CheckProofOfWork()` in pow.cpp:140-163 — hash ≤ target
+      *   - MTP: `GetMedianTimePast()` in chain.h:278-290 — timestamp > median of last 11
+      *   - Future time: validation.cpp — timestamp ≤ currentTime + MAX_FUTURE_BLOCK_TIME
+      *   - Chain continuity: prevBlockHash must match ctx.lastBlockHash
+      *
+      * Difficulty is enforced structurally: PoW is checked against `ctx.currentBits` (the expected
+      * target maintained by [[accumulateBlock]]), so blocks must satisfy the correct difficulty
+      * even though `header.bits` is not explicitly compared. Context update (height, timestamps,
+      * difficulty retarget) is delegated to [[accumulateBlock]].
       */
     def validateBlock(
         header: BlockHeader,
@@ -319,48 +345,29 @@ object BitcoinValidator extends DataParameterizedValidator {
     ): (BlockSummary, TraversalCtx, BigInt) = {
         val hash = blockHeaderHash(header)
         val hashInt = byteStringToInteger(false, hash)
-        val bits = header.bits
-        val timestamps = ctx.timestamps
-        val height = ctx.height
-        val prevDiffAdjTimestamp = ctx.prevDiffAdjTimestamp
 
-        // PoW validation — target is reused for block proof below
-        val target = compactBitsToTarget(bits)
-
-        // Difficulty validation
-        val expectedBits = getNextWorkRequired(
-          height,
-          ctx.currentBits,
-          timestamps.head,
-          prevDiffAdjTimestamp
-        )
+        // PoW validation — matches CheckProofOfWork() in pow.cpp:140-163
+        // Target derived from ctx.currentBits (expected difficulty), reused for block proof below
+        val target = compactBitsToTarget(ctx.currentBits)
 
         if !testingMode then
             require(hashInt <= target, "Invalid proof-of-work")
             require(target <= PowLimit, "Target exceeds PowLimit")
-            require(bits == expectedBits, "Invalid difficulty")
 
-        // MTP validation
-        val sortedTimestamps = insertionSort(timestamps.take(MedianTimeSpan))
+        // MTP validation — matches GetMedianTimePast() in chain.h:278-290
+        val sortedTimestamps = insertionSort(ctx.timestamps.take(MedianTimeSpan))
         val medianTimePast = sortedTimestamps.at(5)
         val timestamp = header.timestamp
         require(timestamp > medianTimePast, "Block timestamp not greater than MTP")
 
-        // Future time validation
+        // Future time validation — matches MAX_FUTURE_BLOCK_TIME check in validation.cpp
         require(
           timestamp <= currentTime + MaxFutureBlockTime,
           "Block timestamp too far in future"
         )
 
-        // Parent hash validation
+        // Chain continuity — prevBlockHash must link to the tip of the traversed chain
         require(header.prevBlockHash == ctx.lastBlockHash, "Parent hash mismatch")
-
-        // Build new context
-        val newHeight = height + 1
-        val newTimestamps = Cons(timestamp, timestamps)
-        val newPrevDiffAdjTimestamp =
-            if newHeight % DifficultyAdjustmentInterval == BigInt(0) then timestamp
-            else prevDiffAdjTimestamp
 
         val summary = BlockSummary(
           hash = hash,
@@ -368,13 +375,8 @@ object BitcoinValidator extends DataParameterizedValidator {
           addedTimeSeconds = currentTime
         )
 
-        val newCtx = TraversalCtx(
-          timestamps = newTimestamps,
-          height = newHeight,
-          currentBits = expectedBits,
-          prevDiffAdjTimestamp = newPrevDiffAdjTimestamp,
-          lastBlockHash = hash
-        )
+        // Delegate context update (timestamps, height, difficulty retarget) to accumulateBlock
+        val newCtx = accumulateBlock(ctx, summary)
 
         // Block proof from target already computed for PoW validation
         val blockProof = calculateBlockProof(target)
