@@ -43,7 +43,9 @@ lazy val it = (project in file("it"))
     .settings(
       name := "binocular-it",
       Test / parallelExecution := false,
+      Test / fork := true,
       Test / javaOptions ++= Seq("-Xmx2g"),
+      Test / envVars += ("TESTCONTAINERS_RYUK_DISABLED" -> "true"),
       addCompilerPlugin("org.scalus" % "scalus-plugin_3.3.7" % scalusVersion),
       libraryDependencies ++= integrationTestDependencies,
       // Use test resources from root project
@@ -94,5 +96,6 @@ lazy val testDependencies = Seq(
 
 // Integration test dependencies
 lazy val integrationTestDependencies = Seq(
+  "com.lihaoyi" %% "os-lib" % "0.11.8" % Test,
   "org.scalatest" %% "scalatest" % "3.2.19" % Test
 )

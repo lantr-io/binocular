@@ -32,6 +32,7 @@
             nodejs
             texliveFull
             pandoc
+            bitcoind
           ];
         };
       })

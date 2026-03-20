@@ -2,7 +2,7 @@ package binocular
 
 import org.scalatest.funsuite.AnyFunSuite
 import scalus.cardano.address.{Address, Network}
-import scalus.cardano.ledger.{AssetName, Coin, Credential, Script, TransactionHash, TransactionInput, Utxo, Value}
+import scalus.cardano.ledger.{AssetName, Coin, Credential, ScriptHash, Script, TransactionHash, TransactionInput, Utxo, Value}
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
@@ -50,16 +50,14 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
     private def findOracleUtxo(
         provider: BlockchainProvider,
         scriptAddress: Address,
-        txHash: String
+        nftPolicyId: ScriptHash
     ): Utxo = {
         val utxos = getUtxos(provider, scriptAddress)
         utxos
-            .find(u =>
-                u.input.transactionId.toHex == txHash && u.output.inlineDatum.isDefined
-            )
+            .find(u => u.output.value.hasAsset(nftPolicyId, AssetName.empty))
             .getOrElse {
                 throw new RuntimeException(
-                  s"No oracle UTxO with inline datum found for tx $txHash"
+                  s"No oracle UTxO with NFT $nftPolicyId found at $scriptAddress"
                 )
             }
     }
@@ -211,7 +209,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
                   url = "mock://rpc",
                   username = "test",
                   password = "test",
-                  network = BitcoinNetwork.Testnet
+                  network = "testnet"
                 )
               ) {
                   override def getBlockHash(height: Int) = mockRpc.getBlockHash(height)
@@ -274,7 +272,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
                 assert(confirmed, s"Update transaction $txHash did not confirm")
                 Thread.sleep(2000)
 
-                val newOracleUtxo = findOracleUtxo(ctx.provider, scriptAddress, txHash)
+                val newOracleUtxo = findOracleUtxo(ctx.provider, scriptAddress, script.scriptHash)
                 val onChainState = newOracleUtxo.output.inlineDatum.get.to[ChainState]
 
                 assert(
@@ -314,7 +312,8 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
           challengeAging = 30,
           oneShotTxOutRef = txOutRef,
           closureTimeout = 30 * 24 * 60 * 60,
-          owner = testOwner
+          owner = testOwner,
+          powLimit = BitcoinHelpers.PowLimit
         )
 
         val script = BitcoinContract.makeContract(params).script
@@ -342,7 +341,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         waitForTransaction(ctx.provider, txHash, maxAttempts = 30)
         Thread.sleep(2000)
 
-        val oracleUtxo = findOracleUtxo(ctx.provider, scriptAddress, txHash)
+        val oracleUtxo = findOracleUtxo(ctx.provider, scriptAddress, scriptHash)
         (oracleUtxo, script, scriptAddress, params)
     }
 

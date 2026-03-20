@@ -137,11 +137,26 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
         )
     }
 
+    private val mainnetValidationParams = BitcoinValidatorParams(
+      maturationConfirmations = 100,
+      challengeAging = 200 * 60,
+      oneShotTxOutRef = scalus.cardano.onchain.plutus.v3.TxOutRef(
+        scalus.cardano.onchain.plutus.v3.TxId(ByteString.unsafeFromArray(Array.fill(32)(0: Byte))),
+        0
+      ),
+      closureTimeout = 30 * 24 * 60 * 60,
+      owner = scalus.cardano.onchain.plutus.v1.PubKeyHash(
+        ByteString.unsafeFromArray(Array.fill(28)(0: Byte))
+      ),
+      powLimit = PowLimit
+    )
+
     private def processHeader(currentState: ChainState, headerInfo: BlockHeaderInfo): ChainState =
         val header = convertHeader(headerInfo)
         val currentTime = BigInt(System.currentTimeMillis() / 1000)
         val ctx = BitcoinValidator.initCtx(currentState)
-        val (summary, newCtx, _) = BitcoinValidator.validateBlock(header, ctx, currentTime)
+        val (summary, newCtx, _) =
+            BitcoinValidator.validateBlock(header, ctx, currentTime, mainnetValidationParams)
         ChainState(
           blockHeight = newCtx.height,
           blockHash = newCtx.lastBlockHash,
