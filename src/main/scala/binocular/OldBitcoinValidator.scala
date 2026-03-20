@@ -169,7 +169,8 @@ object OldBitcoinValidator extends DataParameterizedValidator {
               parentBlock.height,
               parentBlock.bits,
               parentBlock.timestamp,
-              adjustmentStartTimestamp
+              adjustmentStartTimestamp,
+              PowLimit
             )
     }
 
@@ -334,7 +335,8 @@ object OldBitcoinValidator extends DataParameterizedValidator {
                   parentHeight,
                   confirmedState.currentTarget,
                   confirmedState.blockTimestamp,
-                  confirmedState.previousDifficultyAdjustmentTimestamp
+                  confirmedState.previousDifficultyAdjustmentTimestamp,
+                  PowLimit
                 )
             else
                 parentBranchOpt match
@@ -613,7 +615,8 @@ object OldBitcoinValidator extends DataParameterizedValidator {
           prevState.blockHeight,
           prevState.currentTarget,
           prevState.blockTimestamp,
-          prevState.previousDifficultyAdjustmentTimestamp
+          prevState.previousDifficultyAdjustmentTimestamp,
+          PowLimit
         )
         val validDifficulty = compactTarget == nextDifficulty
 

@@ -241,6 +241,7 @@ trait BitcoinValidatorGenerators extends scalus.uplc.test.ArbitraryInstances {
           oneShotTxOutRef = testTxOutRef,
           closureTimeout = 30 * 24 * 60 * 60,
           owner = testOwner,
+          powLimit = BitcoinHelpers.PowLimit,
           testingMode = testingMode
         )
 
@@ -310,7 +311,9 @@ trait BitcoinValidatorGenerators extends scalus.uplc.test.ArbitraryInstances {
         // We need the ctx after all N blocks. Since the blocks are in the fork tree,
         // we can accumulate them.
         val allBlocks = stateN.forkTree.toBlockList
-        val ctxAtTip = allBlocks.foldLeft(ctx0)(BitcoinValidator.accumulateBlock)
+        val ctxAtTip = allBlocks.foldLeft(ctx0)((c, b) =>
+            BitcoinValidator.accumulateBlock(c, b, BitcoinHelpers.PowLimit)
+        )
         val currentTime = addedTimeBase + 100 // slightly later for the extension
         val newHeaders = genFakeHeaderChain(numNew, ctxAtTip, currentTime).sample.get
         (stateN, newHeaders)

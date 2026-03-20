@@ -65,7 +65,7 @@ class OldValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckProper
     }
 
     test("BitcoinValidator size") {
-        assert(OldBitcoinContract.contract.script.script.size == 8686)
+        assert(OldBitcoinContract.contract.script.script.size == 8676)
     }
 
     test("Tx size makes sense") {
@@ -676,7 +676,8 @@ class OldValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckProper
             parentBlock.height,
             parentBlock.bits,
             parentBlock.timestamp,
-            adjustmentStartBlock.timestamp
+            adjustmentStartBlock.timestamp,
+            PowLimit
           )
         )
     }
@@ -1175,7 +1176,8 @@ class OldValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckProper
           closureTimeout = 30 * 24 * 60 * 60,
           owner = PubKeyHash(
             hex"00000000000000000000000000000000000000000000000000000000"
-          )
+          ),
+          powLimit = BitcoinHelpers.PowLimit
         )
         BitcoinContract.makeContract(params).script.scriptHash
     }

@@ -42,6 +42,13 @@ object BitcoinHelpers {
           hex"00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
         )
 
+    // Regtest proof of work limit - matches consensus.powLimit in chainparams.cpp (CRegTestParams)
+    val RegtestPowLimit: BigInt =
+        byteStringToInteger(
+          true,
+          hex"7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        )
+
     // 2^256 constant for chainwork calculation
     // Used in GetBlockProof() formula: work = 2^256 / (target + 1)
     // Precomputed to avoid on-chain exponentiation
@@ -85,10 +92,7 @@ object BitcoinHelpers {
                 (coefficient > 0xff && exponent > 33) ||
                 (coefficient > 0xffff && exponent > 32))
         then fail("Bits overflow")
-        else
-            val result = coefficient * pow(256, exponent - 3)
-            if result > PowLimit then fail("Bits over PowLimit")
-            else result
+        else coefficient * pow(256, exponent - 3)
     }
 
     /** Converts target value (256 bits BigInt) to a little-endian compact 32 bits representation
@@ -320,11 +324,13 @@ object BitcoinHelpers {
         nHeight: BigInt,
         currentTarget: CompactBits,
         blockTime: BigInt,
-        nFirstBlockTime: BigInt
+        nFirstBlockTime: BigInt,
+        powLimit: BigInt
     ): CompactBits = {
         // Only change once per difficulty adjustment interval
         if (nHeight + 1) % DifficultyAdjustmentInterval == BigInt(0) then
-            val newTarget = calculateNextWorkRequired(currentTarget, blockTime, nFirstBlockTime)
+            val newTarget =
+                calculateNextWorkRequired(currentTarget, blockTime, nFirstBlockTime, powLimit)
             val r = targetToCompactByteString(newTarget)
             r
         else currentTarget
@@ -334,7 +340,8 @@ object BitcoinHelpers {
     def calculateNextWorkRequired(
         currentTarget: CompactBits,
         blockTime: BigInt,
-        nFirstBlockTime: BigInt
+        nFirstBlockTime: BigInt,
+        powLimit: BigInt
     ): BigInt = {
         val PowTargetTimespan = DifficultyAdjustmentInterval * TargetBlockTime
         val actualTimespan =
@@ -347,6 +354,6 @@ object BitcoinHelpers {
 
         val t = compactBitsToTarget(currentTarget)
         val bnNew = t * actualTimespan / PowTargetTimespan
-        Math.min(bnNew, PowLimit)
+        Math.min(bnNew, powLimit)
     }
 }

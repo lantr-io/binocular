@@ -95,8 +95,10 @@ class ForkTreePropertyTest
         .deBruijnedProgram
 
     private lazy val accumulateBlockCEK = PlutusV3
-        .compile { (d1: Data, d2: Data) =>
-            BitcoinValidator.accumulateBlock(d1.to[TraversalCtx], d2.to[BlockSummary]).toData
+        .compile { (d1: Data, d2: Data, d3: Data) =>
+            BitcoinValidator
+                .accumulateBlock(d1.to[TraversalCtx], d2.to[BlockSummary], d3.to[BigInt])
+                .toData
         }
         .program
         .deBruijnedProgram
@@ -339,30 +341,36 @@ class ForkTreePropertyTest
     test("accumulateBlock - height increments by 1") {
         forAll(genNonRetargetCtx) { ctx =>
             val block = genBlockSummaryWithId(1, 1700000000L, 1700000000L)
-            val newCtx = BitcoinValidator.accumulateBlock(ctx, block)
+            val newCtx = BitcoinValidator.accumulateBlock(ctx, block, PowLimit)
             assert(newCtx.height == ctx.height + 1)
             // CEK
-            assertCEKData(accumulateBlockCEK, ctx.toData, block.toData)(newCtx.toData)
+            assertCEKData(accumulateBlockCEK, ctx.toData, block.toData, PowLimit.toData)(
+              newCtx.toData
+            )
         }
     }
 
     test("accumulateBlock - lastBlockHash updated to block.hash") {
         forAll(genNonRetargetCtx) { ctx =>
             val block = genBlockSummaryWithId(42, 1700000000L, 1700000000L)
-            val newCtx = BitcoinValidator.accumulateBlock(ctx, block)
+            val newCtx = BitcoinValidator.accumulateBlock(ctx, block, PowLimit)
             assert(newCtx.lastBlockHash == block.hash)
             // CEK
-            assertCEKData(accumulateBlockCEK, ctx.toData, block.toData)(newCtx.toData)
+            assertCEKData(accumulateBlockCEK, ctx.toData, block.toData, PowLimit.toData)(
+              newCtx.toData
+            )
         }
     }
 
     test("accumulateBlock - block.timestamp prepended to timestamps") {
         forAll(genNonRetargetCtx) { ctx =>
             val block = genBlockSummaryWithId(1, 1700000000L, 1700000000L)
-            val newCtx = BitcoinValidator.accumulateBlock(ctx, block)
+            val newCtx = BitcoinValidator.accumulateBlock(ctx, block, PowLimit)
             assert(newCtx.timestamps.head == block.timestamp)
             // CEK
-            assertCEKData(accumulateBlockCEK, ctx.toData, block.toData)(newCtx.toData)
+            assertCEKData(accumulateBlockCEK, ctx.toData, block.toData, PowLimit.toData)(
+              newCtx.toData
+            )
         }
     }
 
@@ -379,10 +387,12 @@ class ForkTreePropertyTest
                   lastBlockHash = genUniqueBlockHash(0)
                 )
                 val block = genBlockSummaryWithId(1, 1700001000L, 1700001000L)
-                val newCtx = BitcoinValidator.accumulateBlock(ctx, block)
+                val newCtx = BitcoinValidator.accumulateBlock(ctx, block, PowLimit)
                 assert(newCtx.prevDiffAdjTimestamp == block.timestamp)
                 // CEK
-                assertCEKData(accumulateBlockCEK, ctx.toData, block.toData)(newCtx.toData)
+                assertCEKData(accumulateBlockCEK, ctx.toData, block.toData, PowLimit.toData)(
+                  newCtx.toData
+                )
             }
         }
     }
@@ -390,10 +400,12 @@ class ForkTreePropertyTest
     test("accumulateBlock - not at retarget: prevDiffAdjTimestamp preserved") {
         forAll(genNonRetargetCtx) { ctx =>
             val block = genBlockSummaryWithId(1, 1700000000L, 1700000000L)
-            val newCtx = BitcoinValidator.accumulateBlock(ctx, block)
+            val newCtx = BitcoinValidator.accumulateBlock(ctx, block, PowLimit)
             assert(newCtx.prevDiffAdjTimestamp == ctx.prevDiffAdjTimestamp)
             // CEK
-            assertCEKData(accumulateBlockCEK, ctx.toData, block.toData)(newCtx.toData)
+            assertCEKData(accumulateBlockCEK, ctx.toData, block.toData, PowLimit.toData)(
+              newCtx.toData
+            )
         }
     }
 
@@ -407,10 +419,12 @@ class ForkTreePropertyTest
               addedTimeSeconds = BigInt(1700000000)
             )
             // Should not throw — accumulateBlock doesn't check MTP
-            val newCtx = BitcoinValidator.accumulateBlock(ctx, block)
+            val newCtx = BitcoinValidator.accumulateBlock(ctx, block, PowLimit)
             assert(newCtx.height == ctx.height + 1)
             // CEK
-            assertCEKData(accumulateBlockCEK, ctx.toData, block.toData)(newCtx.toData)
+            assertCEKData(accumulateBlockCEK, ctx.toData, block.toData, PowLimit.toData)(
+              newCtx.toData
+            )
         }
     }
 
@@ -991,7 +1005,9 @@ class ForkTreePropertyTest
             val ctx0 = BitcoinValidator.initCtx(stateWith100)
             val allBlocks = stateWith100.forkTree.toBlockList
             val ctxAtForkPoint =
-                allBlocks.take(forkPoint + 1).foldLeft(ctx0)(BitcoinValidator.accumulateBlock)
+                allBlocks
+                    .take(forkPoint + 1)
+                    .foldLeft(ctx0)((c, b) => BitcoinValidator.accumulateBlock(c, b, PowLimit))
             val currentTime = BigInt(1700000100)
             val forkHeaders = genFakeHeaderChain(2, ctxAtForkPoint, currentTime).sample.get
 
@@ -1038,7 +1054,8 @@ class ForkTreePropertyTest
 
         val ctx0 = BitcoinValidator.initCtx(stateWith100)
         val allBlocks = stateWith100.forkTree.toBlockList
-        val ctxAtTip = allBlocks.foldLeft(ctx0)(BitcoinValidator.accumulateBlock)
+        val ctxAtTip =
+            allBlocks.foldLeft(ctx0)((c, b) => BitcoinValidator.accumulateBlock(c, b, PowLimit))
         // Use a currentTime well ahead of block timestamps to avoid MTP issues
         val currentTime = addedTimeBase + 50000
 
@@ -1056,7 +1073,9 @@ class ForkTreePropertyTest
         assert(stateWith101.forkTree.blockCount == 101)
 
         // Now fork at block 95 in the 101-block chain (mid-split)
-        val ctxAt95 = allBlocks.take(96).foldLeft(ctx0)(BitcoinValidator.accumulateBlock)
+        val ctxAt95 = allBlocks
+            .take(96)
+            .foldLeft(ctx0)((c, b) => BitcoinValidator.accumulateBlock(c, b, PowLimit))
         val forkHeaders = genFakeHeaderChain(2, ctxAt95, currentTime).sample.get
         val forkedState =
             BitcoinValidator.computeUpdate(
@@ -1094,7 +1113,9 @@ class ForkTreePropertyTest
             val ctx0 = BitcoinValidator.initCtx(stateWith100)
             val allBlocks = stateWith100.forkTree.toBlockList
             val ctxAtFork =
-                allBlocks.take(forkPoint + 1).foldLeft(ctx0)(BitcoinValidator.accumulateBlock)
+                allBlocks
+                    .take(forkPoint + 1)
+                    .foldLeft(ctx0)((c, b) => BitcoinValidator.accumulateBlock(c, b, PowLimit))
             val currentTime = BigInt(1700000100)
             // Short fork: 1 block (will have less chainwork than the main chain's 100 - forkPoint - 1 remaining)
             val forkHeaders = genFakeHeaderChain(1, ctxAtFork, currentTime).sample.get
@@ -1170,7 +1191,9 @@ class ForkTreePropertyTest
         // Prefix has only 3 blocks — all promotable since depth >= 100.
         val ctx0 = BitcoinValidator.initCtx(stateWith103)
         val allBlocks = stateWith103.forkTree.toBlockList
-        val ctxAt2 = allBlocks.take(3).foldLeft(ctx0)(BitcoinValidator.accumulateBlock)
+        val ctxAt2 = allBlocks
+            .take(3)
+            .foldLeft(ctx0)((c, b) => BitcoinValidator.accumulateBlock(c, b, PowLimit))
         val currentTime = addedTimeBase + 50000
         val forkHeaders = genFakeHeaderChain(2, ctxAt2, currentTime).sample.get
 
@@ -1240,7 +1263,8 @@ class ForkTreePropertyTest
         // Step 2: Extend with 4 more headers (→ 103 blocks)
         // Need 103+ main chain blocks so all 3 prefix blocks have depth >= 100
         val blocks99 = state99.forkTree.toBlockList
-        val ctxAtTip99 = blocks99.foldLeft(ctx0)(BitcoinValidator.accumulateBlock)
+        val ctxAtTip99 =
+            blocks99.foldLeft(ctx0)((c, b) => BitcoinValidator.accumulateBlock(c, b, PowLimit))
         val time2 = addedTimeBase + 50000
         val ext2Headers = genFakeHeaderChain(4, ctxAtTip99, time2).sample.get
         val state103 = BitcoinValidator.computeUpdate(
@@ -1255,7 +1279,9 @@ class ForkTreePropertyTest
 
         // Step 3: Create a short fork at block 2 (early fork for easy GC)
         val blocks103 = state103.forkTree.toBlockList
-        val ctxAt2 = blocks103.take(3).foldLeft(ctx0)(BitcoinValidator.accumulateBlock)
+        val ctxAt2 = blocks103
+            .take(3)
+            .foldLeft(ctx0)((c, b) => BitcoinValidator.accumulateBlock(c, b, PowLimit))
         val time3 = addedTimeBase + 50100
         val forkHeaders = genFakeHeaderChain(1, ctxAt2, time3).sample.get
         val stateForked = BitcoinValidator.computeUpdate(
@@ -1269,7 +1295,8 @@ class ForkTreePropertyTest
         assert(stateForked.forkTree.blockCount == 104)
 
         // Step 4: Extend main chain by 1 more (→ 104 in main branch)
-        val ctxAtTip103 = blocks103.foldLeft(ctx0)(BitcoinValidator.accumulateBlock)
+        val ctxAtTip103 =
+            blocks103.foldLeft(ctx0)((c, b) => BitcoinValidator.accumulateBlock(c, b, PowLimit))
         val time4 = addedTimeBase + 50200
 
         // Tree after fork at block 2: Blocks(3, .., Fork(Blocks(100,..,End), Blocks(1,..,End)))

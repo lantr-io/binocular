@@ -76,8 +76,11 @@ class BitcoinHelpersTest extends AnyFunSuite with ScalusTest with ScalaCheckProp
           compactBitsToTarget(hex"1d00ffff".reverse) ==
               BigInt("00000000ffff0000000000000000000000000000000000000000000000000000", 16)
         )
-        // too large exponent
-        intercept[RuntimeException](compactBitsToTarget(hex"1e00ffff".reverse))
+        // large exponent (exceeds mainnet PowLimit but is valid math - PowLimit check is in validateBlock)
+        assert(
+          compactBitsToTarget(hex"1e00ffff".reverse) ==
+              BigInt("ffff000000000000000000000000000000000000000000000000000000", 16)
+        )
     }
 
     test("targetToCompactBits") {
@@ -333,7 +336,8 @@ class BitcoinHelpersTest extends AnyFunSuite with ScalusTest with ScalaCheckProp
               height,
               currentTarget,
               blockTime,
-              firstBlockTime
+              firstBlockTime,
+              PowLimit
             )
             assert(
               result ==
@@ -348,7 +352,8 @@ class BitcoinHelpersTest extends AnyFunSuite with ScalusTest with ScalaCheckProp
               height,
               currentTarget,
               blockTime,
-              firstBlockTime
+              firstBlockTime,
+              PowLimit
             )
             // Result should be different from currentTarget (actually calculated)
             assert(result != currentTarget, s"Height $height should trigger difficulty adjustment")
@@ -369,17 +374,17 @@ class BitcoinHelpersTest extends AnyFunSuite with ScalusTest with ScalaCheckProp
         // Height 2015: (2015 + 1) % 2016 = 0 (should adjust)
         // With bug: 2015 + (1 % 2016) = 2015 + 1 = 2016 ≠ 0 (would not adjust)
         val result2015 =
-            getNextWorkRequired(2015, currentTarget, blockTime, firstBlockTime)
+            getNextWorkRequired(2015, currentTarget, blockTime, firstBlockTime, PowLimit)
         assert(result2015 != currentTarget, "Height 2015 should trigger difficulty adjustment")
 
         // Height 4031: (4031 + 1) % 2016 = 0 (should adjust)
         val result4031 =
-            getNextWorkRequired(4031, currentTarget, blockTime, firstBlockTime)
+            getNextWorkRequired(4031, currentTarget, blockTime, firstBlockTime, PowLimit)
         assert(result4031 != currentTarget, "Height 4031 should trigger difficulty adjustment")
 
         // Height 1000: (1000 + 1) % 2016 = 1001 ≠ 0 (should not adjust)
         val result1000 =
-            getNextWorkRequired(1000, currentTarget, blockTime, firstBlockTime)
+            getNextWorkRequired(1000, currentTarget, blockTime, firstBlockTime, PowLimit)
         assert(
           result1000 ==
               currentTarget,

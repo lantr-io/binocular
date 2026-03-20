@@ -223,6 +223,7 @@ case class BitcoinValidatorParams(
     oneShotTxOutRef: TxOutRef,
     closureTimeout: BigInt,
     owner: PubKeyHash,
+    powLimit: BigInt,
     testingMode: Boolean = false
 ) derives FromData,
       ToData
@@ -275,7 +276,7 @@ object BitcoinValidator extends DataParameterizedValidator {
       *     not the new block being accumulated)
       *   - Records this block's timestamp as `nFirstBlockTime` for the next retarget period
       */
-    def accumulateBlock(ctx: TraversalCtx, block: BlockSummary): TraversalCtx = {
+    def accumulateBlock(ctx: TraversalCtx, block: BlockSummary, powLimit: BigInt): TraversalCtx = {
         val newHeight = ctx.height + 1
         val timestamp = block.timestamp
         val hash = block.hash
@@ -288,7 +289,8 @@ object BitcoinValidator extends DataParameterizedValidator {
             val newTarget = calculateNextWorkRequired(
               ctx.currentBits,
               ctx.timestamps.head, // pindexLast->GetBlockTime()
-              ctx.prevDiffAdjTimestamp // nFirstBlockTime
+              ctx.prevDiffAdjTimestamp, // nFirstBlockTime
+              powLimit
             )
             val newBits = targetToCompactByteString(newTarget)
             TraversalCtx(
@@ -341,7 +343,7 @@ object BitcoinValidator extends DataParameterizedValidator {
         header: BlockHeader,
         ctx: TraversalCtx,
         currentTime: PosixTimeSeconds,
-        testingMode: Boolean = false
+        params: BitcoinValidatorParams
     ): (BlockSummary, TraversalCtx, BigInt) = {
         val hash = blockHeaderHash(header)
         val hashInt = byteStringToInteger(false, hash)
@@ -350,9 +352,9 @@ object BitcoinValidator extends DataParameterizedValidator {
         // Target derived from ctx.currentBits (expected difficulty), reused for block proof below
         val target = compactBitsToTarget(ctx.currentBits)
 
-        if !testingMode then
+        if !params.testingMode then
             require(hashInt <= target, "Invalid proof-of-work")
-            require(target <= PowLimit, "Target exceeds PowLimit")
+            require(target <= params.powLimit, "Target exceeds PowLimit")
 
         // MTP validation — matches GetMedianTimePast() in chain.h:278-290
         val sortedTimestamps = insertionSort(ctx.timestamps.take(MedianTimeSpan))
@@ -376,7 +378,7 @@ object BitcoinValidator extends DataParameterizedValidator {
         )
 
         // Delegate context update (timestamps, height, difficulty retarget) to accumulateBlock
-        val newCtx = accumulateBlock(ctx, summary)
+        val newCtx = accumulateBlock(ctx, summary, params.powLimit)
 
         // Block proof from target already computed for PoW validation
         val blockProof = calculateBlockProof(target)
@@ -398,7 +400,8 @@ object BitcoinValidator extends DataParameterizedValidator {
     def computeChainwork(
         blocks: NonEmptyList[BlockSummary],
         ctx: TraversalCtx,
-        chainwork: Chainwork
+        chainwork: Chainwork,
+        powLimit: BigInt
     ): BigInt = blocks match
         case Nil => chainwork
         case Cons(block, tail) =>
@@ -406,13 +409,15 @@ object BitcoinValidator extends DataParameterizedValidator {
               ctx.height,
               ctx.currentBits,
               ctx.timestamps.head,
-              ctx.prevDiffAdjTimestamp
+              ctx.prevDiffAdjTimestamp,
+              powLimit
             )
-            val newCtx = accumulateBlock(ctx, block)
+            val newCtx = accumulateBlock(ctx, block, powLimit)
             computeChainwork(
               tail,
               newCtx,
-              chainwork + calculateBlockProof(compactBitsToTarget(bits))
+              chainwork + calculateBlockProof(compactBitsToTarget(bits)),
+              powLimit
             )
 
     /** Validate a list of headers (oldest-first), returning validated summaries and segment
@@ -424,19 +429,19 @@ object BitcoinValidator extends DataParameterizedValidator {
         currentTime: BigInt,
         chainwork: BigInt,
         acc: List[BlockSummary],
-        testingMode: Boolean = false
+        params: BitcoinValidatorParams
     ): (List[BlockSummary], BigInt) = headers match
         case Nil => (acc.reverse, chainwork)
         case Cons(header, tail) =>
             val (summary, newCtx, blockProof) =
-                validateBlock(header, ctx, currentTime, testingMode)
+                validateBlock(header, ctx, currentTime, params)
             validateAndCollectBlocks(
               tail,
               newCtx,
               currentTime,
               chainwork + blockProof,
               Cons(summary, acc),
-              testingMode
+              params
             )
 
     // ============================================================================
@@ -473,14 +478,14 @@ object BitcoinValidator extends DataParameterizedValidator {
         headers: List[BlockHeader],
         ctx: TraversalCtx,
         currentTime: PosixTimeSeconds,
-        testingMode: Boolean = false
+        params: BitcoinValidatorParams
     ): ForkTree = {
         path match
             case Nil =>
                 // Path is empty → parent is the confirmed tip (stored in ctx).
                 // Validate headers and attach as a new branch at the tree root.
                 val (newBlocks, newCw) =
-                    validateAndCollectBlocks(headers, ctx, currentTime, 0, Nil, testingMode)
+                    validateAndCollectBlocks(headers, ctx, currentTime, 0, Nil, params)
                 val newBranch = Blocks(newBlocks, newCw, End)
                 tree match
                     // First-ever insertion into an empty tree:
@@ -499,7 +504,7 @@ object BitcoinValidator extends DataParameterizedValidator {
                   currentTime,
                   pathHead,
                   pathTail,
-                  testingMode
+                  params
                 )
     }
 
@@ -514,7 +519,7 @@ object BitcoinValidator extends DataParameterizedValidator {
         currentTime: PosixTimeSeconds,
         pathHead: PathElement,
         pathTail: Path,
-        testingMode: Boolean = false
+        params: BitcoinValidatorParams
     ) = {
         tree match
             case Blocks(blocks, originalCw, next) =>
@@ -542,12 +547,12 @@ object BitcoinValidator extends DataParameterizedValidator {
                                 headers,
                                 newCtx,
                                 currentTime,
-                                testingMode
+                                params
                               )
                             )
                         case Cons(block, tail) if count == pathHead =>
                             // Found insertion point: block at index pathHead is the parent.
-                            val parentCtx = accumulateBlock(newCtx, block)
+                            val parentCtx = accumulateBlock(newCtx, block, params.powLimit)
                             val (newBlocks, newCw) =
                                 validateAndCollectBlocks(
                                   headers,
@@ -555,7 +560,7 @@ object BitcoinValidator extends DataParameterizedValidator {
                                   currentTime,
                                   0,
                                   Nil,
-                                  testingMode
+                                  params
                                 )
                             val fullPrefix = Cons(block, prefix).reverse
                             tail match
@@ -579,7 +584,12 @@ object BitcoinValidator extends DataParameterizedValidator {
                                             //   → Blocks([A,B,C], prefCw,
                                             //       Fork(Fork(..), Blocks([H1], newCw, End)))
                                             val prefixCw =
-                                                computeChainwork(fullPrefix, ctx, BigInt(0))
+                                                computeChainwork(
+                                                  fullPrefix,
+                                                  ctx,
+                                                  BigInt(0),
+                                                  params.powLimit
+                                                )
                                             Blocks(
                                               fullPrefix,
                                               prefixCw,
@@ -598,7 +608,12 @@ object BitcoinValidator extends DataParameterizedValidator {
                                     //       Fork(Blocks([D,E], cw-prefCw, End),
                                     //            Blocks([H1,H2], newCw, End)))
                                     val prefixCw =
-                                        computeChainwork(fullPrefix, ctx, BigInt(0))
+                                        computeChainwork(
+                                          fullPrefix,
+                                          ctx,
+                                          BigInt(0),
+                                          params.powLimit
+                                        )
                                     Blocks(
                                       fullPrefix,
                                       prefixCw,
@@ -613,7 +628,7 @@ object BitcoinValidator extends DataParameterizedValidator {
                               count + 1,
                               tail,
                               Cons(block, prefix),
-                              accumulateBlock(newCtx, block)
+                              accumulateBlock(newCtx, block, params.powLimit)
                             )
                         case _ => fail("Path index out of bounds")
                 }
@@ -630,7 +645,7 @@ object BitcoinValidator extends DataParameterizedValidator {
                         headers,
                         ctx,
                         currentTime,
-                        testingMode
+                        params
                       ),
                       right
                     )
@@ -643,7 +658,7 @@ object BitcoinValidator extends DataParameterizedValidator {
                         headers,
                         ctx,
                         currentTime,
-                        testingMode
+                        params
                       )
                     )
 
@@ -739,7 +754,7 @@ object BitcoinValidator extends DataParameterizedValidator {
                     val age = currentTime - block.addedTimeSeconds
                     if depth >= params.maturationConfirmations && age >= params.challengeAging then
                         // Block eligible — promote it and check next block.
-                        val newCtx = accumulateBlock(ctx, block)
+                        val newCtx = accumulateBlock(ctx, block, params.powLimit)
                         val (morePromoted, remaining, finalCtx) =
                             splitPromotable(
                               tail,
@@ -791,7 +806,8 @@ object BitcoinValidator extends DataParameterizedValidator {
                 if promoted.isEmpty then
                     // No promotion in this node (blocks too young/shallow, or limit reached).
                     // Accumulate all blocks and recurse into subtree for GC.
-                    val fullCtx = blocks.foldLeft(ctx)(accumulateBlock)
+                    val fullCtx =
+                        blocks.foldLeft(ctx)((c, b) => accumulateBlock(c, b, params.powLimit))
 //                    log("promoteAndGC fullCtx")
                     val (nextPromoted, cleanedNext) =
                         promoteAndGC(
@@ -821,7 +837,7 @@ object BitcoinValidator extends DataParameterizedValidator {
                 else
                     // Partial promotion: some blocks promoted, rest remain. Stop recursion —
                     // remaining blocks and subtree stay as-is (subtree GC deferred to future tx).
-                    val promotedCw = computeChainwork(promoted, ctx, 0)
+                    val promotedCw = computeChainwork(promoted, ctx, 0, params.powLimit)
 //                    log("promoteAndGC computeChainwork")
                     (promoted, Blocks(remaining, cw - promotedCw, next))
 
@@ -871,7 +887,8 @@ object BitcoinValidator extends DataParameterizedValidator {
         promoted: List[BlockSummary],
         mpfProofs: List[List[ProofStep]],
         ctx0: TraversalCtx,
-        cleanedTree: ForkTree
+        cleanedTree: ForkTree,
+        powLimit: BigInt
     ): ChainState = {
         def loop(
             blocks: List[BlockSummary],
@@ -887,7 +904,7 @@ object BitcoinValidator extends DataParameterizedValidator {
                 case Cons(block, bTail) =>
                     proofs match
                         case Cons(proof, pTail) =>
-                            val newCtx = accumulateBlock(ctx, block)
+                            val newCtx = accumulateBlock(ctx, block, powLimit)
                             val newRoot =
                                 MPF(mpfRoot).insert(block.hash, block.hash, proof).root
                             loop(bTail, pTail, newCtx, newRoot)
@@ -944,7 +961,7 @@ object BitcoinValidator extends DataParameterizedValidator {
                   blockHeaders,
                   ctx0,
                   currentTime,
-                  params.testingMode
+                  params
                 )
 //        log("validateAndInsert")
 
@@ -971,7 +988,14 @@ object BitcoinValidator extends DataParameterizedValidator {
 
             // Step 4: Apply promotions and set cleaned tree
             val updatedState =
-                applyPromotions(state, promoted, promotionProofs, ctx0, cleanedTree)
+                applyPromotions(
+                  state,
+                  promoted,
+                  promotionProofs,
+                  ctx0,
+                  cleanedTree,
+                  params.powLimit
+                )
 //            log("applyPromotions")
             updatedState
         else

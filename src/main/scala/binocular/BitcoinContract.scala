@@ -34,7 +34,8 @@ object BitcoinContract {
           challengeAging = 200 * 60,
           oneShotTxOutRef = txOutRef,
           closureTimeout = closureTimeout,
-          owner = owner
+          owner = owner,
+          powLimit = BitcoinHelpers.PowLimit
         )
 
     lazy val blueprint: Blueprint = {

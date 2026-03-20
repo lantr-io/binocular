@@ -141,7 +141,8 @@ object OracleTransactions {
                   parentPath,
                   blockHeaders,
                   ctx0,
-                  currentTime
+                  currentTime,
+                  params
                 )
 
         // Find best chain path and promote

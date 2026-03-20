@@ -46,7 +46,8 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
       challengeAging = 200 * 60, // 200 minutes in seconds
       oneShotTxOutRef = testTxOutRef,
       closureTimeout = 30 * 24 * 60 * 60, // 30 days
-      owner = testOwner
+      owner = testOwner,
+      powLimit = BitcoinHelpers.PowLimit
     )
 
     private val testContract = {
@@ -423,7 +424,8 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
               parentPath,
               newHeadersScalus,
               ctx0,
-              currentTime
+              currentTime,
+              testParams
             )
             val (_, bestDepth, bestPath) = BitcoinValidator.bestChainPath(
               newTree,
@@ -871,7 +873,8 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
           parentPath,
           newHeadersScalus,
           ctx0,
-          currentTime
+          currentTime,
+          testParams
         )
         val (_, bestDepth, bestPath) = BitcoinValidator.bestChainPath(
           newTree,
@@ -1428,7 +1431,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             val currentTime = BigInt(fixture.timestamp)
 
             val (summary, newCtx, blockProof) =
-                BitcoinValidator.validateBlock(header, ctx, currentTime)
+                BitcoinValidator.validateBlock(header, ctx, currentTime, testParams)
 
             assert(
               summary.hash.reverse.toHex == fixture.hash,
