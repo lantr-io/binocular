@@ -2,16 +2,16 @@ package binocular
 
 import org.scalatest.funsuite.AnyFunSuite
 import scalus.cardano.address.{Address, Network}
-import scalus.cardano.ledger.{AssetName, Coin, Credential, ScriptHash, Script, TransactionHash, TransactionInput, Utxo, Value}
-import scalus.cardano.node.BlockchainProvider
+import scalus.cardano.ledger.*
+import scalus.cardano.node.TransactionStatus
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.cardano.onchain.plutus.v1.PubKeyHash
-import scalus.testing.kit.Party
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import scalus.cardano.txbuilder.TxBuilder
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 import scalus.testing.integration.YaciTestContext
+import scalus.testing.kit.Party
 import scalus.testing.yaci.{YaciConfig, YaciDevKit}
 import scalus.uplc.builtin.ByteString
 import scalus.uplc.builtin.Data.toData
@@ -29,7 +29,7 @@ import scala.concurrent.{ExecutionContext, Future}
   *   4. Standalone merkle proof verification
   *   5. Init failure with invalid fixture height
   */
-class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
+class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit with OracleTestHelpers {
 
     override protected def yaciConfig: YaciConfig = YaciConfig(
       containerName = "binocular-yaci-devkit",
@@ -37,57 +37,6 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
     )
 
     // ===== Helpers =====
-
-    private def getUtxos(provider: BlockchainProvider, address: Address): List[Utxo] = {
-        given ExecutionContext = provider.executionContext
-        val result = provider.findUtxos(address).await(30.seconds)
-        result match {
-            case Right(u) => u.map { case (input, output) => Utxo(input, output) }.toList
-            case Left(_)  => List.empty
-        }
-    }
-
-    private def findOracleUtxo(
-        provider: BlockchainProvider,
-        scriptAddress: Address,
-        nftPolicyId: ScriptHash
-    ): Utxo = {
-        val utxos = getUtxos(provider, scriptAddress)
-        utxos
-            .find(u => u.output.value.hasAsset(nftPolicyId, AssetName.empty))
-            .getOrElse {
-                throw new RuntimeException(
-                  s"No oracle UTxO with NFT $nftPolicyId found at $scriptAddress"
-                )
-            }
-    }
-
-    private def waitForTransaction(
-        provider: BlockchainProvider,
-        txHash: String,
-        maxAttempts: Int = 30,
-        delayMs: Long = 1000
-    ): Boolean = {
-        given ExecutionContext = provider.executionContext
-        val input = TransactionInput(TransactionHash.fromHex(txHash), 0)
-        var attempts = 0
-        while attempts < maxAttempts do {
-            try {
-                val result = provider.findUtxo(input).await(10.seconds)
-                result match {
-                    case Right(_) => return true
-                    case Left(_) =>
-                        Thread.sleep(delayMs)
-                        attempts += 1
-                }
-            } catch {
-                case _: Exception =>
-                    Thread.sleep(delayMs)
-                    attempts += 1
-            }
-        }
-        false
-    }
 
     /** Mock Bitcoin RPC that reads from test fixtures */
     class MockBitcoinRpc(fixtureDir: String = "src/test/resources/bitcoin_blocks")(using
@@ -268,8 +217,14 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
 
         updateResult match {
             case Right(txHash) =>
-                val confirmed = waitForTransaction(ctx.provider, txHash, maxAttempts = 30)
-                assert(confirmed, s"Update transaction $txHash did not confirm")
+                given ExecutionContext = ctx.provider.executionContext
+                val status = ctx.provider
+                    .pollForConfirmation(TransactionHash.fromHex(txHash), maxAttempts = 30)
+                    .await(60.seconds)
+                assert(
+                  status == TransactionStatus.Confirmed,
+                  s"Update transaction $txHash did not confirm"
+                )
                 Thread.sleep(2000)
 
                 val newOracleUtxo = findOracleUtxo(ctx.provider, scriptAddress, script.scriptHash)
@@ -338,7 +293,9 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         }
 
         println(s"[initOracleWithNft] Oracle initialized: $txHash")
-        waitForTransaction(ctx.provider, txHash, maxAttempts = 30)
+        ctx.provider
+            .pollForConfirmation(TransactionHash.fromHex(txHash), maxAttempts = 30)
+            .await(60.seconds)
         Thread.sleep(2000)
 
         val oracleUtxo = findOracleUtxo(ctx.provider, scriptAddress, scriptHash)
@@ -504,7 +461,9 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
 
         val referenceScriptUtxo: Option[Utxo] = refScriptResult match {
             case Right((txHash, outputIndex, savedOutput)) =>
-                waitForTransaction(ctx.provider, txHash, maxAttempts = 30)
+                ctx.provider
+                    .pollForConfirmation(TransactionHash.fromHex(txHash), maxAttempts = 30)
+                    .await(60.seconds)
                 Thread.sleep(2000)
                 val refInput = TransactionInput(TransactionHash.fromHex(txHash), outputIndex)
                 Some(Utxo(refInput, savedOutput))

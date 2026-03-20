@@ -2,40 +2,32 @@ package binocular
 
 import org.scalatest.funsuite.AnyFunSuite
 import scalus.cardano.address.{Address, Network}
-import scalus.cardano.ledger.{
-    AssetName,
-    Coin,
-    Credential,
-    ScriptHash,
-    TransactionHash,
-    TransactionInput,
-    Utxo,
-    Value
-}
-import scalus.cardano.node.BlockchainProvider
+import scalus.cardano.ledger.*
+import scalus.cardano.node.TransactionStatus
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.cardano.onchain.plutus.v1.PubKeyHash
-import scalus.testing.kit.Party
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import scalus.cardano.txbuilder.TxBuilder
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
+import scalus.testing.kit.Party
 import scalus.testing.yaci.{YaciConfig, YaciDevKit}
 import scalus.uplc.builtin.ByteString
 import scalus.uplc.builtin.Data.toData
 import scalus.utils.await
 
-import scala.concurrent.duration.*
 import scala.concurrent.ExecutionContext
+import scala.concurrent.duration.*
 import scala.util.Try
 
-/** Integration test that exercises the full Binocular oracle lifecycle using a real bitcoind regtest
-  * node alongside Yaci DevKit.
+/** Integration test that exercises the full Binocular oracle lifecycle using a real bitcoind
+  * regtest node alongside Yaci DevKit.
   *
-  * Unlike fixture-based tests, this uses live Bitcoin RPC to fetch real block headers, performs full
-  * PoW validation (testingMode=false), and tests the complete add-blocks → wait → promote cycle.
+  * Unlike fixture-based tests, this uses live Bitcoin RPC to fetch real block headers, performs
+  * full PoW validation (testingMode=false), and tests the complete add-blocks → wait → promote
+  * cycle.
   */
-class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
+class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit with OracleTestHelpers {
 
     override protected def yaciConfig: YaciConfig = YaciConfig(
       containerName = "binocular-regtest-yaci-devkit",
@@ -54,19 +46,21 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
 
         def start(): Unit = {
             println(s"[bitcoind] Starting regtest node, dataDir=$dataDir, rpcPort=$rpcPort")
-            val proc = os.proc(
-              "bitcoind",
-              "-regtest",
-              s"-datadir=$dataDir",
-              s"-rpcport=$rpcPort",
-              s"-rpcuser=$rpcUser",
-              s"-rpcpassword=$rpcPassword",
-              "-listen=0",
-              "-txindex=0",
-              "-server=1",
-              "-fallbackfee=0.0001",
-              "-daemon=0"
-            ).spawn(stdout = os.root / "dev" / "null", stderr = os.root / "dev" / "null")
+            val proc = os
+                .proc(
+                  "bitcoind",
+                  "-regtest",
+                  s"-datadir=$dataDir",
+                  s"-rpcport=$rpcPort",
+                  s"-rpcuser=$rpcUser",
+                  s"-rpcpassword=$rpcPassword",
+                  "-listen=0",
+                  "-txindex=0",
+                  "-server=1",
+                  "-fallbackfee=0.0001",
+                  "-daemon=0"
+                )
+                .spawn(stdout = os.root / "dev" / "null", stderr = os.root / "dev" / "null")
             subProcess = Some(proc)
             waitForBitcoindReady()
             bitcoinCli("createwallet", "test")
@@ -135,66 +129,6 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
             catch { case _: Exception => }
             println("[bitcoind] Stopped and cleaned up")
         }
-    }
-
-    // ===== Helpers (same as BinocularIntegrationTest) =====
-
-    private def getUtxos(provider: BlockchainProvider, address: Address): List[Utxo] = {
-        given ExecutionContext = provider.executionContext
-        val result = provider.findUtxos(address).await(30.seconds)
-        result match {
-            case Right(u) => u.map { case (input, output) => Utxo(input, output) }.toList
-            case Left(_)  => List.empty
-        }
-    }
-
-    private def findOracleUtxo(
-        provider: BlockchainProvider,
-        scriptAddress: Address,
-        nftPolicyId: ScriptHash
-    ): Utxo = {
-        val utxos = getUtxos(provider, scriptAddress)
-        utxos
-            .find(u => u.output.value.hasAsset(nftPolicyId, AssetName.empty))
-            .getOrElse {
-                throw new RuntimeException(
-                  s"No oracle UTxO with NFT $nftPolicyId found at $scriptAddress"
-                )
-            }
-    }
-
-    private def waitForTransaction(
-        provider: BlockchainProvider,
-        txHash: String,
-        maxAttempts: Int = 60,
-        delayMs: Long = 2000
-    ): Boolean = {
-        given ExecutionContext = provider.executionContext
-        val input = TransactionInput(TransactionHash.fromHex(txHash), 0)
-        var attempts = 0
-        while attempts < maxAttempts do {
-            try {
-                val result = provider.findUtxo(input).await(10.seconds)
-                result match {
-                    case Right(_) =>
-                        println(s"[wait] Tx $txHash confirmed after $attempts attempts")
-                        return true
-                    case Left(err) =>
-                        if attempts % 10 == 0 then
-                            println(s"[wait] Attempt $attempts: $err")
-                        Thread.sleep(delayMs)
-                        attempts += 1
-                }
-            } catch {
-                case e: Exception =>
-                    if attempts % 10 == 0 then
-                        println(s"[wait] Attempt $attempts exception: ${e.getMessage}")
-                    Thread.sleep(delayMs)
-                    attempts += 1
-            }
-        }
-        println(s"[wait] Tx $txHash NOT confirmed after $maxAttempts attempts")
-        false
     }
 
     /** Fetch raw block headers from regtest via RPC and convert to BlockHeader objects. */
@@ -281,7 +215,14 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
                 case Left(err) => fail(s"Failed to init oracle: $err")
             }
             println(s"[Test] Oracle initialized: $initTxHash")
-            assert(waitForTransaction(yaciCtx.provider, initTxHash), "Init tx not confirmed")
+            val initStatus = yaciCtx.provider
+                .pollForConfirmation(
+                  TransactionHash.fromHex(initTxHash),
+                  maxAttempts = 60,
+                  delayMs = 2000
+                )
+                .await(120.seconds)
+            assert(initStatus == TransactionStatus.Confirmed, "Init tx not confirmed")
             Thread.sleep(2000)
             var currentOracleUtxo = findOracleUtxo(yaciCtx.provider, scriptAddress, scriptHash)
 
@@ -296,7 +237,9 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
             )
             val referenceScriptUtxo: Option[Utxo] = refScriptResult match {
                 case Right((txHash, outputIndex, savedOutput)) =>
-                    waitForTransaction(yaciCtx.provider, txHash, maxAttempts = 30)
+                    yaciCtx.provider
+                        .pollForConfirmation(TransactionHash.fromHex(txHash), maxAttempts = 30)
+                        .await(60.seconds)
                     Thread.sleep(2000)
                     val refInput = TransactionInput(TransactionHash.fromHex(txHash), outputIndex)
                     Some(Utxo(refInput, savedOutput))
@@ -308,10 +251,12 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
             val numBlocksToAdd = 150
             val batchSize = 25 // limited by on-chain execution unit budget (grows with tree size)
             var currentState = initialState
-            var currentMpf = OffChainMPF.empty.insert(initialState.blockHash, initialState.blockHash)
+            var currentMpf =
+                OffChainMPF.empty.insert(initialState.blockHash, initialState.blockHash)
             val firstBatchTime = System.currentTimeMillis()
 
-            val allHeaders = fetchHeadersFromRegtest(rpc, startHeight + 1, startHeight + numBlocksToAdd)
+            val allHeaders =
+                fetchHeadersFromRegtest(rpc, startHeight + 1, startHeight + numBlocksToAdd)
             val batches = allHeaders.grouped(batchSize).toSeq
 
             batches.zipWithIndex.foreach { case (batch, batchIndex) =>
@@ -351,10 +296,16 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
 
                 updateResult match {
                     case Right(txHash) =>
-                        val confirmed = waitForTransaction(yaciCtx.provider, txHash, maxAttempts = 30)
-                        assert(confirmed, s"Update transaction $txHash did not confirm")
+                        val status = yaciCtx.provider
+                            .pollForConfirmation(TransactionHash.fromHex(txHash), maxAttempts = 30)
+                            .await(60.seconds)
+                        assert(
+                          status == TransactionStatus.Confirmed,
+                          s"Update transaction $txHash did not confirm"
+                        )
                         Thread.sleep(2000)
-                        currentOracleUtxo = findOracleUtxo(yaciCtx.provider, scriptAddress, scriptHash)
+                        currentOracleUtxo =
+                            findOracleUtxo(yaciCtx.provider, scriptAddress, scriptHash)
                         val onChainState = currentOracleUtxo.output.inlineDatum.get.to[ChainState]
                         assert(
                           onChainState.blockHeight == newState.blockHeight &&
@@ -445,14 +396,20 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
 
                     result match {
                         case Right(txHash) =>
-                            val confirmed =
-                                waitForTransaction(yaciCtx.provider, txHash, maxAttempts = 30)
-                            assert(confirmed, s"Promotion tx $txHash did not confirm")
+                            val promoteStatus = yaciCtx.provider
+                                .pollForConfirmation(
+                                  TransactionHash.fromHex(txHash),
+                                  maxAttempts = 30
+                                )
+                                .await(60.seconds)
+                            assert(
+                              promoteStatus == TransactionStatus.Confirmed,
+                              s"Promotion tx $txHash did not confirm"
+                            )
                             Thread.sleep(2000)
                             currentOracleUtxo =
                                 findOracleUtxo(yaciCtx.provider, scriptAddress, scriptHash)
-                            currentState =
-                                currentOracleUtxo.output.inlineDatum.get.to[ChainState]
+                            currentState = currentOracleUtxo.output.inlineDatum.get.to[ChainState]
                             currentMpf = mpf
                             totalPromoted += numPromoted
                             println(
@@ -470,9 +427,11 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
             } do ()
 
             // Phase 8: Verify promotion occurred
-            println(s"[Test] Final state: height=${currentState.blockHeight}, " +
-                s"forkTree=${currentState.forkTree.blockCount} blocks, " +
-                s"totalPromoted=$totalPromoted blocks in $promotionRound rounds")
+            println(
+              s"[Test] Final state: height=${currentState.blockHeight}, " +
+                  s"forkTree=${currentState.forkTree.blockCount} blocks, " +
+                  s"totalPromoted=$totalPromoted blocks in $promotionRound rounds"
+            )
 
             assert(
               totalPromoted > 0,
