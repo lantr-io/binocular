@@ -4,6 +4,7 @@ import binocular.*
 import binocular.cli.{Command, CommandHelpers}
 import com.typesafe.scalalogging.LazyLogging
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
+import scalus.cardano.node.TransactionStatus
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 
@@ -87,19 +88,18 @@ case class UpdateOracleCommand(
                                   TransactionHash.fromHex(deployTxHash),
                                   deployOutputIdx
                                 )
-                                CommandHelpers.waitForUtxo(
-                                  setup.provider,
-                                  refInput,
-                                  timeout,
-                                  sleepMs = 2000
-                                ) match {
-                                    case Some(_) =>
-                                        println(s"  Reference script tx confirmed")
-                                    case None =>
-                                        System.err.println(
-                                          s"  Warning: Reference script tx not confirmed after 60s"
-                                        )
-                                }
+                                val refStatus = setup.provider
+                                    .pollForConfirmation(
+                                      TransactionHash.fromHex(deployTxHash),
+                                      delayMs = 2000
+                                    )
+                                    .await(timeout)
+                                if refStatus == TransactionStatus.Confirmed then
+                                    println(s"  Reference script tx confirmed")
+                                else
+                                    System.err.println(
+                                      s"  Warning: Reference script tx not confirmed after 60s"
+                                    )
                                 Some(Utxo(refInput, savedOutput))
                             case Left(err) =>
                                 System.err.println(s"  Failed to deploy reference script: $err")
@@ -421,23 +421,29 @@ case class UpdateOracleCommand(
 
                                 if batchIndex < batches.size - 1 then {
                                     println(s"    Waiting for UTxO to be indexed...")
-                                    val newOracleInput = TransactionInput(
-                                      TransactionHash.fromHex(resultTxHash),
-                                      0
-                                    )
-                                    CommandHelpers.waitForUtxo(
-                                      setup.provider,
-                                      newOracleInput,
-                                      timeout
-                                    ) match {
-                                        case Some(u) =>
-                                            currentOracleUtxo = u
-                                            println(s"    UTxO indexed")
-                                        case None =>
-                                            System.err.println(
-                                              s"    UTxO not available after 30s"
-                                            )
-                                            break(1)
+                                    val txHash = TransactionHash.fromHex(resultTxHash)
+                                    val status = setup.provider
+                                        .pollForConfirmation(txHash)
+                                        .await(timeout)
+                                    if status == TransactionStatus.Confirmed then {
+                                        val newOracleInput = TransactionInput(txHash, 0)
+                                        setup.provider
+                                            .findUtxo(newOracleInput)
+                                            .await(timeout) match {
+                                            case Right(u) =>
+                                                currentOracleUtxo = u
+                                                println(s"    UTxO indexed")
+                                            case Left(_) =>
+                                                System.err.println(
+                                                  s"    UTxO not available after confirmation"
+                                                )
+                                                break(1)
+                                        }
+                                    } else {
+                                        System.err.println(
+                                          s"    UTxO not available after 30s"
+                                        )
+                                        break(1)
                                     }
 
                                     // Wait for wallet UTxOs to be indexed

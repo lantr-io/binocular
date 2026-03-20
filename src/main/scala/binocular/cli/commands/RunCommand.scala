@@ -4,6 +4,7 @@ import binocular.*
 import binocular.cli.{Command, CommandHelpers}
 import com.typesafe.scalalogging.LazyLogging
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
+import scalus.cardano.node.TransactionStatus
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 
@@ -66,7 +67,9 @@ case class RunCommand(utxo: String, dryRun: Boolean = false) extends Command wit
                 case Right((hash, idx, output)) =>
                     logger.info(s"Reference script deployed at $hash:$idx")
                     val refInput = TransactionInput(TransactionHash.fromHex(hash), idx)
-                    CommandHelpers.waitForUtxo(setup.provider, refInput, timeout)
+                    setup.provider
+                        .pollForConfirmation(TransactionHash.fromHex(hash))
+                        .await(timeout)
                     referenceScriptUtxo = Some(Utxo(refInput, output))
                 case Left(err) =>
                     System.err.println(s"Error deploying reference script: $err")
@@ -206,23 +209,25 @@ case class RunCommand(utxo: String, dryRun: Boolean = false) extends Command wit
                               s"Transaction submitted: $resultTxHash (blocks $startHeight-$endHeight)"
                             )
 
-                            val newInput =
-                                TransactionInput(TransactionHash.fromHex(resultTxHash), 0)
-                            CommandHelpers.waitForUtxo(
-                              setup.provider,
-                              newInput,
-                              timeout,
-                              maxAttempts = 60
-                            ) match {
-                                case Some(u) =>
-                                    currentOracleUtxo = u
-                                    currentChainState = newChainState
-                                    currentMpf = updatedMpf
-                                    logger.info("UTxO confirmed")
-                                case None =>
-                                    logger.warn(
-                                      "UTxO not confirmed after 60s, re-reading state..."
-                                    )
+                            val txHash = TransactionHash.fromHex(resultTxHash)
+                            val status = setup.provider
+                                .pollForConfirmation(txHash, maxAttempts = 60)
+                                .await(timeout)
+                            if status == TransactionStatus.Confirmed then {
+                                val newInput = TransactionInput(txHash, 0)
+                                setup.provider.findUtxo(newInput).await(timeout) match {
+                                    case Right(u) =>
+                                        currentOracleUtxo = u
+                                        currentChainState = newChainState
+                                        currentMpf = updatedMpf
+                                        logger.info("UTxO confirmed")
+                                    case Left(_) =>
+                                        logger.warn(
+                                          "UTxO confirmed but not found, re-reading state..."
+                                        )
+                                }
+                            } else {
+                                logger.warn("UTxO not confirmed after 60s, re-reading state...")
                             }
 
                         case Left(err) =>

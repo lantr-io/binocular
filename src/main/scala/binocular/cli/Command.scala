@@ -156,29 +156,6 @@ object CommandHelpers {
         }
     }
 
-    /** Poll for a UTxO to become available on-chain. */
-    def waitForUtxo(
-        provider: BlockchainProvider,
-        input: TransactionInput,
-        timeout: Duration,
-        maxAttempts: Int = 30,
-        sleepMs: Long = 1000
-    )(using ExecutionContext): Option[Utxo] = {
-        var result: Option[Utxo] = None
-        var attempts = 0
-        while result.isEmpty && attempts < maxAttempts do {
-            Thread.sleep(sleepMs)
-            attempts += 1
-            try {
-                provider.findUtxo(input).await(timeout) match {
-                    case Right(u) => result = Some(u)
-                    case Left(_)  =>
-                }
-            } catch { case _: Exception => }
-        }
-        result
-    }
-
     /** Reconstruct off-chain MPF from Bitcoin RPC by re-inserting all confirmed block hashes. */
     def rebuildMpf(
         rpc: SimpleBitcoinRpc,
