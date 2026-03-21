@@ -12,13 +12,36 @@ import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 
 import java.time.Instant
-import scala.concurrent.ExecutionContext
+import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration.*
 import scala.util.{Failure, Success, Try}
 import scalus.utils.await
 
 /** Helper functions for building oracle transactions */
 object OracleTransactions {
+
+    /** Build a transaction that deploys the oracle script to a UTxO as a reference script. */
+    def buildDeployReferenceScript(
+        signer: TransactionSigner,
+        provider: BlockchainProvider,
+        sponsorAddress: Address,
+        destinationAddress: Address,
+        script: Script
+    )(using ExecutionContext): Future[(Transaction, TransactionOutput)] = {
+        val output = TransactionOutput(
+          address = destinationAddress,
+          value = Value.lovelace(50_000_000), // 50 ADA
+          datumOption = None,
+          scriptRef = Some(ScriptRef(script))
+        )
+
+        TxBuilder(provider.cardanoInfo)
+            .output(output)
+            .complete(provider, sponsorAddress)
+            .map { completed =>
+                (completed.sign(signer).transaction, output)
+            }
+    }
 
     /** Deploy the oracle script to a UTxO as a reference script. */
     def deployReferenceScript(
@@ -31,22 +54,22 @@ object OracleTransactions {
     ): Either[String, (String, Int, TransactionOutput)] = {
         given ec: ExecutionContext = provider.executionContext
         Try {
-            val output = TransactionOutput.Babbage(
-              address = destinationAddress,
-              value = Value.lovelace(50_000_000), // 50 ADA
-              datumOption = None,
-              scriptRef = Some(ScriptRef(script))
-            )
+            val (tx, output) = buildDeployReferenceScript(
+              signer,
+              provider,
+              sponsorAddress,
+              destinationAddress,
+              script
+            ).await(timeout)
 
-            val tx = TxBuilder(provider.cardanoInfo)
-                .output(output)
-                .complete(provider, sponsorAddress)
-                .await(timeout)
-                .sign(signer)
-                .transaction
+            // Find actual output index (TxBuilder may reorder outputs)
+            val scriptRefIdx = tx.body.value.outputs.indexWhere { sized =>
+                sized.value.scriptRef.isDefined
+            }
+            val actualIdx = if scriptRefIdx >= 0 then scriptRefIdx else 0
 
             submitTx(provider, tx, timeout) match {
-                case Right(txHash) => Right((txHash, 0, output))
+                case Right(txHash) => Right((txHash, actualIdx, output))
                 case Left(err)     => Left(err)
             }
         } match {
@@ -200,12 +223,48 @@ object OracleTransactions {
         (newState, mpfProofs, mpf)
     }
 
-    /** Build and submit initialization transaction.
+    /** Build the initialization transaction.
       *
       * Mints the oracle NFT (one-shot policy) and sends it to the script address with the initial
       * ChainState as inline datum. The one-shot UTxO (from params.oneShotTxOutRef) must be
       * consumed.
       */
+    def buildInitTransaction(
+        signer: TransactionSigner,
+        provider: BlockchainProvider,
+        scriptAddress: Address,
+        sponsorAddress: Address,
+        initialState: ChainState,
+        script: Script.PlutusV3,
+        oneShotUtxo: Utxo,
+        referenceScriptUtxo: Utxo,
+        lovelaceAmount: Long = 5_000_000L
+    )(using ExecutionContext): Future[Transaction] = {
+        val policyId = script.scriptHash
+        val nftValue =
+            Value.lovelace(lovelaceAmount) + Value.asset(policyId, AssetName.empty, 1L)
+
+        // Mint redeemer: output index of the oracle output in the final transaction.
+        // The minting policy validates that the NFT goes to the script address at this index.
+        val mintRedeemer: Transaction => Data = { tx =>
+            val idx = tx.body.value.outputs.indexWhere { sized =>
+                sized.value.value.hasAsset(policyId, AssetName.empty)
+            }
+            Data.I(idx)
+        }
+
+        val mintAssets = Map(AssetName.empty -> 1L)
+
+        TxBuilder(provider.cardanoInfo)
+            .spend(oneShotUtxo) // consume one-shot UTxO for NFT policy
+            .references(referenceScriptUtxo)
+            .mint(policyId, mintAssets, mintRedeemer)
+            .payTo(scriptAddress, nftValue, initialState)
+            .complete(provider, sponsorAddress)
+            .map(_.sign(signer).transaction)
+    }
+
+    /** Build and submit initialization transaction. */
     def buildAndSubmitInitTransaction(
         signer: TransactionSigner,
         provider: BlockchainProvider,
@@ -214,34 +273,23 @@ object OracleTransactions {
         initialState: ChainState,
         script: Script.PlutusV3,
         oneShotUtxo: Utxo,
+        referenceScriptUtxo: Utxo,
         lovelaceAmount: Long = 5_000_000L,
         timeout: Duration = 120.seconds
     ): Either[String, String] = {
         given ec: ExecutionContext = provider.executionContext
         Try {
-            val policyId = script.scriptHash
-            val nftValue =
-                Value.lovelace(lovelaceAmount) + Value.asset(policyId, AssetName.empty, 1L)
-
-            // Mint redeemer: output index of the oracle output in the final transaction.
-            // The minting policy validates that the NFT goes to the script address at this index.
-            val mintRedeemer: Transaction => Data = { tx =>
-                val idx = tx.body.value.outputs.indexWhere { sized =>
-                    sized.value.value.hasAsset(policyId, AssetName.empty)
-                }
-                Data.I(idx)
-            }
-
-            val mintAssets = Map(AssetName.empty -> 1L)
-
-            val tx = TxBuilder(provider.cardanoInfo)
-                .spend(oneShotUtxo) // consume one-shot UTxO for NFT policy
-                .mint(script, mintAssets, mintRedeemer)
-                .payTo(scriptAddress, nftValue, initialState)
-                .complete(provider, sponsorAddress)
-                .await(timeout)
-                .sign(signer)
-                .transaction
+            val tx = buildInitTransaction(
+              signer,
+              provider,
+              scriptAddress,
+              sponsorAddress,
+              initialState,
+              script,
+              oneShotUtxo,
+              referenceScriptUtxo,
+              lovelaceAmount
+            ).await(timeout)
 
             submitTx(provider, tx, timeout)
         } match {
@@ -252,6 +300,78 @@ object OracleTransactions {
                   s"Error building transaction: ${ex.getMessage}\nCause: ${Option(ex.getCause).map(_.getMessage).getOrElse("none")}"
                 )
         }
+    }
+
+    /** Build an UpdateOracle transaction. */
+    def buildUpdateTransaction(
+        signer: TransactionSigner,
+        provider: BlockchainProvider,
+        scriptAddress: Address,
+        sponsorAddress: Address,
+        oracleUtxo: Utxo,
+        currentChainState: ChainState,
+        newChainState: ChainState,
+        blockHeaders: ScalusList[BlockHeader],
+        parentPath: ScalusList[BigInt],
+        validityIntervalTimeSeconds: BigInt,
+        script: Script.PlutusV3,
+        referenceScriptUtxo: Option[Utxo] = None,
+        mpfInsertProofs: ScalusList[ScalusList[ProofStep]] = ScalusList.Nil
+    )(using ExecutionContext): Future[Transaction] = {
+        // Verify that the input UTxO's datum matches currentChainState
+        val inputData = oracleUtxo.output.requireInlineDatum
+        val inputState = inputData.to[ChainState]
+
+        if inputState.ctx.height != currentChainState.ctx.height ||
+            inputState.ctx.lastBlockHash != currentChainState.ctx.lastBlockHash
+        then {
+            throw new RuntimeException(
+              s"Input UTxO state does not match provided currentChainState!\n" +
+                  s"  Provided currentChainState: height=${currentChainState.ctx.height}, hash=${currentChainState.ctx.lastBlockHash.toHex}\n" +
+                  s"  Input UTxO state: height=${inputState.ctx.height}, hash=${inputState.ctx.lastBlockHash.toHex}"
+            )
+        }
+
+        val cardanoInfo = provider.cardanoInfo
+
+        // Compute validity interval time from current time
+        val (validityInstant, validatorWillSeeTime) =
+            computeValidityIntervalTime(
+              cardanoInfo,
+              Some(validityIntervalTimeSeconds)
+            )
+
+        // Create UpdateOracle redeemer
+        val redeemer = UpdateOracle(blockHeaders, parentPath, mpfInsertProofs)
+
+        // Build the transaction
+        var builder = TxBuilder(cardanoInfo)
+
+        // Check if reference script UTxO actually contains the script
+        val useRefScript = referenceScriptUtxo.exists(_.output.scriptRef.isDefined)
+
+        // Add reference script if available and valid
+        if useRefScript then {
+            builder = builder.references(referenceScriptUtxo.get)
+        }
+
+        // Spend oracle UTxO with redeemer
+        builder = if useRefScript then {
+            builder.spend(oracleUtxo, redeemer)
+        } else {
+            builder.spend(oracleUtxo, redeemer, script)
+        }
+
+        // Output new state with same value
+        // Validator requires finite validity interval <= MaxValidityWindow (10 min)
+        val validToInstant =
+            validityInstant.plusMillis(BitcoinValidator.MaxValidityWindow.toLong)
+        builder = builder
+            .payTo(scriptAddress, oracleUtxo.output.value, newChainState)
+            .validFrom(validityInstant)
+            .validTo(validToInstant)
+
+        builder.complete(provider, sponsorAddress).map(_.sign(signer).transaction)
     }
 
     /** Build and submit UpdateOracle transaction */
@@ -273,61 +393,21 @@ object OracleTransactions {
     ): Either[String, String] = {
         given ec: ExecutionContext = provider.executionContext
         Try {
-            // Verify that the input UTxO's datum matches currentChainState
-            val inputData = oracleUtxo.output.requireInlineDatum
-            val inputState = inputData.to[ChainState]
-
-            if inputState.ctx.height != currentChainState.ctx.height ||
-                inputState.ctx.lastBlockHash != currentChainState.ctx.lastBlockHash
-            then {
-                throw new RuntimeException(
-                  s"Input UTxO state does not match provided currentChainState!\n" +
-                      s"  Provided currentChainState: height=${currentChainState.ctx.height}, hash=${currentChainState.ctx.lastBlockHash.toHex}\n" +
-                      s"  Input UTxO state: height=${inputState.ctx.height}, hash=${inputState.ctx.lastBlockHash.toHex}"
-                )
-            }
-
-            val cardanoInfo = provider.cardanoInfo
-
-            // Compute validity interval time from current time
-            val (validityInstant, validatorWillSeeTime) =
-                computeValidityIntervalTime(
-                  cardanoInfo,
-                  Some(validityIntervalTimeSeconds)
-                )
-
-            // Create UpdateOracle redeemer
-            val redeemer = UpdateOracle(blockHeaders, parentPath, mpfInsertProofs)
-
-            // Build the transaction
-            var builder = TxBuilder(cardanoInfo)
-
-            // Check if reference script UTxO actually contains the script
-            val useRefScript = referenceScriptUtxo.exists(_.output.scriptRef.isDefined)
-
-            // Add reference script if available and valid
-            if useRefScript then {
-                builder = builder.references(referenceScriptUtxo.get)
-            }
-
-            // Spend oracle UTxO with redeemer
-            builder = if useRefScript then {
-                builder.spend(oracleUtxo, redeemer)
-            } else {
-                builder.spend(oracleUtxo, redeemer, script)
-            }
-
-            // Output new state with same value
-            // Validator requires finite validity interval <= MaxValidityWindow (10 min)
-            val validToInstant =
-                validityInstant.plusMillis(BitcoinValidator.MaxValidityWindow.toLong)
-            builder = builder
-                .payTo(scriptAddress, oracleUtxo.output.value, newChainState)
-                .validFrom(validityInstant)
-                .validTo(validToInstant)
-
-            val completedBuilder = builder.complete(provider, sponsorAddress).await(timeout)
-            val tx = completedBuilder.sign(signer).transaction
+            val tx = buildUpdateTransaction(
+              signer,
+              provider,
+              scriptAddress,
+              sponsorAddress,
+              oracleUtxo,
+              currentChainState,
+              newChainState,
+              blockHeaders,
+              parentPath,
+              validityIntervalTimeSeconds,
+              script,
+              referenceScriptUtxo,
+              mpfInsertProofs
+            ).await(timeout)
 
             submitTx(provider, tx, timeout)
         } match {
@@ -337,6 +417,50 @@ object OracleTransactions {
                   s"Error building UpdateOracle transaction: ${ex.getMessage}\n${ex.getStackTrace.take(5).mkString("\n")}"
                 )
         }
+    }
+
+    /** Build a CloseOracle transaction to close a stale oracle and burn the NFT. */
+    def buildCloseTransaction(
+        signer: TransactionSigner,
+        provider: BlockchainProvider,
+        scriptAddress: Address,
+        sponsorAddress: Address,
+        oracleUtxo: Utxo,
+        script: Script.PlutusV3,
+        referenceScriptUtxo: Option[Utxo] = None
+    )(using ExecutionContext): Future[Transaction] = {
+        val cardanoInfo = provider.cardanoInfo
+
+        val (validityInstant, _) =
+            computeValidityIntervalTime(cardanoInfo)
+
+        val redeemer = OracleAction.CloseOracle
+
+        var builder = TxBuilder(cardanoInfo)
+
+        val useRefScript = referenceScriptUtxo.exists(_.output.scriptRef.isDefined)
+        if useRefScript then {
+            builder = builder.references(referenceScriptUtxo.get)
+        }
+
+        builder = if useRefScript then {
+            builder.spend(oracleUtxo, redeemer)
+        } else {
+            builder.spend(oracleUtxo, redeemer, script)
+        }
+
+        // Burn the NFT (quantity -1)
+        val burnAssets = Map(scalus.cardano.ledger.AssetName.empty -> -1L)
+        builder = builder.mint(script, burnAssets, redeemer)
+
+        val validToInstant =
+            validityInstant.plusMillis(BitcoinValidator.MaxValidityWindow.toLong)
+        builder = builder
+            .payTo(sponsorAddress, Value(oracleUtxo.output.value.coin))
+            .validFrom(validityInstant)
+            .validTo(validToInstant)
+
+        builder.complete(provider, sponsorAddress).map(_.sign(signer).transaction)
     }
 
     /** Build and submit CloseOracle transaction to close a stale oracle and burn the NFT. */
@@ -352,39 +476,15 @@ object OracleTransactions {
     ): Either[String, String] = {
         given ec: ExecutionContext = provider.executionContext
         Try {
-            val cardanoInfo = provider.cardanoInfo
-
-            val (validityInstant, _) =
-                computeValidityIntervalTime(cardanoInfo)
-
-            val redeemer = OracleAction.CloseOracle
-
-            var builder = TxBuilder(cardanoInfo)
-
-            val useRefScript = referenceScriptUtxo.exists(_.output.scriptRef.isDefined)
-            if useRefScript then {
-                builder = builder.references(referenceScriptUtxo.get)
-            }
-
-            builder = if useRefScript then {
-                builder.spend(oracleUtxo, redeemer)
-            } else {
-                builder.spend(oracleUtxo, redeemer, script)
-            }
-
-            // Burn the NFT (quantity -1)
-            val burnAssets = Map(scalus.cardano.ledger.AssetName.empty -> -1L)
-            builder = builder.mint(script, burnAssets, redeemer)
-
-            val validToInstant =
-                validityInstant.plusMillis(BitcoinValidator.MaxValidityWindow.toLong)
-            builder = builder
-                .payTo(sponsorAddress, Value(oracleUtxo.output.value.coin))
-                .validFrom(validityInstant)
-                .validTo(validToInstant)
-
-            val completedBuilder = builder.complete(provider, sponsorAddress).await(timeout)
-            val tx = completedBuilder.sign(signer).transaction
+            val tx = buildCloseTransaction(
+              signer,
+              provider,
+              scriptAddress,
+              sponsorAddress,
+              oracleUtxo,
+              script,
+              referenceScriptUtxo
+            ).await(timeout)
 
             submitTx(provider, tx, timeout)
         } match {
@@ -408,5 +508,22 @@ object OracleTransactions {
             case Left(err)     => Left(s"Submission failed: $err")
             case Right(txHash) => Right(txHash.toHex)
         }
+    }
+
+    /** Wait for a UTxO to appear on-chain by polling the provider. */
+    def waitForUtxo(
+        provider: BlockchainProvider,
+        input: scalus.cardano.ledger.TransactionInput,
+        timeout: Duration = 120.seconds,
+        pollInterval: Duration = 1.second
+    )(using ExecutionContext): Either[String, Utxo] = {
+        val deadline = System.currentTimeMillis() + timeout.toMillis
+        while System.currentTimeMillis() < deadline do {
+            provider.findUtxo(input).await(30.seconds) match {
+                case Right(utxo) => return Right(utxo)
+                case Left(_)     => Thread.sleep(pollInterval.toMillis)
+            }
+        }
+        Left(s"Timeout waiting for UTxO ${input.transactionId.toHex}#${input.index}")
     }
 }
