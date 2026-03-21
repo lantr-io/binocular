@@ -1,8 +1,8 @@
 package binocular.cli.commands
 
-import binocular.{reverse, BinocularConfig, ChainState, MerkleTree, SimpleBitcoinRpc}
+import binocular.{reverse, BinocularConfig, BitcoinContract, ChainState, MerkleTree, SimpleBitcoinRpc}
 import binocular.cli.{Command, CommandHelpers}
-import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
+import scalus.cardano.ledger.Utxo
 import scalus.uplc.builtin.ByteString
 
 import scala.concurrent.ExecutionContext
@@ -11,7 +11,6 @@ import scalus.utils.await
 
 /** Prove Bitcoin transaction inclusion via oracle */
 case class ProveTransactionCommand(
-    utxo: String,
     btcTxId: String,
     blockHash: Option[String] = None,
     txIndex: Option[Int] = None,
@@ -24,7 +23,6 @@ case class ProveTransactionCommand(
 
     override def execute(config: BinocularConfig): Int = {
         println(s"Proving Bitcoin transaction inclusion...")
-        println(s"  Oracle UTxO: $utxo")
         println(s"  Bitcoin TX: $btcTxId")
         blockHash.foreach(h => println(s"  Block Hash: $h"))
         txIndex.foreach(i => println(s"  TX Index: $i"))
@@ -65,25 +63,26 @@ case class ProveTransactionCommand(
             return 1
         }
 
-        CommandHelpers.parseUtxo(utxo) match {
-            case Left(err) =>
-                System.err.println(s"Error: $err")
-                return 1
-            case Right((oracleTxHash, oracleOutputIndex)) =>
-                if isOfflineMode then
-                    proveTransactionOffline(oracleTxHash, oracleOutputIndex, config)
-                else proveTransactionOnline(oracleTxHash, oracleOutputIndex, config)
-        }
+        if isOfflineMode then proveTransactionOffline(config)
+        else proveTransactionOnline(config)
     }
 
     private def fetchOracleUtxo(
-        oracleTxHash: String,
-        oracleOutputIndex: Int,
         config: BinocularConfig
     ): Either[Int, (scalus.cardano.node.BlockchainProvider, Utxo, ChainState)] = {
         val cardanoConf = config.cardano
+        val oracleConf = config.oracle
 
         given ec: ExecutionContext = ExecutionContext.global
+
+        val params = oracleConf.toBitcoinValidatorParams() match {
+            case Right(p) => p
+            case Left(err) =>
+                System.err.println(s"Error deriving params: $err")
+                return Left(1)
+        }
+
+        val script = BitcoinContract.makeContract(params).script
 
         val provider = cardanoConf.createBlockchainProvider() match {
             case Right(p) => p
@@ -92,18 +91,16 @@ case class ProveTransactionCommand(
                 return Left(1)
         }
 
-        val input =
-            TransactionInput(TransactionHash.fromHex(oracleTxHash), oracleOutputIndex)
-        val utxoResult = provider.findUtxo(input).await(30.seconds)
-
-        val utxo = utxoResult match {
-            case Right(u) => u
-            case Left(_) =>
-                System.err.println(
-                  s"Oracle UTxO not found: $oracleTxHash:$oracleOutputIndex"
-                )
-                return Left(1)
-        }
+        val utxo =
+            try {
+                CommandHelpers
+                    .findOracleUtxo(provider, script.scriptHash)
+                    .await(30.seconds)
+            } catch {
+                case e: Exception =>
+                    System.err.println(s"Error: ${e.getMessage}")
+                    return Left(1)
+            }
 
         val chainState =
             try {
@@ -119,8 +116,6 @@ case class ProveTransactionCommand(
     }
 
     private def proveTransactionOffline(
-        oracleTxHash: String,
-        oracleOutputIndex: Int,
         config: BinocularConfig
     ): Int = {
         val targetBlockHash = blockHash.get
@@ -150,10 +145,13 @@ case class ProveTransactionCommand(
 
         println("Step 1: Loading Cardano configuration...")
 
-        fetchOracleUtxo(oracleTxHash, oracleOutputIndex, config) match {
+        fetchOracleUtxo(config) match {
             case Left(exitCode) => exitCode
-            case Right((_, _, chainState)) =>
+            case Right((_, oracleUtxo, chainState)) =>
+                val oracleRef =
+                    s"${oracleUtxo.input.transactionId.toHex}:${oracleUtxo.input.index}"
                 println(s"Oracle state:")
+                println(s"  Oracle UTxO: $oracleRef")
                 println(s"  Block Height: ${chainState.blockHeight}")
                 println(s"  Block Hash: ${chainState.blockHash.toHex}")
 
@@ -202,30 +200,21 @@ case class ProveTransactionCommand(
     }
 
     private def proveTransactionOnline(
-        oracleTxHash: String,
-        oracleOutputIndex: Int,
         config: BinocularConfig
     ): Int = {
         val btcConf = config.bitcoinNode
-        val oracleConf = config.oracle
-        val cardanoConf = config.cardano
-
-        val oracleScriptAddress = oracleConf.scriptAddress(cardanoConf.cardanoNetwork) match {
-            case Right(addr) => addr
-            case Left(err) =>
-                System.err.println(s"Error deriving script address: $err")
-                return 1
-        }
 
         println("Step 1: Loading configurations...")
         println(s"  Bitcoin Node: ${btcConf.url}")
 
-        fetchOracleUtxo(oracleTxHash, oracleOutputIndex, config) match {
+        fetchOracleUtxo(config) match {
             case Left(exitCode) => exitCode
-            case Right((_, _, chainState)) =>
-                println(s"  Oracle Address: $oracleScriptAddress")
+            case Right((_, oracleUtxo, chainState)) =>
+                val oracleRef =
+                    s"${oracleUtxo.input.transactionId.toHex}:${oracleUtxo.input.index}"
                 println()
                 println(s"Oracle state:")
+                println(s"  Oracle UTxO: $oracleRef")
                 println(s"  Block Height: ${chainState.blockHeight}")
                 println(s"  Block Hash: ${chainState.blockHash.toHex}")
 
@@ -406,7 +395,7 @@ case class ProveTransactionCommand(
                 confirmations.foreach(c => println(s"Confirmations: $c"))
                 println()
                 println("--- Oracle State ---")
-                println(s"Oracle UTxO: $oracleTxHash:$oracleOutputIndex")
+                println(s"Oracle UTxO: $oracleRef")
                 println(s"Oracle Height: ${chainState.blockHeight}")
                 println(s"Confirmed Blocks Root: ${chainState.confirmedBlocksRoot.toHex}")
                 println()

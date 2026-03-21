@@ -17,14 +17,13 @@ object CliApp {
         case Blueprint
         case Info
         case ListOracles(limit: Int)
-        case VerifyOracle(utxo: String)
+        case VerifyOracle
         case Init(startBlock: Option[Long], dryRun: Boolean)
-        case UpdateOracle(utxo: String, fromBlock: Option[Long], toBlock: Option[Long])
-        case Run(utxo: String, dryRun: Boolean)
-        case Close(utxo: String)
+        case UpdateOracle(fromBlock: Option[Long], toBlock: Option[Long])
+        case Run(dryRun: Boolean)
+        case Close
         case DeployScript
         case ProveTransaction(
-            utxo: String,
             btcTxId: String,
             blockHash: Option[String],
             txIndex: Option[Int],
@@ -38,8 +37,6 @@ object CliApp {
         val limitOpt: Opts[Int] = Opts
             .option[Int]("limit", help = "Maximum number of results to return", short = "n")
             .withDefault(10)
-
-        val utxoArg: Opts[String] = Opts.argument[String](metavar = "UTXO")
 
         val startBlockOpt: Opts[Option[Long]] = Opts
             .option[Long]("start-block", help = "Bitcoin block height to start from", short = "s")
@@ -106,7 +103,7 @@ object CliApp {
         }
 
         val verifyCommand = Opts.subcommand("verify-oracle", "Verify oracle state") {
-            utxoArg.map(Cmd.VerifyOracle.apply)
+            Opts(Cmd.VerifyOracle)
         }
 
         val initCommand = Opts.subcommand("init", "Initialize new oracle") {
@@ -114,16 +111,16 @@ object CliApp {
         }
 
         val updateCommand = Opts.subcommand("update-oracle", "Update oracle with new blocks") {
-            (utxoArg, fromBlockOpt, toBlockOpt).mapN(Cmd.UpdateOracle.apply)
+            (fromBlockOpt, toBlockOpt).mapN(Cmd.UpdateOracle.apply)
         }
 
         val runCommand =
             Opts.subcommand("run", "Continuous daemon: submit oracle updates in a loop") {
-                (utxoArg, dryRunFlag).mapN(Cmd.Run.apply)
+                dryRunFlag.map(Cmd.Run.apply)
             }
 
         val closeCommand = Opts.subcommand("close", "Close oracle, burn NFT") {
-            utxoArg.map(Cmd.Close.apply)
+            Opts(Cmd.Close)
         }
 
         val deployScriptCommand =
@@ -133,7 +130,7 @@ object CliApp {
 
         val proveCommand =
             Opts.subcommand("prove-transaction", "Prove Bitcoin transaction inclusion") {
-                (utxoArg, btcTxIdArg, blockHashOpt, txIndexOpt, proofOpt, merkleRootOpt).mapN(
+                (btcTxIdArg, blockHashOpt, txIndexOpt, proofOpt, merkleRootOpt).mapN(
                   Cmd.ProveTransaction.apply
                 )
             }
@@ -181,20 +178,19 @@ object CliApp {
                             InfoCommand()
                         case Cmd.ListOracles(limit) =>
                             ListOraclesCommand(limit)
-                        case Cmd.VerifyOracle(utxo) =>
-                            VerifyOracleCommand(utxo)
+                        case Cmd.VerifyOracle =>
+                            VerifyOracleCommand()
                         case Cmd.Init(startBlock, dryRun) =>
                             InitOracleCommand(startBlock, dryRun)
-                        case Cmd.UpdateOracle(utxo, from, to) =>
-                            UpdateOracleCommand(utxo, from, to)
-                        case Cmd.Run(utxo, dryRun) =>
-                            RunCommand(utxo, dryRun)
-                        case Cmd.Close(utxo) =>
-                            CloseCommand(utxo)
+                        case Cmd.UpdateOracle(from, to) =>
+                            UpdateOracleCommand(from, to)
+                        case Cmd.Run(dryRun) =>
+                            RunCommand(dryRun)
+                        case Cmd.Close =>
+                            CloseCommand()
                         case Cmd.DeployScript =>
                             DeployScriptCommand()
                         case Cmd.ProveTransaction(
-                              utxo,
                               btcTxId,
                               blockHash,
                               txIndex,
@@ -202,7 +198,6 @@ object CliApp {
                               merkleRoot
                             ) =>
                             ProveTransactionCommand(
-                              utxo,
                               btcTxId,
                               blockHash,
                               txIndex,

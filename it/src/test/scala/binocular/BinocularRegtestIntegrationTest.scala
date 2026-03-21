@@ -224,7 +224,7 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit with O
                 .await(120.seconds)
             assert(initStatus == TransactionStatus.Confirmed, "Init tx not confirmed")
             Thread.sleep(2000)
-            var currentOracleUtxo = findOracleUtxo(yaciCtx.provider, scriptAddress, scriptHash)
+            var currentOracleUtxo = findOracleUtxo(yaciCtx.provider, scriptHash)
 
             // Phase 4: Deploy reference script
             println(s"[Test] Deploying reference script")
@@ -305,7 +305,7 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit with O
                         )
                         Thread.sleep(2000)
                         currentOracleUtxo =
-                            findOracleUtxo(yaciCtx.provider, scriptAddress, scriptHash)
+                            findOracleUtxo(yaciCtx.provider, scriptHash)
                         val onChainState = currentOracleUtxo.output.inlineDatum.get.to[ChainState]
                         assert(
                           onChainState.blockHeight == newState.blockHeight &&
@@ -408,7 +408,7 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit with O
                             )
                             Thread.sleep(2000)
                             currentOracleUtxo =
-                                findOracleUtxo(yaciCtx.provider, scriptAddress, scriptHash)
+                                findOracleUtxo(yaciCtx.provider, scriptHash)
                             currentState = currentOracleUtxo.output.inlineDatum.get.to[ChainState]
                             currentMpf = mpf
                             totalPromoted += numPromoted

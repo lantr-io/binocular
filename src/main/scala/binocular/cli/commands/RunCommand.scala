@@ -10,29 +10,22 @@ import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration.*
-import scala.util.boundary, boundary.break
+import scala.util.boundary
+import boundary.break
 import scalus.utils.await
 
 /** Continuous daemon: read oracle state, submit updates in a loop */
-case class RunCommand(utxo: String, dryRun: Boolean = false) extends Command with LazyLogging {
+case class RunCommand(dryRun: Boolean = false) extends Command with LazyLogging {
 
     override def execute(config: BinocularConfig): Int = {
         if dryRun then println("Running in dry-run mode (will compute one update and exit)")
         else println("Starting oracle update daemon...")
         println()
 
-        CommandHelpers.parseUtxo(utxo) match {
-            case Left(err) =>
-                System.err.println(s"Error: $err")
-                1
-            case Right((txHash, outputIndex)) =>
-                runDaemon(txHash, outputIndex, config)
-        }
+        runDaemon(config)
     }
 
     private def runDaemon(
-        initialTxHash: String,
-        initialOutputIndex: Int,
         config: BinocularConfig
     ): Int = boundary {
         given ec: ExecutionContext = ExecutionContext.global
@@ -77,19 +70,17 @@ case class RunCommand(utxo: String, dryRun: Boolean = false) extends Command wit
             }
         }
 
-        // Fetch initial oracle UTxO and parse state
-        val initialInput = TransactionInput(
-          TransactionHash.fromHex(initialTxHash),
-          initialOutputIndex
-        )
-        var currentOracleUtxo: Utxo = setup.provider.findUtxo(initialInput).await(timeout) match {
-            case Right(u) => u
-            case Left(_) =>
-                System.err.println(
-                  s"Error: Oracle UTxO not found at $initialTxHash:$initialOutputIndex"
-                )
-                break(1)
-        }
+        // Find oracle UTxO by NFT
+        var currentOracleUtxo: Utxo =
+            try {
+                CommandHelpers
+                    .findOracleUtxo(setup.provider, setup.script.scriptHash)
+                    .await(timeout)
+            } catch {
+                case e: Exception =>
+                    System.err.println(s"Error: ${e.getMessage}")
+                    break(1)
+            }
 
         var currentChainState: ChainState =
             try {

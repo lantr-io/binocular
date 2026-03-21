@@ -2,7 +2,7 @@ package binocular.cli.commands
 
 import binocular.*
 import binocular.cli.{Command, CommandHelpers}
-import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
+import scalus.cardano.ledger.Utxo
 import scalus.uplc.builtin.Data.fromData
 
 import scala.concurrent.ExecutionContext
@@ -11,66 +11,45 @@ import scala.util.{Failure, Success, Try}
 import scalus.utils.await
 
 /** Verify oracle UTxO and validate state */
-case class VerifyOracleCommand(utxo: String) extends Command {
+case class VerifyOracleCommand() extends Command {
 
     override def execute(config: BinocularConfig): Int = {
-        println(s"Verifying oracle at $utxo...")
+        println(s"Verifying oracle...")
         println()
 
-        CommandHelpers.parseUtxo(utxo) match {
-            case Left(err) =>
-                System.err.println(s"Error: $err")
-                return 1
-            case Right((txHash, outputIndex)) =>
-                verifyOracle(txHash, outputIndex, config)
-        }
+        verifyOracle(config)
     }
 
-    private def verifyOracle(txHash: String, outputIndex: Int, config: BinocularConfig): Int = {
+    private def verifyOracle(config: BinocularConfig): Int = {
         val cardanoConf = config.cardano
         val oracleConf = config.oracle
 
-        val oracleScriptAddress = oracleConf.scriptAddress(cardanoConf.cardanoNetwork) match {
-            case Right(addr) => addr
+        val params = oracleConf.toBitcoinValidatorParams() match {
+            case Right(p) => p
             case Left(err) =>
-                System.err.println(s"Error deriving script address: $err")
+                System.err.println(s"Error deriving params: $err")
                 return 1
         }
+
+        val script = BitcoinContract.makeContract(params).script
 
         given ec: ExecutionContext = ExecutionContext.global
 
         cardanoConf.createBlockchainProvider() match {
             case Right(provider) =>
                 try {
-                    val input =
-                        TransactionInput(TransactionHash.fromHex(txHash), outputIndex)
-                    val utxoResult =
-                        provider.findUtxo(input).await(30.seconds)
+                    val foundUtxo: Utxo = CommandHelpers
+                        .findOracleUtxo(provider, script.scriptHash)
+                        .await(30.seconds)
 
-                    val foundUtxo: Utxo = utxoResult match {
-                        case Right(u) => u
-                        case Left(_) =>
-                            System.err.println(
-                              s"Error: UTxO not found at $txHash:$outputIndex"
-                            )
-                            return 1
-                    }
-
-                    println(s"UTxO found")
+                    val oracleRef =
+                        s"${foundUtxo.input.transactionId.toHex}:${foundUtxo.input.index}"
+                    println(s"Oracle UTxO found: $oracleRef")
                     val addr = foundUtxo.output.address.encode.getOrElse("?")
                     println(s"  Address: $addr")
 
                     val lovelace = foundUtxo.output.value.coin.value
                     println(s"  Lovelace: $lovelace")
-
-                    if addr != oracleScriptAddress then {
-                        println()
-                        println(s"Warning: UTxO is not at the oracle script address")
-                        println(s"  Expected: $oracleScriptAddress")
-                        println(s"  Found:    $addr")
-                    } else {
-                        println(s"UTxO is at correct oracle script address")
-                    }
 
                     foundUtxo.output.inlineDatum match {
                         case Some(data) =>

@@ -1,7 +1,8 @@
 package binocular
 
+import binocular.cli.CommandHelpers
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{AssetName, ScriptHash, Utxo}
+import scalus.cardano.ledger.{ScriptHash, Utxo}
 import scalus.cardano.node.BlockchainProvider
 import scalus.utils.await
 
@@ -22,16 +23,9 @@ trait OracleTestHelpers {
 
     protected def findOracleUtxo(
         provider: BlockchainProvider,
-        scriptAddress: Address,
         nftPolicyId: ScriptHash
     ): Utxo = {
-        val utxos = getUtxos(provider, scriptAddress)
-        utxos
-            .find(u => u.output.value.hasAsset(nftPolicyId, AssetName.empty))
-            .getOrElse {
-                throw new RuntimeException(
-                  s"No oracle UTxO with NFT $nftPolicyId found at $scriptAddress"
-                )
-            }
+        given ExecutionContext = provider.executionContext
+        CommandHelpers.findOracleUtxo(provider, nftPolicyId).await(30.seconds)
     }
 }

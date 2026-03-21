@@ -227,7 +227,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit with OracleTe
                 )
                 Thread.sleep(2000)
 
-                val newOracleUtxo = findOracleUtxo(ctx.provider, scriptAddress, script.scriptHash)
+                val newOracleUtxo = findOracleUtxo(ctx.provider, script.scriptHash)
                 val onChainState = newOracleUtxo.output.inlineDatum.get.to[ChainState]
 
                 assert(
@@ -298,7 +298,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit with OracleTe
             .await(60.seconds)
         Thread.sleep(2000)
 
-        val oracleUtxo = findOracleUtxo(ctx.provider, scriptAddress, scriptHash)
+        val oracleUtxo = findOracleUtxo(ctx.provider, scriptHash)
         (oracleUtxo, script, scriptAddress, params)
     }
 

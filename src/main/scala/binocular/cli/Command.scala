@@ -2,7 +2,7 @@ package binocular.cli
 
 import binocular.*
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
+import scalus.cardano.ledger.{AssetName, ScriptHash, TransactionHash, TransactionInput, Utxo, Value}
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.txbuilder.TransactionSigner
 import scalus.cardano.wallet.hd.HdAccount
@@ -103,6 +103,26 @@ object CommandHelpers {
     /** Filter list of UTxOs to only valid oracle UTxOs */
     def filterValidOracleUtxos(utxos: List[Utxo]): List[ValidOracleUtxo] =
         utxos.flatMap(tryValidateOracleUtxo)
+
+    /** Find the oracle UTxO by looking for the NFT with the given policy ID.
+      *
+      * The NFT policy ID equals the script hash. Returns a failed Future if zero or multiple found.
+      */
+    def findOracleUtxo(
+        provider: BlockchainProvider,
+        nftPolicyId: ScriptHash
+    )(using ExecutionContext): Future[Utxo] = {
+        provider
+            .queryUtxos(_.output.value.hasAsset(nftPolicyId, AssetName.empty))
+            .execute()
+            .flatMap {
+                case Left(err) =>
+                    Future.failed(new RuntimeException(s"Error fetching UTxOs: $err"))
+                case Right(utxos) =>
+                    assert(utxos.size == 1)
+                    Future.successful(Utxo(utxos.head))
+            }
+    }
 
     /** Set up all the common oracle infrastructure (params, wallet, provider, script).
       *
