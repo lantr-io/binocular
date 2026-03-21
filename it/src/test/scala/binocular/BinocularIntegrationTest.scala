@@ -3,7 +3,7 @@ package binocular
 import binocular.cli.CommandHelpers
 import org.scalatest.funsuite.AnyFunSuite
 import scalus.cardano.address.{Address, Network}
-import scalus.cardano.ledger.*
+import scalus.cardano.ledger.{BlockHeader as _, *}
 import scalus.cardano.node.TransactionStatus
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
