@@ -2,7 +2,7 @@ package binocular
 
 import binocular.util.SlotConfigHelper
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{AssetName, CardanoInfo, PlutusScript, Script, ScriptHash, ScriptRef, Transaction, TransactionOutput, Utxo, Utxos, Value}
+import scalus.cardano.ledger.{AssetName, CardanoInfo, Coin, PlutusScript, Script, ScriptHash, ScriptRef, Transaction, TransactionOutput, Utxo, Utxos, Value}
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}
 import scalus.uplc.builtin.Data
@@ -15,7 +15,7 @@ import java.time.Instant
 import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration.*
 import scala.util.{Failure, Success, Try}
-import scalus.utils.await
+import scalus.utils.{await, showDetailedHighlighted, showHighlighted}
 
 /** Helper functions for building oracle transactions */
 object OracleTransactions {
@@ -227,7 +227,7 @@ object OracleTransactions {
       *
       * Mints the oracle NFT (one-shot policy) and sends it to the script address with the initial
       * ChainState as inline datum. The one-shot UTxO (from params.oneShotTxOutRef) must be
-      * consumed.
+      * consumed. Uses the reference script UTxO for the minting policy.
       */
     def buildInitTransaction(
         signer: TransactionSigner,
@@ -255,6 +255,9 @@ object OracleTransactions {
 
         val mintAssets = Map(AssetName.empty -> 1L)
 
+        println(scriptAddress)
+        println(policyId)
+        println(referenceScriptUtxo)
         TxBuilder(provider.cardanoInfo)
             .spend(oneShotUtxo) // consume one-shot UTxO for NFT policy
             .references(referenceScriptUtxo)
@@ -291,6 +294,8 @@ object OracleTransactions {
               lovelaceAmount
             ).await(timeout)
 
+            import scalus.utils.*
+            println(tx.showHighlighted)
             submitTx(provider, tx, timeout)
         } match {
             case Success(result) => result
@@ -510,6 +515,39 @@ object OracleTransactions {
         }
     }
 
+    /** Create a dedicated one-shot UTxO by paying to sponsor address.
+      *
+      * Returns the tx hash, output index, and output of the created UTxO.
+      */
+    def createOneShotUtxo(
+        signer: TransactionSigner,
+        provider: BlockchainProvider,
+        sponsorAddress: Address,
+        lovelaceAmount: Long = 10_000_000L,
+        timeout: Duration = 120.seconds
+    ): Either[String, (String, Int, TransactionOutput)] = {
+        given ec: ExecutionContext = provider.executionContext
+        Try {
+            val tx = TxBuilder(provider.cardanoInfo)
+                .payTo(address = sponsorAddress, value = Value.lovelace(lovelaceAmount))
+                .minFee(Coin.ada(1)) // FIXME: why?
+                .complete(provider, sponsorAddress)
+                .map(_.sign(signer).transaction)
+                .await(timeout)
+
+            println(tx.showDetailedHighlighted)
+
+            submitTx(provider, tx, timeout) match {
+                case Right(txHash) => Right((txHash, 0, tx.body.value.outputs.head.value))
+                case Left(err)     => Left(err)
+            }
+        } match {
+            case Success(result) => result
+            case Failure(ex) =>
+                Left(s"Error creating one-shot UTxO: ${ex.getMessage}")
+        }
+    }
+
     /** Wait for a UTxO to appear on-chain by polling the provider. */
     def waitForUtxo(
         provider: BlockchainProvider,
@@ -519,9 +557,11 @@ object OracleTransactions {
     )(using ExecutionContext): Either[String, Utxo] = {
         val deadline = System.currentTimeMillis() + timeout.toMillis
         while System.currentTimeMillis() < deadline do {
-            provider.findUtxo(input).await(30.seconds) match {
+            provider.findUtxo(input).await(10.seconds) match {
                 case Right(utxo) => return Right(utxo)
-                case Left(_)     => Thread.sleep(pollInterval.toMillis)
+                case Left(err) =>
+                    println(s"  Waiting for ${input.transactionId.toHex}#${input.index}: $err")
+                    Thread.sleep(pollInterval.toMillis)
             }
         }
         Left(s"Timeout waiting for UTxO ${input.transactionId.toHex}#${input.index}")

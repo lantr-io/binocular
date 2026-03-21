@@ -8,7 +8,8 @@ import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
-import scala.util.boundary, boundary.break
+import scala.util.boundary
+import boundary.break
 import scalus.utils.await
 
 /** Initialize new oracle from Bitcoin block */
@@ -88,63 +89,6 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
         }
         println(s"Validated: All $requiredTimestamps timestamps present for median-time-past")
 
-        println()
-        println("Step 3: Resolving one-shot UTxO for NFT minting...")
-
-        val oneShotUtxo = if isPlaceholderTxOutRef(config.oracle.txOutRef) then {
-            println("  Configured tx-out-ref is placeholder, auto-detecting from sponsor wallet...")
-            val utxos = setup.provider.findUtxos(setup.sponsorAddress).await(30.seconds) match {
-                case Right(u) => u
-                case Left(e) =>
-                    System.err.println(s"Error fetching sponsor UTxOs: $e")
-                    break(1)
-            }
-            val (input, output) = utxos.headOption.getOrElse {
-                System.err.println("Error: No UTxOs found at sponsor address")
-                System.err.println(s"  Address: $walletAddr")
-                System.err.println("  Fund this address first")
-                break(1)
-            }
-            val utxo = Utxo(input, output)
-            println(s"  Auto-detected one-shot UTxO: ${input.transactionId.toHex}#${input.index}")
-
-            // Rebuild setup with actual one-shot UTxO ref
-            val txOutRef = TxOutRef(TxId(input.transactionId), input.index)
-            val newParams = BitcoinContract.validatorParams(txOutRef, setup.params.owner)
-            val newCompiled = BitcoinContract.makeContract(newParams)
-            setup =
-                OracleSetup(newParams, newCompiled, setup.hdAccount, setup.provider, setup.network)
-            println(s"  Oracle Address: ${setup.scriptAddressBech32}")
-            utxo
-        } else {
-            val oneShotRef = setup.params.oneShotTxOutRef
-            val oneShotInput = TransactionInput(
-              TransactionHash.fromByteString(oneShotRef.id.hash),
-              oneShotRef.idx.toInt
-            )
-            println(s"  One-shot UTxO: ${config.oracle.txOutRef}")
-            try {
-                setup.provider.findUtxo(oneShotInput).await(30.seconds) match {
-                    case Right(u) => u
-                    case Left(e) =>
-                        System.err.println(s"Error: One-shot UTxO not found: $e")
-                        System.err.println(
-                          s"  Configured tx-out-ref: ${config.oracle.txOutRef}"
-                        )
-                        System.err.println(
-                          "  Make sure the UTxO exists and hasn't been spent"
-                        )
-                        break(1)
-                }
-            } catch {
-                case e: Exception =>
-                    System.err.println(
-                      s"Error fetching one-shot UTxO: ${e.getMessage}"
-                    )
-                    break(1)
-            }
-        }
-
         if dryRun then {
             println()
             println("Dry-run complete. Transaction would initialize oracle with:")
@@ -154,36 +98,162 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
             break(0)
         }
 
-        println()
-        println("Step 4: Deploying reference script...")
+        val (oneShotUtxo, referenceScriptUtxo) =
+            if isPlaceholderTxOutRef(config.oracle.txOutRef) then {
+                // Placeholder flow: create one-shot UTxO first, then parameterize, then deploy
 
-        val referenceScriptUtxo = OracleTransactions.deployReferenceScript(
-          setup.signer,
-          setup.provider,
-          setup.sponsorAddress,
-          setup.scriptAddress,
-          setup.script,
-          timeout
-        ) match {
-            case Right((deployTxHash, deployIdx, deployOutput)) =>
-                println(s"  Reference script tx submitted: $deployTxHash:$deployIdx")
-                val refInput = TransactionInput(TransactionHash.fromHex(deployTxHash), deployIdx)
-                println("  Waiting for reference script UTxO to be confirmed...")
-                OracleTransactions.waitForUtxo(setup.provider, refInput, timeout) match {
-                    case Right(utxo) =>
-                        println("  Reference script UTxO confirmed.")
-                        utxo
+                // Step 3: Create dedicated one-shot UTxO
+                println()
+                println("Step 3: Creating dedicated one-shot UTxO (10 ADA)...")
+                val (oneShotTxHash, oneShotIdx, oneShotOutput) =
+                    OracleTransactions.createOneShotUtxo(
+                      setup.signer,
+                      setup.provider,
+                      setup.sponsorAddress,
+                      timeout = timeout
+                    ) match {
+                        case Right(result) =>
+                            println(s"  One-shot tx submitted: ${result._1}#${result._2}")
+                            result
+                        case Left(err) =>
+                            System.err.println(s"Error creating one-shot UTxO: $err")
+                            break(1)
+                    }
+
+                val oneShotInput =
+                    TransactionInput(TransactionHash.fromHex(oneShotTxHash), oneShotIdx)
+                println("  Waiting for one-shot UTxO to be confirmed...")
+                OracleTransactions.waitForUtxo(setup.provider, oneShotInput, timeout) match {
+                    case Right(_) => println("  One-shot UTxO confirmed.")
                     case Left(err) =>
                         System.err.println(s"Error: $err")
                         break(1)
                 }
-            case Left(err) =>
-                System.err.println(s"Error deploying reference script: $err")
-                break(1)
-        }
+                val oneShot = Utxo(oneShotInput, oneShotOutput)
 
+                // Step 4: Parameterize script with the one-shot UTxO
+                println()
+                println("Step 4: Parameterizing script with one-shot UTxO...")
+                val txOutRef = TxOutRef(TxId(oneShotInput.transactionId), oneShotInput.index)
+                val newParams = BitcoinContract.validatorParams(txOutRef, setup.params.owner)
+                val newCompiled = BitcoinContract.makeContract(newParams)
+                setup = OracleSetup(
+                  newParams,
+                  newCompiled,
+                  setup.hdAccount,
+                  setup.provider,
+                  setup.network
+                )
+                println(s"  Oracle Params: $newParams")
+                println(s"  Oracle Address: ${setup.scriptAddressBech32}")
+
+                // Step 5: Deploy reference script (now with correct params)
+                println()
+                println(s"Step 5: Deploying reference script ${setup.script.scriptHash}...")
+                val (deployTxHash, deployIdx, deployOutput) =
+                    OracleTransactions.deployReferenceScript(
+                      setup.signer,
+                      setup.provider,
+                      setup.sponsorAddress,
+                      setup.sponsorAddress,
+                      setup.script,
+                      timeout
+                    ) match {
+                        case Right(result) =>
+                            println(
+                              s"  Reference script tx submitted: ${result._1}#${result._2}"
+                            )
+                            result
+                        case Left(err) =>
+                            System.err.println(s"Error deploying reference script: $err")
+                            break(1)
+                    }
+
+                val refInput =
+                    TransactionInput(TransactionHash.fromHex(deployTxHash), deployIdx)
+                println("  Waiting for reference script UTxO to be confirmed...")
+                OracleTransactions.waitForUtxo(setup.provider, refInput, timeout) match {
+                    case Right(_) => println("  Reference script UTxO confirmed.")
+                    case Left(err) =>
+                        System.err.println(s"Error: $err")
+                        break(1)
+                }
+                val refUtxo = Utxo(refInput, deployOutput)
+
+                (oneShot, refUtxo)
+            } else {
+                // Configured flow: deploy reference script, then resolve configured one-shot UTxO
+
+                // Step 3: Deploy reference script
+                println()
+                println(s"Step 3: Deploying reference script ${setup.script.scriptHash}...")
+                val (deployTxHash, deployIdx, deployOutput) =
+                    OracleTransactions.deployReferenceScript(
+                      setup.signer,
+                      setup.provider,
+                      setup.sponsorAddress,
+                      setup.sponsorAddress,
+                      setup.script,
+                      timeout
+                    ) match {
+                        case Right(result) =>
+                            println(
+                              s"  Reference script tx submitted: ${result._1}#${result._2}"
+                            )
+                            result
+                        case Left(err) =>
+                            System.err.println(s"Error deploying reference script: $err")
+                            break(1)
+                    }
+
+                val refInput =
+                    TransactionInput(TransactionHash.fromHex(deployTxHash), deployIdx)
+                println("  Waiting for reference script UTxO to be confirmed...")
+                OracleTransactions.waitForUtxo(setup.provider, refInput, timeout) match {
+                    case Right(_) => println("  Reference script UTxO confirmed.")
+                    case Left(err) =>
+                        System.err.println(s"Error: $err")
+                        break(1)
+                }
+                val refUtxo = Utxo(refInput, deployOutput)
+
+                // Step 4: Resolve configured one-shot UTxO
+                println()
+                println("Step 4: Resolving one-shot UTxO for NFT minting...")
+                val oneShotRef = setup.params.oneShotTxOutRef
+                val oneShotInput = TransactionInput(
+                  TransactionHash.fromByteString(oneShotRef.id.hash),
+                  oneShotRef.idx.toInt
+                )
+                println(s"  One-shot UTxO: ${config.oracle.txOutRef}")
+                val oneShot =
+                    try {
+                        setup.provider.findUtxo(oneShotInput).await(30.seconds) match {
+                            case Right(u) => u
+                            case Left(e) =>
+                                System.err.println(s"Error: One-shot UTxO not found: $e")
+                                System.err.println(
+                                  s"  Configured tx-out-ref: ${config.oracle.txOutRef}"
+                                )
+                                System.err.println(
+                                  "  Make sure the UTxO exists and hasn't been spent"
+                                )
+                                break(1)
+                        }
+                    } catch {
+                        case e: Exception =>
+                            System.err.println(
+                              s"Error fetching one-shot UTxO: ${e.getMessage}"
+                            )
+                            break(1)
+                    }
+
+                (oneShot, refUtxo)
+            }
+
+        // Final step: Build and submit init transaction
         println()
-        println("Step 5: Building and submitting init transaction...")
+        println("Building and submitting init transaction...")
 
         val initTxHash = OracleTransactions.buildAndSubmitInitTransaction(
           setup.signer,
