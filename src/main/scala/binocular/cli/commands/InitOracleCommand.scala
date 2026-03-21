@@ -124,7 +124,7 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
         println()
         println("Step 4: Building and submitting Cardano transaction...")
 
-        OracleTransactions.buildAndSubmitInitTransaction(
+        val initTxHash = OracleTransactions.buildAndSubmitInitTransaction(
           setup.signer,
           setup.provider,
           setup.scriptAddress,
@@ -135,20 +135,37 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
           timeout = timeout
         ) match {
             case Right(txHash) =>
-                println()
-                println("Oracle initialized successfully!")
                 println(s"  Transaction Hash: $txHash")
                 println(s"  Oracle Address: ${setup.scriptAddressBech32}")
-                println()
-                println("Next steps:")
-                println(s"  1. Wait for transaction confirmation")
-                println(s"  2. Verify oracle: binocular verify-oracle $txHash:0")
-                println(s"  3. List oracles: binocular list-oracles")
-                0
+                txHash
             case Left(err) =>
                 println()
-                System.err.println(s"Error submitting transaction: $err")
-                1
+                System.err.println(s"Error submitting init transaction: $err")
+                break(1)
         }
+
+        println()
+        println("Step 5: Deploying reference script...")
+
+        OracleTransactions.deployReferenceScript(
+          setup.signer,
+          setup.provider,
+          setup.sponsorAddress,
+          setup.scriptAddress,
+          setup.script,
+          timeout
+        ) match {
+            case Right((deployTxHash, deployIdx, _)) =>
+                println(s"  Reference script deployed: $deployTxHash:$deployIdx")
+            case Left(err) =>
+                System.err.println(s"Warning: Failed to deploy reference script: $err")
+                System.err.println("  You can deploy it later with: binocular deploy-script")
+        }
+
+        println()
+        println("Oracle initialized successfully!")
+        println(s"  Oracle TX: $initTxHash")
+        println(s"  Oracle Address: ${setup.scriptAddressBech32}")
+        0
     }
 }

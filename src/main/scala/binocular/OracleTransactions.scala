@@ -26,7 +26,7 @@ object OracleTransactions {
         provider: BlockchainProvider,
         sponsorAddress: Address,
         destinationAddress: Address,
-        script: Script.PlutusV3,
+        script: Script,
         timeout: Duration = 120.seconds
     ): Either[String, (String, Int, TransactionOutput)] = {
         given ec: ExecutionContext = provider.executionContext
