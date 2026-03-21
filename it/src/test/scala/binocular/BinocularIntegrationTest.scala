@@ -74,7 +74,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         parentPath: ScalusList[BigInt],
         validityTime: BigInt,
         params: BitcoinValidatorParams,
-        referenceScriptUtxo: Option[Utxo] = None,
+        referenceScriptUtxo: Utxo,
         mpfInsertProofs: ScalusList[ScalusList[ProofStep]] = ScalusList.Nil
     ): (Utxo, ChainState) = {
         val updateResult = OracleTransactions.buildAndSubmitUpdateTransaction(
@@ -88,7 +88,6 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
           headers,
           parentPath,
           validityTime,
-          script,
           referenceScriptUtxo,
           mpfInsertProofs = mpfInsertProofs
         )
@@ -337,14 +336,14 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
           itScript
         )
 
-        val referenceScriptUtxo: Option[Utxo] = refScriptResult match {
+        val referenceScriptUtxo: Utxo = refScriptResult match {
             case Right((txHash, outputIndex, savedOutput)) =>
                 ctx.provider
                     .pollForConfirmation(TransactionHash.fromHex(txHash), maxAttempts = 30)
                     .await(60.seconds)
                 Thread.sleep(2000)
                 val refInput = TransactionInput(TransactionHash.fromHex(txHash), outputIndex)
-                Some(Utxo(refInput, savedOutput))
+                Utxo(refInput, savedOutput)
             case Left(err) =>
                 fail(s"Failed to deploy reference script: $err")
         }

@@ -236,14 +236,14 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
               scriptAddress,
               script
             )
-            val referenceScriptUtxo: Option[Utxo] = refScriptResult match {
+            val referenceScriptUtxo: Utxo = refScriptResult match {
                 case Right((txHash, outputIndex, savedOutput)) =>
                     yaciCtx.provider
                         .pollForConfirmation(TransactionHash.fromHex(txHash), maxAttempts = 30)
                         .await(60.seconds)
                     Thread.sleep(2000)
                     val refInput = TransactionInput(TransactionHash.fromHex(txHash), outputIndex)
-                    Some(Utxo(refInput, savedOutput))
+                    Utxo(refInput, savedOutput)
                 case Left(err) =>
                     fail(s"Failed to deploy reference script: $err")
             }
@@ -290,7 +290,6 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
                   headersList,
                   parentPath,
                   validityTime,
-                  script,
                   referenceScriptUtxo,
                   mpfInsertProofs = mpfProofs
                 )
@@ -390,7 +389,6 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
                       headersToSubmit,
                       promotePath,
                       promoteValidityTime,
-                      script,
                       referenceScriptUtxo,
                       mpfInsertProofs = mpfProofs
                     )

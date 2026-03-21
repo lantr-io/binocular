@@ -41,34 +41,35 @@ case class RunCommand(dryRun: Boolean = false) extends Command with LazyLogging 
         }
 
         // Find or deploy reference script
-        var referenceScriptUtxo = CommandHelpers.findReferenceScriptUtxo(
-          setup.provider,
-          setup.scriptAddress,
-          setup.script.scriptHash,
-          timeout
-        )
-        if referenceScriptUtxo.isEmpty then {
-            logger.info("Deploying reference script...")
-            OracleTransactions.deployReferenceScript(
-              setup.signer,
+        var referenceScriptUtxo: Utxo = CommandHelpers
+            .findReferenceScriptUtxo(
               setup.provider,
-              setup.sponsorAddress,
               setup.scriptAddress,
-              setup.script,
+              setup.script.scriptHash,
               timeout
-            ) match {
-                case Right((hash, idx, output)) =>
-                    logger.info(s"Reference script deployed at $hash:$idx")
-                    val refInput = TransactionInput(TransactionHash.fromHex(hash), idx)
-                    setup.provider
-                        .pollForConfirmation(TransactionHash.fromHex(hash))
-                        .await(timeout)
-                    referenceScriptUtxo = Some(Utxo(refInput, output))
-                case Left(err) =>
-                    System.err.println(s"Error deploying reference script: $err")
-                    break(1)
+            )
+            .getOrElse {
+                logger.info("Deploying reference script...")
+                OracleTransactions.deployReferenceScript(
+                  setup.signer,
+                  setup.provider,
+                  setup.sponsorAddress,
+                  setup.scriptAddress,
+                  setup.script,
+                  timeout
+                ) match {
+                    case Right((hash, idx, output)) =>
+                        logger.info(s"Reference script deployed at $hash:$idx")
+                        val refInput = TransactionInput(TransactionHash.fromHex(hash), idx)
+                        setup.provider
+                            .pollForConfirmation(TransactionHash.fromHex(hash))
+                            .await(timeout)
+                        Utxo(refInput, output)
+                    case Left(err) =>
+                        System.err.println(s"Error deploying reference script: $err")
+                        break(1)
+                }
             }
-        }
 
         // Find oracle UTxO by NFT
         var currentOracleUtxo: Utxo =
@@ -188,7 +189,6 @@ case class RunCommand(dryRun: Boolean = false) extends Command with LazyLogging 
                       headersList,
                       parentPath,
                       validityTime,
-                      setup.script,
                       referenceScriptUtxo,
                       timeout,
                       mpfProofs

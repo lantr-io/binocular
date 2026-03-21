@@ -51,16 +51,16 @@ case class UpdateOracleCommand(
             println()
 
             println("Step 2: Checking for reference script...")
-            val referenceScriptUtxo: Option[Utxo] =
+            val referenceScriptUtxo: Utxo =
                 CommandHelpers.findReferenceScriptUtxo(
                   setup.provider,
                   setup.scriptAddress,
                   setup.script.scriptHash,
                   timeout
                 ) match {
-                    case some @ Some(_) =>
+                    case Some(utxo) =>
                         println(s"  Found existing reference script")
-                        some
+                        utxo
                     case None =>
                         println(s"  No reference script found, deploying one...")
                         println(s"  This is a one-time operation to reduce transaction sizes")
@@ -93,7 +93,7 @@ case class UpdateOracleCommand(
                                     System.err.println(
                                       s"  Warning: Reference script tx not confirmed after 60s"
                                     )
-                                Some(Utxo(refInput, savedOutput))
+                                Utxo(refInput, savedOutput)
                             case Left(err) =>
                                 System.err.println(s"  Failed to deploy reference script: $err")
                                 System.err.println(s"  Cannot proceed without reference script")
@@ -373,7 +373,6 @@ case class UpdateOracleCommand(
                   headersList,
                   parentPath,
                   validityTime,
-                  setup.script,
                   referenceScriptUtxo,
                   timeout,
                   mpfProofs

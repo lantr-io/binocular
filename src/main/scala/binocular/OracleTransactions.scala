@@ -307,7 +307,7 @@ object OracleTransactions {
         }
     }
 
-    /** Build an UpdateOracle transaction. */
+    /** Build an UpdateOracle transaction. Uses reference script for spending. */
     def buildUpdateTransaction(
         signer: TransactionSigner,
         provider: BlockchainProvider,
@@ -319,8 +319,7 @@ object OracleTransactions {
         blockHeaders: ScalusList[BlockHeader],
         parentPath: ScalusList[BigInt],
         validityIntervalTimeSeconds: BigInt,
-        script: Script.PlutusV3,
-        referenceScriptUtxo: Option[Utxo] = None,
+        referenceScriptUtxo: Utxo,
         mpfInsertProofs: ScalusList[ScalusList[ProofStep]] = ScalusList.Nil
     )(using ExecutionContext): Future[Transaction] = {
         // Verify that the input UTxO's datum matches currentChainState
@@ -349,34 +348,19 @@ object OracleTransactions {
         // Create UpdateOracle redeemer
         val redeemer = UpdateOracle(blockHeaders, parentPath, mpfInsertProofs)
 
-        // Build the transaction
-        var builder = TxBuilder(cardanoInfo)
-
-        // Check if reference script UTxO actually contains the script
-        val useRefScript = referenceScriptUtxo.exists(_.output.scriptRef.isDefined)
-
-        // Add reference script if available and valid
-        if useRefScript then {
-            builder = builder.references(referenceScriptUtxo.get)
-        }
-
-        // Spend oracle UTxO with redeemer
-        builder = if useRefScript then {
-            builder.spend(oracleUtxo, redeemer)
-        } else {
-            builder.spend(oracleUtxo, redeemer, script)
-        }
-
-        // Output new state with same value
         // Validator requires finite validity interval <= MaxValidityWindow (10 min)
         val validToInstant =
             validityInstant.plusMillis(BitcoinValidator.MaxValidityWindow.toLong)
-        builder = builder
+
+        TxBuilder(cardanoInfo)
+            .references(referenceScriptUtxo)
+            .spend(oracleUtxo, redeemer)
             .payTo(scriptAddress, oracleUtxo.output.value, newChainState)
+            .minFee(Coin.ada(1))
             .validFrom(validityInstant)
             .validTo(validToInstant)
-
-        builder.complete(provider, sponsorAddress).map(_.sign(signer).transaction)
+            .complete(provider, sponsorAddress)
+            .map(_.sign(signer).transaction)
     }
 
     /** Build and submit UpdateOracle transaction */
@@ -391,8 +375,7 @@ object OracleTransactions {
         blockHeaders: ScalusList[BlockHeader],
         parentPath: ScalusList[BigInt],
         validityIntervalTimeSeconds: BigInt,
-        script: Script.PlutusV3,
-        referenceScriptUtxo: Option[Utxo] = None,
+        referenceScriptUtxo: Utxo,
         timeout: Duration = 120.seconds,
         mpfInsertProofs: ScalusList[ScalusList[ProofStep]] = ScalusList.Nil
     ): Either[String, String] = {
@@ -409,7 +392,6 @@ object OracleTransactions {
               blockHeaders,
               parentPath,
               validityIntervalTimeSeconds,
-              script,
               referenceScriptUtxo,
               mpfInsertProofs
             ).await(timeout)
