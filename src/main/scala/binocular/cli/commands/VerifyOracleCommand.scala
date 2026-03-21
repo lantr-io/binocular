@@ -62,17 +62,17 @@ case class VerifyOracleCommand() extends Command {
                                 case Success(chainState) =>
                                     println()
                                     println("ChainState parsed successfully:")
-                                    println(s"  Block Height: ${chainState.blockHeight}")
-                                    println(s"  Block Hash: ${chainState.blockHash.toHex}")
+                                    println(s"  Block Height: ${chainState.ctx.height}")
+                                    println(s"  Block Hash: ${chainState.ctx.lastBlockHash.toHex}")
                                     println(
-                                      s"  Current Target: ${chainState.currentTarget.toHex}"
+                                      s"  Current Target: ${chainState.ctx.currentBits.toHex}"
                                     )
                                     println(
-                                      s"  Recent Timestamps: ${chainState.recentTimestamps.size} entries"
+                                      s"  Recent Timestamps: ${chainState.ctx.timestamps.size} entries"
                                     )
 
                                     val timestamps =
-                                        chainState.recentTimestamps.toScalaList
+                                        chainState.ctx.timestamps.toScalaList
                                     println(s"    Values: ${timestamps.mkString(", ")}")
                                     val isSorted = timestamps.sliding(2).forall {
                                         case Seq(a, b) => a >= b
@@ -84,7 +84,7 @@ case class VerifyOracleCommand() extends Command {
                                         println(s"    Median: $median")
                                     }
                                     println(
-                                      s"  Previous Diff Adjustment: ${chainState.previousDifficultyAdjustmentTimestamp}"
+                                      s"  Previous Diff Adjustment: ${chainState.ctx.prevDiffAdjTimestamp}"
                                     )
                                     println(
                                       s"  Confirmed Blocks Root: ${chainState.confirmedBlocksRoot.toHex}"
@@ -98,7 +98,7 @@ case class VerifyOracleCommand() extends Command {
                                         println("  Fork tree:")
                                         println(
                                           chainState.forkTree
-                                              .displayTree(chainState.blockHeight, "    ")
+                                              .displayTree(chainState.ctx.height, "    ")
                                         )
                                     }
 

@@ -793,10 +793,10 @@ class ForkTreePropertyTest
     test("computeUpdate - header-only preserves confirmed state fields") {
         forAll(Gen.choose(1, 5)) { n =>
             val state = makeTestChainState()
-            val ctx = BitcoinValidator.initCtx(state)
-            val headers = genFakeHeaderChain(n, ctx, state.recentTimestamps.head + 1000).sample.get
+            val ctx = state.ctx
+            val headers = genFakeHeaderChain(n, ctx, state.ctx.timestamps.head + 1000).sample.get
             val headersPL = PList.from(headers)
-            val currentTime = state.recentTimestamps.head + 1000
+            val currentTime = state.ctx.timestamps.head + 1000
             val newState =
                 BitcoinValidator.computeUpdate(
                   state = state,
@@ -807,12 +807,12 @@ class ForkTreePropertyTest
                   params = testingParams
                 )
             // Confirmed state fields unchanged
-            assert(newState.blockHeight == state.blockHeight)
-            assert(newState.blockHash == state.blockHash)
-            assert(newState.currentTarget == state.currentTarget)
-            assert(newState.recentTimestamps == state.recentTimestamps)
+            assert(newState.ctx.height == state.ctx.height)
+            assert(newState.ctx.lastBlockHash == state.ctx.lastBlockHash)
+            assert(newState.ctx.currentBits == state.ctx.currentBits)
+            assert(newState.ctx.timestamps == state.ctx.timestamps)
             assert(
-              newState.previousDifficultyAdjustmentTimestamp == state.previousDifficultyAdjustmentTimestamp
+              newState.ctx.prevDiffAdjTimestamp == state.ctx.prevDiffAdjTimestamp
             )
             assert(newState.confirmedBlocksRoot == state.confirmedBlocksRoot)
             // CEK
@@ -831,10 +831,10 @@ class ForkTreePropertyTest
     test("computeUpdate - header-only only changes forkTree") {
         forAll(Gen.choose(1, 5)) { n =>
             val state = makeTestChainState()
-            val ctx = BitcoinValidator.initCtx(state)
-            val headers = genFakeHeaderChain(n, ctx, state.recentTimestamps.head + 1000).sample.get
+            val ctx = state.ctx
+            val headers = genFakeHeaderChain(n, ctx, state.ctx.timestamps.head + 1000).sample.get
             val headersPL = PList.from(headers)
-            val currentTime = state.recentTimestamps.head + 1000
+            val currentTime = state.ctx.timestamps.head + 1000
             val newState =
                 BitcoinValidator.computeUpdate(
                   state = state,
@@ -862,8 +862,8 @@ class ForkTreePropertyTest
     test("computeUpdate - new blocks' hashes exist in resulting forkTree") {
         forAll(Gen.choose(1, 5)) { n =>
             val state = makeTestChainState()
-            val ctx = BitcoinValidator.initCtx(state)
-            val currentTime = state.recentTimestamps.head + 1000
+            val ctx = state.ctx
+            val currentTime = state.ctx.timestamps.head + 1000
             val headers = genFakeHeaderChain(n, ctx, currentTime).sample.get
             val headersPL = PList.from(headers)
             val newState =
@@ -897,8 +897,8 @@ class ForkTreePropertyTest
 
     test("computeUpdate - fork ordering: existing tree goes left, new branch goes right") {
         val state = makeTestChainState()
-        val ctx = BitcoinValidator.initCtx(state)
-        val currentTime = state.recentTimestamps.head + 1000
+        val ctx = state.ctx
+        val currentTime = state.ctx.timestamps.head + 1000
 
         // Insert first batch
         val headers1 = genFakeHeaderChain(2, ctx, currentTime).sample.get
@@ -938,7 +938,7 @@ class ForkTreePropertyTest
 
     test("computeUpdate - empty update: state unchanged") {
         val state = makeTestChainState()
-        val currentTime = state.recentTimestamps.head + 1000
+        val currentTime = state.ctx.timestamps.head + 1000
         val newState =
             BitcoinValidator.computeUpdate(
               state = state,
@@ -972,7 +972,7 @@ class ForkTreePropertyTest
 
             // Extend at the tip: path = [99] (last block index)
             val parentPath = PList(BigInt(99))
-            val currentTime = stateWith100.recentTimestamps.head + 1100
+            val currentTime = stateWith100.ctx.timestamps.head + 1100
             val newState =
                 BitcoinValidator.computeUpdate(
                   state = stateWith100,
@@ -992,8 +992,8 @@ class ForkTreePropertyTest
                     fail(s"Expected linear Blocks, got: ${classifyTreeShape(other)}")
 
             // Confirmed state unchanged (header-only, no proofs)
-            assert(newState.blockHeight == stateWith100.blockHeight)
-            assert(newState.blockHash == stateWith100.blockHash)
+            assert(newState.ctx.height == stateWith100.ctx.height)
+            assert(newState.ctx.lastBlockHash == stateWith100.ctx.lastBlockHash)
         }
     }
 
@@ -1002,7 +1002,7 @@ class ForkTreePropertyTest
             val (stateWith100, _) = buildLongChainState(100)
 
             // Build a competing branch from block at forkPoint
-            val ctx0 = BitcoinValidator.initCtx(stateWith100)
+            val ctx0 = stateWith100.ctx
             val allBlocks = stateWith100.forkTree.toBlockList
             val ctxAtForkPoint =
                 allBlocks
@@ -1052,7 +1052,7 @@ class ForkTreePropertyTest
         val addedTimeBase = BigInt(1700000000)
         val (stateWith100, _) = buildLongChainState(100, addedTimeBase)
 
-        val ctx0 = BitcoinValidator.initCtx(stateWith100)
+        val ctx0 = stateWith100.ctx
         val allBlocks = stateWith100.forkTree.toBlockList
         val ctxAtTip =
             allBlocks.foldLeft(ctx0)((c, b) => BitcoinValidator.accumulateBlock(c, b, PowLimit))
@@ -1110,7 +1110,7 @@ class ForkTreePropertyTest
         forAll(Gen.choose(80, 95)) { forkPoint =>
             val (stateWith100, _) = buildLongChainState(100)
 
-            val ctx0 = BitcoinValidator.initCtx(stateWith100)
+            val ctx0 = stateWith100.ctx
             val allBlocks = stateWith100.forkTree.toBlockList
             val ctxAtFork =
                 allBlocks
@@ -1133,8 +1133,8 @@ class ForkTreePropertyTest
 
             // Best chain should follow the left (original/longer) branch
             val (bestCw, bestDepth, bestPath) =
-                BitcoinValidator.bestChainPath(forkedState.forkTree, stateWith100.blockHeight, 0)
-            assert(bestDepth == stateWith100.blockHeight + 100)
+                BitcoinValidator.bestChainPath(forkedState.forkTree, stateWith100.ctx.height, 0)
+            assert(bestDepth == stateWith100.ctx.height + 100)
             assert(bestPath.head == BitcoinValidator.LeftFork)
         }
     }
@@ -1146,9 +1146,9 @@ class ForkTreePropertyTest
         val (stateWith101, _) = buildLongChainState(101, addedTimeBase)
         assert(stateWith101.forkTree.blockCount == 101)
 
-        val ctx0 = BitcoinValidator.initCtx(stateWith101)
+        val ctx0 = stateWith101.ctx
         val (bestCw, bestDepth, bestPath) =
-            BitcoinValidator.bestChainPath(stateWith101.forkTree, stateWith101.blockHeight, 0)
+            BitcoinValidator.bestChainPath(stateWith101.forkTree, stateWith101.ctx.height, 0)
 
         // currentTime must satisfy: currentTime - addedTimeBase >= challengeAging (12000s)
         val currentTime = addedTimeBase + 200 * 60 + 1000 // 13000s after blocks were added
@@ -1189,7 +1189,7 @@ class ForkTreePropertyTest
         // Create a 2-block fork at block 2. This splits the tree into:
         // Blocks([b0,b1,b2], prefCw, Fork(Blocks([b3..b102], suffCw, End), Blocks([f0,f1], forkCw, End)))
         // Prefix has only 3 blocks — all promotable since depth >= 100.
-        val ctx0 = BitcoinValidator.initCtx(stateWith103)
+        val ctx0 = stateWith103.ctx
         val allBlocks = stateWith103.forkTree.toBlockList
         val ctxAt2 = allBlocks
             .take(3)
@@ -1216,9 +1216,9 @@ class ForkTreePropertyTest
         // After promoting all 3 prefix blocks, promoteAndGC reaches the Fork.
         // At the Fork, the right branch (fork headers) gets GC'd.
         val promotionTime = addedTimeBase + 200 * 60 + 1000
-        val ctx0_2 = BitcoinValidator.initCtx(forkedState)
+        val ctx0_2 = forkedState.ctx
         val (_, bestDepth, bestPath) =
-            BitcoinValidator.bestChainPath(forkedState.forkTree, forkedState.blockHeight, 0)
+            BitcoinValidator.bestChainPath(forkedState.forkTree, forkedState.ctx.height, 0)
 
         val params = testParams()
         val (promoted, cleaned) =
@@ -1258,7 +1258,7 @@ class ForkTreePropertyTest
         assert(state99.forkTree.blockCount == 99)
 
         // Use generous time offsets to stay well ahead of accumulated MTP
-        val ctx0 = BitcoinValidator.initCtx(state99)
+        val ctx0 = state99.ctx
 
         // Step 2: Extend with 4 more headers (→ 103 blocks)
         // Need 103+ main chain blocks so all 3 prefix blocks have depth >= 100
@@ -1317,9 +1317,9 @@ class ForkTreePropertyTest
         // Step 5: Promote with aged blocks
         // Promote 3+ blocks to get past the 3-block prefix and trigger GC at the Fork
         val promotionTime = addedTimeBase + 200 * 60 + 5000
-        val ctx0_final = BitcoinValidator.initCtx(stateExtended)
+        val ctx0_final = stateExtended.ctx
         val (_, bestDepth, bestPath) =
-            BitcoinValidator.bestChainPath(stateExtended.forkTree, stateExtended.blockHeight, 0)
+            BitcoinValidator.bestChainPath(stateExtended.forkTree, stateExtended.ctx.height, 0)
         val params = testParams()
         val (promoted, cleaned) =
             BitcoinValidator.promoteAndGC(
@@ -1367,16 +1367,16 @@ class ForkTreePropertyTest
 
             // bestChainPath should report correct depth
             val (_, depth, path) =
-                BitcoinValidator.bestChainPath(state.forkTree, state.blockHeight, 0)
-            assert(depth == state.blockHeight + chainLen)
+                BitcoinValidator.bestChainPath(state.forkTree, state.ctx.height, 0)
+            assert(depth == state.ctx.height + chainLen)
             assert(path == PNil) // linear → no forks in path
         }
     }
 
     test("computeUpdate - backward-timestamp blocks accepted in testingMode") {
         val state = makeTestChainState()
-        val ctx = BitcoinValidator.initCtx(state)
-        val currentTime = state.recentTimestamps.head + 5000
+        val ctx = state.ctx
+        val currentTime = state.ctx.timestamps.head + 5000
 
         // Generate multiple chains and check that backward timestamps work
         var hasBackward = false

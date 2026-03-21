@@ -232,12 +232,12 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
                 val onChainState = newOracleUtxo.output.inlineDatum.get.to[ChainState]
 
                 assert(
-                  onChainState.blockHeight == newState.blockHeight &&
-                      onChainState.blockHash == newState.blockHash &&
+                  onChainState.ctx.height == newState.ctx.height &&
+                      onChainState.ctx.lastBlockHash == newState.ctx.lastBlockHash &&
                       onChainState.forkTree.blockCount == newState.forkTree.blockCount,
                   s"On-chain state does not match off-chain computed state!\n" +
-                      s"  Off-chain: height=${newState.blockHeight}, hash=${newState.blockHash.toHex}, forkTree=${newState.forkTree.blockCount}\n" +
-                      s"  On-chain:  height=${onChainState.blockHeight}, hash=${onChainState.blockHash.toHex}, forkTree=${onChainState.forkTree.blockCount}"
+                      s"  Off-chain: height=${newState.ctx.height}, hash=${newState.ctx.lastBlockHash.toHex}, forkTree=${newState.forkTree.blockCount}\n" +
+                      s"  On-chain:  height=${onChainState.ctx.height}, hash=${onChainState.ctx.lastBlockHash.toHex}, forkTree=${onChainState.forkTree.blockCount}"
                 )
 
                 (newOracleUtxo, onChainState)
@@ -423,8 +423,8 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         )
 
         assert(
-          onChainState.blockHeight == startHeight,
-          s"Height should remain $startHeight, got ${onChainState.blockHeight}"
+          onChainState.ctx.height == startHeight,
+          s"Height should remain $startHeight, got ${onChainState.ctx.height}"
         )
 
         assert(
@@ -478,7 +478,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         val batches = allHeaders.grouped(batchSize).toSeq
         var currentState = initialState
         var currentMpf = OffChainMPF.empty
-            .insert(initialState.blockHash, initialState.blockHash)
+            .insert(initialState.ctx.lastBlockHash, initialState.ctx.lastBlockHash)
 
         batches.zipWithIndex.foreach { case (batch, batchIndex) =>
             println(
@@ -520,10 +520,10 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         }
 
         // Verify that promotion occurred
-        val heightIncrease = currentState.blockHeight - initialState.blockHeight
+        val heightIncrease = currentState.ctx.height - initialState.ctx.height
         assert(
           heightIncrease > 0,
-          s"Expected promotion to increase confirmed height, but got: initial=${initialState.blockHeight}, final=${currentState.blockHeight}"
+          s"Expected promotion to increase confirmed height, but got: initial=${initialState.ctx.height}, final=${currentState.ctx.height}"
         )
         println(s"[Test] Promotion detected: height increased by $heightIncrease blocks")
 

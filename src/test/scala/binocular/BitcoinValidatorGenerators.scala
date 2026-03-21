@@ -257,12 +257,14 @@ trait BitcoinValidatorGenerators extends scalus.uplc.test.ArbitraryInstances {
         val baseTimestamp = BigInt(1700000000)
         val timestamps = PList.from((0 until 11).map(i => baseTimestamp - i * 600).toList)
         ChainState(
-          blockHeight = height,
-          blockHash = hash,
-          currentTarget = bits,
-          recentTimestamps = timestamps,
-          previousDifficultyAdjustmentTimestamp = baseTimestamp - 11 * 600,
           confirmedBlocksRoot = ByteString.unsafeFromArray(Array.fill(32)(0.toByte)),
+          ctx = TraversalCtx(
+            timestamps = timestamps,
+            height = height,
+            currentBits = bits,
+            prevDiffAdjTimestamp = baseTimestamp - 11 * 600,
+            lastBlockHash = hash
+          ),
           forkTree = tree
         )
     }
@@ -280,7 +282,7 @@ trait BitcoinValidatorGenerators extends scalus.uplc.test.ArbitraryInstances {
         addedTimeBase: BigInt = BigInt(1700000000)
     ): (ChainState, scala.List[BlockHeader]) = {
         val state0 = makeTestChainState()
-        val ctx0 = BitcoinValidator.initCtx(state0)
+        val ctx0 = state0.ctx
         // currentTime must be > MTP of timestamps and allow future-time check.
         // addedTimeBase is used as the Cardano observation time (= currentTime for each batch).
         val currentTime = addedTimeBase
@@ -307,7 +309,7 @@ trait BitcoinValidatorGenerators extends scalus.uplc.test.ArbitraryInstances {
     ): (ChainState, scala.List[BlockHeader]) = {
         val (stateN, existingHeaders) = buildLongChainState(numExisting, addedTimeBase)
         // Build ctx at the tip of the existing chain by replaying through validateBlock
-        val ctx0 = BitcoinValidator.initCtx(stateN)
+        val ctx0 = stateN.ctx
         // We need the ctx after all N blocks. Since the blocks are in the fork tree,
         // we can accumulate them.
         val allBlocks = stateN.forkTree.toBlockList

@@ -85,7 +85,7 @@ object CommandHelpers {
 
     /** Check if ChainState is valid (has 11 sorted timestamps) */
     def isValidChainState(chainState: ChainState): Boolean = {
-        val timestamps = chainState.recentTimestamps.toScalaList
+        val timestamps = chainState.ctx.timestamps.toScalaList
         timestamps.size >= 11 && timestamps.sliding(2).forall {
             case Seq(a, b) => a >= b
             case _         => true
@@ -215,7 +215,8 @@ object CommandHelpers {
         chainState: ChainState,
         startHeight: Option[Long]
     )(using ExecutionContext): Either[String, OffChainMPF] = {
-        val initialMpf = OffChainMPF.empty.insert(chainState.blockHash, chainState.blockHash)
+        val initialMpf =
+            OffChainMPF.empty.insert(chainState.ctx.lastBlockHash, chainState.ctx.lastBlockHash)
         if initialMpf.rootHash == chainState.confirmedBlocksRoot then Right(initialMpf)
         else
             startHeight match {
@@ -227,7 +228,7 @@ object CommandHelpers {
                     rebuildMpf(
                       rpc,
                       h,
-                      chainState.blockHeight.toLong,
+                      chainState.ctx.height.toLong,
                       chainState.confirmedBlocksRoot
                     )
             }

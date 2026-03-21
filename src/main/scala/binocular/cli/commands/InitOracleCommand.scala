@@ -65,17 +65,17 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
             }
 
         println(s"Fetched initial state:")
-        println(s"  Block Height: ${initialState.blockHeight}")
-        println(s"  Block Hash: ${initialState.blockHash.toHex}")
-        println(s"  Block Timestamp: ${initialState.recentTimestamps.head}")
-        println(s"  Current Target: ${initialState.currentTarget.toHex}")
-        println(s"  Recent Timestamps: ${initialState.recentTimestamps.size} entries")
+        println(s"  Block Height: ${initialState.ctx.height}")
+        println(s"  Block Hash: ${initialState.ctx.lastBlockHash.toHex}")
+        println(s"  Block Timestamp: ${initialState.ctx.timestamps.head}")
+        println(s"  Current Target: ${initialState.ctx.currentBits.toHex}")
+        println(s"  Recent Timestamps: ${initialState.ctx.timestamps.size} entries")
 
         val requiredTimestamps = 11
-        if initialState.recentTimestamps.size < requiredTimestamps then {
+        if initialState.ctx.timestamps.size < requiredTimestamps then {
             System.err.println(s"Error: Insufficient timestamps for median-time-past validation")
             System.err.println(
-              s"  Got ${initialState.recentTimestamps.size}, need $requiredTimestamps"
+              s"  Got ${initialState.ctx.timestamps.size}, need $requiredTimestamps"
             )
             break(1)
         }
@@ -84,8 +84,8 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
         if dryRun then {
             println()
             println("Dry-run complete. Transaction would initialize oracle with:")
-            println(s"  Block Height: ${initialState.blockHeight}")
-            println(s"  Block Hash: ${initialState.blockHash.toHex}")
+            println(s"  Block Height: ${initialState.ctx.height}")
+            println(s"  Block Hash: ${initialState.ctx.lastBlockHash.toHex}")
             println(s"  Oracle Address: ${setup.scriptAddressBech32}")
             break(0)
         }

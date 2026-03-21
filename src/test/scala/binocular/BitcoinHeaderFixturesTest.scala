@@ -33,11 +33,11 @@ class BitcoinHeaderFixturesTest extends AnyFunSuite {
         val genesisState = BitcoinHeaderFixtures.createGenesisState(fixture)
 
         // Verify genesis state properties
-        assert(genesisState.blockHeight == BigInt(865493))
-        assert(genesisState.blockHash.length == 32, "Block hash should be 32 bytes")
-        assert(genesisState.currentTarget.length == 4, "Compact bits should be 4 bytes")
-        assert(!genesisState.recentTimestamps.isEmpty, "Should have at least one timestamp")
-        assert(genesisState.recentTimestamps.head == BigInt(1736701001))
+        assert(genesisState.ctx.height == BigInt(865493))
+        assert(genesisState.ctx.lastBlockHash.length == 32, "Block hash should be 32 bytes")
+        assert(genesisState.ctx.currentBits.length == 4, "Compact bits should be 4 bytes")
+        assert(!genesisState.ctx.timestamps.isEmpty, "Should have at least one timestamp")
+        assert(genesisState.ctx.timestamps.head == BigInt(1736701001))
     }
 
     test("Fixture headers are sequential") {

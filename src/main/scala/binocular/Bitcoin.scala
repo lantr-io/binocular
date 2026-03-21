@@ -126,13 +126,15 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
             // Block hash from RPC is in display order (big-endian), but we store it in internal order (little-endian)
             blockHash = ByteString.fromArray(hexToByteString(header.hash).bytes.reverse.toArray)
         yield ChainState(
-          blockHeight = blockHeight,
-          blockHash = blockHash,
-          currentTarget = bits,
-          recentTimestamps = prelude.List(BigInt(header.time)),
-          previousDifficultyAdjustmentTimestamp = BigInt(adjustmentHeader.time),
           confirmedBlocksRoot =
               BitcoinChainState.mpfRootForSingleBlock(blockHash), // MPF trie with single block
+          ctx = TraversalCtx(
+            timestamps = prelude.List(BigInt(header.time)),
+            height = blockHeight,
+            currentBits = bits,
+            prevDiffAdjTimestamp = BigInt(adjustmentHeader.time),
+            lastBlockHash = blockHash
+          ),
           forkTree = ForkTree.End // Initialize with empty forks tree
         )
     }
@@ -154,16 +156,12 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
     private def processHeader(currentState: ChainState, headerInfo: BlockHeaderInfo): ChainState =
         val header = convertHeader(headerInfo)
         val currentTime = BigInt(System.currentTimeMillis() / 1000)
-        val ctx = BitcoinValidator.initCtx(currentState)
+        val ctx = currentState.ctx
         val (summary, newCtx, _) =
             BitcoinValidator.validateBlock(header, ctx, currentTime, mainnetValidationParams)
         ChainState(
-          blockHeight = newCtx.height,
-          blockHash = newCtx.lastBlockHash,
-          currentTarget = newCtx.currentBits,
-          recentTimestamps = newCtx.timestamps.take(BitcoinHelpers.MedianTimeSpan),
-          previousDifficultyAdjustmentTimestamp = newCtx.prevDiffAdjTimestamp,
           confirmedBlocksRoot = currentState.confirmedBlocksRoot,
+          ctx = newCtx.copy(timestamps = newCtx.timestamps.take(BitcoinHelpers.MedianTimeSpan)),
           forkTree = currentState.forkTree
         )
 

@@ -130,7 +130,7 @@ object OracleTransactions {
         currentTime: BigInt,
         params: BitcoinValidatorParams
     ): ScalusList[BlockSummary] = {
-        val ctx0 = BitcoinValidator.initCtx(prevState)
+        val ctx0 = prevState.ctx
 
         // Insert headers into fork tree
         val newTree = blockHeaders match
@@ -147,7 +147,7 @@ object OracleTransactions {
 
         // Find best chain path and promote
         val (_, bestDepth, bestPath) =
-            BitcoinValidator.bestChainPath(newTree, prevState.blockHeight, 0)
+            BitcoinValidator.bestChainPath(newTree, prevState.ctx.height, 0)
 
         // Use a large maxPromotions to find all promotable blocks
         val (promoted, _) = BitcoinValidator.promoteAndGC(
@@ -253,13 +253,13 @@ object OracleTransactions {
             val inputData = oracleUtxo.output.requireInlineDatum
             val inputState = inputData.to[ChainState]
 
-            if inputState.blockHeight != currentChainState.blockHeight ||
-                inputState.blockHash != currentChainState.blockHash
+            if inputState.ctx.height != currentChainState.ctx.height ||
+                inputState.ctx.lastBlockHash != currentChainState.ctx.lastBlockHash
             then {
                 throw new RuntimeException(
                   s"Input UTxO state does not match provided currentChainState!\n" +
-                      s"  Provided currentChainState: height=${currentChainState.blockHeight}, hash=${currentChainState.blockHash.toHex}\n" +
-                      s"  Input UTxO state: height=${inputState.blockHeight}, hash=${inputState.blockHash.toHex}"
+                      s"  Provided currentChainState: height=${currentChainState.ctx.height}, hash=${currentChainState.ctx.lastBlockHash.toHex}\n" +
+                      s"  Input UTxO state: height=${inputState.ctx.height}, hash=${inputState.ctx.lastBlockHash.toHex}"
                 )
             }
 

@@ -65,13 +65,14 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
 
     private def chainStateWithTree(tree: ForkTree): ChainState =
         ChainState(
-          blockHeight = 866880,
-          blockHash = ByteString.unsafeFromArray(Array.fill(32)(0: Byte)),
-          currentTarget = ByteString.unsafeFromArray(Array.fill(4)(0xff.toByte)),
-          recentTimestamps =
-              prelude.List.from((0 until 11).map(i => BigInt(1000000 - i * 600)).toList),
-          previousDifficultyAdjustmentTimestamp = 1000000,
           confirmedBlocksRoot = ByteString.unsafeFromArray(Array.fill(32)(0: Byte)),
+          ctx = TraversalCtx(
+            timestamps = prelude.List.from((0 until 11).map(i => BigInt(1000000 - i * 600)).toList),
+            height = 866880,
+            currentBits = ByteString.unsafeFromArray(Array.fill(4)(0xff.toByte)),
+            prevDiffAdjTimestamp = 1000000,
+            lastBlockHash = ByteString.unsafeFromArray(Array.fill(32)(0: Byte))
+          ),
           forkTree = tree
         )
 
@@ -180,12 +181,14 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         // Create initial ChainState with block 866880 as confirmed tip
         // Block 866880 is at retarget boundary, so previousDifficultyAdjustmentTimestamp is its own timestamp
         val prevState = ChainState(
-          blockHeight = baseFixture.height,
-          blockHash = confirmedTip,
-          currentTarget = bits,
-          recentTimestamps = recentTimestamps,
-          previousDifficultyAdjustmentTimestamp = baseTimestamp,
           confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(confirmedTip),
+          ctx = TraversalCtx(
+            timestamps = recentTimestamps,
+            height = baseFixture.height,
+            currentBits = bits,
+            prevDiffAdjTimestamp = baseTimestamp,
+            lastBlockHash = confirmedTip
+          ),
           forkTree = End
         )
 
@@ -336,12 +339,14 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
 
         // Initial confirmed state
         val initialState = ChainState(
-          blockHeight = baseFixture.height,
-          blockHash = confirmedTip,
-          currentTarget = bits,
-          recentTimestamps = recentTimestamps,
-          previousDifficultyAdjustmentTimestamp = baseTimestamp,
           confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(confirmedTip),
+          ctx = TraversalCtx(
+            timestamps = recentTimestamps,
+            height = baseFixture.height,
+            currentBits = bits,
+            prevDiffAdjTimestamp = baseTimestamp,
+            lastBlockHash = confirmedTip
+          ),
           forkTree = End
         )
 
@@ -418,7 +423,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             val parentPath = prelude.List(BigInt(preloadCount - 1))
 
             // Determine promoted blocks by running validator logic
-            val ctx0 = BitcoinValidator.initCtx(stateWith100Blocks)
+            val ctx0 = stateWith100Blocks.ctx
             val newTree = BitcoinValidator.validateAndInsert(
               stateWith100Blocks.forkTree,
               parentPath,
@@ -429,7 +434,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             )
             val (_, bestDepth, bestPath) = BitcoinValidator.bestChainPath(
               newTree,
-              stateWith100Blocks.blockHeight,
+              stateWith100Blocks.ctx.height,
               BigInt(0)
             )
             val (promoted, _) =
@@ -648,12 +653,14 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             prelude.List.from((0 until 11).map(i => baseTimestamp - i * 600).toList)
 
         val prevState = ChainState(
-          blockHeight = baseFixture.height,
-          blockHash = confirmedTip,
-          currentTarget = bits,
-          recentTimestamps = recentTimestamps,
-          previousDifficultyAdjustmentTimestamp = baseTimestamp,
           confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(confirmedTip),
+          ctx = TraversalCtx(
+            timestamps = recentTimestamps,
+            height = baseFixture.height,
+            currentBits = bits,
+            prevDiffAdjTimestamp = baseTimestamp,
+            lastBlockHash = confirmedTip
+          ),
           forkTree = End
         )
 
@@ -736,12 +743,14 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             prelude.List.from((0 until 11).map(i => baseTimestamp - i * 600).toList)
 
         val prevState = ChainState(
-          blockHeight = baseFixture.height,
-          blockHash = confirmedTip,
-          currentTarget = bits,
-          recentTimestamps = recentTimestamps,
-          previousDifficultyAdjustmentTimestamp = baseTimestamp,
           confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(confirmedTip),
+          ctx = TraversalCtx(
+            timestamps = recentTimestamps,
+            height = baseFixture.height,
+            currentBits = bits,
+            prevDiffAdjTimestamp = baseTimestamp,
+            lastBlockHash = confirmedTip
+          ),
           forkTree = End
         )
 
@@ -830,12 +839,14 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             prelude.List.from((0 until 11).map(i => baseTimestamp - i * 600).toList)
 
         val initialState = ChainState(
-          blockHeight = baseFixture.height,
-          blockHash = confirmedTip,
-          currentTarget = bits,
-          recentTimestamps = recentTimestamps,
-          previousDifficultyAdjustmentTimestamp = baseTimestamp,
           confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(confirmedTip),
+          ctx = TraversalCtx(
+            timestamps = recentTimestamps,
+            height = baseFixture.height,
+            currentBits = bits,
+            prevDiffAdjTimestamp = baseTimestamp,
+            lastBlockHash = confirmedTip
+          ),
           forkTree = End
         )
 
@@ -867,7 +878,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         val numPromotions = 1
 
         // Determine promoted block
-        val ctx0 = BitcoinValidator.initCtx(stateWith100Blocks)
+        val ctx0 = stateWith100Blocks.ctx
         val newTree = BitcoinValidator.validateAndInsert(
           stateWith100Blocks.forkTree,
           parentPath,
@@ -878,7 +889,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         )
         val (_, bestDepth, bestPath) = BitcoinValidator.bestChainPath(
           newTree,
-          stateWith100Blocks.blockHeight,
+          stateWith100Blocks.ctx.height,
           BigInt(0)
         )
         val (promoted, _) =
@@ -1017,12 +1028,14 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             prelude.List.from((0 until 11).map(i => baseTimestamp - i * 600).toList)
 
         val prevState = ChainState(
-          blockHeight = baseFixture.height,
-          blockHash = confirmedTip,
-          currentTarget = bits,
-          recentTimestamps = recentTimestamps,
-          previousDifficultyAdjustmentTimestamp = baseTimestamp,
           confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(confirmedTip),
+          ctx = TraversalCtx(
+            timestamps = recentTimestamps,
+            height = baseFixture.height,
+            currentBits = bits,
+            prevDiffAdjTimestamp = baseTimestamp,
+            lastBlockHash = confirmedTip
+          ),
           forkTree = End
         )
 
@@ -1157,13 +1170,15 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
       */
     private def closeOracleSetup(lastBlockTimestamp: BigInt) = {
         val prevState = ChainState(
-          blockHeight = 866880,
-          blockHash = ByteString.unsafeFromArray(Array.fill(32)(0: Byte)),
-          currentTarget = ByteString.unsafeFromArray(Array.fill(4)(0xff.toByte)),
-          recentTimestamps =
-              prelude.List.from((0 until 11).map(i => lastBlockTimestamp - i * 600).toList),
-          previousDifficultyAdjustmentTimestamp = lastBlockTimestamp - 11 * 600,
           confirmedBlocksRoot = ByteString.unsafeFromArray(Array.fill(32)(0: Byte)),
+          ctx = TraversalCtx(
+            timestamps =
+                prelude.List.from((0 until 11).map(i => lastBlockTimestamp - i * 600).toList),
+            height = 866880,
+            currentBits = ByteString.unsafeFromArray(Array.fill(4)(0xff.toByte)),
+            prevDiffAdjTimestamp = lastBlockTimestamp - 11 * 600,
+            lastBlockHash = ByteString.unsafeFromArray(Array.fill(32)(0: Byte))
+          ),
           forkTree = ForkTree.End
         )
 

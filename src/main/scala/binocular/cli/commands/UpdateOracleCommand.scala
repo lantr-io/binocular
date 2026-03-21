@@ -135,8 +135,8 @@ case class UpdateOracleCommand(
                 }
 
             println(s"  Current oracle state:")
-            println(s"  Confirmed Height: ${currentChainState.blockHeight}")
-            println(s"  Block Hash: ${currentChainState.blockHash.toHex}")
+            println(s"  Confirmed Height: ${currentChainState.ctx.height}")
+            println(s"  Block Hash: ${currentChainState.ctx.lastBlockHash.toHex}")
             println(s"  Fork Tree Size: ${currentChainState.forkTree.blockCount}")
 
             val offChainMpfInit: OffChainMPF = CommandHelpers.reconstructMpf(
@@ -155,13 +155,13 @@ case class UpdateOracleCommand(
             val highestBlock = if currentChainState.forkTree.nonEmpty then {
                 val maxForkHeight =
                     currentChainState.forkTree
-                        .highestHeight(currentChainState.blockHeight)
+                        .highestHeight(currentChainState.ctx.height)
                         .toLong
                 println(s"  Fork Tree Tip: $maxForkHeight")
                 maxForkHeight
             } else {
                 println(s"  Fork Tree: empty (oracle at confirmed height)")
-                currentChainState.blockHeight.toLong
+                currentChainState.ctx.height.toLong
             }
 
             val startHeight = fromBlock.getOrElse(highestBlock + 1)
@@ -354,8 +354,8 @@ case class UpdateOracleCommand(
 
                 if totalBatches == 1 then {
                     println(s"  New oracle state calculated:")
-                    println(s"  Block Height: ${newChainState.blockHeight}")
-                    println(s"  Block Hash: ${newChainState.blockHash.toHex}")
+                    println(s"  Block Height: ${newChainState.ctx.height}")
+                    println(s"  Block Hash: ${newChainState.ctx.lastBlockHash.toHex}")
                     println()
                     println(
                       "Step 7: Building and submitting UpdateOracle transaction..."

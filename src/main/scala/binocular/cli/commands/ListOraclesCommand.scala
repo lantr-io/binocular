@@ -62,7 +62,7 @@ case class ListOraclesCommand(limit: Int) extends Command {
                                 )
                                 CommandHelpers.parseChainState(utxo) match {
                                     case Some(cs) =>
-                                        val timestampCount = cs.recentTimestamps.size
+                                        val timestampCount = cs.ctx.timestamps.size
                                         if timestampCount < 11 then
                                             println(
                                               s"    Only $timestampCount/11 timestamps"
@@ -94,14 +94,14 @@ case class ListOraclesCommand(limit: Int) extends Command {
 
                             println(s"  - ${vo.utxoRef}")
                             println(s"    Lovelace: $lovelace")
-                            println(s"    Block Height: ${vo.chainState.blockHeight}")
+                            println(s"    Block Height: ${vo.chainState.ctx.height}")
                             println(
-                              s"    Block Hash: ${vo.chainState.blockHash.toHex.take(16)}..."
+                              s"    Block Hash: ${vo.chainState.ctx.lastBlockHash.toHex.take(16)}..."
                             )
                             if vo.chainState.forkTree.nonEmpty then {
                                 val maxForkHeight =
                                     vo.chainState.forkTree
-                                        .highestHeight(vo.chainState.blockHeight)
+                                        .highestHeight(vo.chainState.ctx.height)
                                         .toLong
                                 println(
                                   s"    Fork Tree: ${vo.chainState.forkTree.blockCount} block(s), highest at $maxForkHeight"

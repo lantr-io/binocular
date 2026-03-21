@@ -92,7 +92,7 @@ case class RunCommand(dryRun: Boolean = false) extends Command with LazyLogging 
             }
 
         logger.info(
-          s"Oracle state: height=${currentChainState.blockHeight}, forkTree=${currentChainState.forkTree.blockCount} blocks"
+          s"Oracle state: height=${currentChainState.ctx.height}, forkTree=${currentChainState.forkTree.blockCount} blocks"
         )
 
         // Reconstruct off-chain MPF
@@ -121,9 +121,9 @@ case class RunCommand(dryRun: Boolean = false) extends Command with LazyLogging 
                 val highestKnown =
                     if currentChainState.forkTree.nonEmpty then
                         currentChainState.forkTree
-                            .highestHeight(currentChainState.blockHeight)
+                            .highestHeight(currentChainState.ctx.height)
                             .toLong
-                    else currentChainState.blockHeight.toLong
+                    else currentChainState.ctx.height.toLong
 
                 if bitcoinTip > highestKnown then {
                     val startHeight = highestKnown + 1
@@ -170,8 +170,8 @@ case class RunCommand(dryRun: Boolean = false) extends Command with LazyLogging 
                     if dryRun then {
                         println()
                         println("Dry-run: computed update")
-                        println(s"  Current Height: ${currentChainState.blockHeight}")
-                        println(s"  New Height: ${newChainState.blockHeight}")
+                        println(s"  Current Height: ${currentChainState.ctx.height}")
+                        println(s"  New Height: ${newChainState.ctx.height}")
                         println(s"  Headers: ${headers.size}")
                         println(s"  Fork Tree: ${newChainState.forkTree.blockCount} blocks")
                         break(0)

@@ -253,7 +253,7 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
             val batchSize = 25 // limited by on-chain execution unit budget (grows with tree size)
             var currentState = initialState
             var currentMpf =
-                OffChainMPF.empty.insert(initialState.blockHash, initialState.blockHash)
+                OffChainMPF.empty.insert(initialState.ctx.lastBlockHash, initialState.ctx.lastBlockHash)
             val firstBatchTime = System.currentTimeMillis()
 
             val allHeaders =
@@ -309,14 +309,14 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
                             CommandHelpers.findOracleUtxo(yaciCtx.provider, scriptHash).await(30.seconds)
                         val onChainState = currentOracleUtxo.output.inlineDatum.get.to[ChainState]
                         assert(
-                          onChainState.blockHeight == newState.blockHeight &&
-                              onChainState.blockHash == newState.blockHash,
+                          onChainState.ctx.height == newState.ctx.height &&
+                              onChainState.ctx.lastBlockHash == newState.ctx.lastBlockHash,
                           s"On-chain state mismatch after batch ${batchIndex + 1}"
                         )
                         currentState = onChainState
                         currentMpf = updatedMpf
                         println(
-                          s"[Test] Batch ${batchIndex + 1} confirmed: height=${currentState.blockHeight}, " +
+                          s"[Test] Batch ${batchIndex + 1} confirmed: height=${currentState.ctx.height}, " +
                               s"forkTree=${currentState.forkTree.blockCount} blocks"
                         )
                     case Left(error) =>
@@ -415,7 +415,7 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
                             totalPromoted += numPromoted
                             println(
                               s"[Test] Promotion round $promotionRound: promoted $numPromoted blocks, " +
-                                  s"height=${currentState.blockHeight}, " +
+                                  s"height=${currentState.ctx.height}, " +
                                   s"forkTree=${currentState.forkTree.blockCount} blocks"
                             )
                         case Left(error) =>
@@ -429,7 +429,7 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
 
             // Phase 8: Verify promotion occurred
             println(
-              s"[Test] Final state: height=${currentState.blockHeight}, " +
+              s"[Test] Final state: height=${currentState.ctx.height}, " +
                   s"forkTree=${currentState.forkTree.blockCount} blocks, " +
                   s"totalPromoted=$totalPromoted blocks in $promotionRound rounds"
             )

@@ -424,8 +424,8 @@ object BitcoinDependentLockApp {
                     return 1
             }
 
-        println(s"  Oracle confirmed height: ${oracleState.blockHeight}")
-        println(s"  Oracle confirmed hash:   ${oracleState.blockHash.toHex}")
+        println(s"  Oracle confirmed height: ${oracleState.ctx.height}")
+        println(s"  Oracle confirmed hash:   ${oracleState.ctx.lastBlockHash.toHex}")
 
         // Step 3: Fetch block from Bitcoin RPC and build tx merkle proof
         println()
@@ -492,7 +492,7 @@ object BitcoinDependentLockApp {
         println("Step 5: Reconstructing MPF and generating membership proof...")
 
         val initialMpf =
-            OffChainMPF.empty.insert(oracleState.blockHash, oracleState.blockHash)
+            OffChainMPF.empty.insert(oracleState.ctx.lastBlockHash, oracleState.ctx.lastBlockHash)
         val offChainMpf: OffChainMPF =
             if initialMpf.rootHash == oracleState.confirmedBlocksRoot then
                 println(s"  MPF state: single confirmed block")
@@ -508,7 +508,7 @@ object BitcoinDependentLockApp {
                         return 1
                 }
                 println(
-                  s"  Rebuilding MPF from blocks $startHeight to ${oracleState.blockHeight}..."
+                  s"  Rebuilding MPF from blocks $startHeight to ${oracleState.ctx.height}..."
                 )
                 def rebuildMpf(
                     heights: List[Long],
@@ -527,7 +527,7 @@ object BitcoinDependentLockApp {
                     }
                 }
                 val heights =
-                    (startHeight to oracleState.blockHeight.toLong).toList
+                    (startHeight to oracleState.ctx.height.toLong).toList
                 val rebuiltMpf =
                     try {
                         rebuildMpf(heights, OffChainMPF.empty).await(120.seconds)

@@ -172,12 +172,14 @@ object BitcoinHeaderFixtures {
             timestamp - (blocksSinceAdjustment * BitcoinHelpers.TargetBlockTime)
 
         ChainState(
-          blockHeight = BigInt(firstHeader.height),
-          blockHash = blockHash,
-          currentTarget = target,
-          recentTimestamps = prelude.List.single(timestamp),
-          previousDifficultyAdjustmentTimestamp = estimatedPrevAdjustmentTime,
           confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(blockHash),
+          ctx = TraversalCtx(
+            timestamps = prelude.List.single(timestamp),
+            height = BigInt(firstHeader.height),
+            currentBits = target,
+            prevDiffAdjTimestamp = estimatedPrevAdjustmentTime,
+            lastBlockHash = blockHash
+          ),
           forkTree = ForkTree.End
         )
     }

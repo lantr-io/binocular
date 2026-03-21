@@ -152,8 +152,8 @@ case class ProveTransactionCommand(
                     s"${oracleUtxo.input.transactionId.toHex}:${oracleUtxo.input.index}"
                 println(s"Oracle state:")
                 println(s"  Oracle UTxO: $oracleRef")
-                println(s"  Block Height: ${chainState.blockHeight}")
-                println(s"  Block Hash: ${chainState.blockHash.toHex}")
+                println(s"  Block Height: ${chainState.ctx.height}")
+                println(s"  Block Hash: ${chainState.ctx.lastBlockHash.toHex}")
 
                 println()
                 println("Step 4: Verifying Merkle proof...")
@@ -215,8 +215,8 @@ case class ProveTransactionCommand(
                 println()
                 println(s"Oracle state:")
                 println(s"  Oracle UTxO: $oracleRef")
-                println(s"  Block Height: ${chainState.blockHeight}")
-                println(s"  Block Hash: ${chainState.blockHash.toHex}")
+                println(s"  Block Height: ${chainState.ctx.height}")
+                println(s"  Block Hash: ${chainState.ctx.lastBlockHash.toHex}")
 
                 given ec: ExecutionContext = ExecutionContext.global
                 val rpc = new SimpleBitcoinRpc(btcConf)
@@ -281,9 +281,9 @@ case class ProveTransactionCommand(
                             return 1
                     }
 
-                if blockHeader.height > chainState.blockHeight.toInt then {
+                if blockHeader.height > chainState.ctx.height.toInt then {
                     System.err.println(
-                      s"Block height ${blockHeader.height} > oracle height ${chainState.blockHeight}"
+                      s"Block height ${blockHeader.height} > oracle height ${chainState.ctx.height}"
                     )
                     return 1
                 }
@@ -343,7 +343,7 @@ case class ProveTransactionCommand(
                 println()
                 println("Step 8: Building MPF membership proof for Oracle's confirmed trie...")
 
-                val confirmedHeight = chainState.blockHeight.toInt
+                val confirmedHeight = chainState.ctx.height.toInt
                 val targetBlockHashBytes = ByteString.fromHex(targetBlockHash).reverse
 
                 println(s"  Oracle confirmed height: $confirmedHeight")
@@ -396,7 +396,7 @@ case class ProveTransactionCommand(
                 println()
                 println("--- Oracle State ---")
                 println(s"Oracle UTxO: $oracleRef")
-                println(s"Oracle Height: ${chainState.blockHeight}")
+                println(s"Oracle Height: ${chainState.ctx.height}")
                 println(s"Confirmed Blocks Root: ${chainState.confirmedBlocksRoot.toHex}")
                 println()
                 println("--- PROOF 1: Transaction in Block ---")

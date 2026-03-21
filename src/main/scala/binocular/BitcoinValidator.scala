@@ -166,12 +166,8 @@ enum ForkTree derives FromData, ToData {
 }
 
 case class ChainState(
-    blockHeight: BigInt,
-    blockHash: BlockHash,
-    currentTarget: CompactBits,
-    recentTimestamps: List11Timestamps,
-    previousDifficultyAdjustmentTimestamp: PosixTime,
     confirmedBlocksRoot: MPFRoot,
+    ctx: TraversalCtx,
     forkTree: ForkTree
 ) derives FromData,
       ToData
@@ -245,21 +241,6 @@ object BitcoinValidator extends DataParameterizedValidator {
     // ============================================================================
     // TraversalCtx helpers
     // ============================================================================
-
-    /** Initialize traversal context from the confirmed state.
-      *
-      * The context starts at the confirmed tip, with height, bits, timestamps, and hash matching
-      * the confirmed chain. All tree traversal (accumulation, validation, chainwork) builds on top
-      * of this starting point.
-      */
-    def initCtx(state: ChainState): TraversalCtx =
-        TraversalCtx(
-          timestamps = state.recentTimestamps,
-          height = state.blockHeight,
-          currentBits = state.currentTarget,
-          prevDiffAdjTimestamp = state.previousDifficultyAdjustmentTimestamp,
-          lastBlockHash = state.blockHash
-        )
 
     /** Accumulate one already-validated block into the traversal context.
       *
@@ -915,12 +896,8 @@ object BitcoinValidator extends DataParameterizedValidator {
             loop(promoted, mpfProofs, ctx0, state.confirmedBlocksRoot)
 
         ChainState(
-          blockHeight = finalCtx.height,
-          blockHash = finalCtx.lastBlockHash,
-          currentTarget = finalCtx.currentBits,
-          recentTimestamps = finalCtx.timestamps.take(MedianTimeSpan),
-          previousDifficultyAdjustmentTimestamp = finalCtx.prevDiffAdjTimestamp,
           confirmedBlocksRoot = finalRoot,
+          ctx = finalCtx.copy(timestamps = finalCtx.timestamps.take(MedianTimeSpan)),
           forkTree = cleanedTree
         )
     }
@@ -949,7 +926,7 @@ object BitcoinValidator extends DataParameterizedValidator {
         currentTime: BigInt,
         params: BitcoinValidatorParams
     ): ChainState = {
-        val ctx0 = initCtx(state)
+        val ctx0 = state.ctx
 
         // Step 1: Validate and insert new blocks into tree (or keep tree if no headers)
         val newTree = blockHeaders match
@@ -969,7 +946,7 @@ object BitcoinValidator extends DataParameterizedValidator {
         val numBlocksToPromote = promotionProofs.length
         if numBlocksToPromote > BigInt(0) then
             // Step 2: Find best chain by chainwork (single full traversal)
-            val (_, bestDepth, bestPath) = bestChainPath(newTree, state.blockHeight, BigInt(0))
+            val (_, bestDepth, bestPath) = bestChainPath(newTree, ctx0.height, BigInt(0))
 //            log("bestChainPath")
 
             // Step 3: Promote eligible blocks + GC dead forks (single traversal along bestPath)
@@ -1081,7 +1058,7 @@ object BitcoinValidator extends DataParameterizedValidator {
             case OracleAction.CloseOracle =>
                 // 1. Staleness check: last confirmed block timestamp must be > closureTimeout ago
                 require(
-                  intervalStartInSeconds - chainState.recentTimestamps.head > params.closureTimeout,
+                  intervalStartInSeconds - chainState.ctx.timestamps.head > params.closureTimeout,
                   "Oracle is not stale"
                 )
                 // 2. Owner authorization

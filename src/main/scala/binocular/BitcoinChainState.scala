@@ -144,12 +144,14 @@ object BitcoinChainState {
               prelude.List.Nil: prelude.List[BigInt]
             )((ts, acc) => prelude.List.Cons(ts, acc))
         } yield ChainState(
-          blockHeight = blockHeight,
-          blockHash = blockHash,
-          currentTarget = bits,
-          recentTimestamps = recentTimestamps,
-          previousDifficultyAdjustmentTimestamp = BigInt(adjustmentHeader.time),
           confirmedBlocksRoot = mpfRootForSingleBlock(blockHash), // MPF trie with single block
+          ctx = TraversalCtx(
+            timestamps = recentTimestamps,
+            height = blockHeight,
+            currentBits = bits,
+            prevDiffAdjTimestamp = BigInt(adjustmentHeader.time),
+            lastBlockHash = blockHash
+          ),
           forkTree = ForkTree.End // Initialize with empty forks tree
         )
     }
