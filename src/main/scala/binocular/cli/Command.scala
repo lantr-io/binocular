@@ -1,12 +1,12 @@
 package binocular.cli
 
 import binocular.*
-import scalus.cardano.address.Address
-import scalus.cardano.ledger.{AssetName, Script, ScriptHash, TransactionHash, TransactionInput, Utxo, Value}
+import scalus.cardano.address.{Address, Network}
+import scalus.cardano.ledger.{AssetName, ScriptHash, TransactionHash, TransactionInput, Utxo, Value}
 import scalus.cardano.node.BlockchainProvider
-import scalus.cardano.txbuilder.TransactionSigner
 import scalus.cardano.wallet.hd.HdAccount
-import scalus.uplc.builtin.ByteString
+import scalus.uplc.PlutusV3
+import scalus.uplc.builtin.{ByteString, Data}
 import scalus.uplc.builtin.Data.fromData
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 import scalus.utils.Hex.hexToBytes
@@ -36,14 +36,17 @@ trait Command {
 /** Common setup context for commands that interact with the oracle on-chain */
 case class OracleSetup(
     params: BitcoinValidatorParams,
-    scriptAddress: Address,
-    scriptAddressBech32: String,
-    script: Script.PlutusV3,
+    compiled: PlutusV3[Data => Unit],
     hdAccount: HdAccount,
-    signer: TransactionSigner,
-    sponsorAddress: Address,
-    provider: BlockchainProvider
-)
+    provider: BlockchainProvider,
+    network: Network
+) {
+    lazy val script = compiled.script
+    lazy val scriptAddress = compiled.address(network)
+    lazy val scriptAddressBech32 = scriptAddress.encode.get
+    lazy val signer = hdAccount.signerForUtxos
+    lazy val sponsorAddress = hdAccount.baseAddress(network)
+}
 
 /** Represents a validated oracle UTxO with its parsed ChainState */
 case class ValidOracleUtxo(
@@ -144,7 +147,7 @@ object CommandHelpers {
         }
     }
 
-    /** Set up all the common oracle infrastructure (params, wallet, provider, script).
+    /** Set up all the common oracle infrastructure (params, wallet, provider, compiled contract).
       *
       * Returns Left(error) on any setup failure.
       */
@@ -153,23 +156,16 @@ object CommandHelpers {
     )(using ExecutionContext): Either[String, OracleSetup] = {
         for {
             params <- config.oracle.toBitcoinValidatorParams()
-            addrBech32 <- config.oracle.scriptAddress(config.cardano.cardanoNetwork)
             hdAccount <- config.wallet.createHdAccount()
             provider <- config.cardano.createBlockchainProvider()
         } yield {
-            val signer = new TransactionSigner(Set(hdAccount.paymentKeyPair))
-            val sponsorAddress = hdAccount.baseAddress(config.cardano.scalusNetwork)
-            val scriptAddress = Address.fromBech32(addrBech32)
-            val script = BitcoinContract.makeContract(params).script
+            val compiled = BitcoinContract.makeContract(params)
             OracleSetup(
               params,
-              scriptAddress,
-              addrBech32,
-              script,
+              compiled,
               hdAccount,
-              signer,
-              sponsorAddress,
-              provider
+              provider,
+              config.cardano.scalusNetwork
             )
         }
     }
