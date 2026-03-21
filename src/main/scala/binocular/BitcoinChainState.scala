@@ -88,7 +88,7 @@ object BitcoinChainState {
       * state.
       *
       * @param rpc
-      *   SimpleBitcoinRpc client
+      *   BitcoinRpc client
       * @param blockHeight
       *   Bitcoin block height to start from
       * @param ec
@@ -97,7 +97,7 @@ object BitcoinChainState {
       *   Future[ChainState] with initial oracle state
       */
     def getInitialChainState(
-        rpc: SimpleBitcoinRpc,
+        rpc: BitcoinRpc,
         blockHeight: Int
     )(using ec: ExecutionContext): Future[ChainState] = {
         val interval = BitcoinHelpers.DifficultyAdjustmentInterval.toInt

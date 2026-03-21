@@ -9,6 +9,15 @@ import java.time.Duration as JavaDuration
 import upickle.default.*
 import java.util.Base64
 
+/** Common interface for Bitcoin RPC operations */
+trait BitcoinRpc {
+    def getBlockHash(height: Int): Future[String]
+    def getBlockHeader(hash: String): Future[BlockHeaderInfo]
+    def getBlock(hash: String): Future[BlockInfo]
+    def getBlockchainInfo(): Future[BlockchainInfo]
+    def getRawTransaction(txid: String): Future[RawTransactionInfo]
+}
+
 /** Lightweight Bitcoin RPC client using Java 11+ HTTP client
   *
   * Does not depend on bitcoin-s and works with:
@@ -17,7 +26,7 @@ import java.util.Base64
   *
   * This avoids the cookie file lookup issues in bitcoin-s.
   */
-class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) {
+class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) extends BitcoinRpc {
 
     private val httpClient = HttpClient
         .newBuilder()
