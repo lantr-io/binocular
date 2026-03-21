@@ -106,22 +106,42 @@ object CommandHelpers {
 
     /** Find the oracle UTxO by looking for the NFT with the given policy ID.
       *
-      * The NFT policy ID equals the script hash. Returns a failed Future if zero or multiple found.
+      * The NFT policy ID equals the script hash. The script address is derived from the policy ID
+      * and the provider's network. Returns a failed Future if zero or multiple found.
       */
     def findOracleUtxo(
         provider: BlockchainProvider,
         nftPolicyId: ScriptHash
     )(using ExecutionContext): Future[Utxo] = {
-        provider
-            .queryUtxos(_.output.value.hasAsset(nftPolicyId, AssetName.empty))
-            .execute()
-            .flatMap {
-                case Left(err) =>
-                    Future.failed(new RuntimeException(s"Error fetching UTxOs: $err"))
-                case Right(utxos) =>
-                    assert(utxos.size == 1)
-                    Future.successful(Utxo(utxos.head))
-            }
+        val scriptAddress =
+            Address(
+              provider.cardanoInfo.network,
+              scalus.cardano.ledger.Credential.ScriptHash(nftPolicyId)
+            )
+        provider.findUtxos(scriptAddress).flatMap {
+            case Left(err) =>
+                Future.failed(new RuntimeException(s"Error fetching UTxOs: $err"))
+            case Right(utxos) =>
+                val matches = utxos.collect {
+                    case (input, output) if output.value.hasAsset(nftPolicyId, AssetName.empty) =>
+                        Utxo(input, output)
+                }.toList
+                matches match {
+                    case List(utxo) => Future.successful(utxo)
+                    case Nil =>
+                        Future.failed(
+                          new RuntimeException(
+                            s"No oracle UTxO with NFT $nftPolicyId found"
+                          )
+                        )
+                    case multiple =>
+                        Future.failed(
+                          new RuntimeException(
+                            s"Multiple oracle UTxOs (${multiple.size}) with NFT $nftPolicyId found"
+                          )
+                        )
+                }
+        }
     }
 
     /** Set up all the common oracle infrastructure (params, wallet, provider, script).
