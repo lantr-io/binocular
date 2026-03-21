@@ -44,6 +44,7 @@ lazy val it = (project in file("it"))
       name := "binocular-it",
       Test / parallelExecution := false,
       Test / fork := true,
+      Test / baseDirectory := (binocular / baseDirectory).value,
       Test / javaOptions ++= Seq("-Xmx2g"),
       Test / envVars += ("TESTCONTAINERS_RYUK_DISABLED" -> "true"),
       addCompilerPlugin("org.scalus" % "scalus-plugin_3.3.7" % scalusVersion),

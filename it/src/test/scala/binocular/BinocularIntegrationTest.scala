@@ -43,18 +43,23 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
     class MockBitcoinRpc(fixtureDir: String = "src/test/resources/bitcoin_blocks")(using
         ec: ExecutionContext
     ) {
-        private def loadBlockFixture(height: Int): BlockFixture =
-            BlockFixture.load(height, fixtureDir)
-
-        private def loadBlockByHash(hash: String): Option[BlockFixture] = {
+        // Build hash→height index once to avoid scanning all files on every lookup
+        private lazy val hashToHeight: Map[String, Int] = {
             val dir = new java.io.File(fixtureDir)
             dir.listFiles()
                 .filter(_.getName.startsWith("block_"))
                 .filter(_.getName.endsWith(".json"))
                 .filterNot(_.getName.contains("merkle_proofs"))
                 .map { f => BlockFixture.load(f) }
-                .find(_.hash == hash)
+                .map(b => b.hash -> b.height)
+                .toMap
         }
+
+        private def loadBlockFixture(height: Int): BlockFixture =
+            BlockFixture.load(height, fixtureDir)
+
+        private def loadBlockByHash(hash: String): Option[BlockFixture] =
+            hashToHeight.get(hash).map(loadBlockFixture)
 
         def getBlockHash(height: Int): Future[String] = Future {
             loadBlockFixture(height).hash
@@ -106,15 +111,10 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         }
 
         def getRawTransaction(txid: String): Future[RawTransactionInfo] = Future {
-            val dir = new java.io.File(fixtureDir)
-            val blockWithTx = dir
-                .listFiles()
-                .filter(_.getName.startsWith("block_"))
-                .filter(_.getName.endsWith(".json"))
-                .filterNot(_.getName.contains("merkle_proofs"))
-                .map { f => BlockFixture.load(f) }
+            val blockHash = hashToHeight.keys
+                .flatMap(h => loadBlockByHash(h))
                 .find(_.transactions.contains(txid))
-            blockWithTx match {
+            blockHash match {
                 case Some(block) =>
                     RawTransactionInfo(
                       txid = txid,
@@ -129,16 +129,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         }
 
         def getBlockchainInfo(): Future[BlockchainInfo] = Future {
-            val dir = new java.io.File(fixtureDir)
-            val maxHeight = dir
-                .listFiles()
-                .filter(_.getName.startsWith("block_"))
-                .filter(_.getName.endsWith(".json"))
-                .filterNot(_.getName.contains("merkle_proofs"))
-                .map { f => BlockFixture.load(f) }
-                .map(_.height)
-                .maxOption
-                .getOrElse(0)
+            val maxHeight = hashToHeight.values.maxOption.getOrElse(0)
             val bestBlock = loadBlockFixture(maxHeight)
             BlockchainInfo(
               chain = "test",
