@@ -2,7 +2,7 @@ package binocular
 
 import binocular.util.SlotConfigHelper
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{CardanoInfo, PlutusScript, Script, ScriptHash, ScriptRef, Transaction, TransactionOutput, Utxo, Utxos, Value}
+import scalus.cardano.ledger.{AssetName, CardanoInfo, PlutusScript, Script, ScriptHash, ScriptRef, Transaction, TransactionOutput, Utxo, Utxos, Value}
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}
 import scalus.uplc.builtin.Data
@@ -200,20 +200,44 @@ object OracleTransactions {
         (newState, mpfProofs, mpf)
     }
 
-    /** Build and submit initialization transaction */
+    /** Build and submit initialization transaction.
+      *
+      * Mints the oracle NFT (one-shot policy) and sends it to the script address with the initial
+      * ChainState as inline datum. The one-shot UTxO (from params.oneShotTxOutRef) must be
+      * consumed.
+      */
     def buildAndSubmitInitTransaction(
         signer: TransactionSigner,
         provider: BlockchainProvider,
         scriptAddress: Address,
         sponsorAddress: Address,
         initialState: ChainState,
+        script: Script.PlutusV3,
+        oneShotUtxo: Utxo,
         lovelaceAmount: Long = 5_000_000L,
         timeout: Duration = 120.seconds
     ): Either[String, String] = {
         given ec: ExecutionContext = provider.executionContext
         Try {
+            val policyId = script.scriptHash
+            val nftValue =
+                Value.lovelace(lovelaceAmount) + Value.asset(policyId, AssetName.empty, 1L)
+
+            // Mint redeemer: output index of the oracle output in the final transaction.
+            // The minting policy validates that the NFT goes to the script address at this index.
+            val mintRedeemer: Transaction => Data = { tx =>
+                val idx = tx.body.value.outputs.indexWhere { sized =>
+                    sized.value.value.hasAsset(policyId, AssetName.empty)
+                }
+                Data.I(idx)
+            }
+
+            val mintAssets = Map(AssetName.empty -> 1L)
+
             val tx = TxBuilder(provider.cardanoInfo)
-                .payTo(scriptAddress, Value.lovelace(lovelaceAmount), initialState)
+                .spend(oneShotUtxo) // consume one-shot UTxO for NFT policy
+                .mint(script, mintAssets, mintRedeemer)
+                .payTo(scriptAddress, nftValue, initialState)
                 .complete(provider, sponsorAddress)
                 .await(timeout)
                 .sign(signer)

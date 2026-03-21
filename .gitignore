@@ -24,3 +24,4 @@ cardano-address
 blockfrost_api_key.txt
 .env
 .contract-debug/
+application.conf

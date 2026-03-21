@@ -3,6 +3,7 @@ package binocular.cli.commands
 import binocular.*
 import binocular.cli.{Command, CommandHelpers}
 import com.typesafe.scalalogging.LazyLogging
+import scalus.cardano.ledger.TransactionInput
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
@@ -91,7 +92,37 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
         }
 
         println()
-        println("Step 3: Building and submitting Cardano transaction...")
+        println("Step 3: Fetching one-shot UTxO for NFT minting...")
+        val oneShotRef = setup.params.oneShotTxOutRef
+        val oneShotInput = TransactionInput(
+          scalus.cardano.ledger.TransactionHash.fromByteString(oneShotRef.id.hash),
+          oneShotRef.idx.toInt
+        )
+        val oneShotUtxo =
+            try {
+                setup.provider.findUtxo(oneShotInput).await(30.seconds) match {
+                    case Right(u) => u
+                    case Left(e) =>
+                        System.err.println(s"Error: One-shot UTxO not found: $e")
+                        System.err.println(
+                          s"  Configured tx-out-ref: ${config.oracle.txOutRef}"
+                        )
+                        System.err.println(
+                          "  Make sure the UTxO exists and hasn't been spent"
+                        )
+                        break(1)
+                }
+            } catch {
+                case e: Exception =>
+                    System.err.println(
+                      s"Error fetching one-shot UTxO: ${e.getMessage}"
+                    )
+                    break(1)
+            }
+        println(s"  One-shot UTxO: ${config.oracle.txOutRef}")
+
+        println()
+        println("Step 4: Building and submitting Cardano transaction...")
 
         OracleTransactions.buildAndSubmitInitTransaction(
           setup.signer,
@@ -99,6 +130,8 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
           setup.scriptAddress,
           setup.sponsorAddress,
           initialState,
+          setup.script,
+          oneShotUtxo,
           timeout = timeout
         ) match {
             case Right(txHash) =>

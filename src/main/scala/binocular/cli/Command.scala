@@ -2,7 +2,7 @@ package binocular.cli
 
 import binocular.*
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{AssetName, ScriptHash, TransactionHash, TransactionInput, Utxo, Value}
+import scalus.cardano.ledger.{AssetName, Script, ScriptHash, TransactionHash, TransactionInput, Utxo, Value}
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.txbuilder.TransactionSigner
 import scalus.cardano.wallet.hd.HdAccount
@@ -38,7 +38,7 @@ case class OracleSetup(
     params: BitcoinValidatorParams,
     scriptAddress: Address,
     scriptAddressBech32: String,
-    script: scalus.cardano.ledger.Script.PlutusV3,
+    script: Script.PlutusV3,
     hdAccount: HdAccount,
     signer: TransactionSigner,
     sponsorAddress: Address,

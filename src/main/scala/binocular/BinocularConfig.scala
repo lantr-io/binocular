@@ -25,7 +25,10 @@ object BinocularConfig {
             case Some(path) =>
                 ConfigSource.file(path).withFallback(ConfigSource.default)
             case None =>
-                ConfigSource.default
+                val appConf = java.io.File("application.conf")
+                if appConf.exists() then
+                    ConfigSource.file(appConf).withFallback(ConfigSource.default)
+                else ConfigSource.default
         }
         source.at("binocular").loadOrThrow[BinocularConfig]
     }

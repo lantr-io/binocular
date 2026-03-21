@@ -16,35 +16,54 @@ import scalus.utils.await
 case class CardanoConfig(
     network: String = "mainnet",
     backend: String = "blockfrost",
-    blockfrostProjectId: String = ""
+    blockfrostProjectId: String = "",
+    yaciStoreUrl: String = "http://localhost:8080/api/v1",
+    yaciAdminUrl: String = "http://localhost:10000/local-cluster/api"
 ) derives ConfigReader {
 
     /** Create BlockchainProvider based on configured backend type */
     def createBlockchainProvider()(using
         ec: ExecutionContext
     ): Either[String, BlockchainProvider] = {
-        if blockfrostProjectId.isEmpty || blockfrostProjectId == "changeme" then {
-            Left(
-              "Blockfrost backend requires valid project ID. Set BLOCKFROST_PROJECT_ID or configure binocular.cardano.blockfrost-project-id"
-            )
-        } else {
-            Try {
-                val future: Future[BlockfrostProvider] = cardanoNetwork match {
-                    case CardanoNetwork.Mainnet =>
-                        BlockfrostProvider.mainnet(blockfrostProjectId)
-                    case CardanoNetwork.Preprod =>
-                        BlockfrostProvider.preprod(blockfrostProjectId)
-                    case CardanoNetwork.Preview =>
-                        BlockfrostProvider.preview(blockfrostProjectId)
-                    case CardanoNetwork.Testnet =>
-                        BlockfrostProvider.preview(blockfrostProjectId)
+        backend.toLowerCase match {
+            case "yaci" =>
+                Try {
+                    BlockfrostProvider
+                        .localYaci(yaciStoreUrl, yaciAdminUrl)
+                        .await(30.seconds)
+                } match {
+                    case Success(provider) => Right(provider)
+                    case Failure(ex) =>
+                        Left(s"Failed to create Yaci provider: ${ex.getMessage}")
                 }
-                future.await(30.seconds)
-            } match {
-                case Success(provider) => Right(provider)
-                case Failure(ex) =>
-                    Left(s"Failed to create Blockfrost provider: ${ex.getMessage}")
-            }
+            case "blockfrost" =>
+                if blockfrostProjectId.isEmpty || blockfrostProjectId == "changeme" then {
+                    Left(
+                      "Blockfrost backend requires valid project ID. Set BLOCKFROST_PROJECT_ID or configure binocular.cardano.blockfrost-project-id"
+                    )
+                } else {
+                    Try {
+                        val future: Future[BlockfrostProvider] = cardanoNetwork match {
+                            case CardanoNetwork.Mainnet =>
+                                BlockfrostProvider.mainnet(blockfrostProjectId)
+                            case CardanoNetwork.Preprod =>
+                                BlockfrostProvider.preprod(blockfrostProjectId)
+                            case CardanoNetwork.Preview =>
+                                BlockfrostProvider.preview(blockfrostProjectId)
+                            case CardanoNetwork.Testnet =>
+                                BlockfrostProvider.preview(blockfrostProjectId)
+                        }
+                        future.await(30.seconds)
+                    } match {
+                        case Success(provider) => Right(provider)
+                        case Failure(ex) =>
+                            Left(s"Failed to create Blockfrost provider: ${ex.getMessage}")
+                    }
+                }
+            case other =>
+                Left(
+                  s"Unknown Cardano backend: $other. Valid options: blockfrost, yaci"
+                )
         }
     }
 
@@ -62,10 +81,16 @@ case class CardanoConfig(
 
     /** Validate configuration */
     def validate(): Either[String, Unit] = {
-        if blockfrostProjectId.isEmpty || blockfrostProjectId == "changeme" then {
-            Left("Blockfrost project ID must be configured")
-        } else {
-            Right(())
+        backend.toLowerCase match {
+            case "yaci" => Right(())
+            case "blockfrost" =>
+                if blockfrostProjectId.isEmpty || blockfrostProjectId == "changeme" then {
+                    Left("Blockfrost project ID must be configured")
+                } else {
+                    Right(())
+                }
+            case other =>
+                Left(s"Unknown Cardano backend: $other. Valid options: blockfrost, yaci")
         }
     }
 
@@ -80,12 +105,14 @@ case class CardanoConfig(
 /** Cardano backend types */
 enum CardanoBackend {
     case Blockfrost
+    case Yaci
 }
 
 object CardanoBackend {
     def fromString(s: String): Either[String, CardanoBackend] = s.toLowerCase match {
         case "blockfrost" => Right(Blockfrost)
-        case _            => Left(s"Unknown Cardano backend: $s. Valid options: blockfrost")
+        case "yaci"       => Right(Yaci)
+        case _            => Left(s"Unknown Cardano backend: $s. Valid options: blockfrost, yaci")
     }
 }
 
