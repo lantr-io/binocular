@@ -171,10 +171,17 @@ object BitcoinHeaderFixtures {
         val estimatedPrevAdjustmentTime =
             timestamp - (blocksSinceAdjustment * BitcoinHelpers.TargetBlockTime)
 
+        // Build 11 timestamps (newest-first), estimating prior blocks at TargetBlockTime intervals
+        val timestamps = prelude.List.from(
+          (0 until BitcoinHelpers.MedianTimeSpan.toInt)
+              .map(i => timestamp - i * BitcoinHelpers.TargetBlockTime)
+              .toList
+        )
+
         ChainState(
           confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(blockHash),
           ctx = TraversalCtx(
-            timestamps = prelude.List.single(timestamp),
+            timestamps = timestamps,
             height = BigInt(firstHeader.height),
             currentBits = target,
             prevDiffAdjTimestamp = estimatedPrevAdjustmentTime,

@@ -116,12 +116,22 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
 
     private def getInitialChainState(blockHeight: Int): Future[ChainState] = {
         val interval = BitcoinHelpers.DifficultyAdjustmentInterval.toInt
+        val medianTimeSpan = BitcoinHelpers.MedianTimeSpan.toInt
         val adjustmentBlockHeight = blockHeight - (blockHeight % interval)
         for
             blockHashHex <- rpc.getBlockHash(blockHeight)
             header <- rpc.getBlockHeader(blockHashHex)
             adjustmentBlockHashHex <- rpc.getBlockHash(adjustmentBlockHeight)
             adjustmentHeader <- rpc.getBlockHeader(adjustmentBlockHashHex)
+            // Fetch timestamps for the previous 11 blocks (for median-time-past validation)
+            recentTimestamps <- {
+                val heights = (0 until medianTimeSpan).map(i => blockHeight - i).toList
+                Future.sequence(heights.map { h =>
+                    if h >= 0 then
+                        rpc.getBlockHash(h).flatMap(rpc.getBlockHeader).map(hdr => BigInt(hdr.time))
+                    else Future.successful(BigInt(0))
+                })
+            }
             bits = BitcoinChainState.rpcBitsToCompactBits(header.bits)
             // Block hash from RPC is in display order (big-endian), but we store it in internal order (little-endian)
             blockHash = ByteString.fromArray(hexToByteString(header.hash).bytes.reverse.toArray)
@@ -129,7 +139,7 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
           confirmedBlocksRoot =
               BitcoinChainState.mpfRootForSingleBlock(blockHash), // MPF trie with single block
           ctx = TraversalCtx(
-            timestamps = prelude.List(BigInt(header.time)),
+            timestamps = prelude.List.from(recentTimestamps),
             height = blockHeight,
             currentBits = bits,
             prevDiffAdjTimestamp = BigInt(adjustmentHeader.time),

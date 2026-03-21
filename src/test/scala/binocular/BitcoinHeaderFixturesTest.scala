@@ -36,7 +36,7 @@ class BitcoinHeaderFixturesTest extends AnyFunSuite {
         assert(genesisState.ctx.height == BigInt(865493))
         assert(genesisState.ctx.lastBlockHash.length == 32, "Block hash should be 32 bytes")
         assert(genesisState.ctx.currentBits.length == 4, "Compact bits should be 4 bytes")
-        assert(!genesisState.ctx.timestamps.isEmpty, "Should have at least one timestamp")
+        assert(genesisState.ctx.timestamps.length == 11, "Should have 11 timestamps")
         assert(genesisState.ctx.timestamps.head == BigInt(1736701001))
     }
 
