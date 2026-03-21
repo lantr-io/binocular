@@ -1,5 +1,6 @@
 package binocular
 
+import binocular.cli.CommandHelpers
 import org.scalatest.funsuite.AnyFunSuite
 import scalus.cardano.address.{Address, Network}
 import scalus.cardano.ledger.*
@@ -27,7 +28,7 @@ import scala.util.Try
   * full PoW validation (testingMode=false), and tests the complete add-blocks → wait → promote
   * cycle.
   */
-class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit with OracleTestHelpers {
+class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
 
     override protected def yaciConfig: YaciConfig = YaciConfig(
       containerName = "binocular-regtest-yaci-devkit",
@@ -224,7 +225,7 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit with O
                 .await(120.seconds)
             assert(initStatus == TransactionStatus.Confirmed, "Init tx not confirmed")
             Thread.sleep(2000)
-            var currentOracleUtxo = findOracleUtxo(yaciCtx.provider, scriptHash)
+            var currentOracleUtxo = CommandHelpers.findOracleUtxo(yaciCtx.provider, scriptHash).await(30.seconds)
 
             // Phase 4: Deploy reference script
             println(s"[Test] Deploying reference script")
@@ -305,7 +306,7 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit with O
                         )
                         Thread.sleep(2000)
                         currentOracleUtxo =
-                            findOracleUtxo(yaciCtx.provider, scriptHash)
+                            CommandHelpers.findOracleUtxo(yaciCtx.provider, scriptHash).await(30.seconds)
                         val onChainState = currentOracleUtxo.output.inlineDatum.get.to[ChainState]
                         assert(
                           onChainState.blockHeight == newState.blockHeight &&
@@ -408,7 +409,7 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit with O
                             )
                             Thread.sleep(2000)
                             currentOracleUtxo =
-                                findOracleUtxo(yaciCtx.provider, scriptHash)
+                                CommandHelpers.findOracleUtxo(yaciCtx.provider, scriptHash).await(30.seconds)
                             currentState = currentOracleUtxo.output.inlineDatum.get.to[ChainState]
                             currentMpf = mpf
                             totalPromoted += numPromoted

@@ -1,5 +1,6 @@
 package binocular
 
+import binocular.cli.CommandHelpers
 import org.scalatest.funsuite.AnyFunSuite
 import scalus.cardano.address.{Address, Network}
 import scalus.cardano.ledger.*
@@ -29,7 +30,7 @@ import scala.concurrent.{ExecutionContext, Future}
   *   4. Standalone merkle proof verification
   *   5. Init failure with invalid fixture height
   */
-class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit with OracleTestHelpers {
+class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
 
     override protected def yaciConfig: YaciConfig = YaciConfig(
       containerName = "binocular-yaci-devkit",
@@ -227,7 +228,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit with OracleTe
                 )
                 Thread.sleep(2000)
 
-                val newOracleUtxo = findOracleUtxo(ctx.provider, script.scriptHash)
+                val newOracleUtxo = CommandHelpers.findOracleUtxo(ctx.provider, script.scriptHash).await(30.seconds)
                 val onChainState = newOracleUtxo.output.inlineDatum.get.to[ChainState]
 
                 assert(
@@ -298,7 +299,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit with OracleTe
             .await(60.seconds)
         Thread.sleep(2000)
 
-        val oracleUtxo = findOracleUtxo(ctx.provider, scriptHash)
+        val oracleUtxo = CommandHelpers.findOracleUtxo(ctx.provider, scriptHash).await(30.seconds)
         (oracleUtxo, script, scriptAddress, params)
     }
 
