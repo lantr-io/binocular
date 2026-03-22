@@ -34,7 +34,6 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
             break(1)
         }
         val network = config.cardano.scalusNetwork
-        val signer = hdAccount.signerForUtxos
         val sponsorAddress = hdAccount.baseAddress(network)
 
         val blockHeight = startBlock.orElse(oracleConf.startHeight).getOrElse {
@@ -104,9 +103,8 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
         val t3 = System.nanoTime()
         val (oneShotTxHash, oneShotIdx, oneShotOutput) =
             OracleTransactions.createOneShotUtxo(
-              signer,
               provider,
-              sponsorAddress,
+              hdAccount,
               timeout = timeout
             ) match {
                 case Right(result) =>
@@ -153,11 +151,9 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
         val t5 = System.nanoTime()
         val (deployTxHash, deployIdx, deployOutput) =
             OracleTransactions.deployReferenceScript(
-              signer,
               provider,
-              sponsorAddress,
-              setup.scriptAddress,
-              setup.script,
+              hdAccount,
+              compiled,
               timeout
             ) match {
                 case Right(result) =>
@@ -187,12 +183,10 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
 
         val txResult = OracleTransactions
             .buildAndSubmitInitTransaction(
-              setup.signer,
-              setup.provider,
-              setup.scriptAddress,
-              setup.sponsorAddress,
+              provider,
+              hdAccount,
+              compiled,
               initialState,
-              setup.script,
               oneShotUtxo,
               referenceScriptUtxo,
               timeout = timeout

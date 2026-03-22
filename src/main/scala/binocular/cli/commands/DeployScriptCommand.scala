@@ -39,11 +39,9 @@ case class DeployScriptCommand() extends Command with LazyLogging {
         logger.info("No existing reference script found. Deploying...")
 
         OracleTransactions.deployReferenceScript(
-          setup.signer,
           setup.provider,
-          setup.sponsorAddress,
-          setup.scriptAddress,
-          setup.script,
+          setup.hdAccount,
+          setup.compiled,
           timeout
         ) match {
             case Right((deployTxHash, deployOutputIdx, _)) =>

@@ -192,10 +192,9 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
                     }
 
                     val result = OracleTransactions.buildOptimalUpdateTransaction(
-                      setup.signer,
                       setup.provider,
-                      setup.scriptAddress,
-                      setup.sponsorAddress,
+                      setup.hdAccount,
+                      setup.compiled,
                       currentOracleUtxo,
                       currentChainState,
                       headersList,

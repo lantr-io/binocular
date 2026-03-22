@@ -64,11 +64,9 @@ case class UpdateOracleCommand(
                         println(s"  No reference script found, deploying one...")
                         println(s"  This is a one-time operation to reduce transaction sizes")
                         OracleTransactions.deployReferenceScript(
-                          setup.signer,
                           setup.provider,
-                          setup.sponsorAddress,
-                          setup.scriptAddress,
-                          setup.script,
+                          setup.hdAccount,
+                          setup.compiled,
                           timeout
                         ) match {
                             case Right((deployTxHash, deployOutputIdx, savedOutput)) =>
@@ -103,7 +101,6 @@ case class UpdateOracleCommand(
             println()
             println("Step 3: Finding oracle UTxO by NFT...")
 
-            val scriptAddress = setup.scriptAddress
             val oracleUtxo: Utxo =
                 try {
                     CommandHelpers
@@ -361,10 +358,9 @@ case class UpdateOracleCommand(
                 }
 
                 val txResult = OracleTransactions.buildAndSubmitUpdateTransaction(
-                  setup.signer,
                   setup.provider,
-                  scriptAddress,
-                  setup.sponsorAddress,
+                  setup.hdAccount,
+                  setup.compiled,
                   currentOracleUtxo,
                   currentState,
                   newChainState,

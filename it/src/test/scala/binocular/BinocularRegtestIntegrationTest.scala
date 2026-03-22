@@ -2,7 +2,7 @@ package binocular
 
 import binocular.cli.CommandHelpers
 import org.scalatest.funsuite.AnyFunSuite
-import scalus.cardano.address.{Address, Network}
+import scalus.cardano.address.Network
 import scalus.cardano.ledger.{BlockHeader as _, *}
 import scalus.cardano.node.TransactionStatus
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
@@ -197,9 +197,10 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
               testingMode = false
             )
 
-            val script = BitcoinContract.makeContract(params).script
+            val compiled = BitcoinContract.makeContract(params)
+            val script = compiled.script
             val scriptHash = script.scriptHash
-            val scriptAddress = Address(Network.Testnet, Credential.ScriptHash(scriptHash))
+            val scriptAddress = compiled.address(Network.Testnet)
 
             val oracleValue = Value.asset(scriptHash, AssetName.empty, 1, Coin(5_000_000))
             val initTx = TxBuilder(yaciCtx.provider.cardanoInfo)
@@ -230,11 +231,9 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
             // Phase 4: Deploy reference script
             println(s"[Test] Deploying reference script")
             val refScriptResult = OracleTransactions.deployReferenceScript(
-              yaciCtx.alice.signer,
               yaciCtx.provider,
-              yaciCtx.alice.address,
-              scriptAddress,
-              script
+              Party.Alice.account,
+              compiled
             )
             val referenceScriptUtxo: Utxo = refScriptResult match {
                 case Right((txHash, outputIndex, savedOutput)) =>
@@ -280,10 +279,9 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
                     )
 
                 val updateResult = OracleTransactions.buildAndSubmitUpdateTransaction(
-                  yaciCtx.alice.signer,
                   yaciCtx.provider,
-                  scriptAddress,
-                  yaciCtx.alice.address,
+                  Party.Alice.account,
+                  compiled,
                   currentOracleUtxo,
                   currentState,
                   newState,
@@ -379,10 +377,9 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
                     )
 
                     val result = OracleTransactions.buildAndSubmitUpdateTransaction(
-                      yaciCtx.alice.signer,
                       yaciCtx.provider,
-                      scriptAddress,
-                      yaciCtx.alice.address,
+                      Party.Alice.account,
+                      compiled,
                       currentOracleUtxo,
                       currentState,
                       newState,

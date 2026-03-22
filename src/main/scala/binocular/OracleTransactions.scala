@@ -2,9 +2,9 @@ package binocular
 
 import binocular.util.SlotConfigHelper
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{AssetName, CardanoInfo, PlutusScript, Script, ScriptHash, ScriptRef, Transaction, TransactionOutput, Utxo, Utxos, Value}
+import scalus.cardano.ledger.{AssetName, CardanoInfo, PlutusScript, ScriptHash, ScriptRef, Transaction, TransactionOutput, Utxo, Utxos, Value}
 import scalus.cardano.node.BlockchainProvider
-import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}
+import scalus.cardano.txbuilder.TxBuilder
 import scalus.uplc.builtin.Data
 import binocular.OracleAction.*
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
@@ -29,12 +29,16 @@ object OracleTransactions {
 
     /** Build a transaction that deploys the oracle script to a UTxO as a reference script. */
     def buildDeployReferenceScript(
-        signer: TransactionSigner,
         provider: BlockchainProvider,
-        sponsorAddress: Address,
-        destinationAddress: Address,
-        script: Script
+        sponsor: HdAccount,
+        compiled: CompiledPlutus[?]
     )(using ExecutionContext): Future[(Transaction, TransactionOutput)] = {
+        val network = provider.cardanoInfo.network
+        val signer = sponsor.signerForUtxos
+        val sponsorAddress = sponsor.baseAddress(network)
+        val destinationAddress = compiled.address(network)
+        val script = compiled.script
+
         val output = TransactionOutput(
           address = destinationAddress,
           value = Value.lovelace(50_000_000), // 50 ADA
@@ -52,21 +56,17 @@ object OracleTransactions {
 
     /** Deploy the oracle script to a UTxO as a reference script. */
     def deployReferenceScript(
-        signer: TransactionSigner,
         provider: BlockchainProvider,
-        sponsorAddress: Address,
-        destinationAddress: Address,
-        script: Script,
+        sponsor: HdAccount,
+        compiled: CompiledPlutus[?],
         timeout: Duration = 120.seconds
     ): Either[String, (String, Int, TransactionOutput)] = {
         given ec: ExecutionContext = provider.executionContext
         Try {
             val (tx, output) = buildDeployReferenceScript(
-              signer,
               provider,
-              sponsorAddress,
-              destinationAddress,
-              script
+              sponsor,
+              compiled
             ).await(timeout)
 
             // Find actual output index (TxBuilder may reorder outputs)
@@ -234,16 +234,19 @@ object OracleTransactions {
       * consumed. Uses the reference script UTxO for the minting policy.
       */
     def buildInitTransaction(
-        signer: TransactionSigner,
         provider: BlockchainProvider,
-        scriptAddress: Address,
-        sponsorAddress: Address,
+        sponsor: HdAccount,
+        compiled: CompiledPlutus[?],
         initialState: ChainState,
-        script: Script.PlutusV3,
         oneShotUtxo: Utxo,
         referenceScriptUtxo: Utxo,
         lovelaceAmount: Long = 5_000_000L
     )(using ExecutionContext): Future[Transaction] = {
+        val network = provider.cardanoInfo.network
+        val signer = sponsor.signerForUtxos
+        val sponsorAddress = sponsor.baseAddress(network)
+        val scriptAddress = compiled.address(network)
+        val script = compiled.script
         val policyId = script.scriptHash
         val nftValue =
             Value.lovelace(lovelaceAmount) + Value.asset(policyId, AssetName.empty, 1L)
@@ -261,7 +264,7 @@ object OracleTransactions {
 
         TxBuilder(provider.cardanoInfo)
             .spend(oneShotUtxo) // consume one-shot UTxO for NFT policy
-            .references(referenceScriptUtxo)
+            .references(referenceScriptUtxo, compiled)
             .mint(policyId, mintAssets, mintRedeemer)
             .payTo(scriptAddress, nftValue, initialState)
             .complete(provider, sponsorAddress)
@@ -270,12 +273,10 @@ object OracleTransactions {
 
     /** Build and submit initialization transaction. */
     def buildAndSubmitInitTransaction(
-        signer: TransactionSigner,
         provider: BlockchainProvider,
-        scriptAddress: Address,
-        sponsorAddress: Address,
+        sponsor: HdAccount,
+        compiled: CompiledPlutus[?],
         initialState: ChainState,
-        script: Script.PlutusV3,
         oneShotUtxo: Utxo,
         referenceScriptUtxo: Utxo,
         lovelaceAmount: Long = 5_000_000L,
@@ -284,12 +285,10 @@ object OracleTransactions {
         given ec: ExecutionContext = provider.executionContext
         Try {
             val tx = buildInitTransaction(
-              signer,
               provider,
-              scriptAddress,
-              sponsorAddress,
+              sponsor,
+              compiled,
               initialState,
-              script,
               oneShotUtxo,
               referenceScriptUtxo,
               lovelaceAmount
@@ -313,10 +312,9 @@ object OracleTransactions {
 
     /** Build an UpdateOracle transaction. Uses reference script for spending. */
     def buildUpdateTransaction(
-        signer: TransactionSigner,
         provider: BlockchainProvider,
-        scriptAddress: Address,
-        sponsorAddress: Address,
+        sponsor: HdAccount,
+        compiled: CompiledPlutus[?],
         oracleUtxo: Utxo,
         currentChainState: ChainState,
         newChainState: ChainState,
@@ -326,6 +324,10 @@ object OracleTransactions {
         referenceScriptUtxo: Utxo,
         mpfInsertProofs: ScalusList[ScalusList[ProofStep]] = ScalusList.Nil
     )(using ExecutionContext): Future[Transaction] = {
+        val network = provider.cardanoInfo.network
+        val signer = sponsor.signerForUtxos
+        val sponsorAddress = sponsor.baseAddress(network)
+        val scriptAddress = compiled.address(network)
         // Verify that the input UTxO's datum matches currentChainState
         val inputData = oracleUtxo.output.requireInlineDatum
         val inputState = inputData.to[ChainState]
@@ -357,7 +359,7 @@ object OracleTransactions {
             validityInstant.plusMillis(BitcoinValidator.MaxValidityWindow.toLong)
 
         TxBuilder(cardanoInfo)
-            .references(referenceScriptUtxo)
+            .references(referenceScriptUtxo, compiled)
             .spend(oracleUtxo, redeemer)
             .payTo(scriptAddress, oracleUtxo.output.value, newChainState)
             .validFrom(validityInstant)
@@ -373,6 +375,7 @@ object OracleTransactions {
       */
     private def buildUpdateTxBuilder(
         cardanoInfo: CardanoInfo,
+        compiled: CompiledPlutus[?],
         scriptAddress: Address,
         sponsorAddress: Address,
         sponsorUtxos: Utxos,
@@ -394,7 +397,7 @@ object OracleTransactions {
             validityInstant.plusMillis(BitcoinValidator.MaxValidityWindow.toLong)
 
         TxBuilder(cardanoInfo)
-            .references(referenceScriptUtxo)
+            .references(referenceScriptUtxo, compiled)
             .spend(oracleUtxo, redeemer)
             .payTo(scriptAddress, oracleUtxo.output.value, newChainState)
             .validFrom(validityInstant)
@@ -408,10 +411,9 @@ object OracleTransactions {
       * number of promotions performed.
       */
     def buildOptimalUpdateTransaction(
-        signer: TransactionSigner,
         provider: BlockchainProvider,
-        scriptAddress: Address,
-        sponsorAddress: Address,
+        sponsor: HdAccount,
+        compiled: CompiledPlutus[?],
         oracleUtxo: Utxo,
         currentChainState: ChainState,
         blockHeaders: ScalusList[BlockHeader],
@@ -425,6 +427,10 @@ object OracleTransactions {
         Try {
             val cardanoInfo = provider.cardanoInfo
             val protocolParams = cardanoInfo.protocolParams
+            val network = cardanoInfo.network
+            val signer = sponsor.signerForUtxos
+            val sponsorAddress = sponsor.baseAddress(network)
+            val scriptAddress = compiled.address(network)
 
             // Pre-fetch sponsor UTxOs once
             val sponsorUtxos = provider.findUtxos(sponsorAddress).await(timeout).valueOr { err =>
@@ -464,6 +470,7 @@ object OracleTransactions {
                 try {
                     val builder = buildUpdateTxBuilder(
                       cardanoInfo,
+                      compiled,
                       scriptAddress,
                       sponsorAddress,
                       sponsorUtxos,
@@ -540,10 +547,9 @@ object OracleTransactions {
 
     /** Build and submit UpdateOracle transaction */
     def buildAndSubmitUpdateTransaction(
-        signer: TransactionSigner,
         provider: BlockchainProvider,
-        scriptAddress: Address,
-        sponsorAddress: Address,
+        sponsor: HdAccount,
+        compiled: CompiledPlutus[?],
         oracleUtxo: Utxo,
         currentChainState: ChainState,
         newChainState: ChainState,
@@ -557,10 +563,9 @@ object OracleTransactions {
         given ec: ExecutionContext = provider.executionContext
         Try {
             val tx = buildUpdateTransaction(
-              signer,
               provider,
-              scriptAddress,
-              sponsorAddress,
+              sponsor,
+              compiled,
               oracleUtxo,
               currentChainState,
               newChainState,
@@ -672,13 +677,14 @@ object OracleTransactions {
       * Returns the tx hash, output index, and output of the created UTxO.
       */
     def createOneShotUtxo(
-        signer: TransactionSigner,
         provider: BlockchainProvider,
-        sponsorAddress: Address,
+        sponsor: HdAccount,
         lovelaceAmount: Long = 10_000_000L,
         timeout: Duration = 120.seconds
     ): Either[String, (String, Int, TransactionOutput)] = {
         given ec: ExecutionContext = provider.executionContext
+        val signer = sponsor.signerForUtxos
+        val sponsorAddress = sponsor.baseAddress(provider.cardanoInfo.network)
         Try {
             val tx = TxBuilder(provider.cardanoInfo)
                 .payTo(address = sponsorAddress, value = Value.lovelace(lovelaceAmount))

@@ -2,7 +2,7 @@ package binocular
 
 import binocular.cli.CommandHelpers
 import org.scalatest.funsuite.AnyFunSuite
-import scalus.cardano.address.{Address, Network}
+import scalus.cardano.address.Network
 import scalus.cardano.ledger.{BlockHeader as _, *}
 import scalus.cardano.node.TransactionStatus
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
@@ -14,6 +14,7 @@ import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 import scalus.testing.integration.YaciTestContext
 import scalus.testing.kit.Party
 import scalus.testing.yaci.{YaciConfig, YaciDevKit}
+import scalus.uplc.CompiledPlutus
 import scalus.uplc.builtin.ByteString
 import scalus.uplc.builtin.Data.toData
 import scalus.utils.await
@@ -66,8 +67,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
     /** Submit an oracle update, wait for confirmation, verify on-chain state matches. */
     private def submitOracleUpdate(
         ctx: YaciTestContext,
-        scriptAddress: Address,
-        script: Script.PlutusV3,
+        compiled: CompiledPlutus[?],
         oracleUtxo: Utxo,
         currentState: ChainState,
         newState: ChainState,
@@ -79,10 +79,9 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         mpfInsertProofs: ScalusList[ScalusList[ProofStep]] = ScalusList.Nil
     ): (Utxo, ChainState) = {
         val updateResult = OracleTransactions.buildAndSubmitUpdateTransaction(
-          ctx.alice.signer,
           ctx.provider,
-          scriptAddress,
-          ctx.alice.address,
+          Party.Alice.account,
+          compiled,
           oracleUtxo,
           currentState,
           newState,
@@ -105,7 +104,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
                 )
                 Thread.sleep(2000)
 
-                val newOracleUtxo = CommandHelpers.findOracleUtxo(ctx.provider, script.scriptHash).await(30.seconds)
+                val newOracleUtxo = CommandHelpers.findOracleUtxo(ctx.provider, compiled.script.scriptHash).await(30.seconds)
                 val onChainState = newOracleUtxo.output.inlineDatum.get.to[ChainState]
 
                 assert(
@@ -126,16 +125,13 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
 
     private def deployRefScript(
         ctx: YaciTestContext,
-        scriptAddress: Address,
-        script: Script.PlutusV3
+        compiled: CompiledPlutus[?]
     ): Utxo = {
         given ec: ExecutionContext = ctx.provider.executionContext
         val result = OracleTransactions.deployReferenceScript(
-          ctx.alice.signer,
           ctx.provider,
-          ctx.alice.address,
-          scriptAddress,
-          script
+          Party.Alice.account,
+          compiled
         )
         val (txHash, outputIndex, savedOutput) = result.valueOr { err =>
             throw new RuntimeException(s"Failed to deploy reference script: $err")
@@ -152,7 +148,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         ctx: YaciTestContext,
         genesisState: ChainState,
         lovelaceAmount: Long = 5_000_000L
-    ): (Utxo, Script.PlutusV3, Address, BitcoinValidatorParams) = {
+    ): (Utxo, CompiledPlutus[?], BitcoinValidatorParams) = {
         given ec: ExecutionContext = ctx.provider.executionContext
 
         val aliceUtxos = ctx.provider.findUtxos(ctx.alice.address).await(30.seconds)
@@ -173,9 +169,10 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
           powLimit = BitcoinHelpers.PowLimit
         )
 
-        val script = BitcoinContract.makeContract(params).script
+        val compiled = BitcoinContract.makeContract(params)
+        val script = compiled.script
         val scriptHash = script.scriptHash
-        val scriptAddress = Address(Network.Testnet, Credential.ScriptHash(scriptHash))
+        val scriptAddress = compiled.address(Network.Testnet)
 
         val oracleValue = Value.asset(scriptHash, AssetName.empty, 1, Coin(lovelaceAmount))
 
@@ -200,7 +197,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         Thread.sleep(2000)
 
         val oracleUtxo = CommandHelpers.findOracleUtxo(ctx.provider, scriptHash).await(30.seconds)
-        (oracleUtxo, script, scriptAddress, params)
+        (oracleUtxo, compiled, params)
     }
 
     // ===== Tests =====
@@ -213,13 +210,13 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         val mockRpc = new MockBitcoinRpc()
 
         val initialState = fetchInitialState(mockRpc, startHeight)
-        val (oracleUtxo, itScript, scriptAddress, itParams) =
+        val (oracleUtxo, itCompiled, itParams) =
             initOracleWithNft(ctx, initialState)
 
         println(s"[Test] Oracle initialized at height $startHeight")
 
         // Deploy reference script
-        val referenceScriptUtxo = deployRefScript(ctx, scriptAddress, itScript)
+        val referenceScriptUtxo = deployRefScript(ctx, itCompiled)
 
         val headersToSubmit = Seq(866971, 866972)
         var currentState = initialState
@@ -246,8 +243,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
 
             val (newUtxo, onChainState) = submitOracleUpdate(
               ctx,
-              scriptAddress,
-              itScript,
+              itCompiled,
               currentOracleUtxo,
               currentState,
               newState,
@@ -279,7 +275,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         val mockRpc = new MockBitcoinRpc()
 
         val initialState = fetchInitialState(mockRpc, startHeight)
-        val (oracleUtxo, itScript, scriptAddress, itParams) =
+        val (oracleUtxo, itCompiled, itParams) =
             initOracleWithNft(ctx, initialState)
 
         // Verify initial MPF root
@@ -294,7 +290,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         )
 
         // Deploy reference script
-        val referenceScriptUtxo = deployRefScript(ctx, scriptAddress, itScript)
+        val referenceScriptUtxo = deployRefScript(ctx, itCompiled)
 
         // Fetch and submit batch of headers
         val headers = fetchHeaders(mockRpc, startHeight + 1, updateToHeight)
@@ -313,8 +309,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
 
         val (_, onChainState) = submitOracleUpdate(
           ctx,
-          scriptAddress,
-          itScript,
+          itCompiled,
           oracleUtxo,
           initialState,
           newState,
@@ -354,13 +349,13 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         val mockRpc = new MockBitcoinRpc()
 
         val initialState = fetchInitialState(mockRpc, startHeight)
-        val (initOracleUtxo, itScript, scriptAddress, itParams) =
+        val (initOracleUtxo, itCompiled, itParams) =
             initOracleWithNft(ctx, initialState)
         var currentOracleUtxo: Utxo = initOracleUtxo
 
         // Deploy reference script to reduce transaction size
         println(s"[Test] Deploying reference script")
-        val referenceScriptUtxo = deployRefScript(ctx, scriptAddress, itScript)
+        val referenceScriptUtxo = deployRefScript(ctx, itCompiled)
 
         println(s"[Test] Adding $totalBlocks blocks in batches of $batchSize")
 
@@ -391,8 +386,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
 
             val (newUtxo, onChainState) = submitOracleUpdate(
               ctx,
-              scriptAddress,
-              itScript,
+              itCompiled,
               currentOracleUtxo,
               currentState,
               newState,
