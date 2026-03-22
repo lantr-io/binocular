@@ -151,6 +151,88 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         )
     }
 
+    test("ForkTree pretty print - various tree shapes") {
+        import binocular.ForkTreePretty.*
+
+        // Use realistic-ish timestamps
+        val baseTime = BigInt(1700000000L) // ~Nov 2023
+        def block(id: Byte, heightOffset: Int): BlockSummary =
+            BlockSummary(
+              hash = ByteString.unsafeFromArray(Array.fill(32)(id)),
+              timestamp = baseTime + heightOffset * 600,
+              addedTimeSeconds = baseTime + heightOffset * 600 + 3600
+            )
+
+        // 1. Empty tree
+        val emptyState = chainStateWithTree(End)
+        println("=== Empty tree ===")
+        println(emptyState.forkTree.pretty(emptyState.ctx.height))
+
+        // 2. Linear chain
+        val linearBlocks = prelude.List.from(
+          (1 to 5).map(i => block(i.toByte, i)).toList
+        )
+        val linearTree = Blocks(linearBlocks, 500, End)
+        println("=== Linear chain (5 blocks) ===")
+        println(linearTree.pretty(866880))
+
+        // 3. Simple fork
+        val forkTree = Blocks(
+          prelude.List.from((1 to 3).map(i => block(i.toByte, i)).toList),
+          300,
+          Fork(
+            Blocks(
+              prelude.List.from((4 to 6).map(i => block(i.toByte, i)).toList),
+              400,
+              End
+            ),
+            Blocks(
+              prelude.List.from((7 to 8).map(i => block((i + 10).toByte, i - 3)).toList),
+              200,
+              End
+            )
+          )
+        )
+        println("=== Simple fork ===")
+        println(forkTree.pretty(866880))
+
+        // 4. Nested forks
+        val nestedTree = Blocks(
+          prelude.List.from((1 to 2).map(i => block(i.toByte, i)).toList),
+          200,
+          Fork(
+            Blocks(
+              prelude.List.from((3 to 4).map(i => block(i.toByte, i)).toList),
+              250,
+              Fork(
+                Blocks(prelude.List(block(5, 5)), 150, End),
+                Blocks(prelude.List(block(6, 5)), 100, End)
+              )
+            ),
+            Blocks(prelude.List(block(7, 3)), 100, End)
+          )
+        )
+        println("=== Nested forks ===")
+        println(nestedTree.pretty(866880))
+
+        // 5. With current time (aging display)
+        val currentTime = baseTime + 250 * 60 // 250 minutes later
+        println("=== With aging info ===")
+        println(forkTree.pretty(866880, currentTime = Some(currentTime)))
+
+        // 6. Large linear chain
+        val bigBlocks = prelude.List.from(
+          (1 to 320).map(i => block((i % 256).toByte, i)).toList
+        )
+        val bigTree = Blocks(bigBlocks, 50000, End)
+        println("=== Large linear chain (320 blocks) ===")
+        println(bigTree.pretty(866880))
+
+        // 7. No ANSI colors
+        println("=== No colors ===")
+        println(forkTree.pretty(866880, ansi = false))
+    }
+
     test("BitcoinValidator size") {
         given Options =
             Options.release.copy(targetProtocolVersion = MajorProtocolVersion.vanRossemPV)

@@ -1,6 +1,7 @@
 package binocular.cli.commands
 
 import binocular.*
+import binocular.ForkTreePretty.*
 import binocular.cli.{Command, CommandHelpers, Console}
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.cardano.node.TransactionStatus
@@ -89,6 +90,7 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
           "Fork tree",
           s"${currentChainState.forkTree.blockCount} blocks"
         )
+        println(currentChainState.forkTree.pretty(currentChainState.ctx.height))
 
         // Reconstruct off-chain MPF
         val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
@@ -229,6 +231,9 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
                                         currentMpf = updatedMpf
                                         Console.logSuccess(
                                           s"Confirmed ${txResult.txHash} | height: ${newChainState.ctx.height}"
+                                        )
+                                        println(
+                                          newChainState.forkTree.pretty(newChainState.ctx.height)
                                         )
                                     case Left(_) =>
                                         Console.logWarn(

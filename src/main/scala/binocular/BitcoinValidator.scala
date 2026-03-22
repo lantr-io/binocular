@@ -147,22 +147,6 @@ enum ForkTree derives FromData, ToData {
             else List.Cons(BigInt(1), right.findTipPath)
         case End => List.Nil
 
-    /** Display tree structure for debugging/CLI output. */
-    def displayTree(baseHeight: BigInt, indent: String = ""): String = this match
-        case Blocks(blocks, cw, next) =>
-            val first = blocks.head
-            val last = blocks.last
-            val firstHeight = baseHeight + 1
-            val lastHeight = baseHeight + blocks.size.toInt
-            val line =
-                s"${indent}Blocks[${blocks.size.toInt}] heights $firstHeight..$lastHeight, chainwork=$cw, tip=${last.hash.toHex.take(8)}..."
-            val nextStr = next.displayTree(lastHeight, indent)
-            if nextStr.isEmpty then line else line + "\n" + nextStr
-        case Fork(left, right) =>
-            val leftStr = left.displayTree(baseHeight, indent + "  L ")
-            val rightStr = right.displayTree(baseHeight, indent + "  R ")
-            s"${indent}Fork:\n$leftStr\n$rightStr"
-        case End => ""
 }
 
 case class ChainState(

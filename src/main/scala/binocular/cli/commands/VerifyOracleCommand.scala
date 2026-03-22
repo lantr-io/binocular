@@ -1,6 +1,7 @@
 package binocular.cli.commands
 
 import binocular.*
+import binocular.ForkTreePretty.*
 import binocular.cli.{Command, CommandHelpers}
 import scalus.cardano.ledger.Utxo
 import scalus.uplc.builtin.Data.fromData
@@ -95,10 +96,9 @@ case class VerifyOracleCommand() extends Command {
 
                                     if chainState.forkTree.nonEmpty then {
                                         println()
-                                        println("  Fork tree:")
                                         println(
                                           chainState.forkTree
-                                              .displayTree(chainState.ctx.height, "    ")
+                                              .pretty(chainState.ctx.height)
                                         )
                                     }
 
