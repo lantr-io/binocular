@@ -159,7 +159,7 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
               signer,
               provider,
               sponsorAddress,
-              sponsorAddress,
+              setup.scriptAddress,
               setup.script,
               timeout
             ) match {

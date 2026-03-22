@@ -170,11 +170,11 @@ object CommandHelpers {
         }
     }
 
-    /** Find existing reference script UTxO.
+    /** Find existing reference script UTxO at the script address.
       *
-      * The provider may not populate scriptRef when listing UTxOs, so we search for UTxOs at the
-      * script address that have no inline datum (the oracle UTxO has inline datum, the reference
-      * script UTxO does not) and reconstruct the output with the known script attached.
+      * The provider does not populate scriptRef when listing UTxOs, so we identify the reference
+      * script UTxO as the one at the script address that does NOT carry the oracle NFT (the NFT
+      * policy ID equals the script hash). We then reconstruct the output with the known script.
       */
     def findReferenceScriptUtxo(
         provider: BlockchainProvider,
@@ -182,11 +182,12 @@ object CommandHelpers {
         script: scalus.cardano.ledger.Script,
         timeout: Duration
     )(using ExecutionContext): Option[Utxo] = {
+        val nftPolicyId = script.scriptHash
         provider.findUtxos(scriptAddress).await(timeout) match {
             case Right(utxos) =>
                 utxos.toList
                     .find { case (_, output) =>
-                        output.inlineDatum.isEmpty && output.scriptRef.isEmpty
+                        !output.value.hasAsset(nftPolicyId, AssetName.empty)
                     }
                     .map { case (input, output) =>
                         Utxo(

@@ -20,14 +20,6 @@ object BitcoinChainState {
 
     /** Build 80-byte raw header from block header info */
     private def buildRawHeader(header: BlockHeaderInfo): Array[Byte] = {
-        println(s"[DEBUG buildRawHeader] Building header for block ${header.height}")
-        println(s"  Version: ${header.version} (0x${header.version.toHexString})")
-        println(s"  Prev hash: ${header.previousblockhash.getOrElse("GENESIS")}")
-        println(s"  Merkle root: ${header.merkleroot}")
-        println(s"  Timestamp: ${header.time}")
-        println(s"  Bits: ${header.bits}")
-        println(s"  Nonce: ${header.nonce}")
-
         val buffer = new Array[Byte](80)
         var offset = 0
 
@@ -70,9 +62,6 @@ object BitcoinChainState {
         buffer(offset + 1) = ((nonce >> 8) & 0xff).toByte
         buffer(offset + 2) = ((nonce >> 16) & 0xff).toByte
         buffer(offset + 3) = ((nonce >> 24) & 0xff).toByte
-
-        val headerHex = buffer.map(b => f"${b & 0xff}%02x").mkString
-        println(s"  Built header (80 bytes): $headerHex")
 
         buffer
     }

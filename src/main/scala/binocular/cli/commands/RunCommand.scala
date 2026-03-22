@@ -46,21 +46,13 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
           setup.hdAccount.baseAddress(config.cardano.scalusNetwork).toBech32.getOrElse("?")
         )
 
-        // Find reference script (deployed by init)
+        // Find reference script (deployed by init to script address)
         var referenceScriptUtxo: Utxo = CommandHelpers
             .findReferenceScriptUtxo(
               setup.provider,
-              setup.sponsorAddress,
+              setup.scriptAddress,
               setup.script,
               timeout
-            )
-            .orElse(
-              CommandHelpers.findReferenceScriptUtxo(
-                setup.provider,
-                setup.scriptAddress,
-                setup.script,
-                timeout
-              )
             )
             .getOrElse {
                 Console.error("Reference script not found. Run 'binocular init' first.")

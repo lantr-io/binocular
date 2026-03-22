@@ -8,6 +8,9 @@ import binocular.cli.CliApp
   * the binocular.cli package.
   */
 @main def main(args: String*): Unit = {
+    // Suppress verbose Scalus provider logs (uses scribe, not logback)
+    scribe.Logger("scalus").withMinimumLevel(scribe.Level.Warn).replace()
+
     val exitCode = CliApp.run(args)
     if exitCode != 0 then throw new RuntimeException(s"Exit code: $exitCode")
 }
