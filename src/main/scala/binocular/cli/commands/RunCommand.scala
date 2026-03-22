@@ -157,19 +157,17 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
                     OracleTransactions.computeValidityIntervalTime(setup.provider.cardanoInfo)
                 val parentPath = currentChainState.forkTree.findTipPath
 
-                val (newChainState, mpfProofs, updatedMpf) =
-                    OracleTransactions.computeUpdateWithProofs(
+                // Quick check: is there anything to do?
+                val totalPromotable = OracleTransactions
+                    .computePromotedBlocks(
                       currentChainState,
                       headersList,
                       parentPath,
                       validityTime,
-                      currentMpf,
-                      setup.params,
-                      maxPromotions = 1
+                      setup.params
                     )
-
-                // Check if state actually changed (new blocks added or promotions occurred)
-                val stateChanged = newChainState != currentChainState
+                    .length
+                val stateChanged = headers.nonEmpty || totalPromotable > 0
 
                 if !stateChanged then {
                     val behind = bitcoinTip - highestKnown
@@ -181,44 +179,44 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
                     )
                     Thread.sleep(pollInterval * 1000L)
                 } else {
-                    val promotedCount =
-                        newChainState.ctx.height - currentChainState.ctx.height
-                    Console.log(
-                      s"Update: +${headers.size} headers, $promotedCount promoted | tree: ${newChainState.forkTree.blockCount} blocks"
-                    )
-
                     if dryRun then {
                         Console.success("Dry-run: computed update")
                         Console.info("Current Height", currentChainState.ctx.height)
-                        Console.info("New Height", newChainState.ctx.height)
+                        Console.info("Promotable", totalPromotable)
                         Console.info("Headers", headers.size)
-                        Console.info("Fork Tree", s"${newChainState.forkTree.blockCount} blocks")
+                        Console.info(
+                          "Fork Tree",
+                          s"${currentChainState.forkTree.blockCount} blocks"
+                        )
                         break(0)
                     }
 
-                    val txResult = OracleTransactions.buildAndSubmitUpdateTransaction(
+                    val result = OracleTransactions.buildOptimalUpdateTransaction(
                       setup.signer,
                       setup.provider,
                       setup.scriptAddress,
                       setup.sponsorAddress,
                       currentOracleUtxo,
                       currentChainState,
-                      newChainState,
                       headersList,
                       parentPath,
                       validityTime,
                       referenceScriptUtxo,
-                      timeout,
-                      mpfProofs
+                      currentMpf,
+                      setup.params,
+                      timeout
                     )
 
-                    txResult match {
-                        case Right(result) =>
+                    result match {
+                        case Right((txResult, newChainState, updatedMpf, promotions)) =>
                             Console.log(
-                              s"Submitting... datum: ${result.datumSize} B, tx: ${result.txSize} B"
+                              s"Update: +${headers.size} headers, $promotions promoted | tree: ${newChainState.forkTree.blockCount} blocks"
+                            )
+                            Console.log(
+                              s"Submitting... datum: ${txResult.datumSize} B, tx: ${txResult.txSize} B"
                             )
 
-                            val txHash = TransactionHash.fromHex(result.txHash)
+                            val txHash = TransactionHash.fromHex(txResult.txHash)
                             val status = setup.provider
                                 .pollForConfirmation(txHash, maxAttempts = 60)
                                 .await(timeout)
@@ -230,7 +228,7 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
                                         currentChainState = newChainState
                                         currentMpf = updatedMpf
                                         Console.logSuccess(
-                                          s"Confirmed ${result.txHash} | height: ${newChainState.ctx.height}"
+                                          s"Confirmed ${txResult.txHash} | height: ${newChainState.ctx.height}"
                                         )
                                     case Left(_) =>
                                         Console.logWarn(

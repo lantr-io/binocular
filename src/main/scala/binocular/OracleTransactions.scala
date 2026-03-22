@@ -10,6 +10,7 @@ import binocular.OracleAction.*
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
+import scalus.cardano.ledger.rules.{ExUnitsTooBigValidator, TransactionSizeValidator}
 
 import java.time.Instant
 import scala.concurrent.{ExecutionContext, Future}
@@ -365,6 +366,176 @@ object OracleTransactions {
             .validTo(validToInstant)
             .complete(provider, sponsorAddress)
             .map(_.sign(signer).transaction)
+    }
+
+    /** Build an UpdateOracle TxBuilder synchronously using pre-fetched sponsor UTxOs.
+      *
+      * This avoids async provider calls, making it suitable for repeated calls during binary
+      * search.
+      */
+    private def buildUpdateTxBuilder(
+        cardanoInfo: CardanoInfo,
+        scriptAddress: Address,
+        sponsorAddress: Address,
+        sponsorUtxos: Utxos,
+        oracleUtxo: Utxo,
+        currentChainState: ChainState,
+        newChainState: ChainState,
+        blockHeaders: ScalusList[BlockHeader],
+        parentPath: ScalusList[BigInt],
+        validityIntervalTimeSeconds: BigInt,
+        referenceScriptUtxo: Utxo,
+        mpfInsertProofs: ScalusList[ScalusList[ProofStep]]
+    ): TxBuilder = {
+        val (validityInstant, _) =
+            computeValidityIntervalTime(cardanoInfo, Some(validityIntervalTimeSeconds))
+
+        val redeemer = UpdateOracle(blockHeaders, parentPath, mpfInsertProofs)
+
+        val validToInstant =
+            validityInstant.plusMillis(BitcoinValidator.MaxValidityWindow.toLong)
+
+        TxBuilder(cardanoInfo)
+            .references(referenceScriptUtxo)
+            .spend(oracleUtxo, redeemer)
+            .payTo(scriptAddress, oracleUtxo.output.value, newChainState)
+            .minFee(Coin.ada(3))
+            .validFrom(validityInstant)
+            .validTo(validToInstant)
+            .complete(sponsorUtxos, sponsorAddress)
+    }
+
+    /** Binary-search for the maximum number of promotions that fit in a valid transaction.
+      *
+      * Returns the signed transaction result, updated chain state, updated off-chain MPF, and the
+      * number of promotions performed.
+      */
+    def buildOptimalUpdateTransaction(
+        signer: TransactionSigner,
+        provider: BlockchainProvider,
+        scriptAddress: Address,
+        sponsorAddress: Address,
+        oracleUtxo: Utxo,
+        currentChainState: ChainState,
+        blockHeaders: ScalusList[BlockHeader],
+        parentPath: ScalusList[BigInt],
+        validityIntervalTimeSeconds: BigInt,
+        referenceScriptUtxo: Utxo,
+        offChainMpf: OffChainMPF,
+        params: BitcoinValidatorParams,
+        timeout: Duration
+    )(using ExecutionContext): Either[String, (TxResult, ChainState, OffChainMPF, Int)] = {
+        Try {
+            val cardanoInfo = provider.cardanoInfo
+            val protocolParams = cardanoInfo.protocolParams
+
+            // Pre-fetch sponsor UTxOs once
+            val sponsorUtxos = provider.findUtxos(sponsorAddress).await(timeout) match {
+                case Right(u)  => u
+                case Left(err) => throw new RuntimeException(s"Failed to fetch sponsor UTxOs: $err")
+            }
+
+            // Find total promotable blocks
+            val totalPromotable = computePromotedBlocks(
+              currentChainState,
+              blockHeaders,
+              parentPath,
+              validityIntervalTimeSeconds,
+              params
+            ).length
+
+            // Try building with a given number of promotions, returning the completed TxBuilder
+            // or None if validation fails.
+            def tryBuild(
+                maxPromotions: Int
+            ): Option[(TxBuilder, ChainState, OffChainMPF)] = {
+                val (newState, mpfProofs, updatedMpf) =
+                    computeUpdateWithProofs(
+                      currentChainState,
+                      blockHeaders,
+                      parentPath,
+                      validityIntervalTimeSeconds,
+                      offChainMpf,
+                      params,
+                      maxPromotions
+                    )
+
+                // Skip if no state change
+                if newState == currentChainState then return None
+
+                try {
+                    val builder = buildUpdateTxBuilder(
+                      cardanoInfo,
+                      scriptAddress,
+                      sponsorAddress,
+                      sponsorUtxos,
+                      oracleUtxo,
+                      currentChainState,
+                      newState,
+                      blockHeaders,
+                      parentPath,
+                      validityIntervalTimeSeconds,
+                      referenceScriptUtxo,
+                      mpfProofs
+                    )
+
+                    // Validate tx size and execution units
+                    val validators = Seq(TransactionSizeValidator, ExUnitsTooBigValidator)
+                    builder.context.validate(validators, protocolParams) match {
+                        case Right(_) => Some((builder, newState, updatedMpf))
+                        case Left(_)  => None
+                    }
+                } catch {
+                    case _: Exception => None
+                }
+            }
+
+            // Binary search for max promotions
+            var low = 0
+            var high = totalPromotable.toInt
+            var best: Option[(TxBuilder, ChainState, OffChainMPF, Int)] = None
+
+            while low <= high do {
+                val mid = (low + high) / 2
+                tryBuild(mid) match {
+                    case Some((builder, newState, updatedMpf)) =>
+                        best = Some((builder, newState, updatedMpf, mid))
+                        low = mid + 1
+                    case None =>
+                        high = mid - 1
+                }
+            }
+
+            // Fall back to 0 promotions if no promotion count worked
+            val (builder, newState, updatedMpf, promotionCount) = best.getOrElse {
+                tryBuild(0) match {
+                    case Some((b, ns, um)) => (b, ns, um, 0)
+                    case None =>
+                        throw new RuntimeException(
+                          "Failed to build transaction even with 0 promotions"
+                        )
+                }
+            }
+
+            // Sign and submit
+            val tx = builder.sign(signer).transaction
+            val txSize = tx.toCbor.length
+            val datumSize = tx.body.value.outputs
+                .find(_.value.inlineDatum.isDefined)
+                .map(_.value.requireInlineDatum.toCbor.length)
+                .getOrElse(0)
+
+            submitTx(provider, tx, timeout)
+                .map(hash =>
+                    (TxResult(hash, txSize, datumSize), newState, updatedMpf, promotionCount)
+                )
+        } match {
+            case Success(result) => result
+            case Failure(ex) =>
+                Left(
+                  s"Error building optimal UpdateOracle transaction: ${ex.getMessage}\n${ex.getStackTrace.take(5).mkString("\n")}"
+                )
+        }
     }
 
     /** Build and submit UpdateOracle transaction */
