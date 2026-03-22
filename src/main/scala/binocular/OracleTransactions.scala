@@ -151,7 +151,8 @@ object OracleTransactions {
         blockHeaders: ScalusList[BlockHeader],
         parentPath: ScalusList[BigInt],
         currentTime: BigInt,
-        params: BitcoinValidatorParams
+        params: BitcoinValidatorParams,
+        maxPromotions: Int = 1000
     ): ScalusList[BlockSummary] = {
         val ctx0 = prevState.ctx
 
@@ -172,14 +173,13 @@ object OracleTransactions {
         val (_, bestDepth, bestPath) =
             BitcoinValidator.bestChainPath(newTree, prevState.ctx.height, 0)
 
-        // Use a large maxPromotions to find all promotable blocks
         val (promoted, _) = BitcoinValidator.promoteAndGC(
           newTree,
           ctx0,
           bestPath,
           bestDepth,
           currentTime,
-          BigInt(1000), // large limit
+          BigInt(maxPromotions),
           params
         )
         promoted
@@ -192,11 +192,19 @@ object OracleTransactions {
         parentPath: ScalusList[BigInt],
         currentTime: BigInt,
         offChainMpf: OffChainMPF,
-        params: BitcoinValidatorParams
+        params: BitcoinValidatorParams,
+        maxPromotions: Int = 1000
     ): (ChainState, ScalusList[ScalusList[ProofStep]], OffChainMPF) = {
         // 1. Determine which blocks will be promoted
         val promotedBlocks =
-            computePromotedBlocks(currentState, headers, parentPath, currentTime, params)
+            computePromotedBlocks(
+              currentState,
+              headers,
+              parentPath,
+              currentTime,
+              params,
+              maxPromotions
+            )
 
         // 2. Generate MPF insert proofs for each promoted block.
         var mpf = offChainMpf
@@ -356,7 +364,7 @@ object OracleTransactions {
             .references(referenceScriptUtxo)
             .spend(oracleUtxo, redeemer)
             .payTo(scriptAddress, oracleUtxo.output.value, newChainState)
-            .minFee(Coin.ada(1))
+            .minFee(Coin.ada(3))
             .validFrom(validityInstant)
             .validTo(validToInstant)
             .complete(provider, sponsorAddress)
@@ -395,6 +403,10 @@ object OracleTransactions {
               referenceScriptUtxo,
               mpfInsertProofs
             ).await(timeout)
+
+//            println(tx.showDetailedHighlighted)
+            println(tx.body.value.outputs.head.value.requireInlineDatum.toCbor.length)
+            println(tx.toCbor.length)
 
             submitTx(provider, tx, timeout)
         } match {

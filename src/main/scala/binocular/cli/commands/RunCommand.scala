@@ -126,7 +126,8 @@ case class RunCommand(dryRun: Boolean = false) extends Command with LazyLogging 
                             .toLong
                     else currentChainState.ctx.height.toLong
 
-                if bitcoinTip > highestKnown then {
+                // Fetch new headers if available
+                val headers = if bitcoinTip > highestKnown then {
                     val startHeight = highestKnown + 1
                     val endHeight = Math.min(bitcoinTip, startHeight + batchSize - 1)
 
@@ -150,23 +151,38 @@ case class RunCommand(dryRun: Boolean = false) extends Command with LazyLogging 
                         }
                     }
 
-                    val headers =
-                        fetchHeaders((startHeight to endHeight).toList, Nil).await(60.seconds)
-                    val headersList = ScalusList.from(headers)
+                    fetchHeaders((startHeight to endHeight).toList, Nil).await(60.seconds)
+                } else Nil
 
-                    val (_, validityTime) =
-                        OracleTransactions.computeValidityIntervalTime(setup.provider.cardanoInfo)
-                    val parentPath = currentChainState.forkTree.findTipPath
+                val headersList = ScalusList.from(headers)
 
-                    val (newChainState, mpfProofs, updatedMpf) =
-                        OracleTransactions.computeUpdateWithProofs(
-                          currentChainState,
-                          headersList,
-                          parentPath,
-                          validityTime,
-                          currentMpf,
-                          setup.params
-                        )
+                val (_, validityTime) =
+                    OracleTransactions.computeValidityIntervalTime(setup.provider.cardanoInfo)
+                val parentPath = currentChainState.forkTree.findTipPath
+
+                val (newChainState, mpfProofs, updatedMpf) =
+                    OracleTransactions.computeUpdateWithProofs(
+                      currentChainState,
+                      headersList,
+                      parentPath,
+                      validityTime,
+                      currentMpf,
+                      setup.params,
+                      maxPromotions = 1
+                    )
+
+                // Check if state actually changed (new blocks added or promotions occurred)
+                val stateChanged = newChainState != currentChainState
+
+                if !stateChanged then {
+                    Thread.sleep(pollInterval * 1000L)
+                } else {
+                    val promotedCount =
+                        newChainState.ctx.height - currentChainState.ctx.height
+                    logger.info(
+                      s"Update: ${headers.size} new blocks, $promotedCount promoted, " +
+                          s"fork tree: ${newChainState.forkTree.blockCount} blocks"
+                    )
 
                     if dryRun then {
                         println()
@@ -196,9 +212,7 @@ case class RunCommand(dryRun: Boolean = false) extends Command with LazyLogging 
 
                     txResult match {
                         case Right(resultTxHash) =>
-                            logger.info(
-                              s"Transaction submitted: $resultTxHash (blocks $startHeight-$endHeight)"
-                            )
+                            logger.info(s"Transaction submitted: $resultTxHash")
 
                             val txHash = TransactionHash.fromHex(resultTxHash)
                             val status = setup.provider
@@ -225,8 +239,6 @@ case class RunCommand(dryRun: Boolean = false) extends Command with LazyLogging 
                             logger.error(s"Transaction failed: $err")
                             Thread.sleep(retryInterval * 1000L)
                     }
-                } else {
-                    Thread.sleep(pollInterval * 1000L)
                 }
             } catch {
                 case e: Exception =>
