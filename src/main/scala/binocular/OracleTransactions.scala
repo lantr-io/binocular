@@ -11,6 +11,7 @@ import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import scalus.cardano.ledger.rules.ExUnitsTooBigValidator
+import scalus.uplc.CompiledPlutus
 
 import java.time.Instant
 import scala.concurrent.{ExecutionContext, Future}
@@ -593,11 +594,11 @@ object OracleTransactions {
     def buildCloseTransaction(
         signer: TransactionSigner,
         provider: BlockchainProvider,
-        scriptAddress: Address,
         sponsorAddress: Address,
         oracleUtxo: Utxo,
         script: Script.PlutusV3,
-        referenceScriptUtxo: Option[Utxo] = None
+        referenceScriptUtxo: Utxo,
+        compiled: CompiledPlutus[?]
     )(using ExecutionContext): Future[Transaction] = {
         val cardanoInfo = provider.cardanoInfo
 
@@ -606,42 +607,32 @@ object OracleTransactions {
 
         val redeemer = OracleAction.CloseOracle
 
-        var builder = TxBuilder(cardanoInfo)
-
-        val useRefScript = referenceScriptUtxo.exists(_.output.scriptRef.isDefined)
-        if useRefScript then {
-            builder = builder.references(referenceScriptUtxo.get)
-        }
-
-        builder = if useRefScript then {
-            builder.spend(oracleUtxo, redeemer)
-        } else {
-            builder.spend(oracleUtxo, redeemer, script)
-        }
-
         // Burn the NFT (quantity -1)
         val burnAssets = Map(scalus.cardano.ledger.AssetName.empty -> -1L)
-        builder = builder.mint(script, burnAssets, redeemer)
 
         val validToInstant =
             validityInstant.plusMillis(BitcoinValidator.MaxValidityWindow.toLong)
-        builder = builder
+
+        TxBuilder(cardanoInfo)
+            .references(referenceScriptUtxo, compiled)
+            .spend(oracleUtxo, redeemer)
+            .mint(script, burnAssets, redeemer)
             .payTo(sponsorAddress, Value(oracleUtxo.output.value.coin))
             .validFrom(validityInstant)
             .validTo(validToInstant)
-
-        builder.complete(provider, sponsorAddress).map(_.sign(signer).transaction)
+            .complete(provider, sponsorAddress)
+            .map(_.sign(signer).transaction)
     }
 
     /** Build and submit CloseOracle transaction to close a stale oracle and burn the NFT. */
     def buildAndSubmitCloseTransaction(
         signer: TransactionSigner,
         provider: BlockchainProvider,
-        scriptAddress: Address,
         sponsorAddress: Address,
         oracleUtxo: Utxo,
         script: Script.PlutusV3,
-        referenceScriptUtxo: Option[Utxo] = None,
+        referenceScriptUtxo: Utxo,
+        compiled: CompiledPlutus[?],
         timeout: Duration = 120.seconds
     ): Either[String, String] = {
         given ec: ExecutionContext = provider.executionContext
@@ -649,11 +640,11 @@ object OracleTransactions {
             val tx = buildCloseTransaction(
               signer,
               provider,
-              scriptAddress,
               sponsorAddress,
               oracleUtxo,
               script,
-              referenceScriptUtxo
+              referenceScriptUtxo,
+              compiled
             ).await(timeout)
 
             submitTx(provider, tx, timeout)
