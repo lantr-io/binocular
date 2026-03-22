@@ -135,7 +135,15 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
                 println()
                 println("Step 4: Parameterizing script with one-shot UTxO...")
                 val txOutRef = TxOutRef(TxId(oneShotInput.transactionId), oneShotInput.index)
-                val newParams = BitcoinContract.validatorParams(txOutRef, setup.params.owner)
+                val oracleConf = config.oracle
+                val newParams = BitcoinContract.validatorParams(
+                  txOutRef,
+                  setup.params.owner,
+                  maturationConfirmations = oracleConf.maturationConfirmations,
+                  challengeAging = oracleConf.challengeAging,
+                  closureTimeout = oracleConf.closureTimeout,
+                  testingMode = oracleConf.testingMode
+                )
                 val newCompiled = BitcoinContract.makeContract(newParams)
                 setup = OracleSetup(
                   newParams,
@@ -280,6 +288,7 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
         println("Oracle initialized successfully!")
         println(s"  Oracle TX: $initTxHash")
         println(s"  Oracle Address: ${setup.scriptAddressBech32}")
+        println(s"  One-shot input: ${oneShotUtxo.input}")
         0
     }
 }
