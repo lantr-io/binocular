@@ -68,14 +68,11 @@ case class CloseCommand() extends Command {
         Console.log("Building close transaction...")
 
         OracleTransactions.buildAndSubmitCloseTransaction(
-          setup.signer,
           setup.provider,
-          setup.sponsorAddress,
+          setup.hdAccount,
           oracleUtxo,
-          setup.script,
           referenceScriptUtxo,
           setup.compiled,
-          setup.params.owner,
           timeout
         ) match {
             case Right(txHash) =>

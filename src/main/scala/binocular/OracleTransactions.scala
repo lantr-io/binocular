@@ -11,8 +11,7 @@ import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import scalus.cardano.ledger.rules.ExUnitsTooBigValidator
-import scalus.cardano.ledger.AddrKeyHash
-import scalus.cardano.onchain.plutus.v1.PubKeyHash
+import scalus.cardano.wallet.hd.HdAccount
 import scalus.uplc.CompiledPlutus
 
 import java.time.Instant
@@ -594,16 +593,16 @@ object OracleTransactions {
 
     /** Build a CloseOracle transaction to close a stale oracle and burn the NFT. */
     def buildCloseTransaction(
-        signer: TransactionSigner,
         provider: BlockchainProvider,
-        sponsorAddress: Address,
+        owner: HdAccount,
         oracleUtxo: Utxo,
-        script: Script.PlutusV3,
         referenceScriptUtxo: Utxo,
-        compiled: CompiledPlutus[?],
-        ownerPkh: PubKeyHash
+        compiled: CompiledPlutus[?]
     )(using ExecutionContext): Future[Transaction] = {
         val cardanoInfo = provider.cardanoInfo
+        val network = cardanoInfo.network
+        val sponsorAddress = owner.baseAddress(network)
+        val signer = owner.signerForUtxos
 
         val (validityInstant, _) =
             computeValidityIntervalTime(cardanoInfo)
@@ -611,7 +610,7 @@ object OracleTransactions {
         val redeemer = OracleAction.CloseOracle
 
         // Burn the NFT (quantity -1)
-        val policyId = script.scriptHash
+        val policyId = compiled.script.scriptHash
         val burnAssets = Map(AssetName.empty -> -1L)
 
         val validToInstant =
@@ -620,7 +619,7 @@ object OracleTransactions {
         TxBuilder(cardanoInfo)
             .references(referenceScriptUtxo, compiled)
             .spend(oracleUtxo, redeemer)
-            .requireSignatures(Set(AddrKeyHash(ownerPkh.hash)))
+            .requireSignatures(Set(owner.paymentKeyHash))
             .mint(policyId, burnAssets, redeemer)
             .payTo(sponsorAddress, Value(oracleUtxo.output.value.coin))
             .validFrom(validityInstant)
@@ -631,27 +630,21 @@ object OracleTransactions {
 
     /** Build and submit CloseOracle transaction to close a stale oracle and burn the NFT. */
     def buildAndSubmitCloseTransaction(
-        signer: TransactionSigner,
         provider: BlockchainProvider,
-        sponsorAddress: Address,
+        owner: HdAccount,
         oracleUtxo: Utxo,
-        script: Script.PlutusV3,
         referenceScriptUtxo: Utxo,
         compiled: CompiledPlutus[?],
-        ownerPkh: PubKeyHash,
         timeout: Duration = 120.seconds
     ): Either[String, String] = {
         given ec: ExecutionContext = provider.executionContext
         Try {
             val tx = buildCloseTransaction(
-              signer,
               provider,
-              sponsorAddress,
+              owner,
               oracleUtxo,
-              script,
               referenceScriptUtxo,
-              compiled,
-              ownerPkh
+              compiled
             ).await(timeout)
 
             submitTx(provider, tx, timeout)

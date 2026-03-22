@@ -123,6 +123,32 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         }
     }
 
+    private def deployRefScript(
+        ctx: YaciTestContext,
+        scriptAddress: Address,
+        script: Script.PlutusV3
+    ): Utxo = {
+        given ec: ExecutionContext = ctx.provider.executionContext
+        val result = OracleTransactions.deployReferenceScript(
+          ctx.alice.signer,
+          ctx.provider,
+          ctx.alice.address,
+          scriptAddress,
+          script
+        )
+        result match {
+            case Right((txHash, outputIndex, savedOutput)) =>
+                ctx.provider
+                    .pollForConfirmation(TransactionHash.fromHex(txHash), maxAttempts = 30)
+                    .await(60.seconds)
+                Thread.sleep(2000)
+                val refInput = TransactionInput(TransactionHash.fromHex(txHash), outputIndex)
+                Utxo(refInput, savedOutput)
+            case Left(err) =>
+                throw new RuntimeException(s"Failed to deploy reference script: $err")
+        }
+    }
+
     private def initOracleWithNft(
         ctx: YaciTestContext,
         genesisState: ChainState,
@@ -194,6 +220,9 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
 
         println(s"[Test] Oracle initialized at height $startHeight")
 
+        // Deploy reference script
+        val referenceScriptUtxo = deployRefScript(ctx, scriptAddress, itScript)
+
         val headersToSubmit = Seq(866971, 866972)
         var currentState = initialState
         var currentOracleUtxo = oracleUtxo
@@ -227,7 +256,8 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
               headersList,
               parentPath,
               validityTime,
-              itParams
+              itParams,
+              referenceScriptUtxo
             )
 
             currentOracleUtxo = newUtxo
@@ -265,6 +295,9 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
           "On-chain MPF root should match initial state"
         )
 
+        // Deploy reference script
+        val referenceScriptUtxo = deployRefScript(ctx, scriptAddress, itScript)
+
         // Fetch and submit batch of headers
         val headers = fetchHeaders(mockRpc, startHeight + 1, updateToHeight)
         val headersList = ScalusList.from(headers.toList)
@@ -290,7 +323,8 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
           headersList,
           parentPath,
           validityTime,
-          itParams
+          itParams,
+          referenceScriptUtxo
         )
 
         assert(
@@ -328,25 +362,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
 
         // Deploy reference script to reduce transaction size
         println(s"[Test] Deploying reference script")
-        val refScriptResult = OracleTransactions.deployReferenceScript(
-          ctx.alice.signer,
-          ctx.provider,
-          ctx.alice.address,
-          scriptAddress,
-          itScript
-        )
-
-        val referenceScriptUtxo: Utxo = refScriptResult match {
-            case Right((txHash, outputIndex, savedOutput)) =>
-                ctx.provider
-                    .pollForConfirmation(TransactionHash.fromHex(txHash), maxAttempts = 30)
-                    .await(60.seconds)
-                Thread.sleep(2000)
-                val refInput = TransactionInput(TransactionHash.fromHex(txHash), outputIndex)
-                Utxo(refInput, savedOutput)
-            case Left(err) =>
-                fail(s"Failed to deploy reference script: $err")
-        }
+        val referenceScriptUtxo = deployRefScript(ctx, scriptAddress, itScript)
 
         println(s"[Test] Adding $totalBlocks blocks in batches of $batchSize")
 
