@@ -31,7 +31,7 @@ case class OracleConfig(
     def toBitcoinValidatorParams(): Either[String, BitcoinValidatorParams] = {
         for {
             ref <- parseTxOutRef(txOutRef)
-            pkh <- parseOwnerPkh(ownerPkh)
+            pkh <- parseOwnerPkhString(ownerPkh)
         } yield BitcoinContract.validatorParams(
           ref,
           pkh,
@@ -78,7 +78,10 @@ case class OracleConfig(
         }
     }
 
-    private def parseOwnerPkh(s: String): Either[String, PubKeyHash] = {
+    /** Parse ownerPkh string into PubKeyHash */
+    def parseOwnerPkh(): Either[String, PubKeyHash] = parseOwnerPkhString(ownerPkh)
+
+    private def parseOwnerPkhString(s: String): Either[String, PubKeyHash] = {
         Try(PubKeyHash(ByteString.fromHex(s))) match {
             case Success(pkh) => Right(pkh)
             case Failure(ex)  => Left(s"Invalid owner PKH '$s': ${ex.getMessage}")
