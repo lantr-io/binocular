@@ -75,6 +75,7 @@ case class CloseCommand() extends Command {
           setup.script,
           referenceScriptUtxo,
           setup.compiled,
+          setup.params.owner,
           timeout
         ) match {
             case Right(txHash) =>

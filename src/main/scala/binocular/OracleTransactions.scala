@@ -11,6 +11,8 @@ import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import scalus.cardano.ledger.rules.ExUnitsTooBigValidator
+import scalus.cardano.ledger.AddrKeyHash
+import scalus.cardano.onchain.plutus.v1.PubKeyHash
 import scalus.uplc.CompiledPlutus
 
 import java.time.Instant
@@ -598,7 +600,8 @@ object OracleTransactions {
         oracleUtxo: Utxo,
         script: Script.PlutusV3,
         referenceScriptUtxo: Utxo,
-        compiled: CompiledPlutus[?]
+        compiled: CompiledPlutus[?],
+        ownerPkh: PubKeyHash
     )(using ExecutionContext): Future[Transaction] = {
         val cardanoInfo = provider.cardanoInfo
 
@@ -608,7 +611,8 @@ object OracleTransactions {
         val redeemer = OracleAction.CloseOracle
 
         // Burn the NFT (quantity -1)
-        val burnAssets = Map(scalus.cardano.ledger.AssetName.empty -> -1L)
+        val policyId = script.scriptHash
+        val burnAssets = Map(AssetName.empty -> -1L)
 
         val validToInstant =
             validityInstant.plusMillis(BitcoinValidator.MaxValidityWindow.toLong)
@@ -616,7 +620,8 @@ object OracleTransactions {
         TxBuilder(cardanoInfo)
             .references(referenceScriptUtxo, compiled)
             .spend(oracleUtxo, redeemer)
-            .mint(script, burnAssets, redeemer)
+            .requireSignatures(Set(AddrKeyHash(ownerPkh.hash)))
+            .mint(policyId, burnAssets, redeemer)
             .payTo(sponsorAddress, Value(oracleUtxo.output.value.coin))
             .validFrom(validityInstant)
             .validTo(validToInstant)
@@ -633,6 +638,7 @@ object OracleTransactions {
         script: Script.PlutusV3,
         referenceScriptUtxo: Utxo,
         compiled: CompiledPlutus[?],
+        ownerPkh: PubKeyHash,
         timeout: Duration = 120.seconds
     ): Either[String, String] = {
         given ec: ExecutionContext = provider.executionContext
@@ -644,7 +650,8 @@ object OracleTransactions {
               oracleUtxo,
               script,
               referenceScriptUtxo,
-              compiled
+              compiled,
+              ownerPkh
             ).await(timeout)
 
             submitTx(provider, tx, timeout)
