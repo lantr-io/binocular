@@ -12,6 +12,7 @@ import scala.concurrent.duration.*
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.boundary, boundary.break
 import scalus.utils.await
+import cats.syntax.either.*
 
 /** Update oracle with new Bitcoin blocks */
 case class UpdateOracleCommand(
@@ -33,11 +34,9 @@ case class UpdateOracleCommand(
             val timeout = config.oracle.transactionTimeout.seconds
 
             println("Step 1: Loading configurations...")
-            val setup = CommandHelpers.setupOracle(config) match {
-                case Right(s) => s
-                case Left(err) =>
-                    System.err.println(s"Error: $err")
-                    break(1)
+            val setup = CommandHelpers.setupOracle(config).valueOr { err =>
+                System.err.println(s"Error: $err")
+                break(1)
             }
 
             val walletAddr = setup.hdAccount
@@ -139,18 +138,17 @@ case class UpdateOracleCommand(
             println(s"  Block Hash: ${currentChainState.ctx.lastBlockHash.toHex}")
             println(s"  Fork Tree Size: ${currentChainState.forkTree.blockCount}")
 
-            val offChainMpfInit: OffChainMPF = CommandHelpers.reconstructMpf(
-              new SimpleBitcoinRpc(config.bitcoinNode),
-              currentChainState,
-              config.oracle.startHeight
-            ) match {
-                case Right(mpf) =>
-                    logger.info("MPF reconstructed successfully")
-                    mpf
-                case Left(err) =>
+            val offChainMpfInit: OffChainMPF = CommandHelpers
+                .reconstructMpf(
+                  new SimpleBitcoinRpc(config.bitcoinNode),
+                  currentChainState,
+                  config.oracle.startHeight
+                )
+                .valueOr { err =>
                     System.err.println(s"  Error: $err")
                     break(1)
-            }
+                }
+            logger.info("MPF reconstructed successfully")
 
             val highestBlock = if currentChainState.forkTree.nonEmpty then {
                 val maxForkHeight =

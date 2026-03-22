@@ -19,6 +19,7 @@ import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration.*
 import scala.util.{Failure, Success, Try}
 import scalus.utils.await
+import cats.syntax.either.*
 
 /** Result of a submitted transaction with size metrics. */
 case class TxResult(txHash: String, txSize: Int, datumSize: Int)
@@ -74,10 +75,7 @@ object OracleTransactions {
             }
             val actualIdx = if scriptRefIdx >= 0 then scriptRefIdx else 0
 
-            submitTx(provider, tx, timeout) match {
-                case Right(txHash) => Right((txHash, actualIdx, output))
-                case Left(err)     => Left(err)
-            }
+            submitTx(provider, tx, timeout).map((_, actualIdx, output))
         } match {
             case Success(result) => result
             case Failure(ex) =>
@@ -95,9 +93,8 @@ object OracleTransactions {
         given ec: ExecutionContext = provider.executionContext
         val utxosResult = provider.findUtxos(searchAddress).await(timeout)
 
-        val utxos: Utxos = utxosResult match {
-            case Right(u)  => u
-            case Left(err) => throw new RuntimeException(s"Failed to fetch UTxOs: $err")
+        val utxos: Utxos = utxosResult.valueOr { err =>
+            throw new RuntimeException(s"Failed to fetch UTxOs: $err")
         }
 
         val matchingUtxos = utxos.toList
@@ -430,9 +427,8 @@ object OracleTransactions {
             val protocolParams = cardanoInfo.protocolParams
 
             // Pre-fetch sponsor UTxOs once
-            val sponsorUtxos = provider.findUtxos(sponsorAddress).await(timeout) match {
-                case Right(u)  => u
-                case Left(err) => throw new RuntimeException(s"Failed to fetch sponsor UTxOs: $err")
+            val sponsorUtxos = provider.findUtxos(sponsorAddress).await(timeout).valueOr { err =>
+                throw new RuntimeException(s"Failed to fetch sponsor UTxOs: $err")
             }
 
             // Find total promotable blocks
@@ -690,10 +686,7 @@ object OracleTransactions {
                 .map(_.sign(signer).transaction)
                 .await(timeout)
 
-            submitTx(provider, tx, timeout) match {
-                case Right(txHash) => Right((txHash, 0, tx.body.value.outputs.head.value))
-                case Left(err)     => Left(err)
-            }
+            submitTx(provider, tx, timeout).map((_, 0, tx.body.value.outputs.head.value))
         } match {
             case Success(result) => result
             case Failure(ex) =>

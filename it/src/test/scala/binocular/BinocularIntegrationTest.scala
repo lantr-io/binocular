@@ -20,6 +20,7 @@ import scalus.utils.await
 
 import scala.concurrent.duration.*
 import scala.concurrent.{ExecutionContext, Future}
+import cats.syntax.either.*
 
 /** Integration tests for Binocular Oracle on Yaci DevKit
   *
@@ -136,17 +137,15 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
           scriptAddress,
           script
         )
-        result match {
-            case Right((txHash, outputIndex, savedOutput)) =>
-                ctx.provider
-                    .pollForConfirmation(TransactionHash.fromHex(txHash), maxAttempts = 30)
-                    .await(60.seconds)
-                Thread.sleep(2000)
-                val refInput = TransactionInput(TransactionHash.fromHex(txHash), outputIndex)
-                Utxo(refInput, savedOutput)
-            case Left(err) =>
-                throw new RuntimeException(s"Failed to deploy reference script: $err")
+        val (txHash, outputIndex, savedOutput) = result.valueOr { err =>
+            throw new RuntimeException(s"Failed to deploy reference script: $err")
         }
+        ctx.provider
+            .pollForConfirmation(TransactionHash.fromHex(txHash), maxAttempts = 30)
+            .await(60.seconds)
+        Thread.sleep(2000)
+        val refInput = TransactionInput(TransactionHash.fromHex(txHash), outputIndex)
+        Utxo(refInput, savedOutput)
     }
 
     private def initOracleWithNft(
@@ -190,9 +189,8 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
             .sign(ctx.alice.signer)
             .transaction
 
-        val txHash = OracleTransactions.submitTx(ctx.provider, tx) match {
-            case Right(h)  => h
-            case Left(err) => throw new RuntimeException(s"Failed to init oracle with NFT: $err")
+        val txHash = OracleTransactions.submitTx(ctx.provider, tx).valueOr { err =>
+            throw new RuntimeException(s"Failed to init oracle with NFT: $err")
         }
 
         println(s"[initOracleWithNft] Oracle initialized: $txHash")

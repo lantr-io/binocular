@@ -20,6 +20,7 @@ import scalus.utils.await
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
 import scala.util.Try
+import cats.syntax.either.*
 
 /** Integration test that exercises the full Binocular oracle lifecycle using a real bitcoind
   * regtest node alongside Yaci DevKit.
@@ -211,9 +212,8 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
                 .sign(yaciCtx.alice.signer)
                 .transaction
 
-            val initTxHash = OracleTransactions.submitTx(yaciCtx.provider, initTx) match {
-                case Right(h)  => h
-                case Left(err) => fail(s"Failed to init oracle: $err")
+            val initTxHash = OracleTransactions.submitTx(yaciCtx.provider, initTx).valueOr { err =>
+                fail(s"Failed to init oracle: $err")
             }
             println(s"[Test] Oracle initialized: $initTxHash")
             val initStatus = yaciCtx.provider

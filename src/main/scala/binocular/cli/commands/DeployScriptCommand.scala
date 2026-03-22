@@ -6,6 +6,7 @@ import com.typesafe.scalalogging.LazyLogging
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
+import cats.syntax.either.*
 
 /** Deploy the oracle validator as a reference script UTxO */
 case class DeployScriptCommand() extends Command with LazyLogging {
@@ -16,11 +17,9 @@ case class DeployScriptCommand() extends Command with LazyLogging {
         given ec: ExecutionContext = ExecutionContext.global
         val timeout = config.oracle.transactionTimeout.seconds
 
-        val setup = CommandHelpers.setupOracle(config) match {
-            case Right(s) => s
-            case Left(err) =>
-                System.err.println(s"Error: $err")
-                return 1
+        val setup = CommandHelpers.setupOracle(config).valueOr { err =>
+            System.err.println(s"Error: $err")
+            return 1
         }
 
         // Check if already deployed

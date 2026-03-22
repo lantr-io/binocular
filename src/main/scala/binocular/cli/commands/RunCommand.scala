@@ -13,6 +13,7 @@ import scala.concurrent.duration.*
 import scala.util.boundary
 import boundary.break
 import scalus.utils.await
+import cats.syntax.either.*
 
 /** Continuous daemon: read oracle state, submit updates in a loop */
 case class RunCommand(dryRun: Boolean = false) extends Command {
@@ -33,11 +34,9 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
         val pollInterval = config.oracle.pollInterval
         val retryInterval = config.oracle.retryInterval
 
-        val setup = CommandHelpers.setupOracle(config) match {
-            case Right(s) => s
-            case Left(err) =>
-                Console.error(err)
-                break(1)
+        val setup = CommandHelpers.setupOracle(config).valueOr { err =>
+            Console.error(err)
+            break(1)
         }
 
         Console.info("Bitcoin", s"${config.bitcoinNode.url} (${config.bitcoinNode.network})")
@@ -94,18 +93,17 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
 
         // Reconstruct off-chain MPF
         val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
-        var currentMpf: OffChainMPF = CommandHelpers.reconstructMpf(
-          rpc,
-          currentChainState,
-          config.oracle.startHeight
-        ) match {
-            case Right(mpf) =>
-                Console.success("MPF reconstructed")
-                mpf
-            case Left(err) =>
+        var currentMpf: OffChainMPF = CommandHelpers
+            .reconstructMpf(
+              rpc,
+              currentChainState,
+              config.oracle.startHeight
+            )
+            .valueOr { err =>
                 Console.error(err)
                 break(1)
-        }
+            }
+        Console.success("MPF reconstructed")
 
         Console.separator()
         println()

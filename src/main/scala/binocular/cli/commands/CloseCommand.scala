@@ -9,6 +9,7 @@ import scala.concurrent.duration.*
 import scala.util.boundary
 import boundary.break
 import scalus.utils.await
+import cats.syntax.either.*
 
 /** Close oracle, burn NFT, return min_ada */
 case class CloseCommand() extends Command {
@@ -24,11 +25,9 @@ case class CloseCommand() extends Command {
         given ec: ExecutionContext = ExecutionContext.global
         val timeout = config.oracle.transactionTimeout.seconds
 
-        val setup = CommandHelpers.setupOracle(config) match {
-            case Right(s) => s
-            case Left(err) =>
-                Console.error(err)
-                break(1)
+        val setup = CommandHelpers.setupOracle(config).valueOr { err =>
+            Console.error(err)
+            break(1)
         }
 
         Console.info("Oracle", setup.scriptAddress.encode.getOrElse("?"))

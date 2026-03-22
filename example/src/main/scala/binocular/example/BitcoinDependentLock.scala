@@ -205,30 +205,24 @@ object BitcoinDependentLockApp {
 
         given ec: ExecutionContext = ExecutionContext.global
 
-        val hdAccount = walletConf.createHdAccount() match {
-            case Right(acc) =>
-                val addr = acc
-                    .baseAddress(cardanoConf.scalusNetwork)
-                    .asInstanceOf[scalus.cardano.address.ShelleyAddress]
-                    .toBech32
-                    .get
-                println(s"Wallet loaded: $addr")
-                acc
-            case Left(err) =>
-                System.err.println(s"Error creating wallet: $err")
-                return 1
+        val hdAccount = walletConf.createHdAccount().valueOr { err =>
+            System.err.println(s"Error creating wallet: $err")
+            return 1
         }
+        val addr = hdAccount
+            .baseAddress(cardanoConf.scalusNetwork)
+            .asInstanceOf[scalus.cardano.address.ShelleyAddress]
+            .toBech32
+            .get
+        println(s"Wallet loaded: $addr")
         val signer = new TransactionSigner(Set(hdAccount.paymentKeyPair))
         val sponsorAddress = hdAccount.baseAddress(cardanoConf.scalusNetwork)
 
-        val provider = cardanoConf.createBlockchainProvider() match {
-            case Right(p) =>
-                println(s"Connected to Cardano backend")
-                p
-            case Left(err) =>
-                System.err.println(s"Error creating backend: $err")
-                return 1
+        val provider = cardanoConf.createBlockchainProvider().valueOr { err =>
+            System.err.println(s"Error creating backend: $err")
+            return 1
         }
+        println(s"Connected to Cardano backend")
 
         val verifierAddress = getVerifierAddress(cardanoConf.scalusNetwork)
         val verifierAddressBech32 = verifierAddress
@@ -309,30 +303,24 @@ object BitcoinDependentLockApp {
 
         given ec: ExecutionContext = ExecutionContext.global
 
-        val hdAccount = walletConf.createHdAccount() match {
-            case Right(acc) =>
-                val addr = acc
-                    .baseAddress(cardanoConf.scalusNetwork)
-                    .asInstanceOf[scalus.cardano.address.ShelleyAddress]
-                    .toBech32
-                    .get
-                println(s"Wallet loaded: $addr")
-                acc
-            case Left(err) =>
-                System.err.println(s"Error creating wallet: $err")
-                return 1
+        val hdAccount = walletConf.createHdAccount().valueOr { err =>
+            System.err.println(s"Error creating wallet: $err")
+            return 1
         }
+        val unlockAddr = hdAccount
+            .baseAddress(cardanoConf.scalusNetwork)
+            .asInstanceOf[scalus.cardano.address.ShelleyAddress]
+            .toBech32
+            .get
+        println(s"Wallet loaded: $unlockAddr")
         val signer = new TransactionSigner(Set(hdAccount.paymentKeyPair))
         val sponsorAddress = hdAccount.baseAddress(cardanoConf.scalusNetwork)
 
-        val provider = cardanoConf.createBlockchainProvider() match {
-            case Right(p) =>
-                println(s"Connected to Cardano backend")
-                p
-            case Left(err) =>
-                System.err.println(s"Error creating backend: $err")
-                return 1
+        val provider = cardanoConf.createBlockchainProvider().valueOr { err =>
+            System.err.println(s"Error creating backend: $err")
+            return 1
         }
+        println(s"Connected to Cardano backend")
 
         val script = getVerifierScript()
         val verifierAddress = getVerifierAddress(cardanoConf.scalusNetwork)
@@ -340,13 +328,11 @@ object BitcoinDependentLockApp {
         // Step 1: Fetch locked UTxO and parse datum
         println("Step 1: Fetching locked UTxO...")
 
-        val utxosResult = provider.findUtxos(verifierAddress).await(30.seconds)
-        val allUtxos: List[Utxo] = utxosResult match {
-            case Right(u) => u.map { case (input, output) => Utxo(input, output) }.toList
-            case Left(err) =>
+        val allUtxos: List[Utxo] = provider.findUtxos(verifierAddress).await(30.seconds).valueOr {
+            err =>
                 System.err.println(s"Error fetching UTxOs: $err")
                 return 1
-        }
+        }.map { case (input, output) => Utxo(input, output) }.toList
 
         val utxoToSpend = allUtxos.find(u =>
             u.input.transactionId.toHex == txHash && u.input.index == outputIndex
@@ -375,30 +361,24 @@ object BitcoinDependentLockApp {
         println()
         println("Step 2: Finding oracle UTxO by NFT...")
 
-        val params = oracleConf.toBitcoinValidatorParams() match {
-            case Right(p) => p
-            case Left(err) =>
-                System.err.println(s"Error parsing oracle params: $err")
-                return 1
+        val params = oracleConf.toBitcoinValidatorParams().valueOr { err =>
+            System.err.println(s"Error parsing oracle params: $err")
+            return 1
         }
         val oracleScriptHash =
             BitcoinContract.makeContract(params).script.scriptHash
-        val oracleScriptAddressBech32 = oracleConf.scriptAddress(cardanoConf.cardanoNetwork) match {
-            case Right(addr) => addr
-            case Left(err) =>
+        val oracleScriptAddressBech32 =
+            oracleConf.scriptAddress(cardanoConf.cardanoNetwork).valueOr { err =>
                 System.err.println(s"Error deriving oracle script address: $err")
                 return 1
-        }
+            }
         val oracleAddress = Address.fromBech32(oracleScriptAddressBech32)
 
-        val oracleUtxosResult =
-            provider.findUtxos(oracleAddress).await(30.seconds)
-        val oracleUtxos: List[Utxo] = oracleUtxosResult match {
-            case Right(u) => u.map { case (input, output) => Utxo(input, output) }.toList
-            case Left(err) =>
+        val oracleUtxos: List[Utxo] =
+            provider.findUtxos(oracleAddress).await(30.seconds).valueOr { err =>
                 System.err.println(s"Error fetching oracle UTxOs: $err")
                 return 1
-        }
+            }.map { case (input, output) => Utxo(input, output) }.toList
 
         val oracleUtxo: Utxo = oracleUtxos.find(u =>
             u.output.value.hasAsset(oracleScriptHash, AssetName.empty)

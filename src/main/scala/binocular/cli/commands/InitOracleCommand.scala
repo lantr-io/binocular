@@ -11,6 +11,7 @@ import scala.concurrent.duration.*
 import scala.util.boundary
 import boundary.break
 import scalus.utils.await
+import cats.syntax.either.*
 
 /** Initialize new oracle from Bitcoin block */
 case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) extends Command {
@@ -24,17 +25,13 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
         val oracleConf = config.oracle
         val timeout = oracleConf.transactionTimeout.seconds
 
-        val hdAccount = config.wallet.createHdAccount() match {
-            case Right(a) => a
-            case Left(err) =>
-                Console.error(err)
-                break(1)
+        val hdAccount = config.wallet.createHdAccount().valueOr { err =>
+            Console.error(err)
+            break(1)
         }
-        val provider = config.cardano.createBlockchainProvider() match {
-            case Right(p) => p
-            case Left(err) =>
-                Console.error(err)
-                break(1)
+        val provider = config.cardano.createBlockchainProvider().valueOr { err =>
+            Console.error(err)
+            break(1)
         }
         val network = config.cardano.scalusNetwork
         val signer = hdAccount.signerForUtxos
@@ -188,22 +185,22 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
         Console.step(6, "Submitting init transaction")
         val t6 = System.nanoTime()
 
-        val txResult = OracleTransactions.buildAndSubmitInitTransaction(
-          setup.signer,
-          setup.provider,
-          setup.scriptAddress,
-          setup.sponsorAddress,
-          initialState,
-          setup.script,
-          oneShotUtxo,
-          referenceScriptUtxo,
-          timeout = timeout
-        ) match {
-            case Right(r) => r
-            case Left(err) =>
+        val txResult = OracleTransactions
+            .buildAndSubmitInitTransaction(
+              setup.signer,
+              setup.provider,
+              setup.scriptAddress,
+              setup.sponsorAddress,
+              initialState,
+              setup.script,
+              oneShotUtxo,
+              referenceScriptUtxo,
+              timeout = timeout
+            )
+            .valueOr { err =>
                 Console.error(s"Submitting init transaction: $err")
                 break(1)
-        }
+            }
 
         val step6Time = (System.nanoTime() - t6) / 1e9
         Console.tx("Tx", txResult.txHash)
