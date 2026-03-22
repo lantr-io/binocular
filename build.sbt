@@ -16,6 +16,8 @@ lazy val binocular = (project in file("."))
     .enablePlugins(BuildInfoPlugin)
     .settings(
       name := "binocular",
+      run / fork := true,
+      run / connectInput := true,
       Test / parallelExecution := false,
       Test / javaOptions ++= Seq("-Xmx2g"),
       addCompilerPlugin("org.scalus" % "scalus-plugin_3.3.7" % scalusVersion),
