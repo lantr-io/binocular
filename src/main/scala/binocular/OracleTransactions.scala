@@ -15,7 +15,10 @@ import java.time.Instant
 import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration.*
 import scala.util.{Failure, Success, Try}
-import scalus.utils.{await, showDetailedHighlighted, showHighlighted}
+import scalus.utils.await
+
+/** Result of a submitted transaction with size metrics. */
+case class TxResult(txHash: String, txSize: Int, datumSize: Int)
 
 /** Helper functions for building oracle transactions */
 object OracleTransactions {
@@ -87,12 +90,6 @@ object OracleTransactions {
         timeout: Duration = 30.seconds
     ): List[(String, Int)] = {
         given ec: ExecutionContext = provider.executionContext
-
-        println(
-          s"Searching for reference script UTxOs at address: ${searchAddress.encode.getOrElse("?")}"
-        )
-        println(s"Expected script hash: ${expectedScriptHash.toHex}")
-
         val utxosResult = provider.findUtxos(searchAddress).await(timeout)
 
         val utxos: Utxos = utxosResult match {
@@ -113,7 +110,6 @@ object OracleTransactions {
                 (input.transactionId.toHex, input.index)
             }
 
-        println(s"Found ${matchingUtxos.size} matching reference script UTxO(s)")
         matchingUtxos
     }
 
@@ -263,9 +259,6 @@ object OracleTransactions {
 
         val mintAssets = Map(AssetName.empty -> 1L)
 
-        println(scriptAddress)
-        println(policyId)
-        println(referenceScriptUtxo)
         TxBuilder(provider.cardanoInfo)
             .spend(oneShotUtxo) // consume one-shot UTxO for NFT policy
             .references(referenceScriptUtxo)
@@ -287,7 +280,7 @@ object OracleTransactions {
         referenceScriptUtxo: Utxo,
         lovelaceAmount: Long = 5_000_000L,
         timeout: Duration = 120.seconds
-    ): Either[String, String] = {
+    ): Either[String, TxResult] = {
         given ec: ExecutionContext = provider.executionContext
         Try {
             val tx = buildInitTransaction(
@@ -302,13 +295,16 @@ object OracleTransactions {
               lovelaceAmount
             ).await(timeout)
 
-            import scalus.utils.*
-            println(tx.showHighlighted)
-            submitTx(provider, tx, timeout)
+            val txSize = tx.toCbor.length
+            val datumSize = tx.body.value.outputs
+                .find(_.value.inlineDatum.isDefined)
+                .map(_.value.requireInlineDatum.toCbor.length)
+                .getOrElse(0)
+
+            submitTx(provider, tx, timeout).map(hash => TxResult(hash, txSize, datumSize))
         } match {
             case Success(result) => result
             case Failure(ex) =>
-                ex.printStackTrace()
                 Left(
                   s"Error building transaction: ${ex.getMessage}\nCause: ${Option(ex.getCause).map(_.getMessage).getOrElse("none")}"
                 )
@@ -386,7 +382,7 @@ object OracleTransactions {
         referenceScriptUtxo: Utxo,
         timeout: Duration = 120.seconds,
         mpfInsertProofs: ScalusList[ScalusList[ProofStep]] = ScalusList.Nil
-    ): Either[String, String] = {
+    ): Either[String, TxResult] = {
         given ec: ExecutionContext = provider.executionContext
         Try {
             val tx = buildUpdateTransaction(
@@ -404,11 +400,13 @@ object OracleTransactions {
               mpfInsertProofs
             ).await(timeout)
 
-//            println(tx.showDetailedHighlighted)
-            println(tx.body.value.outputs.head.value.requireInlineDatum.toCbor.length)
-            println(tx.toCbor.length)
+            val txSize = tx.toCbor.length
+            val datumSize = tx.body.value.outputs
+                .find(_.value.inlineDatum.isDefined)
+                .map(_.value.requireInlineDatum.toCbor.length)
+                .getOrElse(0)
 
-            submitTx(provider, tx, timeout)
+            submitTx(provider, tx, timeout).map(hash => TxResult(hash, txSize, datumSize))
         } match {
             case Success(result) => result
             case Failure(ex) =>
@@ -529,8 +527,6 @@ object OracleTransactions {
                 .map(_.sign(signer).transaction)
                 .await(timeout)
 
-            println(tx.showDetailedHighlighted)
-
             submitTx(provider, tx, timeout) match {
                 case Right(txHash) => Right((txHash, 0, tx.body.value.outputs.head.value))
                 case Left(err)     => Left(err)
@@ -553,8 +549,7 @@ object OracleTransactions {
         while System.currentTimeMillis() < deadline do {
             provider.findUtxo(input).await(10.seconds) match {
                 case Right(utxo) => return Right(utxo)
-                case Left(err) =>
-                    println(s"  Waiting for ${input.transactionId.toHex}#${input.index}: $err")
+                case Left(_) =>
                     Thread.sleep(pollInterval.toMillis)
             }
         }

@@ -1,8 +1,7 @@
 package binocular.cli.commands
 
 import binocular.*
-import binocular.cli.{Command, OracleSetup}
-import com.typesafe.scalalogging.LazyLogging
+import binocular.cli.{Command, Console, OracleSetup}
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.cardano.onchain.plutus.v1.PubKeyHash
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
@@ -14,13 +13,11 @@ import boundary.break
 import scalus.utils.await
 
 /** Initialize new oracle from Bitcoin block */
-case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
-    extends Command
-    with LazyLogging {
+case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) extends Command {
 
     override def execute(config: BinocularConfig): Int = boundary {
-        println("Initializing new oracle...")
-        if dryRun then println("  (dry-run mode - will not submit)")
+        Console.header("Binocular Oracle Init")
+        if dryRun then Console.warn("Dry-run mode — will not submit")
         println()
 
         given ec: ExecutionContext = ExecutionContext.global
@@ -30,13 +27,13 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
         val hdAccount = config.wallet.createHdAccount() match {
             case Right(a) => a
             case Left(err) =>
-                System.err.println(s"Error: $err")
+                Console.error(err)
                 break(1)
         }
         val provider = config.cardano.createBlockchainProvider() match {
             case Right(p) => p
             case Left(err) =>
-                System.err.println(s"Error: $err")
+                Console.error(err)
                 break(1)
         }
         val network = config.cardano.scalusNetwork
@@ -44,66 +41,70 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
         val sponsorAddress = hdAccount.baseAddress(network)
 
         val blockHeight = startBlock.orElse(oracleConf.startHeight).getOrElse {
-            System.err.println("Error: No start block height specified")
-            System.err.println("  Use --start-block <HEIGHT> or configure ORACLE_START_HEIGHT")
+            Console.error("No start block height specified")
+            Console.error("Use --start-block <HEIGHT> or configure ORACLE_START_HEIGHT")
             break(1)
         }
 
         val walletAddr = sponsorAddress.toBech32.getOrElse("?")
-        println(s"Start Block Height: $blockHeight")
-        println(s"Bitcoin Network: ${config.bitcoinNode.network}")
-        println(s"Cardano Network: ${config.cardano.network}")
-        println(s"Wallet loaded: $walletAddr")
+        Console.info("Network", s"${config.bitcoinNode.network} → ${config.cardano.network}")
+        Console.info("Start Height", f"$blockHeight%,d")
+        Console.info("Wallet", walletAddr)
         println()
 
-        println("Step 1: Connecting to Bitcoin RPC...")
+        // Step 1
+        Console.step(1, "Connecting to Bitcoin RPC")
+        val t1 = System.nanoTime()
         val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
-        println(s"Connected to Bitcoin node at ${config.bitcoinNode.url}")
+        Console.success(s"Connected to ${config.bitcoinNode.url}")
         println()
-        println(s"Step 2: Fetching initial chain state from block $blockHeight...")
 
+        // Step 2
+        Console.step(2, "Fetching initial chain state")
+        val t2 = System.nanoTime()
         val initialState =
             try {
                 BitcoinChainState.getInitialChainState(rpc, blockHeight.toInt).await(30.seconds)
             } catch {
                 case e: Exception =>
-                    System.err.println(s"Error fetching Bitcoin block: ${e.getMessage}")
-                    println()
-                    println("Make sure:")
-                    println("  1. Bitcoin node is running and accessible")
-                    println("  2. RPC credentials are correct")
-                    println(s"  3. Block height $blockHeight exists")
+                    Console.error(s"Fetching Bitcoin block: ${e.getMessage}")
+                    Console.error("Make sure:")
+                    Console.error("  1. Bitcoin node is running and accessible")
+                    Console.error("  2. RPC credentials are correct")
+                    Console.error(s"  3. Block height $blockHeight exists")
                     break(1)
             }
 
-        println(s"Fetched initial state:")
-        println(s"  Block Height: ${initialState.ctx.height}")
-        println(s"  Block Hash: ${initialState.ctx.lastBlockHash.toHex}")
-        println(s"  Block Timestamp: ${initialState.ctx.timestamps.head}")
-        println(s"  Current Target: ${initialState.ctx.currentBits.toHex}")
-        println(s"  Recent Timestamps: ${initialState.ctx.timestamps.size} entries")
+        Console.info("Height", initialState.ctx.height)
+        Console.info("Hash", initialState.ctx.lastBlockHash.toHex)
+        Console.info("Timestamp", initialState.ctx.timestamps.head)
+        Console.info("Target", initialState.ctx.currentBits.toHex)
 
         val requiredTimestamps = 11
         if initialState.ctx.timestamps.size < requiredTimestamps then {
-            System.err.println(s"Error: Insufficient timestamps for median-time-past validation")
-            System.err.println(
-              s"  Got ${initialState.ctx.timestamps.size}, need $requiredTimestamps"
+            Console.error("Insufficient timestamps for median-time-past validation")
+            Console.error(
+              s"Got ${initialState.ctx.timestamps.size}, need $requiredTimestamps"
             )
             break(1)
         }
-        println(s"Validated: All $requiredTimestamps timestamps present for median-time-past")
+        val step2Time = (System.nanoTime() - t2) / 1e9
+        Console.success(
+          f"${initialState.ctx.timestamps.size} timestamps validated ($step2Time%.1fs)"
+        )
 
         if dryRun then {
             println()
-            println("Dry-run complete. Transaction would initialize oracle with:")
-            println(s"  Block Height: ${initialState.ctx.height}")
-            println(s"  Block Hash: ${initialState.ctx.lastBlockHash.toHex}")
+            Console.success("Dry-run complete. Transaction would initialize oracle with:")
+            Console.info("Height", initialState.ctx.height)
+            Console.info("Hash", initialState.ctx.lastBlockHash.toHex)
             break(0)
         }
 
-        // Step 3: Create dedicated one-shot UTxO
+        // Step 3
         println()
-        println("Step 3: Creating dedicated one-shot UTxO (10 ADA)...")
+        Console.step(3, "Creating one-shot UTxO")
+        val t3 = System.nanoTime()
         val (oneShotTxHash, oneShotIdx, oneShotOutput) =
             OracleTransactions.createOneShotUtxo(
               signer,
@@ -112,27 +113,28 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
               timeout = timeout
             ) match {
                 case Right(result) =>
-                    println(s"  One-shot tx submitted: ${result._1}#${result._2}")
+                    Console.tx("Tx", s"${result._1}#${result._2}")
                     result
                 case Left(err) =>
-                    System.err.println(s"Error creating one-shot UTxO: $err")
+                    Console.error(s"Creating one-shot UTxO: $err")
                     break(1)
             }
 
         val oneShotInput =
             TransactionInput(TransactionHash.fromHex(oneShotTxHash), oneShotIdx)
-        println("  Waiting for one-shot UTxO to be confirmed...")
         OracleTransactions.waitForUtxo(provider, oneShotInput, timeout) match {
-            case Right(_) => println("  One-shot UTxO confirmed.")
+            case Right(_) =>
+                val step3Time = (System.nanoTime() - t3) / 1e9
+                Console.success(f"Confirmed ($step3Time%.1fs)")
             case Left(err) =>
-                System.err.println(s"Error: $err")
+                Console.error(err)
                 break(1)
         }
         val oneShotUtxo = Utxo(oneShotInput, oneShotOutput)
 
-        // Step 4: Parameterize script with the one-shot UTxO
+        // Step 4
         println()
-        println("Step 4: Parameterizing script with one-shot UTxO...")
+        Console.step(4, "Parameterizing script")
         val txOutRef = TxOutRef(TxId(oneShotInput.transactionId), oneShotInput.index)
         val owner = PubKeyHash(hdAccount.paymentKeyHash)
         val params = BitcoinContract.validatorParams(
@@ -145,12 +147,13 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
         )
         val compiled = BitcoinContract.makeContract(params)
         val setup = OracleSetup(params, compiled, hdAccount, provider, network)
-        println(s"  Oracle Params: $params")
-        println(s"  Oracle Address: ${setup.scriptAddressBech32}")
+        Console.info("Address", setup.scriptAddressBech32)
+        Console.info("Owner", owner.hash.toHex)
 
-        // Step 5: Deploy reference script
+        // Step 5
         println()
-        println(s"Step 5: Deploying reference script ${setup.script.scriptHash}...")
+        Console.step(5, "Deploying reference script")
+        val t5 = System.nanoTime()
         val (deployTxHash, deployIdx, deployOutput) =
             OracleTransactions.deployReferenceScript(
               signer,
@@ -161,29 +164,31 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
               timeout
             ) match {
                 case Right(result) =>
-                    println(s"  Reference script tx submitted: ${result._1}#${result._2}")
+                    Console.tx("Tx", s"${result._1}#${result._2}")
                     result
                 case Left(err) =>
-                    System.err.println(s"Error deploying reference script: $err")
+                    Console.error(s"Deploying reference script: $err")
                     break(1)
             }
 
         val refInput =
             TransactionInput(TransactionHash.fromHex(deployTxHash), deployIdx)
-        println("  Waiting for reference script UTxO to be confirmed...")
         OracleTransactions.waitForUtxo(provider, refInput, timeout) match {
-            case Right(_) => println("  Reference script UTxO confirmed.")
+            case Right(_) =>
+                val step5Time = (System.nanoTime() - t5) / 1e9
+                Console.success(f"Confirmed ($step5Time%.1fs)")
             case Left(err) =>
-                System.err.println(s"Error: $err")
+                Console.error(err)
                 break(1)
         }
         val referenceScriptUtxo = Utxo(refInput, deployOutput)
 
-        // Final step: Build and submit init transaction
+        // Step 6
         println()
-        println("Building and submitting init transaction...")
+        Console.step(6, "Submitting init transaction")
+        val t6 = System.nanoTime()
 
-        val initTxHash = OracleTransactions.buildAndSubmitInitTransaction(
+        val txResult = OracleTransactions.buildAndSubmitInitTransaction(
           setup.signer,
           setup.provider,
           setup.scriptAddress,
@@ -194,22 +199,25 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
           referenceScriptUtxo,
           timeout = timeout
         ) match {
-            case Right(txHash) =>
-                println(s"  Transaction Hash: $txHash")
-                println(s"  Oracle Address: ${setup.scriptAddressBech32}")
-                txHash
+            case Right(r) => r
             case Left(err) =>
-                println()
-                System.err.println(s"Error submitting init transaction: $err")
+                Console.error(s"Submitting init transaction: $err")
                 break(1)
         }
 
+        val step6Time = (System.nanoTime() - t6) / 1e9
+        Console.tx("Tx", txResult.txHash)
+        Console.metric("Tx size", s"${txResult.txSize} bytes")
+        Console.metric("Datum", s"${txResult.datumSize} bytes")
+        Console.success(f"Oracle initialized! ($step6Time%.1fs)")
+
         println()
-        println("Oracle initialized successfully!")
-        println(s"  Oracle TX: $initTxHash")
-        println(s"  Oracle Address: ${setup.scriptAddressBech32}")
-        println(s"  One-shot input: ${oneShotUtxo.input}")
-        println(s"  Owner PKH: ${owner.hash.toHex}")
+        Console.separator()
+        Console.tx("Oracle TX", txResult.txHash)
+        Console.info("Oracle Address", setup.scriptAddressBech32)
+        Console.info("One-shot", s"${oneShotUtxo.input}")
+        Console.info("Owner PKH", owner.hash.toHex)
+        Console.separator()
         0
     }
 }

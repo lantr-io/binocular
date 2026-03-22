@@ -1,8 +1,7 @@
 package binocular.cli.commands
 
 import binocular.*
-import binocular.cli.{Command, CommandHelpers}
-import com.typesafe.scalalogging.LazyLogging
+import binocular.cli.{Command, CommandHelpers, Console}
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.cardano.node.TransactionStatus
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
@@ -15,11 +14,11 @@ import boundary.break
 import scalus.utils.await
 
 /** Continuous daemon: read oracle state, submit updates in a loop */
-case class RunCommand(dryRun: Boolean = false) extends Command with LazyLogging {
+case class RunCommand(dryRun: Boolean = false) extends Command {
 
     override def execute(config: BinocularConfig): Int = {
-        if dryRun then println("Running in dry-run mode (will compute one update and exit)")
-        else println("Starting oracle update daemon...")
+        Console.header("Binocular Oracle Daemon")
+        if dryRun then Console.warn("Dry-run mode — will compute one update and exit")
         println()
 
         runDaemon(config)
@@ -36,39 +35,36 @@ case class RunCommand(dryRun: Boolean = false) extends Command with LazyLogging 
         val setup = CommandHelpers.setupOracle(config) match {
             case Right(s) => s
             case Left(err) =>
-                System.err.println(s"Error: $err")
+                Console.error(err)
                 break(1)
         }
 
-        // Find or deploy reference script
+        Console.info("Bitcoin", s"${config.bitcoinNode.url} (${config.bitcoinNode.network})")
+        Console.info("Cardano", config.cardano.network)
+        Console.info(
+          "Wallet",
+          setup.hdAccount.baseAddress(config.cardano.scalusNetwork).toBech32.getOrElse("?")
+        )
+
+        // Find reference script (deployed by init)
         var referenceScriptUtxo: Utxo = CommandHelpers
             .findReferenceScriptUtxo(
               setup.provider,
-              setup.scriptAddress,
-              setup.script.scriptHash,
+              setup.sponsorAddress,
+              setup.script,
               timeout
             )
+            .orElse(
+              CommandHelpers.findReferenceScriptUtxo(
+                setup.provider,
+                setup.scriptAddress,
+                setup.script,
+                timeout
+              )
+            )
             .getOrElse {
-                logger.info("Deploying reference script...")
-                OracleTransactions.deployReferenceScript(
-                  setup.signer,
-                  setup.provider,
-                  setup.sponsorAddress,
-                  setup.scriptAddress,
-                  setup.script,
-                  timeout
-                ) match {
-                    case Right((hash, idx, output)) =>
-                        logger.info(s"Reference script deployed at $hash:$idx")
-                        val refInput = TransactionInput(TransactionHash.fromHex(hash), idx)
-                        setup.provider
-                            .pollForConfirmation(TransactionHash.fromHex(hash))
-                            .await(timeout)
-                        Utxo(refInput, output)
-                    case Left(err) =>
-                        System.err.println(s"Error deploying reference script: $err")
-                        break(1)
-                }
+                Console.error("Reference script not found. Run 'binocular init' first.")
+                break(1)
             }
 
         // Find oracle UTxO by NFT
@@ -79,7 +75,7 @@ case class RunCommand(dryRun: Boolean = false) extends Command with LazyLogging 
                     .await(timeout)
             } catch {
                 case e: Exception =>
-                    System.err.println(s"Error: ${e.getMessage}")
+                    Console.error(e.getMessage)
                     break(1)
             }
 
@@ -88,12 +84,18 @@ case class RunCommand(dryRun: Boolean = false) extends Command with LazyLogging 
                 currentOracleUtxo.output.requireInlineDatum.to[ChainState]
             } catch {
                 case e: Exception =>
-                    System.err.println(s"Error parsing ChainState: ${e.getMessage}")
+                    Console.error(s"Parsing ChainState: ${e.getMessage}")
                     break(1)
             }
 
-        logger.info(
-          s"Oracle state: height=${currentChainState.ctx.height}, forkTree=${currentChainState.forkTree.blockCount} blocks"
+        Console.info(
+          "Oracle",
+          setup.scriptAddress.encode.getOrElse("?")
+        )
+        Console.info("Height", currentChainState.ctx.height)
+        Console.info(
+          "Fork tree",
+          s"${currentChainState.forkTree.blockCount} blocks"
         )
 
         // Reconstruct off-chain MPF
@@ -104,12 +106,15 @@ case class RunCommand(dryRun: Boolean = false) extends Command with LazyLogging 
           config.oracle.startHeight
         ) match {
             case Right(mpf) =>
-                logger.info("MPF reconstructed successfully")
+                Console.success("MPF reconstructed")
                 mpf
             case Left(err) =>
-                System.err.println(s"Error: $err")
+                Console.error(err)
                 break(1)
         }
+
+        Console.separator()
+        println()
 
         val batchSize = config.oracle.maxHeadersPerTx
 
@@ -131,8 +136,8 @@ case class RunCommand(dryRun: Boolean = false) extends Command with LazyLogging 
                     val startHeight = highestKnown + 1
                     val endHeight = Math.min(bitcoinTip, startHeight + batchSize - 1)
 
-                    logger.info(
-                      s"New blocks available: $startHeight to $endHeight (Bitcoin tip: $bitcoinTip)"
+                    Console.log(
+                      s"Fetching blocks $startHeight..$endHeight (${endHeight - startHeight + 1} headers)"
                     )
 
                     def fetchHeaders(
@@ -175,22 +180,27 @@ case class RunCommand(dryRun: Boolean = false) extends Command with LazyLogging 
                 val stateChanged = newChainState != currentChainState
 
                 if !stateChanged then {
+                    val behind = bitcoinTip - highestKnown
+                    val status =
+                        if behind == 0 then "up to date"
+                        else s"behind: $behind"
+                    Console.logInPlace(
+                      s"Polling... tip: $bitcoinTip | oracle: $highestKnown | $status"
+                    )
                     Thread.sleep(pollInterval * 1000L)
                 } else {
                     val promotedCount =
                         newChainState.ctx.height - currentChainState.ctx.height
-                    logger.info(
-                      s"Update: ${headers.size} new blocks, $promotedCount promoted, " +
-                          s"fork tree: ${newChainState.forkTree.blockCount} blocks"
+                    Console.log(
+                      s"Update: +${headers.size} headers, $promotedCount promoted | tree: ${newChainState.forkTree.blockCount} blocks"
                     )
 
                     if dryRun then {
-                        println()
-                        println("Dry-run: computed update")
-                        println(s"  Current Height: ${currentChainState.ctx.height}")
-                        println(s"  New Height: ${newChainState.ctx.height}")
-                        println(s"  Headers: ${headers.size}")
-                        println(s"  Fork Tree: ${newChainState.forkTree.blockCount} blocks")
+                        Console.success("Dry-run: computed update")
+                        Console.info("Current Height", currentChainState.ctx.height)
+                        Console.info("New Height", newChainState.ctx.height)
+                        Console.info("Headers", headers.size)
+                        Console.info("Fork Tree", s"${newChainState.forkTree.blockCount} blocks")
                         break(0)
                     }
 
@@ -211,10 +221,12 @@ case class RunCommand(dryRun: Boolean = false) extends Command with LazyLogging 
                     )
 
                     txResult match {
-                        case Right(resultTxHash) =>
-                            logger.info(s"Transaction submitted: $resultTxHash")
+                        case Right(result) =>
+                            Console.log(
+                              s"Submitting... datum: ${result.datumSize} B, tx: ${result.txSize} B"
+                            )
 
-                            val txHash = TransactionHash.fromHex(resultTxHash)
+                            val txHash = TransactionHash.fromHex(result.txHash)
                             val status = setup.provider
                                 .pollForConfirmation(txHash, maxAttempts = 60)
                                 .await(timeout)
@@ -225,24 +237,30 @@ case class RunCommand(dryRun: Boolean = false) extends Command with LazyLogging 
                                         currentOracleUtxo = u
                                         currentChainState = newChainState
                                         currentMpf = updatedMpf
-                                        logger.info("UTxO confirmed")
+                                        Console.logSuccess(
+                                          s"Confirmed ${result.txHash} | height: ${newChainState.ctx.height}"
+                                        )
                                     case Left(_) =>
-                                        logger.warn(
+                                        Console.logWarn(
                                           "UTxO confirmed but not found, re-reading state..."
                                         )
                                 }
                             } else {
-                                logger.warn("UTxO not confirmed after 60s, re-reading state...")
+                                Console.logWarn(
+                                  "UTxO not confirmed after 60s, re-reading state..."
+                                )
                             }
 
                         case Left(err) =>
-                            logger.error(s"Transaction failed: $err")
+                            Console.logError(s"Tx failed: $err — retrying in ${retryInterval}s")
                             Thread.sleep(retryInterval * 1000L)
                     }
                 }
             } catch {
                 case e: Exception =>
-                    logger.error(s"Error in main loop: ${e.getMessage}")
+                    Console.logError(
+                      s"Error: ${e.getMessage} — retrying in ${retryInterval}s"
+                    )
                     Thread.sleep(retryInterval * 1000L)
             }
         }

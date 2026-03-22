@@ -55,7 +55,7 @@ case class UpdateOracleCommand(
                 CommandHelpers.findReferenceScriptUtxo(
                   setup.provider,
                   setup.scriptAddress,
-                  setup.script.scriptHash,
+                  setup.script,
                   timeout
                 ) match {
                     case Some(utxo) =>
@@ -379,9 +379,9 @@ case class UpdateOracleCommand(
                 )
 
                 txResult match {
-                    case Right(resultTxHash) =>
+                    case Right(result) =>
                         if totalBatches > 1 then {
-                            println(s"    Batch $batchNum submitted: $resultTxHash")
+                            println(s"    Batch $batchNum submitted: ${result.txHash}")
                         }
 
                         currentState = newChainState
@@ -389,7 +389,7 @@ case class UpdateOracleCommand(
 
                         if batchIndex < batches.size - 1 then {
                             println(s"    Waiting for UTxO to be indexed...")
-                            val txHash = TransactionHash.fromHex(resultTxHash)
+                            val txHash = TransactionHash.fromHex(result.txHash)
                             val status = setup.provider
                                 .pollForConfirmation(txHash)
                                 .await(timeout)
@@ -430,7 +430,7 @@ case class UpdateOracleCommand(
                                         .await(timeout) match {
                                         case Right(utxos) =>
                                             if utxos.exists { case (input, _) =>
-                                                    input.transactionId.toHex == resultTxHash
+                                                    input.transactionId.toHex == result.txHash
                                                 }
                                             then {
                                                 newUtxoFound = true

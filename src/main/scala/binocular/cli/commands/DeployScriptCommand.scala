@@ -27,7 +27,7 @@ case class DeployScriptCommand() extends Command with LazyLogging {
         CommandHelpers.findReferenceScriptUtxo(
           setup.provider,
           setup.scriptAddress,
-          setup.script.scriptHash,
+          setup.script,
           timeout
         ) match {
             case Some(u) =>

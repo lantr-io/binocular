@@ -172,7 +172,6 @@ object CliApp {
             case Right((configPath, cmd)) =>
                 try {
                     val config = BinocularConfig.load(configPath)
-                    println(config)
 
                     val commandImpl: binocular.cli.Command = cmd match {
                         case Cmd.Info =>

@@ -93,14 +93,14 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         )
 
         updateResult match {
-            case Right(txHash) =>
+            case Right(result) =>
                 given ExecutionContext = ctx.provider.executionContext
                 val status = ctx.provider
-                    .pollForConfirmation(TransactionHash.fromHex(txHash), maxAttempts = 30)
+                    .pollForConfirmation(TransactionHash.fromHex(result.txHash), maxAttempts = 30)
                     .await(60.seconds)
                 assert(
                   status == TransactionStatus.Confirmed,
-                  s"Update transaction $txHash did not confirm"
+                  s"Update transaction ${result.txHash} did not confirm"
                 )
                 Thread.sleep(2000)
 

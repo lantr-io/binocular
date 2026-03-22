@@ -2,7 +2,7 @@ package binocular.cli
 
 import binocular.*
 import scalus.cardano.address.{Address, Network}
-import scalus.cardano.ledger.{AssetName, ScriptHash, TransactionHash, TransactionInput, Utxo, Value}
+import scalus.cardano.ledger.{AssetName, ScriptHash, ScriptRef, TransactionHash, TransactionInput, TransactionOutput, Utxo, Value}
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.wallet.hd.HdAccount
 import scalus.uplc.PlutusV3
@@ -170,25 +170,36 @@ object CommandHelpers {
         }
     }
 
-    /** Find existing reference script UTxO (first match). */
+    /** Find existing reference script UTxO.
+      *
+      * The provider may not populate scriptRef when listing UTxOs, so we search for UTxOs at the
+      * script address that have no inline datum (the oracle UTxO has inline datum, the reference
+      * script UTxO does not) and reconstruct the output with the known script attached.
+      */
     def findReferenceScriptUtxo(
         provider: BlockchainProvider,
         scriptAddress: Address,
-        scriptHash: scalus.cardano.ledger.ScriptHash,
+        script: scalus.cardano.ledger.Script,
         timeout: Duration
     )(using ExecutionContext): Option[Utxo] = {
-        val refs = OracleTransactions.findReferenceScriptUtxos(
-          provider,
-          scriptAddress,
-          scriptHash,
-          timeout
-        )
-        refs.headOption.flatMap { case (refHash, refIdx) =>
-            val refInput = TransactionInput(TransactionHash.fromHex(refHash), refIdx)
-            provider.findUtxo(refInput).await(timeout) match {
-                case Right(u) => Some(u)
-                case Left(_)  => None
-            }
+        provider.findUtxos(scriptAddress).await(timeout) match {
+            case Right(utxos) =>
+                utxos.toList
+                    .find { case (_, output) =>
+                        output.inlineDatum.isEmpty && output.scriptRef.isEmpty
+                    }
+                    .map { case (input, output) =>
+                        Utxo(
+                          input,
+                          TransactionOutput(
+                            address = output.address,
+                            value = output.value,
+                            datumOption = output.datumOption,
+                            scriptRef = Some(ScriptRef(script))
+                          )
+                        )
+                    }
+            case Left(_) => None
         }
     }
 

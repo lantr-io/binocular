@@ -48,7 +48,7 @@ case class CloseCommand() extends Command with LazyLogging {
         val referenceScriptUtxo = CommandHelpers.findReferenceScriptUtxo(
           setup.provider,
           setup.scriptAddress,
-          setup.script.scriptHash,
+          setup.script,
           timeout
         )
 
