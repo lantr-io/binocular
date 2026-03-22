@@ -4,6 +4,7 @@ import binocular.*
 import binocular.cli.{Command, OracleSetup}
 import com.typesafe.scalalogging.LazyLogging
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
+import scalus.cardano.onchain.plutus.v1.PubKeyHash
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 
 import scala.concurrent.ExecutionContext
@@ -34,12 +35,6 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
         }
         val provider = config.cardano.createBlockchainProvider() match {
             case Right(p) => p
-            case Left(err) =>
-                System.err.println(s"Error: $err")
-                break(1)
-        }
-        val owner = oracleConf.parseOwnerPkh() match {
-            case Right(pkh) => pkh
             case Left(err) =>
                 System.err.println(s"Error: $err")
                 break(1)
@@ -139,6 +134,7 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
         println()
         println("Step 4: Parameterizing script with one-shot UTxO...")
         val txOutRef = TxOutRef(TxId(oneShotInput.transactionId), oneShotInput.index)
+        val owner = PubKeyHash(hdAccount.paymentKeyHash)
         val params = BitcoinContract.validatorParams(
           txOutRef,
           owner,
