@@ -2,9 +2,10 @@ package binocular
 
 import pureconfig.*
 import scalus.cardano.address.Network
+import scalus.cardano.ledger.SlotConfig
 import scalus.cardano.node.{BlockchainProvider, BlockfrostProvider}
 
-import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
 import scala.util.{Failure, Success, Try}
 import scalus.utils.await
@@ -43,17 +44,47 @@ case class CardanoConfig(
                     )
                 } else {
                     Try {
-                        val future: Future[BlockfrostProvider] = cardanoNetwork match {
+                        val (baseUrl, network, defaultSlotConfig) = cardanoNetwork match {
                             case CardanoNetwork.Mainnet =>
-                                BlockfrostProvider.mainnet(blockfrostProjectId)
+                                (
+                                  BlockfrostProvider.mainnetUrl,
+                                  Network.Mainnet,
+                                  SlotConfig.mainnet
+                                )
                             case CardanoNetwork.Preprod =>
-                                BlockfrostProvider.preprod(blockfrostProjectId)
+                                (
+                                  BlockfrostProvider.preprodUrl,
+                                  Network.Testnet,
+                                  SlotConfig.preprod
+                                )
                             case CardanoNetwork.Preview =>
-                                BlockfrostProvider.preview(blockfrostProjectId)
+                                (
+                                  BlockfrostProvider.previewUrl,
+                                  Network.Testnet,
+                                  SlotConfig.preview
+                                )
                             case CardanoNetwork.Testnet =>
-                                BlockfrostProvider.preview(blockfrostProjectId)
+                                (
+                                  BlockfrostProvider.previewUrl,
+                                  Network.Testnet,
+                                  SlotConfig.preview
+                                )
                         }
-                        future.await(30.seconds)
+                        val slotConfig = CardanoConfig
+                            .fetchCalibratedSlotConfig(
+                              blockfrostProjectId,
+                              baseUrl,
+                              defaultSlotConfig
+                            )
+                            .getOrElse(defaultSlotConfig)
+                        BlockfrostProvider
+                            .create(
+                              blockfrostProjectId,
+                              baseUrl,
+                              network,
+                              slotConfig
+                            )
+                            .await(30.seconds)
                     } match {
                         case Success(provider) => Right(provider)
                         case Failure(ex) =>
@@ -99,6 +130,48 @@ case class CardanoConfig(
             if blockfrostProjectId.length > 8 then blockfrostProjectId.take(8) + "***"
             else "***"
         s"CardanoConfig(backend=$backend, network=$network, blockfrostProjectId=$maskedId)"
+    }
+}
+
+object CardanoConfig {
+
+    /** Fetch the latest block from Blockfrost and calibrate SlotConfig from actual network data.
+      *
+      * Testnets can accumulate slot drift from outages/restarts, causing the theoretical SlotConfig
+      * to compute slots ahead of reality. This queries `/blocks/latest` to get the actual tip slot
+      * and time, then adjusts zeroTime accordingly.
+      */
+    def fetchCalibratedSlotConfig(
+        apiKey: String,
+        baseUrl: String,
+        defaultSlotConfig: SlotConfig
+    ): Option[SlotConfig] = {
+        Try {
+            val client = java.net.http.HttpClient.newHttpClient()
+            val request = java.net.http.HttpRequest
+                .newBuilder()
+                .uri(java.net.URI.create(s"$baseUrl/blocks/latest"))
+                .header("project_id", apiKey)
+                .GET()
+                .build()
+            val response =
+                client.send(request, java.net.http.HttpResponse.BodyHandlers.ofString())
+            if response.statusCode() == 200 then {
+                val json = ujson.read(response.body())
+                val tipSlot = json("slot").num.toLong
+                val tipTime = json("time").num.toLong // unix seconds
+                // Calibrate: zeroTime = tipTimeMs - (tipSlot - zeroSlot) * slotLength
+                val calibratedZeroTime =
+                    tipTime * 1000L - (tipSlot - defaultSlotConfig.zeroSlot) * defaultSlotConfig.slotLength
+                Some(
+                  SlotConfig(
+                    calibratedZeroTime,
+                    defaultSlotConfig.zeroSlot,
+                    defaultSlotConfig.slotLength
+                  )
+                )
+            } else None
+        }.getOrElse(None)
     }
 }
 
