@@ -209,6 +209,7 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false)
         println(s"  Oracle TX: $initTxHash")
         println(s"  Oracle Address: ${setup.scriptAddressBech32}")
         println(s"  One-shot input: ${oneShotUtxo.input}")
+        println(s"  Owner PKH: ${owner.hash.toHex}")
         0
     }
 }
