@@ -637,6 +637,162 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         assert(balancedDepth == 8, s"Expected balanced depth 8, got $balancedDepth")
     }
 
+    test("ForkTree capacity with promotion - max blocks that allow promoting 1 block") {
+        val pp = CardanoInfo.mainnet.protocolParams
+        val maxTxSize = pp.maxTxSize
+
+        // Build an MPF with 100,000 entries to get realistic proof sizes
+        println("\nBuilding MPF with 100,000 entries...")
+        var mpf = OffChainMPF.empty
+        val numMpfEntries = 100_000
+        for i <- 0 until numMpfEntries do {
+            val key = ByteString.unsafeFromArray {
+                val arr = Array.fill(32)(0: Byte)
+                arr(0) = (i >> 24).toByte
+                arr(1) = (i >> 16).toByte
+                arr(2) = (i >> 8).toByte
+                arr(3) = i.toByte
+                arr
+            }
+            mpf = mpf.insert(key, key)
+        }
+        println(s"MPF built with root: ${mpf.rootHash.toHex}")
+
+        // Generate a non-membership proof for a new key (simulates promoting 1 block)
+        val newBlockHash = ByteString.unsafeFromArray {
+            val arr = Array.fill(32)(0xff.toByte)
+            arr(0) = 0xab.toByte
+            arr
+        }
+        val proof = mpf.proveNonMembership(newBlockHash)
+        val proofData = prelude.List.from(List(proof)).toData
+        val proofSize = proofData.toCbor.length
+        println(s"MPF proof for 1 block: $proofSize bytes (${proof.length} steps)")
+
+        // Build a dummy UpdateOracle redeemer with:
+        //   - 0 new block headers (promotion-only tx)
+        //   - empty parent path
+        //   - 1 MPF insert proof
+        val redeemer = UpdateOracle(
+          prelude.List.Nil, // no new headers
+          prelude.List.Nil, // empty parent path
+          prelude.List.from(List(proof))
+        )
+        val redeemerSize = redeemer.toData.toCbor.length
+        println(s"Redeemer size (0 headers, 1 promotion proof): $redeemerSize bytes")
+
+        // Measure transaction overhead with a reference script UTxO
+        val refScriptInput = Input(
+          TransactionHash.fromHex(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ),
+          0
+        )
+        val refScriptUtxo = Utxo(
+          refScriptInput,
+          Output(
+            testScriptAddr,
+            Value.ada(10),
+            None,
+            Some(ScriptRef(testContract.script))
+          )
+        )
+
+        val oracleInput = Input(
+          TransactionHash.fromHex(
+            "1ab6879fc08345f51dc9571ac4f530bf8673e0d798758c470f9af6f98e2f3982"
+          ),
+          0
+        )
+
+        def buildTxDraft(forkTreeBlocks: Int): (Int, Int, Int) = {
+            // Build input ChainState with the fork tree
+            val inputState = chainStateWithTree(
+              Blocks(
+                prelude.List.from(
+                  (1 to forkTreeBlocks).map(i => dummyBlock(i.toByte)).toList
+                ),
+                100,
+                End
+              )
+            )
+
+            // Output state: 1 block promoted (removed from tree head), rest remain
+            val outputTree =
+                if forkTreeBlocks > 1 then
+                    Blocks(
+                      prelude.List.from(
+                        (2 to forkTreeBlocks).map(i => dummyBlock(i.toByte)).toList
+                      ),
+                      100,
+                      End
+                    )
+                else End
+
+            val outputState = inputState.copy(
+              ctx = inputState.ctx.copy(height = inputState.ctx.height + 1),
+              forkTree = outputTree
+            )
+
+            val inputValue = nftValue(5)
+            val utxo = Utxo(
+              oracleInput,
+              Output(testScriptAddr, inputValue, DatumOption.Inline(inputState.toData))
+            )
+
+            val validFrom = Instant.ofEpochSecond(1000000L)
+            val validTo = validFrom.plusSeconds(600)
+
+            val draft = txBuilder
+                .references(refScriptUtxo, testContract)
+                .spend(utxo, redeemer)
+                .payTo(testScriptAddr, inputValue, outputState.toData)
+                .validFrom(validFrom)
+                .validTo(validTo)
+                .draft
+
+            val txSize = draft.toCbor.length
+            val inputDatumSize = inputState.toData.toCbor.length
+            val outputDatumSize = outputState.toData.toCbor.length
+            (txSize, inputDatumSize, outputDatumSize)
+        }
+
+        // Binary search for the max fork tree blocks that fit with promotion
+        var lo = 1
+        var hi = 338 // known max without promotion overhead
+        while lo < hi do {
+            val mid = (lo + hi + 1) / 2
+            val (txSize, _, _) = buildTxDraft(mid)
+            if txSize <= maxTxSize then lo = mid else hi = mid - 1
+        }
+        val maxBlocks = lo
+        val (txSize, inputDatumSize, outputDatumSize) = buildTxDraft(maxBlocks)
+        val (overTxSize, _, _) = buildTxDraft(maxBlocks + 1)
+
+        println()
+        println(
+          f"Max fork tree blocks with 1-block promotion (100K MPF): $maxBlocks"
+        )
+        println(f"  Transaction size:  $txSize%,d bytes (limit: $maxTxSize%,d)")
+        println(f"  Input datum size:  $inputDatumSize%,d bytes")
+        println(f"  Output datum size: $outputDatumSize%,d bytes")
+        println(f"  Redeemer size:     $redeemerSize%,d bytes")
+        println(
+          f"  Overhead:          ${txSize - inputDatumSize - outputDatumSize - redeemerSize}%,d bytes"
+        )
+        println(f"  maxBlocks+1 tx:    $overTxSize%,d bytes (over limit)")
+
+        // The max should be significantly less than 338 (no-promotion max)
+        assert(
+          maxBlocks < 338,
+          s"Expected fewer blocks than 338 to fit with promotion overhead, got $maxBlocks"
+        )
+        assert(
+          maxBlocks > 100,
+          s"Expected at least 100 blocks to fit with promotion, got $maxBlocks"
+        )
+    }
+
     test("Validity interval - unbounded validRange (no validTo) must be rejected") {
         // Without a validTo upper bound, the on-chain time (validFrom) could be
         // arbitrarily stale — the transaction remains valid forever. This weakens
