@@ -20,7 +20,11 @@ case class OracleConfig(
     maxHeadersPerTx: Int = 10,
     pollInterval: Int = 1,
     retryInterval: Int = 10,
-    transactionTimeout: Int = 120
+    transactionTimeout: Int = 120,
+    maturationConfirmations: Int = 100,
+    challengeAging: Int = 12000,
+    closureTimeout: Int = 2592000,
+    testingMode: Boolean = false
 ) derives ConfigReader {
 
     /** Parse txOutRef and ownerPkh into BitcoinValidatorParams */
@@ -28,7 +32,14 @@ case class OracleConfig(
         for {
             ref <- parseTxOutRef(txOutRef)
             pkh <- parseOwnerPkh(ownerPkh)
-        } yield BitcoinContract.validatorParams(ref, pkh)
+        } yield BitcoinContract.validatorParams(
+          ref,
+          pkh,
+          maturationConfirmations = maturationConfirmations,
+          challengeAging = challengeAging,
+          closureTimeout = closureTimeout,
+          testingMode = testingMode
+        )
     }
 
     /** Derive script address for a given network */
@@ -75,6 +86,6 @@ case class OracleConfig(
     }
 
     override def toString: String = {
-        s"OracleConfig(txOutRef=$txOutRef, startHeight=$startHeight, maxHeadersPerTx=$maxHeadersPerTx, pollInterval=$pollInterval, retryInterval=$retryInterval, transactionTimeout=$transactionTimeout)"
+        s"OracleConfig(txOutRef=$txOutRef, startHeight=$startHeight, maxHeadersPerTx=$maxHeadersPerTx, pollInterval=$pollInterval, retryInterval=$retryInterval, transactionTimeout=$transactionTimeout, maturationConfirmations=$maturationConfirmations, challengeAging=$challengeAging, closureTimeout=$closureTimeout, testingMode=$testingMode)"
     }
 }

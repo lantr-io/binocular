@@ -27,15 +27,19 @@ object BitcoinContract {
     def validatorParams(
         txOutRef: TxOutRef,
         owner: PubKeyHash,
-        closureTimeout: BigInt = 30 * 24 * 60 * 60 // 30 days
+        maturationConfirmations: Int = 100,
+        challengeAging: Int = 12000,
+        closureTimeout: Int = 2592000,
+        testingMode: Boolean = false
     ): BitcoinValidatorParams =
         BitcoinValidatorParams(
-          maturationConfirmations = 100,
-          challengeAging = 200 * 60,
+          maturationConfirmations = maturationConfirmations,
+          challengeAging = challengeAging,
           oneShotTxOutRef = txOutRef,
           closureTimeout = closureTimeout,
           owner = owner,
-          powLimit = BitcoinHelpers.PowLimit
+          powLimit = BitcoinHelpers.PowLimit,
+          testingMode = testingMode
         )
 
     lazy val blueprint: Blueprint = {
