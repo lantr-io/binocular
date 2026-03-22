@@ -2,7 +2,7 @@ package binocular
 
 import binocular.util.SlotConfigHelper
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{AssetName, CardanoInfo, Coin, PlutusScript, Script, ScriptHash, ScriptRef, Transaction, TransactionOutput, Utxo, Utxos, Value}
+import scalus.cardano.ledger.{AssetName, CardanoInfo, PlutusScript, Script, ScriptHash, ScriptRef, Transaction, TransactionOutput, Utxo, Utxos, Value}
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}
 import scalus.uplc.builtin.Data
@@ -10,7 +10,7 @@ import binocular.OracleAction.*
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
-import scalus.cardano.ledger.rules.{ExUnitsTooBigValidator, TransactionSizeValidator}
+import scalus.cardano.ledger.rules.ExUnitsTooBigValidator
 
 import java.time.Instant
 import scala.concurrent.{ExecutionContext, Future}
@@ -361,7 +361,6 @@ object OracleTransactions {
             .references(referenceScriptUtxo)
             .spend(oracleUtxo, redeemer)
             .payTo(scriptAddress, oracleUtxo.output.value, newChainState)
-            .minFee(Coin.ada(3))
             .validFrom(validityInstant)
             .validTo(validToInstant)
             .complete(provider, sponsorAddress)
@@ -399,7 +398,6 @@ object OracleTransactions {
             .references(referenceScriptUtxo)
             .spend(oracleUtxo, redeemer)
             .payTo(scriptAddress, oracleUtxo.output.value, newChainState)
-            .minFee(Coin.ada(3))
             .validFrom(validityInstant)
             .validTo(validToInstant)
             .complete(sponsorUtxos, sponsorAddress)
@@ -444,11 +442,13 @@ object OracleTransactions {
               params
             ).length
 
-            // Try building with a given number of promotions, returning the completed TxBuilder
-            // or None if validation fails.
+            val maxTxSize = protocolParams.maxTxSize
+
+            // Try building with a given number of promotions.
+            // Signs the transaction and checks actual CBOR size against protocol limits.
             def tryBuild(
                 maxPromotions: Int
-            ): Option[(TxBuilder, ChainState, OffChainMPF)] = {
+            ): Option[(Transaction, ChainState, OffChainMPF)] = {
                 val (newState, mpfProofs, updatedMpf) =
                     computeUpdateWithProofs(
                       currentChainState,
@@ -479,12 +479,17 @@ object OracleTransactions {
                       mpfProofs
                     )
 
-                    // Validate tx size and execution units
-                    val validators = Seq(TransactionSizeValidator, ExUnitsTooBigValidator)
-                    builder.context.validate(validators, protocolParams) match {
-                        case Right(_) => Some((builder, newState, updatedMpf))
-                        case Left(_)  => None
+                    // Validate ExUnits against protocol limits
+                    builder.context
+                        .validate(Seq(ExUnitsTooBigValidator), protocolParams) match {
+                        case Left(_) => return None
+                        case _       => ()
                     }
+
+                    // Sign and check actual CBOR size (signing adds witness bytes)
+                    val tx = builder.sign(signer).transaction
+                    if tx.toCbor.length > maxTxSize then None
+                    else Some((tx, newState, updatedMpf))
                 } catch {
                     case _: Exception => None
                 }
@@ -493,13 +498,13 @@ object OracleTransactions {
             // Binary search for max promotions
             var low = 0
             var high = totalPromotable.toInt
-            var best: Option[(TxBuilder, ChainState, OffChainMPF, Int)] = None
+            var best: Option[(Transaction, ChainState, OffChainMPF, Int)] = None
 
             while low <= high do {
                 val mid = (low + high) / 2
                 tryBuild(mid) match {
-                    case Some((builder, newState, updatedMpf)) =>
-                        best = Some((builder, newState, updatedMpf, mid))
+                    case Some((tx, newState, updatedMpf)) =>
+                        best = Some((tx, newState, updatedMpf, mid))
                         low = mid + 1
                     case None =>
                         high = mid - 1
@@ -507,18 +512,15 @@ object OracleTransactions {
             }
 
             // Fall back to 0 promotions if no promotion count worked
-            val (builder, newState, updatedMpf, promotionCount) = best.getOrElse {
+            val (tx, newState, updatedMpf, promotionCount) = best.getOrElse {
                 tryBuild(0) match {
-                    case Some((b, ns, um)) => (b, ns, um, 0)
+                    case Some((t, ns, um)) => (t, ns, um, 0)
                     case None =>
                         throw new RuntimeException(
                           "Failed to build transaction even with 0 promotions"
                         )
                 }
             }
-
-            // Sign and submit
-            val tx = builder.sign(signer).transaction
             val txSize = tx.toCbor.length
             val datumSize = tx.body.value.outputs
                 .find(_.value.inlineDatum.isDefined)
@@ -693,7 +695,6 @@ object OracleTransactions {
         Try {
             val tx = TxBuilder(provider.cardanoInfo)
                 .payTo(address = sponsorAddress, value = Value.lovelace(lovelaceAmount))
-                .minFee(Coin.ada(1)) // FIXME: why?
                 .complete(provider, sponsorAddress)
                 .map(_.sign(signer).transaction)
                 .await(timeout)
