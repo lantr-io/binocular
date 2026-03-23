@@ -89,8 +89,6 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
           "Fork tree",
           s"${currentChainState.forkTree.blockCount} blocks"
         )
-        println(currentChainState.forkTree.pretty(currentChainState.ctx.height))
-
         // Reconstruct off-chain MPF
         val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
         var currentMpf: OffChainMPF = CommandHelpers
@@ -103,7 +101,11 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
                 Console.error(err)
                 break(1)
             }
-        Console.success("MPF reconstructed")
+        Console.success(s"MPF reconstructed: ${currentMpf.size} confirmed blocks")
+        println(
+          currentChainState.forkTree
+              .pretty(currentChainState.ctx.height, confirmedBlocks = Some(currentMpf.size))
+        )
 
         Console.separator()
         println()
@@ -257,7 +259,10 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
                                           s"Confirmed ${txResult.txHash} | height: ${newChainState.ctx.height}"
                                         )
                                         println(
-                                          newChainState.forkTree.pretty(newChainState.ctx.height)
+                                          newChainState.forkTree.pretty(
+                                            newChainState.ctx.height,
+                                            confirmedBlocks = Some(updatedMpf.size)
+                                          )
                                         )
                                     case Left(_) =>
                                         Console.logWarn(
