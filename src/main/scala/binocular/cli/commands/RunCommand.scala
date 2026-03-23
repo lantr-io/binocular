@@ -110,6 +110,33 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
 
         val batchSize = config.oracle.maxHeadersPerTx
 
+        /** Re-read oracle UTxO and chain state from the blockchain. Called after tx failure or
+          * uncertain confirmation to recover from stale state.
+          */
+        def refreshOracleState(): Unit = {
+            try {
+                Console.log("Re-reading oracle state...")
+                val utxo = CommandHelpers
+                    .findOracleUtxo(setup.provider, setup.script.scriptHash)
+                    .await(timeout)
+                val state = utxo.output.requireInlineDatum.to[ChainState]
+                currentOracleUtxo = utxo
+                currentChainState = state
+                currentMpf = CommandHelpers
+                    .reconstructMpf(rpc, state, config.oracle.startHeight)
+                    .valueOr { err =>
+                        Console.logError(s"MPF reconstruction failed: $err")
+                        currentMpf // keep existing
+                    }
+                Console.logSuccess(
+                  s"State refreshed: height=${state.ctx.height}, tree=${state.forkTree.blockCount} blocks"
+                )
+            } catch {
+                case e: Exception =>
+                    Console.logError(s"Failed to refresh state: ${e.getMessage}")
+            }
+        }
+
         // Main loop
         while true do {
             try {
@@ -236,16 +263,18 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
                                         Console.logWarn(
                                           "UTxO confirmed but not found, re-reading state..."
                                         )
+                                        refreshOracleState()
                                 }
                             } else {
                                 Console.logWarn(
-                                  "UTxO not confirmed after 60s, re-reading state..."
+                                  "Tx not confirmed after 60s, re-reading state..."
                                 )
+                                refreshOracleState()
                             }
 
                         case Left(err) =>
-                            Console.logError(s"Tx failed: $err — retrying in ${retryInterval}s")
-                            Thread.sleep(retryInterval * 1000L)
+                            Console.logError(s"Tx failed: $err")
+                            refreshOracleState()
                     }
                 }
             } catch {

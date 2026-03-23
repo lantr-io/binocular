@@ -68,11 +68,14 @@ object ForkTreePretty {
           *   whether to include ANSI color codes (default true)
           * @param currentTime
           *   current Cardano time in seconds for aging display (optional)
+          * @param confirmedBlocks
+          *   number of confirmed blocks stored in MPF (optional)
           */
         def pretty(
             baseHeight: BigInt,
             ansi: Boolean = true,
-            currentTime: Option[BigInt] = None
+            currentTime: Option[BigInt] = None,
+            confirmedBlocks: Option[Int] = None
         ): String = {
             val c = if ansi then ansiColors else noColors
 
@@ -82,8 +85,11 @@ object ForkTreePretty {
 
             val sb = new StringBuilder
             // Header
+            val mpfInfo = confirmedBlocks match
+                case Some(n) => s"  ${c.dim}MPF: ${c.cyan}$n${c.dim} confirmed blocks${c.reset}"
+                case None    => ""
             sb.append(
-              s"${c.dim}confirmed tip:${c.reset} height=${c.cyan}$baseHeight${c.reset}\n"
+              s"${c.dim}confirmed tip:${c.reset} height=${c.cyan}$baseHeight${c.reset}$mpfInfo\n"
             )
             sb.append(s"${c.dim}│${c.reset}\n")
 

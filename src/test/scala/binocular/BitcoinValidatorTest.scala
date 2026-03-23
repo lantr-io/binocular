@@ -215,10 +215,12 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         println("=== Nested forks ===")
         println(nestedTree.pretty(866880))
 
-        // 5. With current time (aging display)
+        // 5. With current time + confirmed blocks count
         val currentTime = baseTime + 250 * 60 // 250 minutes later
-        println("=== With aging info ===")
-        println(forkTree.pretty(866880, currentTime = Some(currentTime)))
+        println("=== With aging info + MPF size ===")
+        println(
+          forkTree.pretty(866880, currentTime = Some(currentTime), confirmedBlocks = Some(100_000))
+        )
 
         // 6. Large linear chain
         val bigBlocks = prelude.List.from(
