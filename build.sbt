@@ -14,8 +14,14 @@ Global / onChangedBuildSource := ReloadOnSourceChanges
 // Command aliases to compile/format all projects (including it and example)
 // which can't be aggregated due to circular dependsOn
 addCommandAlias("compileAll", ";compile;it/compile;example/compile")
-addCommandAlias("scalafmtAll", ";scalafmt;Test/scalafmt;it/scalafmt;it/Test/scalafmt;example/scalafmt")
-addCommandAlias("scalafmtCheckAll", ";scalafmtCheck;Test/scalafmtCheck;it/scalafmtCheck;it/Test/scalafmtCheck;example/scalafmtCheck")
+addCommandAlias(
+  "scalafmtAll",
+  ";scalafmt;Test/scalafmt;it/scalafmt;it/Test/scalafmt;example/scalafmt"
+)
+addCommandAlias(
+  "scalafmtCheckAll",
+  ";scalafmtCheck;Test/scalafmtCheck;it/scalafmtCheck;it/Test/scalafmtCheck;example/scalafmtCheck"
+)
 
 // Root project (binocular)
 lazy val binocular = (project in file("."))
