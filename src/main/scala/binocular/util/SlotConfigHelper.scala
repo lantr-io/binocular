@@ -33,9 +33,9 @@ object SlotConfigHelper {
                 // Convert on-chain POSIXTime to wall-clock ms for slot lookup
                 slotConfig.timeToSlot(seconds.toLong * 1000 - slotConfig.posixTimeOffset)
             case None =>
-                // Subtract 60s to guard against residual slot drift on testnets.
-                // The validity window is 10 minutes, so this is negligible.
-                slotConfig.timeToSlot(Instant.now().toEpochMilli - 60_000L)
+                // Subtract 5 minutes to guard against clock skew between local
+                // machine and the Cardano node. The validity window is 10 minutes.
+                slotConfig.timeToSlot(Instant.now().toEpochMilli - 300_000L)
         }
         // slotToTime returns on-chain POSIXTime (includes posixTimeOffset)
         val onChainPosixTimeMs = slotConfig.slotToTime(currentSlot)
