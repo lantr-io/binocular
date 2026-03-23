@@ -226,7 +226,8 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
                 .await(120.seconds)
             assert(initStatus == TransactionStatus.Confirmed, "Init tx not confirmed")
             Thread.sleep(2000)
-            var currentOracleUtxo = CommandHelpers.findOracleUtxo(yaciCtx.provider, scriptHash).await(30.seconds)
+            var currentOracleUtxo =
+                CommandHelpers.findOracleUtxo(yaciCtx.provider, scriptHash).await(30.seconds)
 
             // Phase 4: Deploy reference script
             println(s"[Test] Deploying reference script")
@@ -252,7 +253,10 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
             val batchSize = 25 // limited by on-chain execution unit budget (grows with tree size)
             var currentState = initialState
             var currentMpf =
-                OffChainMPF.empty.insert(initialState.ctx.lastBlockHash, initialState.ctx.lastBlockHash)
+                OffChainMPF.empty.insert(
+                  initialState.ctx.lastBlockHash,
+                  initialState.ctx.lastBlockHash
+                )
             val firstBatchTime = System.currentTimeMillis()
 
             val allHeaders =
@@ -295,15 +299,19 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
                 updateResult match {
                     case Right(result) =>
                         val status = yaciCtx.provider
-                            .pollForConfirmation(TransactionHash.fromHex(result.txHash), maxAttempts = 30)
+                            .pollForConfirmation(
+                              TransactionHash.fromHex(result.txHash),
+                              maxAttempts = 30
+                            )
                             .await(60.seconds)
                         assert(
                           status == TransactionStatus.Confirmed,
                           s"Update transaction ${result.txHash} did not confirm"
                         )
                         Thread.sleep(2000)
-                        currentOracleUtxo =
-                            CommandHelpers.findOracleUtxo(yaciCtx.provider, scriptHash).await(30.seconds)
+                        currentOracleUtxo = CommandHelpers
+                            .findOracleUtxo(yaciCtx.provider, scriptHash)
+                            .await(30.seconds)
                         val onChainState = currentOracleUtxo.output.inlineDatum.get.to[ChainState]
                         assert(
                           onChainState.ctx.height == newState.ctx.height &&
@@ -403,8 +411,9 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
                               s"Promotion tx ${txResult.txHash} did not confirm"
                             )
                             Thread.sleep(2000)
-                            currentOracleUtxo =
-                                CommandHelpers.findOracleUtxo(yaciCtx.provider, scriptHash).await(30.seconds)
+                            currentOracleUtxo = CommandHelpers
+                                .findOracleUtxo(yaciCtx.provider, scriptHash)
+                                .await(30.seconds)
                             currentState = currentOracleUtxo.output.inlineDatum.get.to[ChainState]
                             currentMpf = mpf
                             totalPromoted += numPromoted

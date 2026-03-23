@@ -123,8 +123,9 @@ object BitcoinDependentLockApp {
     }
 
     private def computeOracleScriptHashFromScript(): ByteString = {
-        val configOpt = try { Some(BinocularConfig.load()) }
-        catch { case _: Exception => None }
+        val configOpt =
+            try { Some(BinocularConfig.load()) }
+            catch { case _: Exception => None }
         configOpt match {
             case Some(config) =>
                 config.oracle.toBitcoinValidatorParams() match {
@@ -328,11 +329,15 @@ object BitcoinDependentLockApp {
         // Step 1: Fetch locked UTxO and parse datum
         println("Step 1: Fetching locked UTxO...")
 
-        val allUtxos: List[Utxo] = provider.findUtxos(verifierAddress).await(30.seconds).valueOr {
-            err =>
+        val allUtxos: List[Utxo] = provider
+            .findUtxos(verifierAddress)
+            .await(30.seconds)
+            .valueOr { err =>
                 System.err.println(s"Error fetching UTxOs: $err")
                 return 1
-        }.map { case (input, output) => Utxo(input, output) }.toList
+            }
+            .map { case (input, output) => Utxo(input, output) }
+            .toList
 
         val utxoToSpend = allUtxos.find(u =>
             u.input.transactionId.toHex == txHash && u.input.index == outputIndex
@@ -375,10 +380,15 @@ object BitcoinDependentLockApp {
         val oracleAddress = Address.fromBech32(oracleScriptAddressBech32)
 
         val oracleUtxos: List[Utxo] =
-            provider.findUtxos(oracleAddress).await(30.seconds).valueOr { err =>
-                System.err.println(s"Error fetching oracle UTxOs: $err")
-                return 1
-            }.map { case (input, output) => Utxo(input, output) }.toList
+            provider
+                .findUtxos(oracleAddress)
+                .await(30.seconds)
+                .valueOr { err =>
+                    System.err.println(s"Error fetching oracle UTxOs: $err")
+                    return 1
+                }
+                .map { case (input, output) => Utxo(input, output) }
+                .toList
 
         val oracleUtxo: Utxo = oracleUtxos.find(u =>
             u.output.value.hasAsset(oracleScriptHash, AssetName.empty)

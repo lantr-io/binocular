@@ -104,7 +104,9 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
                 )
                 Thread.sleep(2000)
 
-                val newOracleUtxo = CommandHelpers.findOracleUtxo(ctx.provider, compiled.script.scriptHash).await(30.seconds)
+                val newOracleUtxo = CommandHelpers
+                    .findOracleUtxo(ctx.provider, compiled.script.scriptHash)
+                    .await(30.seconds)
                 val onChainState = newOracleUtxo.output.inlineDatum.get.to[ChainState]
 
                 assert(
