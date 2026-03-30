@@ -152,10 +152,21 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
                             .toLong
                     else currentChainState.ctx.height.toLong
 
-                // Fetch new headers if available
-                val headers = if bitcoinTip > highestKnown then {
+                // Cap fork tree best chain at 150 blocks to prevent datum overflow
+                val maxForkTreeBestChain = 150
+                val bestChainBlocks =
+                    if currentChainState.forkTree.nonEmpty then
+                        (highestKnown - currentChainState.ctx.height.toLong).toInt
+                    else 0
+                val maxNewBlocks = maxForkTreeBestChain - bestChainBlocks
+
+                // Fetch new headers if available and fork tree has room
+                val headers = if bitcoinTip > highestKnown && maxNewBlocks > 0 then {
                     val startHeight = highestKnown + 1
-                    val endHeight = Math.min(bitcoinTip, startHeight + batchSize - 1)
+                    val endHeight = Math.min(
+                      Math.min(bitcoinTip, startHeight + batchSize - 1),
+                      startHeight + maxNewBlocks - 1
+                    )
 
                     Console.log(
                       s"Fetching blocks $startHeight..$endHeight (${endHeight - startHeight + 1} headers)"

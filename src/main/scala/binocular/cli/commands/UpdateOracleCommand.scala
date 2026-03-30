@@ -181,7 +181,30 @@ case class UpdateOracleCommand(
                 break(1)
             }
 
-            val numBlocks = (endHeight - startHeight + 1).toInt
+            // Cap fork tree best chain at 150 blocks to prevent datum overflow
+            val maxForkTreeBestChain = 150
+            val bestChainBlocks =
+                if currentChainState.forkTree.nonEmpty then
+                    (highestBlock - currentChainState.ctx.height.toLong).toInt
+                else 0
+            val maxNewBlocks = maxForkTreeBestChain - bestChainBlocks
+
+            val cappedEndHeight = if maxNewBlocks <= 0 then {
+                println(
+                  s"  Fork tree best chain already has $bestChainBlocks blocks (cap: $maxForkTreeBestChain)."
+                )
+                println(s"  Waiting for block promotion before adding more blocks.")
+                break(0)
+            } else {
+                val capped = Math.min(endHeight, startHeight + maxNewBlocks - 1)
+                if capped < endHeight then
+                    println(
+                      s"  Capping to $maxNewBlocks new blocks (fork tree best chain: $bestChainBlocks/$maxForkTreeBestChain)"
+                    )
+                capped
+            }
+
+            val numBlocks = (cappedEndHeight - startHeight + 1).toInt
             val params = setup.params
 
             val maxBlocksPerCommand = 100
@@ -252,7 +275,7 @@ case class UpdateOracleCommand(
 
             val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
 
-            val batches = (startHeight to endHeight).grouped(batchSize).toList
+            val batches = (startHeight to cappedEndHeight).grouped(batchSize).toList
             val totalBatches = batches.size
 
             if totalBatches > 1 then {
@@ -263,7 +286,7 @@ case class UpdateOracleCommand(
             } else {
                 println()
                 println(
-                  s"Step 5: Fetching Bitcoin headers from block $startHeight to $endHeight ($numBlocks headers)..."
+                  s"Step 5: Fetching Bitcoin headers from block $startHeight to $cappedEndHeight ($numBlocks headers)..."
                 )
             }
 
@@ -467,7 +490,7 @@ case class UpdateOracleCommand(
             println("Oracle updated successfully!")
             println(s"  Transaction Hash: $currentTxHash")
             println(
-              s"  Updated from block $startHeight to $endHeight ($numBlocks blocks)"
+              s"  Updated from block $startHeight to $cappedEndHeight ($numBlocks blocks)"
             )
             if totalBatches > 1 then {
                 println(s"  Processed in $totalBatches batches")
