@@ -241,7 +241,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         val contract = PlutusV3.compile(BitcoinValidator.validate).apply(testParams.toData)
         println(s"Contract size: ${contract.script.script.size}")
 //        println(s"Contract size: ${contract.program.showHighlighted}")
-//        assert(contract.script.script.size == 7381)
+        assert(contract.script.script.size == 7402)
     }
 
     test("Block header throughput - max headers per transaction") {
@@ -1699,6 +1699,61 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
 
         assert(validatedCount == totalBlocks, s"Expected $totalBlocks blocks, got $validatedCount")
         validatedCount
+    }
+
+    test("Duplicate block insertion must be rejected") {
+        val baseHeight = 866880
+
+        // Load confirmed tip (866880)
+        val (baseFixture, _) = BlockFixture.loadWithHeader(baseHeight)
+        val confirmedTip = ByteString.fromHex(baseFixture.hash).reverse
+        val bits = ByteString.fromHex(baseFixture.bits).reverse
+        val baseTimestamp = BigInt(baseFixture.timestamp)
+        val recentTimestamps =
+            prelude.List.from((0 until 11).map(i => baseTimestamp - i * 600).toList)
+
+        val initialState = ChainState(
+          confirmedBlocksRoot = BitcoinChainState.mpfRootForSingleBlock(confirmedTip),
+          ctx = TraversalCtx(
+            timestamps = recentTimestamps,
+            height = baseFixture.height,
+            currentBits = bits,
+            prevDiffAdjTimestamp = baseTimestamp,
+            lastBlockHash = confirmedTip
+          ),
+          forkTree = End
+        )
+
+        // Insert block 866881
+        val (_, header881) = BlockFixture.loadWithHeader(baseHeight + 1)
+        val fixture881 = BlockFixture.load(baseHeight + 1)
+        val headersScalus = prelude.List(header881)
+
+        val stateAfterInsert = BitcoinValidator.computeUpdate(
+          state = initialState,
+          blockHeaders = headersScalus,
+          parentPath = prelude.List.Nil,
+          mpfInsertProofs = prelude.List.Nil,
+          currentTime = BigInt(fixture881.timestamp),
+          params = testParams
+        )
+
+        // Attempt to insert block 866881 again — same parentPath (confirmed tip) triggers
+        // a root fork where existsAsChild detects the duplicate
+        val ex = intercept[Exception] {
+            BitcoinValidator.computeUpdate(
+              state = stateAfterInsert,
+              blockHeaders = headersScalus,
+              parentPath = prelude.List.Nil,
+              mpfInsertProofs = prelude.List.Nil,
+              currentTime = BigInt(fixture881.timestamp),
+              params = testParams
+            )
+        }
+        assert(
+          ex.getMessage.contains("Block already exists"),
+          s"Unexpected error: ${ex.getMessage}"
+        )
     }
 
     test(

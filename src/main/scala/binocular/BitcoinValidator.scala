@@ -437,6 +437,20 @@ object BitcoinValidator extends DataParameterizedValidator {
       * @return
       *   updated fork tree with new blocks inserted
       */
+    /** Check if a block hash matches the first block of any branch in the tree.
+      *
+      * Only inspects the leading block of each branch — O(k) where k is the number of branches, not
+      * the total number of blocks. This suffices because a duplicate can only appear as a sibling
+      * of the existing first block at a given fork point (same prevBlockHash ⇒ same parent ⇒ same
+      * fork point).
+      */
+    def existsAsChild(tree: ForkTree, hash: BlockHash): Boolean =
+        tree match
+            case Blocks(blocks, _, _) => blocks.head.hash == hash
+            case Fork(left, right) =>
+                existsAsChild(left, hash) || existsAsChild(right, hash)
+            case End => false
+
     def validateAndInsert(
         tree: ForkTree,
         path: Path,
@@ -459,7 +473,12 @@ object BitcoinValidator extends DataParameterizedValidator {
                     // Tree already has blocks from confirmed tip → create a fork.
                     // Existing branch goes left, new branch goes right (Fork ordering invariant).
                     //   Blocks([A,B], ..) → Fork(Blocks([A,B], ..), Blocks([H1,H2], cw, End))
-                    case existing => Fork(existing, newBranch)
+                    case existing =>
+                        require(
+                          !existsAsChild(existing, newBlocks.head.hash),
+                          "Block already exists in fork tree"
+                        )
+                        Fork(existing, newBranch)
 
             case Cons(pathHead, pathTail) =>
                 validateAndInsertInPath(
@@ -548,6 +567,10 @@ object BitcoinValidator extends DataParameterizedValidator {
                                             // Blocks([A,B,C], cw, Fork(..)), path=[2]
                                             //   → Blocks([A,B,C], prefCw,
                                             //       Fork(Fork(..), Blocks([H1], newCw, End)))
+                                            require(
+                                              !existsAsChild(next, newBlocks.head.hash),
+                                              "Block already exists in fork tree"
+                                            )
                                             val prefixCw =
                                                 computeChainwork(
                                                   fullPrefix,
@@ -572,6 +595,10 @@ object BitcoinValidator extends DataParameterizedValidator {
                                     //   → Blocks([A,B,C], prefCw,
                                     //       Fork(Blocks([D,E], cw-prefCw, End),
                                     //            Blocks([H1,H2], newCw, End)))
+                                    require(
+                                      tail.head.hash != newBlocks.head.hash,
+                                      "Block already exists in fork tree"
+                                    )
                                     val prefixCw =
                                         computeChainwork(
                                           fullPrefix,
@@ -1056,7 +1083,6 @@ object BitcoinValidator extends DataParameterizedValidator {
                 )
     }
 
-    import StrictLookups.*
     // One-shot NFT minting policy
     // param: BitcoinValidatorParams containing the TxOutRef that must be consumed to mint
     // redeemer: BigInt index of the oracle output in tx.outputs
@@ -1070,7 +1096,9 @@ object BitcoinValidator extends DataParameterizedValidator {
         val minted = tx.mint.tokens(policyId).toData
         if minted == SortedMap.singleton(ByteString.empty, BigInt(1)).toData then
             // ensure we spend the one-shot TxOutRef
-            tx.inputs.findOrFail(_.outRef.toData == params.oneShotTxOutRef.toData)
+            tx.inputs
+                .find(_.outRef.toData == params.oneShotTxOutRef.toData)
+                .getOrFail("Must consume one-shot utxo")
             // Verify oracle output contains the NFT at the specified index
             val outputIndex = redeemer.to[BigInt]
             val oracleOutput = tx.outputs.at(outputIndex)
