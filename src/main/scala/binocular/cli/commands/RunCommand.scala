@@ -275,6 +275,29 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
                                             confirmedBlocks = Some(updatedMpf.size)
                                           )
                                         )
+                                        // Wait for wallet UTxOs to be indexed before next iteration
+                                        var walletReady = false
+                                        var walletAttempts = 0
+                                        while !walletReady && walletAttempts < 30 do {
+                                            Thread.sleep(1000)
+                                            walletAttempts += 1
+                                            try {
+                                                setup.provider
+                                                    .findUtxos(setup.sponsorAddress)
+                                                    .await(timeout) match {
+                                                    case Right(utxos) =>
+                                                        if utxos.exists { case (input, _) =>
+                                                                input.transactionId.toHex == txResult.txHash
+                                                            }
+                                                        then walletReady = true
+                                                    case Left(_) =>
+                                                }
+                                            } catch { case _: Exception => }
+                                        }
+                                        if !walletReady then
+                                            Console.logWarn(
+                                              "Wallet UTxOs not indexed after 30s, continuing anyway"
+                                            )
                                     case Left(_) =>
                                         Console.logWarn(
                                           "UTxO confirmed but not found, re-reading state..."
