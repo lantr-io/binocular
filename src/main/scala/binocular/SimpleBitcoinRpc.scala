@@ -164,7 +164,8 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) ex
               nonce = result("nonce").num.toLong,
               bits = result("bits").str,
               difficulty = result("difficulty").num,
-              previousblockhash = result.obj.get("previousblockhash").map(_.str)
+              previousblockhash = result.obj.get("previousblockhash").map(_.str),
+              chainwork = result.obj.get("chainwork").map(_.str)
             )
         }
     }
@@ -269,7 +270,8 @@ case class BlockHeaderInfo(
     nonce: Long,
     bits: String,
     difficulty: Double,
-    previousblockhash: Option[String]
+    previousblockhash: Option[String],
+    chainwork: Option[String] = None
 )
 
 /** Transaction information */

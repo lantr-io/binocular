@@ -26,6 +26,7 @@ import scalus.testing.kit.Party
 
 import scala.concurrent.ExecutionContext
 import scalus.utils.await
+import scalus.utils.Hex.hexToBytes
 
 class BitcoinMainnetCekTest extends AnyFunSuite with ScalusTest {
     private given ec: ExecutionContext = ExecutionContext.global
@@ -156,6 +157,132 @@ class BitcoinMainnetCekTest extends AnyFunSuite with ScalusTest {
     private def prettyTree(tree: ForkTree, height: BigInt): String =
         ForkTreePretty.pretty(tree)(height, ansi = false)
 
+    /** Convert RPC big-endian hash hex to internal little-endian ByteString. */
+    private def rpcHashToInternal(hashHex: String): ByteString =
+        ByteString.fromArray(hashHex.hexToBytes.reverse)
+
+    /** Parse RPC chainwork hex (big-endian, no 0x prefix) to BigInt. */
+    private def parseChainwork(hex: String): BigInt =
+        BigInt(hex, 16)
+
+    /** Verify oracle state fields against Bitcoin RPC data.
+      *
+      * Checks confirmed tip (hash, bits, timestamp, timestamps, prevDiffAdjTimestamp)
+      * and fork tree tip (hash, chainwork).
+      */
+    private def verifyStateAgainstRpc(
+        state: ChainState,
+        rpc: SimpleBitcoinRpc,
+        batchLabel: String,
+        fullCheck: Boolean
+    ): Unit = {
+        val confirmedHeight = state.ctx.height.toInt
+
+        // --- Confirmed tip verification ---
+        val confirmedHashHex = rpc.getBlockHash(confirmedHeight).await()
+        val confirmedHeader = rpc.getBlockHeader(confirmedHashHex).await()
+
+        // 1. Confirmed tip hash
+        val expectedHash = rpcHashToInternal(confirmedHeader.hash)
+        assert(
+          state.ctx.lastBlockHash == expectedHash,
+          s"[$batchLabel] Confirmed tip hash mismatch at height $confirmedHeight: " +
+              s"state=${state.ctx.lastBlockHash.toHex} rpc=${expectedHash.toHex}"
+        )
+
+        // 2. Confirmed tip bits
+        val expectedBits = BitcoinChainState.rpcBitsToCompactBits(confirmedHeader.bits)
+        assert(
+          state.ctx.currentBits == expectedBits,
+          s"[$batchLabel] Confirmed tip bits mismatch at height $confirmedHeight: " +
+              s"state=${state.ctx.currentBits.toHex} rpc=${expectedBits.toHex}"
+        )
+
+        // 3. Newest timestamp matches confirmed tip
+        assert(
+          state.ctx.timestamps.head == BigInt(confirmedHeader.time),
+          s"[$batchLabel] Newest timestamp mismatch at height $confirmedHeight: " +
+              s"state=${state.ctx.timestamps.head} rpc=${confirmedHeader.time}"
+        )
+
+        // 4. prevDiffAdjTimestamp matches the last difficulty adjustment block
+        val interval = BitcoinHelpers.DifficultyAdjustmentInterval.toInt
+        val adjHeight = confirmedHeight - (confirmedHeight % interval)
+        val adjHashHex = rpc.getBlockHash(adjHeight).await()
+        val adjHeader = rpc.getBlockHeader(adjHashHex).await()
+        assert(
+          state.ctx.prevDiffAdjTimestamp == BigInt(adjHeader.time),
+          s"[$batchLabel] prevDiffAdjTimestamp mismatch: " +
+              s"state=${state.ctx.prevDiffAdjTimestamp} rpc=${adjHeader.time} (adj block #$adjHeight)"
+        )
+
+        // --- Fork tree tip verification ---
+        val (bestChainwork, bestDepth, _) =
+            BitcoinValidator.bestChainPath(state.forkTree, confirmedHeight, 0)
+        val bestTipHeight = bestDepth.toInt
+
+        if state.forkTree != ForkTree.End then {
+            val tipHashHex = rpc.getBlockHash(bestTipHeight).await()
+            val tipHeader = rpc.getBlockHeader(tipHashHex).await()
+
+            // 5. Fork tree tip hash
+            val treeBlocks = state.forkTree.toBlockList
+            if treeBlocks.nonEmpty then {
+                val treeTipHash = treeBlocks.last.hash
+                val expectedTipHash = rpcHashToInternal(tipHeader.hash)
+                assert(
+                  treeTipHash == expectedTipHash,
+                  s"[$batchLabel] Fork tree tip hash mismatch at height $bestTipHeight: " +
+                      s"tree=${treeTipHash.toHex} rpc=${expectedTipHash.toHex}"
+                )
+            }
+
+            // 6. Chainwork: fork tree best-path chainwork == rpc(tip) - rpc(confirmed)
+            for {
+                tipCwHex <- tipHeader.chainwork
+                confirmedCwHex <- confirmedHeader.chainwork
+            } {
+                val expectedCw = parseChainwork(tipCwHex) - parseChainwork(confirmedCwHex)
+                assert(
+                  bestChainwork == expectedCw,
+                  s"[$batchLabel] Chainwork mismatch: tree=$bestChainwork " +
+                      s"expected=$expectedCw (rpc tip=$tipCwHex confirmed=$confirmedCwHex)"
+                )
+            }
+        }
+
+        // --- Full checks (less frequent) ---
+        if fullCheck then {
+            // 7. All 11 MTP timestamps
+            val timestamps = state.ctx.timestamps.toScalaList
+            for ((ts, i) <- timestamps.zipWithIndex) {
+                val h = confirmedHeight - i
+                if h >= 0 then {
+                    val hashHex = rpc.getBlockHash(h).await()
+                    val hdr = rpc.getBlockHeader(hashHex).await()
+                    assert(
+                      ts == BigInt(hdr.time),
+                      s"[$batchLabel] Timestamp[$i] mismatch at height $h: " +
+                          s"state=$ts rpc=${hdr.time}"
+                    )
+                }
+            }
+
+            // 8. All fork tree block hashes
+            val treeBlocks = state.forkTree.toBlockList
+            for ((block, i) <- treeBlocks.zipWithIndex) {
+                val blockHeight = confirmedHeight + 1 + i
+                val hashHex = rpc.getBlockHash(blockHeight.toInt).await()
+                val expectedBlockHash = rpcHashToInternal(hashHex)
+                assert(
+                  block.hash == expectedBlockHash,
+                  s"[$batchLabel] Fork tree block hash mismatch at height $blockHeight: " +
+                      s"tree=${block.hash.toHex} rpc=${expectedBlockHash.toHex}"
+                )
+            }
+        }
+    }
+
     test("CEK validation of real Bitcoin mainnet blocks from RPC") {
         val config = BinocularConfig.load()
         assume(config.bitcoinNode.url.nonEmpty, "Bitcoin RPC not configured — skipping")
@@ -256,7 +383,12 @@ class BitcoinMainnetCekTest extends AnyFunSuite with ScalusTest {
             mpf = newMpf
             prevCurrentTime = currentTime
 
-            // 4. Check for orphan blocks to submit at heights in this batch
+            // 4. Verify state against RPC (full check every 10 batches)
+            verifyStateAgainstRpc(
+              state, rpc, s"batch $batchCount", fullCheck = batchCount % 10 == 0
+            )
+
+            // 5. Check for orphan blocks to submit at heights in this batch
             for {
                 forkHeight <- batchStartHeight to batchEndHeight
                 orphanHashes <- staleForks.get(forkHeight)
