@@ -245,6 +245,7 @@ trait BitcoinValidatorGenerators extends scalus.uplc.test.ArbitraryInstances {
           closureTimeout = 30 * 24 * 60 * 60,
           owner = testOwner,
           powLimit = BitcoinHelpers.PowLimit,
+          maxBlocksInForkTree = BitcoinContract.DefaultMaxBlocksInForkTree,
           testingMode = testingMode
         )
 

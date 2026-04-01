@@ -23,6 +23,13 @@ object BitcoinContract {
     def makeContract(params: BitcoinValidatorParams): PlutusV3[Data => Unit] =
         contract(params.toData)
 
+    // Maximum blocks allowed in the fork tree. 256 = 2^8, the capacity of a balanced
+    // binary tree at depth 8 — the most space-efficient tree shape (15,248 bytes), which
+    // fits within the 16,384-byte tx size limit with ~1,136 bytes of headroom for the
+    // redeemer. This bounds the cheapest griefing attack: filling the tree with single-block
+    // branches (all below maturationConfirmations) so nothing qualifies for promotion.
+    val DefaultMaxBlocksInForkTree: Int = 256
+
     /** Build default params from a TxOutRef and owner */
     def validatorParams(
         txOutRef: TxOutRef,
@@ -30,6 +37,7 @@ object BitcoinContract {
         maturationConfirmations: Int = 100,
         challengeAging: Int = 12000,
         closureTimeout: Int = 2592000,
+        maxBlocksInForkTree: Int = DefaultMaxBlocksInForkTree,
         testingMode: Boolean = false
     ): BitcoinValidatorParams =
         BitcoinValidatorParams(
@@ -39,6 +47,7 @@ object BitcoinContract {
           closureTimeout = closureTimeout,
           owner = owner,
           powLimit = BitcoinHelpers.PowLimit,
+          maxBlocksInForkTree = maxBlocksInForkTree,
           testingMode = testingMode
         )
 

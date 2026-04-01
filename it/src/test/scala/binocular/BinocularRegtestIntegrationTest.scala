@@ -194,6 +194,7 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
               closureTimeout = 30 * 24 * 60 * 60,
               owner = testOwner,
               powLimit = BitcoinHelpers.RegtestPowLimit,
+              maxBlocksInForkTree = BitcoinContract.DefaultMaxBlocksInForkTree,
               testingMode = false
             )
 

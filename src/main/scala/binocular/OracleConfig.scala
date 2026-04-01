@@ -24,6 +24,7 @@ case class OracleConfig(
     maturationConfirmations: Int = 100,
     challengeAging: Int = 12000,
     closureTimeout: Int = 2592000,
+    maxBlocksInForkTree: Int = 256,
     testingMode: Boolean = false
 ) derives ConfigReader {
 
@@ -38,6 +39,7 @@ case class OracleConfig(
           maturationConfirmations = maturationConfirmations,
           challengeAging = challengeAging,
           closureTimeout = closureTimeout,
+          maxBlocksInForkTree = maxBlocksInForkTree,
           testingMode = testingMode
         )
     }
@@ -89,6 +91,6 @@ case class OracleConfig(
     }
 
     override def toString: String = {
-        s"OracleConfig(txOutRef=$txOutRef, startHeight=$startHeight, maxHeadersPerTx=$maxHeadersPerTx, pollInterval=$pollInterval, retryInterval=$retryInterval, transactionTimeout=$transactionTimeout, maturationConfirmations=$maturationConfirmations, challengeAging=$challengeAging, closureTimeout=$closureTimeout, testingMode=$testingMode)"
+        s"OracleConfig(txOutRef=$txOutRef, startHeight=$startHeight, maxHeadersPerTx=$maxHeadersPerTx, pollInterval=$pollInterval, retryInterval=$retryInterval, transactionTimeout=$transactionTimeout, maturationConfirmations=$maturationConfirmations, challengeAging=$challengeAging, closureTimeout=$closureTimeout, maxBlocksInForkTree=$maxBlocksInForkTree, testingMode=$testingMode)"
     }
 }

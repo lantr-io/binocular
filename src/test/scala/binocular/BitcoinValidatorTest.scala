@@ -47,7 +47,8 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
       oneShotTxOutRef = testTxOutRef,
       closureTimeout = 30 * 24 * 60 * 60, // 30 days
       owner = testOwner,
-      powLimit = BitcoinHelpers.PowLimit
+      powLimit = BitcoinHelpers.PowLimit,
+      maxBlocksInForkTree = BitcoinContract.DefaultMaxBlocksInForkTree
     )
 
     private val testContract = {
@@ -241,7 +242,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         val contract = PlutusV3.compile(BitcoinValidator.validate).apply(testParams.toData)
         info(s"Contract size: ${contract.script.script.size}")
 //        println(s"Contract size: ${contract.program.showHighlighted}")
-        assert(contract.script.script.size == 7412)
+        assert(contract.script.script.size == 7488)
     }
 
     test("Block header throughput - max headers per transaction") {
@@ -692,6 +693,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
 
         assert(maxForks == 274, s"Expected 274 left-leaning forks, got $maxForks")
         assert(balancedDepth == 8, s"Expected balanced depth 8, got $balancedDepth")
+        assert(
+          testParams.maxBlocksInForkTree <= balancedBlocks,
+          s"maxBlocksInForkTree (${testParams.maxBlocksInForkTree}) must be <= balanced tree capacity ($balancedBlocks)"
+        )
     }
 
     test("ForkTree capacity with promotion - max blocks that allow promoting 1 block") {
@@ -1218,7 +1223,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         info(f"  Tx Fee:       $txFeeAda%15.6f ADA")
 
         assert(txSize <= maxTxSize, "Tx size exceeded")
-        assert(tx.body.value.fee == Coin(997159), s"Tx fee ${tx.body.value.fee} != 997159 lovelace")
+        assert(
+          tx.body.value.fee == Coin(1049220),
+          s"Tx fee ${tx.body.value.fee} != 1049220 lovelace"
+        )
     }
 
     // =========================================================================

@@ -168,7 +168,8 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
           oneShotTxOutRef = txOutRef,
           closureTimeout = 30 * 24 * 60 * 60,
           owner = testOwner,
-          powLimit = BitcoinHelpers.PowLimit
+          powLimit = BitcoinHelpers.PowLimit,
+          maxBlocksInForkTree = BitcoinContract.DefaultMaxBlocksInForkTree
         )
 
         val compiled = BitcoinContract.makeContract(params)

@@ -160,7 +160,8 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
       owner = scalus.cardano.onchain.plutus.v1.PubKeyHash(
         ByteString.unsafeFromArray(Array.fill(28)(0: Byte))
       ),
-      powLimit = PowLimit
+      powLimit = PowLimit,
+      maxBlocksInForkTree = BitcoinContract.DefaultMaxBlocksInForkTree
     )
 
     private def processHeader(currentState: ChainState, headerInfo: BlockHeaderInfo): ChainState =

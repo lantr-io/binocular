@@ -208,6 +208,7 @@ case class BitcoinValidatorParams(
     closureTimeout: BigInt,
     owner: PubKeyHash,
     powLimit: BigInt,
+    maxBlocksInForkTree: BigInt,
     testingMode: Boolean = false
 ) derives FromData,
       ToData
@@ -713,6 +714,14 @@ object BitcoinValidator extends DataParameterizedValidator {
                 (chainwork, height, Nil)
     }
 
+    /** Count the total number of blocks in a fork tree. */
+    def forkTreeBlockCount(tree: ForkTree): BigInt = {
+        tree match
+            case Blocks(blocks, _, next) => blocks.length + forkTreeBlockCount(next)
+            case Fork(left, right)       => forkTreeBlockCount(left) + forkTreeBlockCount(right)
+            case End                     => BigInt(0)
+    }
+
     // ============================================================================
     // Promotion and GC
     // ============================================================================
@@ -957,6 +966,10 @@ object BitcoinValidator extends DataParameterizedValidator {
                   params
                 )
 //        log("validateAndInsert")
+        require(
+          forkTreeBlockCount(newTree) <= params.maxBlocksInForkTree,
+          "Fork tree block count exceeds maxBlocksInForkTree"
+        )
 
         val promotionProofs = mpfInsertProofs
         val numBlocksToPromote = promotionProofs.length
