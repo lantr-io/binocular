@@ -1035,11 +1035,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
     test("Bifrost scenario - 100 blocks in tree, add 1 header, promote 1 block") {
         val baseHeight = 866880
         val preloadCount = 100
-        val pp = CardanoInfo.mainnet.protocolParams
-        val prices = pp.executionUnitPrices
-        val maxTxCpu = pp.maxTxExecutionUnits.steps
-        val maxTxMem = pp.maxTxExecutionUnits.memory
-        val maxTxSize = pp.maxTxSize
+        val maxTxSize = CardanoInfo.mainnet.protocolParams.maxTxSize
 
         val (baseFixture, _) = BlockFixture.loadWithHeader(baseHeight)
         val confirmedTip = ByteString.fromHex(baseFixture.hash).reverse
@@ -1148,20 +1144,37 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
           ),
           0
         )
-        val refScriptInput = Input(
-          TransactionHash.fromHex(
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-          ),
-          0
-        )
         val refScriptUtxo = Utxo(
-          refScriptInput,
+          Input(
+            TransactionHash.fromHex(
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            0
+          ),
           Output(
             testScriptAddr,
             Value.ada(10),
             None,
             Some(ScriptRef(testContract.script))
           )
+        )
+        val feePayerUtxo = Utxo(
+          Input(
+            TransactionHash.fromHex(
+              "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            ),
+            0
+          ),
+          Output(Party.Alice.address, Value.ada(50))
+        )
+        val collateralUtxo = Utxo(
+          Input(
+            TransactionHash.fromHex(
+              "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            ),
+            0
+          ),
+          Output(Party.Alice.address, Value.ada(5))
         )
 
         val inputValue = nftValue(5)
@@ -1173,51 +1186,39 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             DatumOption.Inline(stateWith100Blocks.toData)
           )
         )
-        val utxos: Utxos =
-            Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
         val validFrom = Instant.ofEpochSecond(currentTime.toLong)
         val validTo = validFrom.plusSeconds(600)
 
-        val draft = txBuilder
+        val built = txBuilder
+            .spend(feePayerUtxo)
+            .collaterals(collateralUtxo)
             .references(refScriptUtxo, testContract)
             .spend(utxo, update.toData)
             .payTo(testScriptAddr, inputValue, expectedState.toData)
             .validFrom(validFrom)
             .validTo(validTo)
-            .draft
+            .build(changeTo = Party.Alice.address)
 
-        val txSize = draft.toCbor.length
-        val scriptContext = draft.getScriptContextV3(utxos, ForSpend(input))
+        val pp = CardanoInfo.mainnet.protocolParams
+        val tx = built.transaction
+        val txSize = tx.toCbor.length
+        val txFeeAda = tx.body.value.fee.value / 1_000_000.0
+        val exUnits = tx.witnessSet.redeemers.map(_.value.totalExUnits).getOrElse(ExUnits.zero)
+        val exFeeAda = exUnits.fee(pp.executionUnitPrices).value / 1_000_000.0
+        val maxTxCpu = pp.maxTxExecutionUnits.steps
+        val maxTxMem = pp.maxTxExecutionUnits.memory
 
-        val result = testProgram.applyArg(scriptContext.toData).evaluateDebug
-        result match
-            case r: Result.Success =>
-                val cpuPct = r.budget.steps * 100.0 / maxTxCpu
-                val memPct = r.budget.memory * 100.0 / maxTxMem
-                val sizePct = txSize * 100.0 / maxTxSize
-                val exFeeAda = r.budget.fee(prices).value / 1_000_000.0
-                val txFeeAda = MinTransactionFee
-                    .computeMinFee(draft, utxos, pp)
-                    .getOrElse(throw new Exception("Failed to compute min fee"))
-                    .value / 1_000_000.0
+        info("BIFROST SCENARIO: 100 blocks in tree + 1 header + 1 promotion")
+        info(f"  CPU Steps:    ${exUnits.steps}%,15d  (${exUnits.steps * 100.0 / maxTxCpu}%5.1f%%)")
+        info(
+          f"  Memory:       ${exUnits.memory}%,15d  (${exUnits.memory * 100.0 / maxTxMem}%5.1f%%)"
+        )
+        info(f"  Tx Size:      $txSize%,15d  (${txSize * 100.0 / maxTxSize}%5.1f%%)")
+        info(f"  Ex Fee:       $exFeeAda%15.6f ADA")
+        info(f"  Tx Fee:       $txFeeAda%15.6f ADA")
 
-                println(result)
-                println()
-                println("=" * 80)
-                println("BIFROST SCENARIO: 100 blocks in tree + 1 header + 1 promotion")
-                println("=" * 80)
-                println(f"  CPU Steps:    ${r.budget.steps}%,15d  ($cpuPct%5.1f%%)")
-                println(f"  Memory:       ${r.budget.memory}%,15d  ($memPct%5.1f%%)")
-                println(f"  Tx Size:      $txSize%,15d  ($sizePct%5.1f%%)")
-                println(f"  Ex Fee:       $exFeeAda%15.6f ADA")
-                println(f"  Tx Fee:       $txFeeAda%15.6f ADA")
-                println("=" * 80)
-
-                assert(cpuPct <= 100, "CPU budget exceeded")
-                assert(memPct <= 100, "Memory budget exceeded")
-                assert(sizePct <= 100, "Tx size exceeded")
-            case r: Result.Failure =>
-                fail(s"Evaluation failed: $r")
+        assert(txSize <= maxTxSize, "Tx size exceeded")
+        assert(tx.body.value.fee == Coin(997159), s"Tx fee ${tx.body.value.fee} != 997159 lovelace")
     }
 
     // =========================================================================
