@@ -1,5 +1,6 @@
 package binocular
 
+import org.scalatest.Tag
 import org.scalatest.funsuite.AnyFunSuite
 import scalus.cardano.ledger.{AssetName, CardanoInfo, Coin, DatumOption, Input, Output, ScriptRef, TransactionHash, Utxos, Value}
 import scalus.cardano.ledger.Utxo as CardanoUtxo
@@ -24,6 +25,8 @@ import scalus.testing.kit.Party
 import scala.concurrent.ExecutionContext
 import scalus.utils.await
 import scalus.utils.Hex.hexToBytes
+
+object ManualTest extends Tag("binocular.ManualTest")
 
 class BitcoinMainnetCekTest extends AnyFunSuite with ScalusTest {
     private given ec: ExecutionContext = ExecutionContext.global
@@ -333,12 +336,12 @@ class BitcoinMainnetCekTest extends AnyFunSuite with ScalusTest {
         }
     }
 
-    test("CEK validation of real Bitcoin mainnet blocks from RPC") {
+    test("CEK validation of real Bitcoin mainnet blocks from RPC", ManualTest) {
         val config = BinocularConfig.load()
         assume(config.bitcoinNode.url.nonEmpty, "Bitcoin RPC not configured — skipping")
 
         val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
-        val startHeight = 800000
+        val startHeight = 0
         val batchSize = 50
         val tipHeight = rpc.getBlockchainInfo().await().blocks
         val totalBlocks =
@@ -400,8 +403,17 @@ class BitcoinMainnetCekTest extends AnyFunSuite with ScalusTest {
             val currentTime =
                 (lastHeaderTimestamp max prevCurrentTime) + testParams.challengeAging + 1
 
-            // 2. Compute parentPath
-            val parentPath = state.forkTree.findTipPath
+            // 2. Compute parentPath from the first header's prevBlockHash
+            val firstPrevHash = headers.head.prevBlockHash
+            val parentPath =
+                if firstPrevHash == state.ctx.lastBlockHash then prelude.List.Nil
+                else
+                    findPathToHash(state.forkTree, firstPrevHash).getOrElse {
+                        fail(
+                          s"Cannot find parent hash ${firstPrevHash.toHex} in fork tree for batch $batchCount"
+                        )
+                        prelude.List.Nil
+                    }
 
             // 3. CEK evaluate main chain batch
             val cekStartMs = System.currentTimeMillis()
