@@ -300,18 +300,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
           )
         )
 
-        println()
-        println("=" * 100)
-        println("BLOCK HEADER THROUGHPUT TEST (V2)")
-        println("=" * 100)
-        println(
-          f"${"Headers"}%8s | ${"CPU Steps"}%15s | ${"Memory"}%12s | ${"CPU %"}%7s | ${"Mem %"}%7s | ${"Ex Fee"}%12s | ${"Tx Fee"}%12s | ${"Tx Size"}%8s | ${"Size %"}%7s | ${"Status"}%6s"
-        )
-        println("-" * 100)
-
         val maxAvailableHeaders = 195 // fixtures available: 866881..867075
         var count = 0
         var withinLimits = true
+        var lastFittingLine = ""
         while withinLimits && count < maxAvailableHeaders do {
             count += 1
             val headers =
@@ -336,10 +328,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
                   params = testParams
                 )
 
-//            pprint.pprintln(expectedState)
-
             val redeemer = update.toData
-//            pprint.pprintln(redeemer)
 
             val inputValue = nftValue(5)
             val utxo = Utxo(
@@ -379,24 +368,21 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
                         .value / 1_000_000.0
                     withinLimits = cpuPct <= 100 && memPct <= 100 && sizePct <= 100
                     val status = if withinLimits then "OK" else "OVER"
-                    println(
-                      f"$count%8d | ${r.budget.steps}%15d | ${r.budget.memory}%12d | $cpuPct%6.1f%% | $memPct%6.1f%% | $exFeeAda%12.6f | $txFeeAda%12.6f | $txSize%8d | $sizePct%6.1f%% | $status%6s"
-                    )
+                    val line =
+                        f"$count%8d | ${r.budget.steps}%15d | ${r.budget.memory}%12d | $cpuPct%6.1f%% | $memPct%6.1f%% | $exFeeAda%12.6f | $txFeeAda%12.6f | $txSize%8d | $sizePct%6.1f%% | $status%6s"
+                    if withinLimits then lastFittingLine = line
                 case r: Result.Failure =>
-                    println(f"$count%8d | EVALUATION FAILED: $r")
                     withinLimits = false
-
-            if !withinLimits then println(result)
         }
 
         val maxHeadersPerTx = if withinLimits then count else count - 1
 
-        println("-" * 100)
-        println(s"Max tx execution budget: CPU=$maxTxCpu steps, Memory=$maxTxMem units")
-        println(s"Max tx size: $maxTxSize bytes")
-        println(s"Maximum block headers per transaction: $maxHeadersPerTx")
-        if withinLimits then println(s"(limited by available test fixtures, not execution budget)")
-        println("=" * 100)
+        info(s"BLOCK HEADER THROUGHPUT: max $maxHeadersPerTx headers/tx")
+        if lastFittingLine.nonEmpty then
+            info(
+              f"${"Headers"}%8s | ${"CPU Steps"}%15s | ${"Memory"}%12s | ${"CPU %"}%7s | ${"Mem %"}%7s | ${"Ex Fee"}%12s | ${"Tx Fee"}%12s | ${"Tx Size"}%8s | ${"Size %"}%7s | ${"Status"}%6s"
+            )
+            info(lastFittingLine)
 
         assert(
           maxHeadersPerTx > 0,
@@ -473,20 +459,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
           )
         )
 
-        println()
-        println("=" * 120)
-        println(
-          "PROMOTION THROUGHPUT TEST (V2) - 100 blocks in fork tree + N new blocks triggering N promotions"
-        )
-        println("=" * 120)
-        println(
-          f"${"Headers"}%8s | ${"Promoted"}%8s | ${"CPU Steps"}%15s | ${"Memory"}%12s | ${"CPU %"}%7s | ${"Mem %"}%7s | ${"Ex Fee"}%12s | ${"Tx Fee"}%12s | ${"Tx Size"}%8s | ${"Size %"}%7s | ${"Status"}%6s"
-        )
-        println("-" * 120)
-
         val maxNewHeaders = 95 // fixtures available: 866981..867075
         var count = 0
         var withinLimits = true
+        var lastFittingLine = ""
 
         while withinLimits && count < maxNewHeaders do {
             count += 1
@@ -598,24 +574,21 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
                         .value / 1_000_000.0
                     withinLimits = cpuPct <= 100 && memPct <= 100 && sizePct <= 100
                     val status = if withinLimits then "OK" else "OVER"
-                    println(
-                      f"$count%8d | $promotedCount%8d | ${r.budget.steps}%15d | ${r.budget.memory}%12d | $cpuPct%6.1f%% | $memPct%6.1f%% | $exFeeAda%12.6f | $txFeeAda%12.6f | $txSize%8d | $sizePct%6.1f%% | $status%6s"
-                    )
+                    val line =
+                        f"$count%8d | $promotedCount%8d | ${r.budget.steps}%15d | ${r.budget.memory}%12d | $cpuPct%6.1f%% | $memPct%6.1f%% | $exFeeAda%12.6f | $txFeeAda%12.6f | $txSize%8d | $sizePct%6.1f%% | $status%6s"
+                    if withinLimits then lastFittingLine = line
                 case r: Result.Failure =>
-                    println(f"$count%8d | $promotedCount%8d | EVALUATION FAILED: $r")
                     withinLimits = false
-
-            if !withinLimits then println(result)
         }
 
         val maxHeadersPerTx = if withinLimits then count else count - 1
 
-        println("-" * 120)
-        println(s"Max tx execution budget: CPU=$maxTxCpu steps, Memory=$maxTxMem units")
-        println(s"Max tx size: $maxTxSize bytes")
-        println(s"Maximum headers with promotion per transaction: $maxHeadersPerTx")
-        if withinLimits then println(s"(limited by available test fixtures, not execution budget)")
-        println("=" * 120)
+        info(s"PROMOTION THROUGHPUT: max $maxHeadersPerTx headers+promotions/tx")
+        if lastFittingLine.nonEmpty then
+            info(
+              f"${"Headers"}%8s | ${"Promoted"}%8s | ${"CPU Steps"}%15s | ${"Memory"}%12s | ${"CPU %"}%7s | ${"Mem %"}%7s | ${"Ex Fee"}%12s | ${"Tx Fee"}%12s | ${"Tx Size"}%8s | ${"Size %"}%7s | ${"Status"}%6s"
+            )
+            info(lastFittingLine)
 
         assert(
           maxHeadersPerTx > 0,
