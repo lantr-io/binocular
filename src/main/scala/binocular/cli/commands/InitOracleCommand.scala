@@ -125,6 +125,19 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
                 Console.error(err)
                 break(1)
         }
+        // Wait for the address-based UTxO index to reflect the new transaction,
+        // so subsequent steps don't build on stale (already-spent) inputs.
+        OracleTransactions.waitForUtxoAtAddress(
+          provider,
+          sponsorAddress,
+          TransactionHash.fromHex(oneShotTxHash),
+          timeout
+        ) match {
+            case Left(err) =>
+                Console.error(err)
+                break(1)
+            case _ =>
+        }
         val oneShotUtxo = Utxo(oneShotInput, oneShotOutput)
 
         // Step 4
@@ -175,6 +188,17 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
                 break(1)
         }
         val referenceScriptUtxo = Utxo(refInput, deployOutput)
+        OracleTransactions.waitForUtxoAtAddress(
+          provider,
+          sponsorAddress,
+          TransactionHash.fromHex(deployTxHash),
+          timeout
+        ) match {
+            case Left(err) =>
+                Console.error(err)
+                break(1)
+            case _ =>
+        }
 
         // Step 6
         println()

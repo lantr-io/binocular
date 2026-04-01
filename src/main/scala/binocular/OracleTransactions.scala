@@ -2,7 +2,7 @@ package binocular
 
 import binocular.util.SlotConfigHelper
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{AssetName, CardanoInfo, PlutusScript, ScriptHash, ScriptRef, Transaction, TransactionOutput, Utxo, Utxos, Value}
+import scalus.cardano.ledger.{AssetName, CardanoInfo, PlutusScript, ScriptHash, ScriptRef, Transaction, TransactionHash, TransactionOutput, Utxo, Utxos, Value}
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.txbuilder.TxBuilder
 import scalus.uplc.builtin.Data
@@ -716,5 +716,33 @@ object OracleTransactions {
             }
         }
         Left(s"Timeout waiting for UTxO ${input.transactionId.toHex}#${input.index}")
+    }
+
+    /** Wait until an output from a given transaction appears in the address-based UTxO query.
+      *
+      * After a transaction is confirmed, [[waitForUtxo]] (which uses `findUtxo` by outref) may
+      * succeed while `findUtxos(address)` still returns stale results. This causes subsequent
+      * transactions built via `TxBuilder.complete(provider, address)` to use already-spent inputs.
+      *
+      * Call this between sequential transactions that share a sponsor address to ensure the
+      * address-based index has caught up.
+      */
+    def waitForUtxoAtAddress(
+        provider: BlockchainProvider,
+        address: Address,
+        expectedTxHash: TransactionHash,
+        timeout: Duration = 120.seconds,
+        pollInterval: Duration = 1.second
+    )(using ExecutionContext): Either[String, Unit] = {
+        val deadline = System.currentTimeMillis() + timeout.toMillis
+        while System.currentTimeMillis() < deadline do {
+            provider.findUtxos(address).await(10.seconds) match {
+                case Right(utxos) if utxos.keys.exists(_.transactionId == expectedTxHash) =>
+                    return Right(())
+                case _ =>
+                    Thread.sleep(pollInterval.toMillis)
+            }
+        }
+        Left(s"Timeout waiting for tx ${expectedTxHash.toHex} output at address")
     }
 }
