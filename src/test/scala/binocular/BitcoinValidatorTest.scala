@@ -242,7 +242,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         val contract = PlutusV3.compile(BitcoinValidator.validate).apply(testParams.toData)
         info(s"Contract size: ${contract.script.script.size}")
 //        println(s"Contract size: ${contract.program.showHighlighted}")
-        assert(contract.script.script.size == 7488)
+        assert(contract.script.script.size == 7532)
     }
 
     test("Block header throughput - max headers per transaction") {
@@ -1224,8 +1224,8 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
 
         assert(txSize <= maxTxSize, "Tx size exceeded")
         assert(
-          tx.body.value.fee == Coin(1049220),
-          s"Tx fee ${tx.body.value.fee} != 1049220 lovelace"
+          tx.body.value.fee == Coin(1050965),
+          s"Tx fee ${tx.body.value.fee} != 1050965 lovelace"
         )
     }
 

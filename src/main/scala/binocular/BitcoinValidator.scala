@@ -14,6 +14,8 @@ import scalus.uplc.builtin.Builtins.*
 import scalus.uplc.builtin.ByteString.*
 import scalus.uplc.builtin.Data.{toData, FromData, ToData}
 import scalus.{show as _, *}
+import scalus.uplc.PlutusV3
+import scalus.compiler.Options
 
 extension (a: ByteString) def reverse: ByteString = ByteString.fromArray(a.bytes.reverse)
 
@@ -304,10 +306,12 @@ object BitcoinValidator extends DataParameterizedValidator {
       *   - Future time: validation.cpp — timestamp ≤ currentTime + MAX_FUTURE_BLOCK_TIME
       *   - Chain continuity: prevBlockHash must match ctx.lastBlockHash
       *
-      * Difficulty is enforced structurally: PoW is checked against `ctx.currentBits` (the expected
-      * target maintained by [[accumulateBlock]]), so blocks must satisfy the correct difficulty
-      * even though `header.bits` is not explicitly compared. Context update (height, timestamps,
-      * difficulty retarget) is delegated to [[accumulateBlock]].
+      * Difficulty is determined via [[getNextWorkRequired]], which handles retarget boundaries
+      * (computing new difficulty every 2016 blocks) — matching Bitcoin Core's
+      * `GetNextWorkRequired()` in pow.cpp. The block's `header.bits` is not explicitly compared;
+      * instead, the correct difficulty is enforced structurally through the oracle's maintained
+      * traversal context. Context update (height, timestamps, difficulty retarget) is delegated to
+      * [[accumulateBlock]].
       */
     def validateBlock(
         header: BlockHeader,
@@ -318,9 +322,19 @@ object BitcoinValidator extends DataParameterizedValidator {
         val hash = blockHeaderHash(header)
         val hashInt = byteStringToInteger(false, hash)
 
+        // Difficulty — matches GetNextWorkRequired() in pow.cpp:14-48
+        // At retarget boundaries (height+1 % 2016 == 0), computes new difficulty;
+        // otherwise returns ctx.currentBits unchanged.
+        val bits = getNextWorkRequired(
+          ctx.height,
+          ctx.currentBits,
+          ctx.timestamps.head,
+          ctx.prevDiffAdjTimestamp,
+          params.powLimit
+        )
+
         // PoW validation — matches CheckProofOfWork() in pow.cpp:140-163
-        // Target derived from ctx.currentBits (expected difficulty), reused for block proof below
-        val target = compactBitsToTarget(ctx.currentBits)
+        val target = compactBitsToTarget(bits)
 
         if !params.testingMode then
             require(hashInt <= target, "Invalid proof-of-work")
@@ -1136,5 +1150,15 @@ object BitcoinValidator extends DataParameterizedValidator {
               minted == SortedMap.singleton(ByteString.empty, BigInt(-1)).toData,
               "can only mint 1 or burn 1 SP NFT"
             )
+    }
+}
+
+object BitcoinBlaster {
+
+    def main(args: Array[String]): Unit = {
+        given Options = Options.release
+        val validator = PlutusV3.compile((d: Data) => require(d.to[BigInt] == BigInt(123)))
+        println(validator.program.showHighlighted)
+        println(validator.program.cborByteString.toHex)
     }
 }

@@ -1,10 +1,7 @@
 package binocular
 
 import org.scalatest.funsuite.AnyFunSuite
-import scalus.cardano.ledger.{
-    AssetName, CardanoInfo, Coin, DatumOption, Input, Output, ScriptRef, TransactionHash, Utxos,
-    Value
-}
+import scalus.cardano.ledger.{AssetName, CardanoInfo, Coin, DatumOption, Input, Output, ScriptRef, TransactionHash, Utxos, Value}
 import scalus.cardano.ledger.Utxo as CardanoUtxo
 import scalus.cardano.onchain.plutus.prelude
 import scalus.cardano.txbuilder.RedeemerPurpose.ForSpend
@@ -96,12 +93,12 @@ class BitcoinMainnetCekTest extends AnyFunSuite with ScalusTest {
         }
 
         val orphansByForkHeight = scala.collection.mutable.Map[Int, Seq[String]]()
-        for (tip <- staleTips) {
+        for tip <- staleTips do {
             val forkPointHeight = tip.height - tip.branchlen
             if forkPointHeight >= minHeight then {
                 val headers = scala.collection.mutable.ListBuffer[String]()
                 var hash = tip.hash
-                for (_ <- 0 until tip.branchlen) {
+                for _ <- 0 until tip.branchlen do {
                     headers.prepend(hash)
                     val hdr = rpc.getBlockHeader(hash).await()
                     hash = hdr.previousblockhash.getOrElse("")
@@ -122,7 +119,12 @@ class BitcoinMainnetCekTest extends AnyFunSuite with ScalusTest {
     ): (ChainState, OffChainMPF, Result) = {
         val (expectedState, mpfProofs, updatedMpf) =
             OracleTransactions.computeUpdateWithProofs(
-              prevState, headers, parentPath, currentTime, mpf, testParams
+              prevState,
+              headers,
+              parentPath,
+              currentTime,
+              mpf,
+              testParams
             )
 
         val update = UpdateOracle(
@@ -165,10 +167,58 @@ class BitcoinMainnetCekTest extends AnyFunSuite with ScalusTest {
     private def parseChainwork(hex: String): BigInt =
         BigInt(hex, 16)
 
+    /** Find the path to a block with the given hash in the fork tree.
+      *
+      * Returns the insertion path (as used by validateAndInsert) to the block matching
+      * `targetHash`, or None if the hash is not found.
+      */
+    private def findPathToHash(
+        tree: ForkTree,
+        targetHash: BlockHash
+    ): Option[prelude.List[BigInt]] = {
+        tree match {
+            case ForkTree.Blocks(blocks, _, next) =>
+                val blocksList = blocks.toScalaList
+                blocksList.zipWithIndex.find(_._1.hash == targetHash) match {
+                    case Some((_, idx)) => Some(prelude.List(BigInt(idx)))
+                    case None =>
+                        findPathToHash(next, targetHash) match {
+                            case Some(subPath) =>
+                                Some(prelude.List.Cons(BigInt(blocksList.size), subPath))
+                            case None => None
+                        }
+                }
+            case ForkTree.Fork(left, right) =>
+                findPathToHash(left, targetHash) match {
+                    case Some(subPath) => Some(prelude.List.Cons(BigInt(0), subPath))
+                    case None =>
+                        findPathToHash(right, targetHash) match {
+                            case Some(subPath) => Some(prelude.List.Cons(BigInt(1), subPath))
+                            case None          => None
+                        }
+                }
+            case ForkTree.End => None
+        }
+    }
+
+    /** Collect blocks along the best chain path only (excludes orphan/stale branches). */
+    private def bestChainBlocks(tree: ForkTree): scala.List[BlockSummary] = {
+        tree match {
+            case ForkTree.Blocks(blocks, _, next) =>
+                blocks.toScalaList ++ bestChainBlocks(next)
+            case ForkTree.Fork(left, right) =>
+                val (leftWork, _, _) = BitcoinValidator.bestChainPath(left, 0, 0)
+                val (rightWork, _, _) = BitcoinValidator.bestChainPath(right, 0, 0)
+                if leftWork >= rightWork then bestChainBlocks(left)
+                else bestChainBlocks(right)
+            case ForkTree.End => scala.Nil
+        }
+    }
+
     /** Verify oracle state fields against Bitcoin RPC data.
       *
-      * Checks confirmed tip (hash, bits, timestamp, timestamps, prevDiffAdjTimestamp)
-      * and fork tree tip (hash, chainwork).
+      * Checks confirmed tip (hash, bits, timestamp, timestamps, prevDiffAdjTimestamp) and fork tree
+      * tip (hash, chainwork).
       */
     private def verifyStateAgainstRpc(
         state: ChainState,
@@ -225,10 +275,10 @@ class BitcoinMainnetCekTest extends AnyFunSuite with ScalusTest {
             val tipHashHex = rpc.getBlockHash(bestTipHeight).await()
             val tipHeader = rpc.getBlockHeader(tipHashHex).await()
 
-            // 5. Fork tree tip hash
-            val treeBlocks = state.forkTree.toBlockList
-            if treeBlocks.nonEmpty then {
-                val treeTipHash = treeBlocks.last.hash
+            // 5. Fork tree best-chain tip hash
+            val bestBlocks = bestChainBlocks(state.forkTree)
+            if bestBlocks.nonEmpty then {
+                val treeTipHash = bestBlocks.last.hash
                 val expectedTipHash = rpcHashToInternal(tipHeader.hash)
                 assert(
                   treeTipHash == expectedTipHash,
@@ -255,7 +305,7 @@ class BitcoinMainnetCekTest extends AnyFunSuite with ScalusTest {
         if fullCheck then {
             // 7. All 11 MTP timestamps
             val timestamps = state.ctx.timestamps.toScalaList
-            for ((ts, i) <- timestamps.zipWithIndex) {
+            for (ts, i) <- timestamps.zipWithIndex do {
                 val h = confirmedHeight - i
                 if h >= 0 then {
                     val hashHex = rpc.getBlockHash(h).await()
@@ -268,9 +318,9 @@ class BitcoinMainnetCekTest extends AnyFunSuite with ScalusTest {
                 }
             }
 
-            // 8. All fork tree block hashes
-            val treeBlocks = state.forkTree.toBlockList
-            for ((block, i) <- treeBlocks.zipWithIndex) {
+            // 8. All best-chain fork tree block hashes
+            val bestTreeBlocks = bestChainBlocks(state.forkTree)
+            for (block, i) <- bestTreeBlocks.zipWithIndex do {
                 val blockHeight = confirmedHeight + 1 + i
                 val hashHex = rpc.getBlockHash(blockHeight.toInt).await()
                 val expectedBlockHash = rpcHashToInternal(hashHex)
@@ -288,7 +338,7 @@ class BitcoinMainnetCekTest extends AnyFunSuite with ScalusTest {
         assume(config.bitcoinNode.url.nonEmpty, "Bitcoin RPC not configured — skipping")
 
         val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
-        val startHeight = 100
+        val startHeight = 800000
         val batchSize = 50
         val tipHeight = rpc.getBlockchainInfo().await().blocks
         val totalBlocks =
@@ -298,13 +348,14 @@ class BitcoinMainnetCekTest extends AnyFunSuite with ScalusTest {
         println(s"Start height: $startHeight, batch size: $batchSize, total blocks: $totalBlocks")
 
         // Fetch stale forks in our range
-        val staleForks = try {
-            fetchStaleForks(rpc, startHeight, startHeight + totalBlocks)
-        } catch {
-            case _: Exception =>
-                println("  (getchaintips not available — skipping orphan detection)")
-                Map.empty[Int, Seq[String]]
-        }
+        val staleForks =
+            try {
+                fetchStaleForks(rpc, startHeight, startHeight + totalBlocks)
+            } catch {
+                case _: Exception =>
+                    println("  (getchaintips not available — skipping orphan detection)")
+                    Map.empty[Int, Seq[String]]
+            }
         if staleForks.nonEmpty then {
             println(s"Found ${staleForks.size} stale fork(s):")
             staleForks.foreach { case (forkHeight, hashes) =>
@@ -319,7 +370,8 @@ class BitcoinMainnetCekTest extends AnyFunSuite with ScalusTest {
             BitcoinChainState.getInitialChainState(rpc, startHeight).await()
         var state = initialState
         var mpf = OffChainMPF.empty.insert(
-          state.ctx.lastBlockHash, state.ctx.lastBlockHash
+          state.ctx.lastBlockHash,
+          state.ctx.lastBlockHash
         )
         var prevCurrentTime = state.ctx.timestamps.head
 
@@ -329,7 +381,7 @@ class BitcoinMainnetCekTest extends AnyFunSuite with ScalusTest {
         var orphanCount = 0
 
         val batches = (0 until totalBlocks).grouped(batchSize).toList
-        for (batch <- batches) {
+        for batch <- batches do {
             batchCount += 1
             val batchStartHeight = startHeight + batch.head + 1
             val batchEndHeight = startHeight + batch.last + 1
@@ -385,7 +437,10 @@ class BitcoinMainnetCekTest extends AnyFunSuite with ScalusTest {
 
             // 4. Verify state against RPC (full check every 10 batches)
             verifyStateAgainstRpc(
-              state, rpc, s"batch $batchCount", fullCheck = batchCount % 10 == 0
+              state,
+              rpc,
+              s"batch $batchCount",
+              fullCheck = batchCount % 10 == 0
             )
 
             // 5. Check for orphan blocks to submit at heights in this batch
@@ -405,37 +460,57 @@ class BitcoinMainnetCekTest extends AnyFunSuite with ScalusTest {
                     orphanHeaderHexes.map(hex => BlockHeader(ByteString.fromHex(hex)))
                 val orphanHeadersScalus = prelude.List.from(orphanHeaders.toList)
 
-                val orphanParentPath = state.forkTree.findTipPath
+                // Compute correct parent path: fork point block is the parent
+                val confirmedHeight = state.ctx.height.toInt
+                val forkPointHash = rpcHashToInternal(rpc.getBlockHash(forkHeight).await())
+                val orphanParentPath =
+                    if forkPointHash == state.ctx.lastBlockHash then
+                        prelude.List.Nil // parent is confirmed tip
+                    else
+                        findPathToHash(state.forkTree, forkPointHash) match {
+                            case Some(path) => path
+                            case None =>
+                                println(
+                                  s"  >> Skipping orphan: fork point #$forkHeight not in fork tree (already confirmed)"
+                                )
+                                null // sentinel to skip
+                        }
 
-                val orphanCekStart = System.currentTimeMillis()
-                val (orphanState, orphanMpf, orphanResult) =
-                    cekEvaluateUpdate(
-                      state, orphanHeadersScalus, orphanParentPath, currentTime, mpf
-                    )
-                val orphanCekMs = System.currentTimeMillis() - orphanCekStart
-                totalCekMs += orphanCekMs
+                if orphanParentPath != null then {
+                    val orphanCekStart = System.currentTimeMillis()
+                    val (orphanState, orphanMpf, orphanResult) =
+                        cekEvaluateUpdate(
+                          state,
+                          orphanHeadersScalus,
+                          orphanParentPath,
+                          currentTime,
+                          mpf
+                        )
+                    val orphanCekMs = System.currentTimeMillis() - orphanCekStart
+                    totalCekMs += orphanCekMs
 
-                orphanResult match {
-                    case r: Result.Success =>
-                        println(
-                          f"  >> Orphan OK | CEK ${orphanCekMs}%5dms | " +
-                              f"steps ${r.budget.steps}%,12d mem ${r.budget.memory}%,12d"
-                        )
-                        println(
-                          s"  >> Fork tree after orphan:\n${prettyTree(orphanState.forkTree, orphanState.ctx.height)}"
-                        )
-                    case r: Result.Failure =>
-                        println(s"  >> Orphan FAILED: ${r.exception.getMessage}")
-                        println(
-                          s"  >> Fork tree:\n${prettyTree(state.forkTree, state.ctx.height)}"
-                        )
-                        fail(
-                          s"CEK evaluation failed for orphan at height $forkHeight: ${r.exception.getMessage}"
-                        )
+                    orphanResult match {
+                        case r: Result.Success =>
+                            println(
+                              f"  >> Orphan OK | CEK ${orphanCekMs}%5dms | " +
+                                  f"steps ${r.budget.steps}%,12d mem ${r.budget.memory}%,12d"
+                            )
+                            println(
+                              s"  >> Fork tree after orphan:\n${prettyTree(orphanState.forkTree, orphanState.ctx.height)}"
+                            )
+                        case r: Result.Failure =>
+                            println(s"  >> Orphan FAILED: ${r.exception.getMessage}")
+                            println(
+                              s"  >> Fork tree:\n${prettyTree(state.forkTree, state.ctx.height)}"
+                            )
+                            fail(
+                              s"CEK evaluation failed for orphan at height $forkHeight: ${r.exception.getMessage}"
+                            )
+                    }
+
+                    state = orphanState
+                    mpf = orphanMpf
                 }
-
-                state = orphanState
-                mpf = orphanMpf
             }
         }
 
