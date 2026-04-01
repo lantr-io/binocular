@@ -239,7 +239,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         given Options =
             Options.release.copy(targetProtocolVersion = MajorProtocolVersion.vanRossemPV)
         val contract = PlutusV3.compile(BitcoinValidator.validate).apply(testParams.toData)
-        println(s"Contract size: ${contract.script.script.size}")
+        info(s"Contract size: ${contract.script.script.size}")
 //        println(s"Contract size: ${contract.program.showHighlighted}")
         assert(contract.script.script.size == 7412)
     }
@@ -646,8 +646,8 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         val datumSize = chainStateWithTree(linearTree(maxBlocks)).toData.toCbor.length
         val overSize = chainStateWithTree(linearTree(maxBlocks + 1)).toData.toCbor.length
 
-        println(
-          f"\nSingle branch: max $maxBlocks blocks ($datumSize%,d bytes, limit $maxTxSize%,d)"
+        info(
+          f"Single branch: max $maxBlocks blocks ($datumSize%,d bytes, limit $maxTxSize%,d)"
         )
 
         assert(maxBlocks == 368, s"Expected 368 blocks in single branch, got $maxBlocks")
@@ -710,10 +710,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         val balancedBlocks = 1 << balancedDepth // 2^depth leaf nodes, each with 1 block
         val balancedSize = chainStateWithTree(balancedForkTree(balancedDepth)).toData.toCbor.length
 
-        println(
-          f"\nLeft-leaning:  $maxForks forks, ${maxForks + 1} blocks ($forkDatumSize%,d bytes, limit $maxTxSize%,d)"
+        info(
+          f"Left-leaning:  $maxForks forks, ${maxForks + 1} blocks ($forkDatumSize%,d bytes, limit $maxTxSize%,d)"
         )
-        println(
+        info(
           f"Balanced:      $balancedForks forks, $balancedBlocks blocks, depth $balancedDepth ($balancedSize%,d bytes) — min griefing cost"
         )
 
@@ -853,18 +853,15 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         val (txSize, inputDatumSize, outputDatumSize) = buildTxDraft(maxBlocks)
         val (overTxSize, _, _) = buildTxDraft(maxBlocks + 1)
 
-        println()
-        println(
-          f"Max fork tree blocks with 1-block promotion (100K MPF): $maxBlocks"
-        )
-        println(f"  Transaction size:  $txSize%,d bytes (limit: $maxTxSize%,d)")
-        println(f"  Input datum size:  $inputDatumSize%,d bytes")
-        println(f"  Output datum size: $outputDatumSize%,d bytes")
-        println(f"  Redeemer size:     $redeemerSize%,d bytes")
-        println(
+        info(f"Max fork tree blocks with 1-block promotion (100K MPF): $maxBlocks")
+        info(f"  Transaction size:  $txSize%,d bytes (limit: $maxTxSize%,d)")
+        info(f"  Input datum size:  $inputDatumSize%,d bytes")
+        info(f"  Output datum size: $outputDatumSize%,d bytes")
+        info(f"  Redeemer size:     $redeemerSize%,d bytes")
+        info(
           f"  Overhead:          ${txSize - inputDatumSize - outputDatumSize - redeemerSize}%,d bytes"
         )
-        println(f"  maxBlocks+1 tx:    $overTxSize%,d bytes (over limit)")
+        info(f"  maxBlocks+1 tx:    $overTxSize%,d bytes (over limit)")
 
         // The max should be significantly less than 368 (no-promotion max)
         assert(
