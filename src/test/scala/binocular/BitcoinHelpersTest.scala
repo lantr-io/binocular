@@ -16,6 +16,29 @@ import upickle.default.*
 
 import java.nio.file.{Files, Path}
 
+/** Minimal Bitcoin block JSON structure for test deserialization */
+private case class BitcoinBlock(
+    hash: String,
+    confirmations: Int,
+    height: Int,
+    version: Long,
+    versionHex: String,
+    merkleroot: String,
+    time: Long,
+    mediantime: Long,
+    nonce: Long,
+    bits: String,
+    difficulty: Double,
+    chainwork: String,
+    nTx: Int,
+    previousblockhash: String,
+    nextblockhash: String,
+    strippedsize: Int,
+    size: Int,
+    weight: Int,
+    tx: List[String]
+) derives ReadWriter
+
 class BitcoinHelpersTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyChecks {
 
     test("parseCoinbaseTx") {
