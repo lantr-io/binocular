@@ -10,7 +10,6 @@ import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
 import scala.util.{Failure, Success, Try}
 import scalus.utils.await
-import cats.syntax.either.*
 
 /** Verify oracle UTxO and validate state */
 case class VerifyOracleCommand() extends Command {
@@ -26,9 +25,11 @@ case class VerifyOracleCommand() extends Command {
         val cardanoConf = config.cardano
         val oracleConf = config.oracle
 
-        val params = oracleConf.toBitcoinValidatorParams().valueOr { err =>
-            System.err.println(s"Error deriving params: $err")
-            return 1
+        val params = oracleConf.toBitcoinValidatorParams() match {
+            case Left(err) =>
+                System.err.println(s"Error deriving params: $err")
+                return 1
+            case Right(value) => value
         }
 
         val script = BitcoinContract.makeContract(params).script

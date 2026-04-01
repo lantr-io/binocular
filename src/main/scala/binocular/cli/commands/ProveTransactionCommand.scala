@@ -8,7 +8,6 @@ import scalus.uplc.builtin.ByteString
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
 import scalus.utils.await
-import cats.syntax.either.*
 
 /** Prove Bitcoin transaction inclusion via oracle */
 case class ProveTransactionCommand(
@@ -76,16 +75,20 @@ case class ProveTransactionCommand(
 
         given ec: ExecutionContext = ExecutionContext.global
 
-        val params = oracleConf.toBitcoinValidatorParams().valueOr { err =>
-            System.err.println(s"Error deriving params: $err")
-            return Left(1)
+        val params = oracleConf.toBitcoinValidatorParams() match {
+            case Left(err) =>
+                System.err.println(s"Error deriving params: $err")
+                return Left(1)
+            case Right(value) => value
         }
 
         val script = BitcoinContract.makeContract(params).script
 
-        val provider = cardanoConf.createBlockchainProvider().valueOr { err =>
-            System.err.println(s"Error creating blockchain provider: $err")
-            return Left(1)
+        val provider = cardanoConf.createBlockchainProvider() match {
+            case Left(err) =>
+                System.err.println(s"Error creating blockchain provider: $err")
+                return Left(1)
+            case Right(value) => value
         }
 
         val utxo =

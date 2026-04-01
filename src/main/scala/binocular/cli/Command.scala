@@ -2,7 +2,7 @@ package binocular.cli
 
 import binocular.*
 import scalus.cardano.address.{Address, Network}
-import scalus.cardano.ledger.{AssetName, ScriptHash, ScriptRef, TransactionHash, TransactionInput, TransactionOutput, Utxo, Value}
+import scalus.cardano.ledger.{AssetName, ScriptHash, ScriptRef, TransactionOutput, Utxo, Value}
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.wallet.hd.HdAccount
 import scalus.uplc.PlutusV3

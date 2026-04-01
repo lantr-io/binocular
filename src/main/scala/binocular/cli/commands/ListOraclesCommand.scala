@@ -8,8 +8,6 @@ import scalus.cardano.ledger.Utxo
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
 import scalus.utils.await
-import cats.syntax.either.*
-
 /** List oracle UTxOs on Cardano */
 case class ListOraclesCommand(limit: Int) extends Command {
 
@@ -21,9 +19,11 @@ case class ListOraclesCommand(limit: Int) extends Command {
         val oracleConf = config.oracle
 
         val oracleScriptAddress =
-            oracleConf.scriptAddress(cardanoConf.cardanoNetwork).valueOr { err =>
-                System.err.println(s"Error deriving script address: $err")
-                return 1
+            oracleConf.scriptAddress(cardanoConf.cardanoNetwork) match {
+                case Left(err) =>
+                    System.err.println(s"Error deriving script address: $err")
+                    return 1
+                case Right(value) => value
             }
 
         given ec: ExecutionContext = ExecutionContext.global
@@ -39,12 +39,12 @@ case class ListOraclesCommand(limit: Int) extends Command {
                     val utxosResult =
                         provider.findUtxos(address).await(30.seconds)
 
-                    val allUtxos: List[Utxo] = utxosResult
-                        .valueOr { err =>
+                    val allUtxos: List[Utxo] = (utxosResult match {
+                        case Left(err) =>
                             System.err.println(s"Error fetching UTxOs: $err")
                             return 1
-                        }
-                        .map { case (input, output) => Utxo(input, output) }
+                        case Right(value) => value
+                    }).map { case (input, output) => Utxo(input, output) }
                         .toList
 
                     val validOracles = CommandHelpers.filterValidOracleUtxos(allUtxos)
