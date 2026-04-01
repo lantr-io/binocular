@@ -6,6 +6,7 @@ import com.typesafe.scalalogging.LazyLogging
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
+
 /** Deploy the oracle validator as a reference script UTxO */
 case class DeployScriptCommand() extends Command with LazyLogging {
 

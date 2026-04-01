@@ -127,7 +127,7 @@ case class ChainState(
 case class BlockNode(
                       prevBlockHash: BlockHash,
                       chainwork: BigInt,
-                      addedTimestamp: BigInt,
+                      addedTimeDelta: BigInt,
                       children: List[BlockHash]
                     )
 ```

@@ -81,7 +81,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         BlockSummary(
           hash = ByteString.unsafeFromArray(Array.fill(32)(id)),
           timestamp = BigInt(1000000 + id),
-          addedTimeSeconds = BigInt(1000000 + id)
+          addedTimeDelta = 0
         )
 
     test(
@@ -160,7 +160,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             BlockSummary(
               hash = ByteString.unsafeFromArray(Array.fill(32)(id)),
               timestamp = baseTime + heightOffset * 600,
-              addedTimeSeconds = baseTime + heightOffset * 600 + 3600
+              addedTimeDelta = 3600
             )
 
         // 1. Empty tree
@@ -241,7 +241,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         val contract = PlutusV3.compile(BitcoinValidator.validate).apply(testParams.toData)
         println(s"Contract size: ${contract.script.script.size}")
 //        println(s"Contract size: ${contract.program.showHighlighted}")
-        assert(contract.script.script.size == 7402)
+        assert(contract.script.script.size == 7412)
     }
 
     test("Block header throughput - max headers per transaction") {
@@ -650,7 +650,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
           f"\nSingle branch: max $maxBlocks blocks ($datumSize%,d bytes, limit $maxTxSize%,d)"
         )
 
-        assert(maxBlocks == 338, s"Expected 338 blocks in single branch, got $maxBlocks")
+        assert(maxBlocks == 368, s"Expected 368 blocks in single branch, got $maxBlocks")
     }
 
     test("ForkTree capacity - max forks and minimum griefing attack cost") {
@@ -717,7 +717,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
           f"Balanced:      $balancedForks forks, $balancedBlocks blocks, depth $balancedDepth ($balancedSize%,d bytes) — min griefing cost"
         )
 
-        assert(maxForks == 256, s"Expected 256 left-leaning forks, got $maxForks")
+        assert(maxForks == 274, s"Expected 274 left-leaning forks, got $maxForks")
         assert(balancedDepth == 8, s"Expected balanced depth 8, got $balancedDepth")
     }
 
@@ -843,7 +843,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
 
         // Binary search for the max fork tree blocks that fit with promotion
         var lo = 1
-        var hi = 338 // known max without promotion overhead
+        var hi = 368 // known max without promotion overhead
         while lo < hi do {
             val mid = (lo + hi + 1) / 2
             val (txSize, _, _) = buildTxDraft(mid)
@@ -866,10 +866,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         )
         println(f"  maxBlocks+1 tx:    $overTxSize%,d bytes (over limit)")
 
-        // The max should be significantly less than 338 (no-promotion max)
+        // The max should be significantly less than 368 (no-promotion max)
         assert(
-          maxBlocks < 338,
-          s"Expected fewer blocks than 338 to fit with promotion overhead, got $maxBlocks"
+          maxBlocks < 368,
+          s"Expected fewer blocks than 368 to fit with promotion overhead, got $maxBlocks"
         )
         assert(
           maxBlocks > 100,
@@ -880,7 +880,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
     test("Validity interval - unbounded validRange (no validTo) must be rejected") {
         // Without a validTo upper bound, the on-chain time (validFrom) could be
         // arbitrarily stale — the transaction remains valid forever. This weakens
-        // the challenge aging guarantee: addedTimeSeconds could be set to a much
+        // the challenge aging guarantee: addedTimeDelta could be computed from a much
         // earlier time than when the transaction actually executes on-chain.
         // The fix requires both validFrom and validTo with a bounded window.
         val baseHeight = 866880
@@ -972,7 +972,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
 
     test("Validity interval - too wide window must be rejected") {
         // Even with validTo set, the window must be bounded to ensure
-        // addedTimeSeconds is close to actual wall-clock time.
+        // addedTimeDelta is computed from a time close to actual wall-clock time.
         val baseHeight = 866880
 
         val (baseFixture, _) = BlockFixture.loadWithHeader(baseHeight)

@@ -8,6 +8,7 @@ import scalus.cardano.ledger.Utxo
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
 import scalus.utils.await
+
 /** List oracle UTxOs on Cardano */
 case class ListOraclesCommand(limit: Int) extends Command {
 
@@ -44,8 +45,7 @@ case class ListOraclesCommand(limit: Int) extends Command {
                             System.err.println(s"Error fetching UTxOs: $err")
                             return 1
                         case Right(value) => value
-                    }).map { case (input, output) => Utxo(input, output) }
-                        .toList
+                    }).map { case (input, output) => Utxo(input, output) }.toList
 
                     val validOracles = CommandHelpers.filterValidOracleUtxos(allUtxos)
 

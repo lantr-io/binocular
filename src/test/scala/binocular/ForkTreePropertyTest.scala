@@ -416,7 +416,7 @@ class ForkTreePropertyTest
             val block = BlockSummary(
               hash = genUniqueBlockHash(99),
               timestamp = earlierTimestamp,
-              addedTimeSeconds = BigInt(1700000000)
+              addedTimeDelta = BigInt(0)
             )
             // Should not throw — accumulateBlock doesn't check MTP
             val newCtx = BitcoinValidator.accumulateBlock(ctx, block, PowLimit)
@@ -575,7 +575,7 @@ class ForkTreePropertyTest
             val blockList = tree.toBlockList
             val expected =
                 if blockList.isEmpty then scala.None
-                else scala.Some(blockList.map(_.addedTimeSeconds).min)
+                else scala.Some(blockList.map(b => b.timestamp + b.addedTimeDelta).min)
             assert(tree.oldestBlockTime == expected)
         }
     }
@@ -598,7 +598,8 @@ class ForkTreePropertyTest
             (blocks, bestDepth) =>
                 whenever(blocks.nonEmpty) {
                     val ctx = makeSplitCtx(bestDepth - 110) // ensure some blocks are deep enough
-                    val currentTime = blocks.head.addedTimeSeconds + 200 * 60 + 1000
+                    val currentTime =
+                        blocks.head.timestamp + blocks.head.addedTimeDelta + 200 * 60 + 1000
                     val blocksPL = PList.from(blocks)
                     val params = testParams()
                     val (promoted, remaining, _) =
@@ -620,7 +621,8 @@ class ForkTreePropertyTest
             (blocks, bestDepth) =>
                 whenever(blocks.nonEmpty) {
                     val ctx = makeSplitCtx(bestDepth - 110)
-                    val currentTime = blocks.head.addedTimeSeconds + 200 * 60 + 1000
+                    val currentTime =
+                        blocks.head.timestamp + blocks.head.addedTimeDelta + 200 * 60 + 1000
                     val blocksPL = PList.from(blocks)
                     val params = testParams()
                     val (promoted, _, _) =
@@ -636,7 +638,7 @@ class ForkTreePropertyTest
                     promoted.foreach { block =>
                         h = h + 1
                         val depth = bestDepth - h
-                        val age = currentTime - block.addedTimeSeconds
+                        val age = currentTime - block.timestamp - block.addedTimeDelta
                         assert(depth >= params.maturationConfirmations)
                         assert(age >= params.challengeAging)
                     }
@@ -649,7 +651,8 @@ class ForkTreePropertyTest
             (blocks, bestDepth) =>
                 whenever(blocks.nonEmpty) {
                     val ctx = makeSplitCtx(bestDepth - 110)
-                    val currentTime = blocks.head.addedTimeSeconds + 200 * 60 + 1000
+                    val currentTime =
+                        blocks.head.timestamp + blocks.head.addedTimeDelta + 200 * 60 + 1000
                     val blocksPL = PList.from(blocks)
                     val params = testParams()
                     val (promoted, remaining, finalCtx) =
@@ -665,7 +668,8 @@ class ForkTreePropertyTest
                         case Cons(firstRemaining, _) =>
                             val blockHeight = finalCtx.height + 1
                             val depth = bestDepth - blockHeight
-                            val age = currentTime - firstRemaining.addedTimeSeconds
+                            val age =
+                                currentTime - firstRemaining.timestamp - firstRemaining.addedTimeDelta
                             assert(
                               depth < params.maturationConfirmations || age < params.challengeAging,
                               "First remaining block should fail at least one condition"
@@ -683,7 +687,8 @@ class ForkTreePropertyTest
         ) { (blocks, maxProm, bestDepth) =>
             whenever(blocks.nonEmpty) {
                 val ctx = makeSplitCtx(bestDepth - 200)
-                val currentTime = blocks.head.addedTimeSeconds + 200 * 60 + 10000
+                val currentTime =
+                    blocks.head.timestamp + blocks.head.addedTimeDelta + 200 * 60 + 10000
                 val blocksPL = PList.from(blocks)
                 val params = testParams()
                 val (promoted, _, _) =
@@ -765,7 +770,7 @@ class ForkTreePropertyTest
             // Set currentTime so that no block is old enough
             val ctx = makeSplitCtx(tree.blockCount + 200)
             val bestDepth = BigInt(tree.blockCount + 200)
-            // Set addedTimeSeconds very recent, currentTime barely after
+            // Set added time very recent, currentTime barely after
             val currentTime = BigInt(1700000010) // blocks have addedTime around 1.5-1.7 billion
             val (_, _, bestPath) = BitcoinValidator.bestChainPath(tree, ctx.height, 0)
             val params = testParams()
@@ -779,8 +784,8 @@ class ForkTreePropertyTest
                   100,
                   params
                 )
-            // If currentTime - addedTimeSeconds < challengeAging for all blocks, promoted is empty
-            val allBlockTimes = tree.toBlockList.map(_.addedTimeSeconds)
+            // If currentTime - timestamp - addedTimeDelta < challengeAging for all blocks, promoted is empty
+            val allBlockTimes = tree.toBlockList.map(b => b.timestamp + b.addedTimeDelta)
             val oldestBlock = if allBlockTimes.nonEmpty then allBlockTimes.min else BigInt(0)
             if currentTime - oldestBlock < params.challengeAging then assert(promoted == PNil)
         }

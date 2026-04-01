@@ -68,11 +68,12 @@ trait BitcoinValidatorGenerators extends scalus.uplc.test.ArbitraryInstances {
         BlockSummary(
           hash = genUniqueBlockHash(id),
           timestamp = BigInt(baseTimestamp),
-          addedTimeSeconds = BigInt(addedTime)
+          addedTimeDelta = BigInt(addedTime - baseTimestamp)
         )
 
     /** n BlockSummaries with unique hashes. Bitcoin timestamps may go backward (jitter ±300s around
-      * base), but addedTimeSeconds (Cardano observation time) increases monotonically.
+      * base), but added time (Cardano observation time) increases monotonically. addedTimeDelta =
+      * addedTime - timestamp.
       */
     def genBlockSummarySeq(n: Int): Gen[scala.List[BlockSummary]] =
         for {
@@ -81,10 +82,12 @@ trait BitcoinValidatorGenerators extends scalus.uplc.test.ArbitraryInstances {
             addedBase <- Gen.choose(1500000000L, 1700000000L)
         } yield {
             (0 until n).map { i =>
+                val ts = BigInt(baseTimestamp + i * 600L + jitters(i))
+                val addedTime = BigInt(addedBase + i * 10L) // monotonically increasing
                 BlockSummary(
                   hash = genUniqueBlockHash(i + 1),
-                  timestamp = BigInt(baseTimestamp + i * 600L + jitters(i)),
-                  addedTimeSeconds = BigInt(addedBase + i * 10L) // monotonically increasing
+                  timestamp = ts,
+                  addedTimeDelta = addedTime - ts
                 )
             }.toList
         }

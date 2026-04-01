@@ -25,6 +25,7 @@ type CompactBits = ByteString // 4-byte compact difficulty target representation
 type BlockHeaderBytes = ByteString // 80-byte raw Bitcoin block header
 
 type PosixTimeSeconds = BigInt
+type DeltaSeconds = BigInt
 type Chainwork = BigInt
 type NonEmptyList[A] = List[A]
 type List11Timestamps = List[PosixTimeSeconds]
@@ -46,7 +47,7 @@ case class BlockHeader(bytes: ByteString) derives FromData, ToData {
 case class BlockSummary(
     hash: BlockHash, // Block hash
     timestamp: PosixTime, // Bitcoin block timestamp (for median-time-past)
-    addedTimeSeconds: PosixTimeSeconds // Cardano time when this block was added to forkTree
+    addedTimeDelta: DeltaSeconds // currentTime - timestamp at submission (saves CBOR bytes vs absolute time)
 ) derives FromData,
       ToData
 
@@ -92,14 +93,17 @@ enum ForkTree derives FromData, ToData {
         depth
     }
 
-    /** Earliest addedTimeSeconds among all blocks in the tree, or None if empty. */
+    /** Earliest added time (timestamp + addedTimeDelta) among all blocks in the tree, or None if
+      * empty.
+      */
     def oldestBlockTime: scala.Option[BigInt] = this match
         case Blocks(blocks, _, next) =>
             var min: scala.Option[BigInt] = scala.None
             blocks.foreach { b =>
+                val addedTime = b.timestamp + b.addedTimeDelta
                 min = min match
-                    case scala.Some(v) => scala.Some(v.min(b.addedTimeSeconds))
-                    case scala.None    => scala.Some(b.addedTimeSeconds)
+                    case scala.Some(v) => scala.Some(v.min(addedTime))
+                    case scala.None    => scala.Some(addedTime)
             }
             val minInNext = next.oldestBlockTime
             (min, minInNext) match
@@ -213,7 +217,7 @@ object BitcoinValidator extends DataParameterizedValidator {
     import BitcoinHelpers.*
 
     // Maximum allowed width of the transaction validity interval (in milliseconds).
-    // Ensures validFrom is close to actual wall-clock time, so addedTimeSeconds
+    // Ensures validFrom is close to actual wall-clock time, so addedTimeDelta
     // is trustworthy for the challenge aging check.
     // 10 minutes = 600 seconds = 600_000 milliseconds
     val MaxValidityWindow: BigInt = 600_000
@@ -339,7 +343,7 @@ object BitcoinValidator extends DataParameterizedValidator {
         val summary = BlockSummary(
           hash = hash,
           timestamp = timestamp,
-          addedTimeSeconds = currentTime
+          addedTimeDelta = currentTime - timestamp
         )
 
         // Delegate context update (timestamps, height, difficulty retarget) to accumulateBlock
@@ -717,7 +721,8 @@ object BitcoinValidator extends DataParameterizedValidator {
       *
       * Walks oldest→newest. A block is eligible for promotion if:
       *   - `bestDepth - blockHeight >= params.maturationConfirmations` (e.g. 100 confirmations)
-      *   - `currentTime - addedTimeSeconds >= params.challengeAging` (e.g. 200 minutes on-chain)
+      *   - `currentTime - block.timestamp - block.addedTimeDelta >= params.challengeAging` (e.g.
+      *     200 minutes on-chain)
       *   - `maxPromotions > 0` (caller-imposed limit from number of MPF proofs provided)
       *
       * Stops at the first ineligible block. This is safe because blocks are ordered oldest→newest:
@@ -743,7 +748,7 @@ object BitcoinValidator extends DataParameterizedValidator {
                 else
                     val blockHeight = ctx.height + 1
                     val depth = bestDepth - blockHeight
-                    val age = currentTime - block.addedTimeSeconds
+                    val age = currentTime - block.timestamp - block.addedTimeDelta
                     if depth >= params.maturationConfirmations && age >= params.challengeAging then
                         // Block eligible — promote it and check next block.
                         val newCtx = accumulateBlock(ctx, block, params.powLimit)

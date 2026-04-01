@@ -397,7 +397,7 @@ case class BlockSummary(
     chainwork: BigInt,     // Cumulative chainwork at this block
     timestamp: BigInt,     // Bitcoin block timestamp (for median-time-past)
     bits: CompactBits,     // Difficulty target (for difficulty validation)
-    addedTime: BigInt      // Cardano time when this block was added to forksTree
+    addedTimeDelta: BigInt  // currentTime - timestamp at submission (saves CBOR bytes vs absolute time)
 )
 
 // A complete chain branch from a fork point to its current tip
@@ -871,7 +871,7 @@ Function promoteQualifiedBlocks(
   blockHashesToPromote ← []
   for block in branch.recentBlocks (oldest first):
     depth ← canonicalTipHeight - block.height
-    age ← currentTime - block.addedTime  // Uses individual block's addedTime
+    age ← currentTime - block.timestamp - block.addedTimeDelta  // Recovers age from delta
 
     if depth ≥ 100 and age ≥ 200 × 60 then
       blockHashesToPromote.append(block.hash)
@@ -1183,7 +1183,7 @@ Guard:
 Actions:
   - Validate full block header (PoW, difficulty, timestamps, version)
   - Extract prevBlockHash from header
-  - Create BlockSummary with hash, height, chainwork, timestamp, bits, addedTime
+  - Create BlockSummary with hash, height, chainwork, timestamp, bits, addedTimeDelta
   - Either extend existing branch or create new ForkBranch
   - Add to forksTree
 Next State: UNCONFIRMED_RECENT
@@ -1197,7 +1197,7 @@ Trigger: Sufficient time/depth accumulated, or canonical chain changes
 Guard:
   - Block is on canonical chain (highest chainwork path)
   - depth(block) ≥ 100 (from canonical tip)
-  - currentTime - block.addedTimestamp ≥ 200 × 60
+  - currentTime - block.timestamp - block.addedTimeDelta ≥ 200 × 60
 Actions:
   - Mark block as promotable (implicit in qualification check)
 Next State: QUALIFIED
@@ -1256,7 +1256,7 @@ The following properties hold at all times:
 3. **Promotion Monotonicity**: Confirmed block height is monotonically increasing. Once a block is
    CONFIRMED, it never returns to any other state.
 
-4. **Aging Monotonicity**: A block's `addedTimestamp` never changes once set. Age only increases.
+4. **Aging Monotonicity**: A block's `addedTimeDelta` never changes once set. Age only increases.
 
 5. **Depth Consistency**: Depth calculation matches the canonical chain at time of evaluation.
 
@@ -1359,7 +1359,7 @@ Given: At least one honest party $H$ monitors Bitcoin.
    canonical Bitcoin chain, validation succeeds.
 
 4. **Addition to Forks Tree**: Block $b$ added to forks tree at time $t_0$ with:
-    - `addedTimestamp = t_0`
+    - `addedTimeDelta = t_0 - block.timestamp`
     - On canonical chain (honest $H$ submits real Bitcoin blocks)
 
 5. **Accumulation**: After 100 more Bitcoin blocks, $b$ has depth ≥ 100.
@@ -1658,7 +1658,7 @@ final approach.
 4. **Promotion Process**: Block promotion only requires:
    - Block hash (already the map key)
    - Chainwork comparison (stored separately)
-   - Depth and age checks (stored as `addedTimestamp`)
+   - Depth and age checks (stored as `addedTimeDelta`)
    - The full header is not needed
 
 5. **Application Use**: Applications verifying Bitcoin transaction inclusion proofs provide their own block headers off-chain. They only need to verify:
@@ -1677,7 +1677,7 @@ final approach.
 
 - Chain walking: ✓ (uses `prevBlockHash`)
 - Canonical selection: ✓ (uses `chainwork`)
-- Block promotion: ✓ (uses depth + `addedTimestamp`)
+- Block promotion: ✓ (uses depth + `addedTimeDelta`)
 - Fork competition: ✓ (uses `chainwork` + tree structure)
 - Tree navigation: ✓ (uses `children` list)
 
@@ -1688,7 +1688,7 @@ The validation workflow becomes:
 1. Receive full block header in update transaction
 2. Validate header completely (PoW, difficulty, timestamps, version)
 3. Extract only essential data: `prevBlockHash`, compute `chainwork`
-4. Store minimal `BlockNode(prevBlockHash, chainwork, addedTimestamp, children)`
+4. Store minimal `BlockNode(prevBlockHash, chainwork, addedTimeDelta, children)`
 5. Discard full header after validation
 
 This optimization maximizes forks tree capacity while maintaining all required protocol operations.
@@ -1821,7 +1821,7 @@ Forks tree (per-block storage):
 - Map key (block hash): 32 bytes
 - BlockNode.prevBlockHash: 32 bytes
 - BlockNode.chainwork: ~8 bytes (typical BigInt encoding)
-- BlockNode.addedTimestamp: ~8 bytes
+- BlockNode.addedTimeDelta: ~2-3 bytes (delta is typically 60-60,000 seconds vs ~5 bytes for absolute POSIX time)
 - BlockNode.children (list overhead + 32 bytes per child): ~8 bytes base
 - **Total per block**: ~88 bytes (base) + 32 bytes per child
 

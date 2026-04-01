@@ -183,8 +183,9 @@ object ForkTreePretty {
         currentTime: Option[BigInt]
     ): Unit = {
         currentTime.foreach { now =>
-            val oldestAdded = blocks.foldLeft(first.addedTimeSeconds) { (min, b) =>
-                if b.addedTimeSeconds < min then b.addedTimeSeconds else min
+            val oldestAdded = blocks.foldLeft(first.timestamp + first.addedTimeDelta) { (min, b) =>
+                val addedTime = b.timestamp + b.addedTimeDelta
+                if addedTime < min then addedTime else min
             }
             val ageMinutes = (now - oldestAdded) / 60
             val ageColor =
