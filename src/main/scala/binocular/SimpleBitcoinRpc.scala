@@ -231,6 +231,20 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) ex
         }
     }
 
+    /** Get all known chain tips including stale forks */
+    def getChainTips(): Future[Seq[ChainTip]] = {
+        call("getchaintips").map { result =>
+            result.arr.map { tip =>
+                ChainTip(
+                  height = tip("height").num.toInt,
+                  hash = tip("hash").str,
+                  branchlen = tip("branchlen").num.toInt,
+                  status = tip("status").str
+                )
+            }.toSeq
+        }
+    }
+
     /** Get raw transaction by txid (verbose=true) */
     def getRawTransaction(txid: String): Future[RawTransactionInfo] = {
         call("getrawtransaction", ujson.Arr(txid, true)).map { result =>
@@ -284,6 +298,14 @@ case class BlockchainInfo(
     blocks: Int,
     headers: Int,
     bestblockhash: String
+)
+
+/** Chain tip information from getchaintips */
+case class ChainTip(
+    height: Int,
+    hash: String,
+    branchlen: Int,
+    status: String // active, valid-fork, valid-headers, headers-only, invalid
 )
 
 /** Raw transaction information */
