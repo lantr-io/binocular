@@ -242,7 +242,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         val contract = PlutusV3.compile(BitcoinValidator.validate).apply(testParams.toData)
         info(s"Contract size: ${contract.script.script.size}")
 //        println(s"Contract size: ${contract.program.showHighlighted}")
-        assert(contract.script.script.size == 7532)
+        assert(contract.script.script.size == 7576)
     }
 
     test("Block header throughput - max headers per transaction") {
@@ -1224,8 +1224,8 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
 
         assert(txSize <= maxTxSize, "Tx size exceeded")
         assert(
-          tx.body.value.fee == Coin(1050965),
-          s"Tx fee ${tx.body.value.fee} != 1050965 lovelace"
+          tx.body.value.fee == Coin(1053147),
+          s"Tx fee ${tx.body.value.fee} != 1053147 lovelace"
         )
     }
 
@@ -1731,6 +1731,82 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         }
         assert(
           ex.getMessage.contains("Block already exists"),
+          s"Unexpected error: ${ex.getMessage}"
+        )
+    }
+
+    test("validateBlock rejects headers with incorrect nBits encoding") {
+        val startHeight = 866880
+        val (startFixture, _) = BlockFixture.loadWithHeader(startHeight)
+        val startHash = ByteString.fromHex(startFixture.hash).reverse
+        val startBits = ByteString.fromHex(startFixture.bits).reverse
+        val startTimestamp = BigInt(startFixture.timestamp)
+        val recentTimestamps = prelude.List.from(
+          (0 until 11).map(i => startTimestamp - i * 600).toList
+        )
+
+        val ctx = TraversalCtx(
+          timestamps = recentTimestamps,
+          height = BigInt(startHeight),
+          currentBits = startBits,
+          prevDiffAdjTimestamp = startTimestamp,
+          lastBlockHash = startHash
+        )
+
+        val (fixture, header) = BlockFixture.loadWithHeader(startHeight + 1)
+        val wrongBits = ByteString.fromHex("1d00ffff").reverse
+        val mutatedHeader =
+            binocular.BlockHeader(
+              header.bytes.slice(0, 72) ++ wrongBits ++ header.bytes.slice(76, 4)
+            )
+
+        val ex = intercept[Exception] {
+            BitcoinValidator.validateBlock(
+              mutatedHeader,
+              ctx,
+              BigInt(fixture.timestamp),
+              testParams
+            )
+        }
+
+        assert(
+          ex.getMessage.contains("Incorrect difficulty bits"),
+          s"Unexpected error: ${ex.getMessage}"
+        )
+    }
+
+    test("validateBlock rejects non-80-byte headers") {
+        val startHeight = 866880
+        val (startFixture, _) = BlockFixture.loadWithHeader(startHeight)
+        val startHash = ByteString.fromHex(startFixture.hash).reverse
+        val startBits = ByteString.fromHex(startFixture.bits).reverse
+        val startTimestamp = BigInt(startFixture.timestamp)
+        val recentTimestamps = prelude.List.from(
+          (0 until 11).map(i => startTimestamp - i * 600).toList
+        )
+
+        val ctx = TraversalCtx(
+          timestamps = recentTimestamps,
+          height = BigInt(startHeight),
+          currentBits = startBits,
+          prevDiffAdjTimestamp = startTimestamp,
+          lastBlockHash = startHash
+        )
+
+        val (fixture, header) = BlockFixture.loadWithHeader(startHeight + 1)
+        val extendedHeader = binocular.BlockHeader(header.bytes ++ hex"00010203")
+
+        val ex = intercept[Exception] {
+            BitcoinValidator.validateBlock(
+              extendedHeader,
+              ctx,
+              BigInt(fixture.timestamp),
+              testParams
+            )
+        }
+
+        assert(
+          ex.getMessage.contains("Invalid block header length"),
           s"Unexpected error: ${ex.getMessage}"
         )
     }

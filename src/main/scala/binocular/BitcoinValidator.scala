@@ -319,6 +319,13 @@ object BitcoinValidator extends DataParameterizedValidator {
         currentTime: PosixTimeSeconds,
         params: BitcoinValidatorParams
     ): (BlockSummary, TraversalCtx, BigInt) = {
+        // Bitcoin consensus hashes exactly the serialized 80-byte header. Without this check an
+        // attacker could mine arbitrary-length payloads whose first 80 bytes look header-shaped,
+        // and Binocular would be validating a different object than Bitcoin. In particular,
+        // hashing payloads shorter than 80 bytes is cheaper than hashing real Bitcoin headers, so
+        // omitting this check would weaken the intended PoW cost model.
+        require(header.bytes.length == BigInt(80), "Invalid block header length")
+
         val hash = blockHeaderHash(header)
         val hashInt = byteStringToInteger(false, hash)
 
@@ -332,9 +339,14 @@ object BitcoinValidator extends DataParameterizedValidator {
           ctx.prevDiffAdjTimestamp,
           params.powLimit
         )
+        // Bitcoin requires the header's encoded nBits to match the difficulty transition exactly
+        // (`bad-diffbits`). Deriving the target from local context alone is not enough, because it
+        // would allow malformed headers with incorrect nBits to be accepted and assigned chainwork.
+        val headerBits = header.bits
+        require(headerBits == bits, "Incorrect difficulty bits")
 
         // PoW validation — matches CheckProofOfWork() in pow.cpp:140-163
-        val target = compactBitsToTarget(bits)
+        val target = compactBitsToTarget(headerBits)
 
         if !params.testingMode then
             require(hashInt <= target, "Invalid proof-of-work")
