@@ -32,7 +32,8 @@ lazy val binocular = (project in file("."))
       run / connectInput := true,
       run / javaOptions += "--sun-misc-unsafe-memory-access=allow",
       Test / parallelExecution := false,
-      Test / test / testOptions += Tests.Argument(TestFrameworks.ScalaTest, "-l", "binocular.ManualTest"),
+      Test / test / testOptions += Tests
+          .Argument(TestFrameworks.ScalaTest, "-l", "binocular.ManualTest"),
       Test / javaOptions ++= Seq("-Xmx2g", "--sun-misc-unsafe-memory-access=allow"),
       addCompilerPlugin("org.scalus" % "scalus-plugin_3.3.7" % scalusVersion),
       libraryDependencies ++= coreDependencies ++ testDependencies,
