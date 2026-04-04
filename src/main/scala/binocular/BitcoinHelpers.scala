@@ -164,7 +164,7 @@ object BitcoinHelpers {
       *   positive, so it's fine.
       */
     def targetToCompactByteString(target: BigInt): CompactBits = {
-        val compact = targetToCompactBits(target)
+        val compact = targetToCompactBitsV2(target)
         integerToByteString(false, 4, compact)
     }
 
