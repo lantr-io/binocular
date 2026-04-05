@@ -308,9 +308,9 @@ object BitcoinValidator extends DataParameterizedValidator {
       *
       * Difficulty is determined via [[getNextWorkRequired]], which handles retarget boundaries
       * (computing new difficulty every 2016 blocks) — matching Bitcoin Core's
-      * `GetNextWorkRequired()` in pow.cpp. The block's `header.bits` is not explicitly compared;
-      * instead, the correct difficulty is enforced structurally through the oracle's maintained
-      * traversal context. Context update (height, timestamps, difficulty retarget) is delegated to
+      * `GetNextWorkRequired()` in pow.cpp. The block's `header.bits` is explicitly checked against
+      * the expected value (`bad-diffbits`), preventing malformed headers with incorrect nBits from
+      * being accepted. Context update (height, timestamps, difficulty retarget) is delegated to
       * [[accumulateBlock]].
       */
     def validateBlock(

@@ -2,7 +2,7 @@
 
 Alexander Nemish @ Lantr (<alex@lantr.io>)
 
-Draft v0.3
+Draft v0.4
 
 ## Abstract
 
@@ -10,12 +10,15 @@ Binocular is a Bitcoin oracle for Cardano that enables smart contracts to access
 blockchain state. The protocol allows anyone to submit Bitcoin block headers to a single on-chain
 Oracle UTxO without registration or bonding requirements. All blocks are validated against Bitcoin
 consensus rules (proof-of-work, difficulty adjustment, timestamp constraints) enforced by a Plutus
-smart contract. The Oracle maintains a tree of competing forks and automatically selects the
+smart contract. The Oracle maintains a binary tree of competing forks and automatically selects the
 canonical chain using Bitcoin's chainwork calculation. Blocks achieving 100+ confirmations and 200+
-minutes of on-chain aging are promoted to the confirmed state, providing a Merkle tree root that
-enables transaction inclusion proofs. Security relies on a 1-honest-party assumption and Bitcoin's
-proof-of-work security, with economic analysis showing that mining 100 Bitcoin blocks costs
-significantly more than any potential oracle manipulation reward.
+minutes of on-chain aging are promoted to the confirmed state, stored via Merkle Patricia Forestry
+(MPF) to enable transaction inclusion proofs. The Oracle UTxO is identified by an NFT minted
+through a one-shot minting policy. A companion TransactionVerifier contract enables on-chain
+verification of Bitcoin transaction inclusion proofs against the Oracle's confirmed state. Security
+relies on a 1-honest-party assumption and Bitcoin's proof-of-work security, with economic analysis
+showing that mining 100 Bitcoin blocks costs significantly more than any potential oracle
+manipulation reward.
 
 ## Introduction
 
@@ -44,9 +47,10 @@ Binocular makes the following contributions:
    registration, bonding, or special privileges. The validator contract enforces all validation
    rules, rejecting invalid blocks automatically.
 
-3. **Simplified Single-UTxO Architecture**: A single Oracle UTxO contains both the confirmed state (
-   Merkle tree of blocks with 100+ confirmations) and a tree of competing unconfirmed forks. Updates
-   atomically select the canonical chain and promote qualified blocks.
+3. **Simplified Single-UTxO Architecture**: A single Oracle UTxO, identified by an NFT, contains
+   both the confirmed state (MPF trie of blocks with 100+ confirmations) and a binary tree of
+   competing unconfirmed forks. Updates atomically select the canonical chain and promote qualified
+   blocks.
 
 4. **Challenge Period Mechanism**: Blocks must exist on-chain for 200 minutes before promotion to
    confirmed state, providing time for honest parties to counter pre-computed attacks while
@@ -59,40 +63,51 @@ The protocol operates under a 1-honest-party assumption: at least one participan
 Bitcoin network and submits valid blocks to the Oracle. This assumption is minimal - requiring only
 that someone, somewhere, runs the freely available software.
 
+### Reading Guide
+
+- **Overview** (Section 2): Architecture, data flow, and protocol operation — start here
+- **Protocol Specification** (Section 3): Complete data structures, algorithms, and validation
+  rules — reference for implementors
+- **Communication Protocols** (Section 4): Sequence diagrams illustrating key interactions
+- **Formal State Machine** (Section 5): Block lifecycle states and transition rules
+- **Security Analysis** (Section 6): Threat model, formal proofs, and attack scenarios
+- **Design Decisions** (Section 7): Rationale for key architectural choices
+
 ## Overview
-
-### Key Concepts
-
-- **Oracle UTxO**: A single on-chain UTxO containing the complete Oracle state (confirmed blocks and
-  forks tree).
-- **Confirmed State**: Bitcoin blocks that have achieved 100+ confirmations and 200+ minutes of
-  on-chain aging, stored as a Merkle tree root.
-- **Forks Tree**: A tree data structure holding competing unconfirmed Bitcoin block chains, indexed
-  by block hash.
-- **Canonical Chain Selection**: Automatic selection of the highest chainwork fork following
-  Bitcoin's longest chain rule.
-- **Block Promotion**: Blocks meeting confirmation and aging criteria are automatically moved from
-  the forks tree to confirmed state.
-- **Challenge Period**: 200-minute on-chain aging requirement before blocks can be promoted,
-  preventing pre-computed attacks.
-- **Chainwork**: Cumulative proof-of-work calculation used to determine the canonical chain.
 
 ### Architecture
 
-The Binocular Oracle uses a simplified single-UTxO design:
+The Binocular Oracle uses a single UTxO, identified by an NFT minted through a one-shot minting
+policy. The UTxO contains the complete protocol state:
 
 **Oracle UTxO State**:
 
 ```
 ChainState {
-  // Confirmed state (blocks with 100+ confirmations, 200+ min old)
-  blockHeight, blockHash, currentTarget, blockTimestamp,
-  recentTimestamps[11], previousDifficultyAdjustmentTimestamp,
-  confirmedBlocksRoot,  // Merkle tree of confirmed blocks
-
-  // Forks tree (competing unconfirmed chains)
-  forksTree  // Tree of BlockNodes indexed by block hash
+  confirmedBlocksRoot,  // MPF trie root of confirmed block hashes
+  ctx: TraversalCtx,    // Accumulated context from confirmed chain tip
+  forkTree: ForkTree    // Binary tree of unconfirmed block segments
 }
+```
+
+The `TraversalCtx` carries the accumulated state needed for validating new blocks:
+
+```
+TraversalCtx {
+  timestamps[11],              // Recent timestamps (newest first)
+  height,                      // Current confirmed block height
+  currentBits,                 // Difficulty target (compact bits)
+  prevDiffAdjTimestamp,        // For difficulty retarget calculations
+  lastBlockHash                // Hash of last confirmed block
+}
+```
+
+The `ForkTree` is a recursive binary enum:
+
+```
+ForkTree = Blocks(blocks, chainwork, next: ForkTree)
+         | Fork(left: ForkTree, right: ForkTree)
+         | End
 ```
 
 ### Protocol Operation
@@ -116,240 +131,174 @@ Given a starting block at height $h$ (e.g., $h = 800000$):
 
 ```
 ChainState {
-  blockHeight = h,
-  blockHash = hash(block_h),
-  currentTarget = block_h.bits,
-  blockTimestamp = block_h.timestamp,
-  recentTimestamps = [block_h.timestamp],  // Single timestamp initially
-  previousDifficultyAdjustmentTimestamp = block_{adj}.timestamp,
-  confirmedBlocksRoot = hash(block_h),     // Single-element Merkle tree
-  forksTree = {}                            // Empty forks tree
+  confirmedBlocksRoot = mpfRootForSingleBlock(hash(block_h)),  // MPF trie with single block
+  ctx = TraversalCtx {
+    timestamps = [block_h, block_{h-1}, ..., block_{h-10}].timestamps,  // Last 11 timestamps
+    height = h,
+    currentBits = block_h.bits,
+    prevDiffAdjTimestamp = block_{adj}.timestamp,
+    lastBlockHash = hash(block_h)
+  },
+  forkTree = End  // Empty fork tree
 }
 ```
 
 where $\text{block}_{adj}$ is the most recent difficulty adjustment block at or before height $h$
-(i.e., $adj = h - (h \bmod 2016)$).
+(i.e., $adj = h - (h \bmod 2016)$), and `mpfRootForSingleBlock` creates an MPF trie containing a
+single entry where both key and value are the block hash.
 
 **Rationale:**
 
-1. **Single confirmed block**: The checkpoint block is the only confirmed block initially. Its hash
-   serves as the Merkle root (a Merkle tree with a single leaf equals the leaf itself).
+1. **Single confirmed block**: The checkpoint block is the only confirmed block initially. The
+   `confirmedBlocksRoot` is the MPF trie root containing just this block's hash.
 
-2. **Empty forks tree**: No unconfirmed blocks exist yet. All subsequent Bitcoin blocks will be
-   added to the forks tree and promoted to confirmed state once they meet criteria.
+2. **Empty fork tree**: No unconfirmed blocks exist yet. All subsequent Bitcoin blocks will be
+   added to the fork tree and promoted to confirmed state once they meet criteria.
 
 3. **Difficulty state**: The checkpoint block's difficulty parameters and timestamp from the last
    difficulty adjustment block enable proper validation of subsequent blocks.
 
-4. **Single timestamp**: Only one timestamp is available initially. The `recentTimestamps` list will
-   grow to 11 elements as blocks are added.
+4. **11 timestamps**: The `timestamps` list must be initialized with 11 timestamps (from blocks
+   $h$ through $h-10$, newest first) because `validateBlock` computes the median-time-past by
+   sorting the list and accessing element at index 5. Fewer than 11 timestamps would cause an
+   index-out-of-bounds failure.
 
 **Deployment Process:**
 
 1. Select checkpoint block height $h$ from Bitcoin blockchain
-2. Retrieve block header for block $h$ and adjustment block
+2. Retrieve block headers for blocks $h$ through $h-10$ (for timestamps) and adjustment block
 3. Construct initial `ChainState` as specified above
-4. Deploy Oracle validator script to Cardano
-5. Create initial Oracle UTxO with `ChainState` as datum
-6. Oracle is now operational and ready to accept block submissions
+4. Deploy Oracle validator script to Cardano with `BitcoinValidatorParams`
+5. Mint the Oracle NFT by consuming the one-shot UTxO
+6. Create initial Oracle UTxO with `ChainState` as inline datum and NFT
+7. Oracle is now operational and ready to accept block submissions
 
 **Example:**
 
 Starting at Bitcoin block 800,000 (height as of August 2023):
 
 ```
-blockHeight: 800000
-blockHash: 0x00000000000000000002a7c4c1e48d76c5a37902165a270156b7a8d72728a054
-currentTarget: 0x17053894 (compact bits from block header)
-blockTimestamp: 1691064786
-recentTimestamps: [1691064786]
-previousDifficultyAdjustmentTimestamp: 1690396653 (from block 797,184)
-confirmedBlocksRoot: 0x00000000000000000002a7c4c1e48d76c5a37902165a270156b7a8d72728a054
-forksTree: {}
+ChainState {
+  confirmedBlocksRoot: <MPF root for single block 0x000...a054>
+  ctx: TraversalCtx {
+    timestamps: [1691064786, 1691063498, ..., 1691055321]  // 11 timestamps from blocks 800,000-799,990
+    height: 800000
+    currentBits: 0x17053894
+    prevDiffAdjTimestamp: 1690396653 (from block 797,184)
+    lastBlockHash: 0x00000000000000000002a7c4c1e48d76c5a37902165a270156b7a8d72728a054
+  }
+  forkTree: End
+}
 ```
 
 After initialization, observers can begin submitting Bitcoin blocks starting from height 800,001 and
 onward.
 
-**Oracle Identification and Validation:**
+**Oracle Identification:**
 
-Since anyone can deploy an Oracle UTxO with the same validator script, multiple Oracle instances may
-exist on-chain. However, **valid Oracles are self-identifying through Bitcoin consensus**.
+Each Oracle instance is uniquely identified by an **NFT** minted through a one-shot minting policy.
+The NFT's policy ID equals the validator script hash because Plutus V3 uses a single script for
+both spending and minting — the same script that validates `UpdateOracle`/`CloseOracle` also serves
+as the minting policy. This policy ID serves as a unique on-chain identifier for the Oracle UTxO.
+
+**NFT-Based Identification:**
+
+The Oracle NFT provides:
+
+1. **Unique Identity**: The one-shot minting policy ensures exactly one NFT can be minted per
+   deployment (tied to a specific UTxO consumption). This makes each Oracle instance globally unique.
+
+2. **Continuity Guarantee**: Every `UpdateOracle` transaction must produce a continuing output
+   containing the same NFT, ensuring the Oracle UTxO chain is unbroken.
+
+3. **On-Chain Discoverability**: Applications can find the Oracle by searching for the known NFT
+   policy ID, without needing to track UTxO references.
 
 **Bitcoin State Verification:**
 
-Any Oracle claiming to track Bitcoin can be verified by checking if its state matches the actual
-Bitcoin blockchain:
-
-1. **Read Oracle State**: Query the Oracle UTxO and extract:
-   - `blockHeight` (e.g., 800,000)
-   - `blockHash` (e.g., 0x00000000000000000002a7c4...)
-   - `blockTimestamp`, `currentTarget`, etc.
-
-2. **Verify Against Bitcoin**: Query a trusted Bitcoin node for block at that height:
-   - Does the hash match?
-   - Does the timestamp match?
-   - Does the difficulty match?
-
-3. **Result**:
-   - **Valid Oracle**: State matches real Bitcoin blockchain → Oracle can be trusted
-   - **Invalid Oracle**: State doesn't match → Oracle is fake or corrupted
-
-**Mathematical Property:**
-
-Given a block height $h$, there exists exactly one valid Bitcoin block:
-$$
-\forall h: \exists! \text{block}_h \text{ such that } \text{valid}(\text{block}_h)
-$$
-
-Therefore, any Oracle correctly tracking Bitcoin from height $h$ must have:
-$$
-\text{Oracle.blockHash} = \text{hash}(\text{Bitcoin.block}_h)
-$$
-
-**Implications:**
-
-1. **Multiple Valid Oracles**: Multiple Oracles can exist if initialized at the same checkpoint. They
-   are all valid as long as they match Bitcoin state.
-
-2. **No Additional Mechanism Needed**: No NFTs, registries, or known UTxO references required. The
-   Bitcoin blockchain itself authenticates valid Oracles.
-
-3. **Continuous Verification**: Applications can verify Oracle validity at any point by checking
-   recent confirmed blocks against Bitcoin:
-   ```
-   if Oracle.confirmedState matches Bitcoin.actualState:
-       trust Oracle
-   else:
-       reject Oracle
-   ```
-
-4. **Fork Tolerance**: Even if Oracles diverge temporarily (different forks in `forksTree`), valid
-   Oracles will converge to the same confirmed state after 100+ confirmations.
-
-**Practical Verification:**
-
-Applications should verify Oracle validity by:
-
-1. **Checkpoint Verification**: Check that Oracle's confirmed state (last promoted blocks) matches
-   Bitcoin at several recent block heights
-
-2. **Continuous Monitoring**: Periodically verify that new confirmed blocks match Bitcoin
-
-3. **Multiple Sources**: Query multiple Bitcoin nodes to prevent reliance on a single source
-
-**Example Verification:**
-
-```
-Oracle State (confirmed):
-  blockHeight: 800,100
-  blockHash: 0x0000000000000000000167c8b4e3c8a7e5c14f...
-
-Bitcoin Node Query:
-  getBlockHash(800100) → 0x0000000000000000000167c8b4e3c8a7e5c14f...
-
-Match? ✓ → Oracle is valid
-```
-
-**Security Advantage:**
-
-This approach provides **objective verifiability**: anyone with access to the Bitcoin blockchain can
-verify Oracle correctness without trusting any centralized authority or relying on social consensus.
+Additionally, any Oracle can be verified off-chain by comparing `ctx.lastBlockHash` and
+`ctx.height` against a Bitcoin full node. Since there is exactly one valid Bitcoin block at each
+height, any correctly-tracking Oracle must agree with the canonical chain. This provides **objective
+verifiability** without trusting any centralized authority. Even if Oracles diverge temporarily
+(different forks in `forkTree`), valid Oracles will converge to the same confirmed state after 100+
+confirmations.
 
 **1. Submitting Blocks**
 
-Anyone can submit an update transaction containing:
+Anyone can submit an `UpdateOracle` transaction containing:
 
-- New Bitcoin block header(s)
-- Fork point specification (which block the new blocks extend)
+- New Bitcoin block header(s) (oldest first)
+- A **parent path** specifying where in the fork tree the new blocks extend from
+- Optional MPF insertion proofs (for promoting blocks to confirmed state)
 
 The on-chain validator performs atomic operations:
 
-- Validates each block against Bitcoin consensus rules (PoW, difficulty, timestamps)
-- Adds valid blocks to the forks tree
-- Selects the canonical chain (highest chainwork)
-- Promotes blocks meeting criteria (100+ confirmations AND 200+ min old) to confirmed state
-- Updates the confirmed blocks Merkle tree root
+- Navigates the fork tree using the parent path
+- Validates each block against Bitcoin consensus rules (PoW, difficulty, timestamps, header length)
+- Inserts valid blocks into the fork tree
+- If MPF proofs are provided: selects the canonical chain (highest chainwork), promotes eligible
+  blocks, garbage-collects dead forks, and updates the confirmed MPF root
+
+**Path-Based Insertion:**
+
+The `parentPath` in the `UpdateOracle` redeemer specifies the insertion point:
+
+- **Empty path** (`[]`): New blocks extend the confirmed tip directly. The fork tree root is the
+  insertion point.
+- **Path elements at `Blocks` nodes**: An index into the block list. If the index equals the
+  block count, traversal passes through to the subtree. Otherwise, the block at that index is
+  the parent.
+- **Path elements at `Fork` nodes**: 0 = left branch, 1 = right branch.
+
+This enables single-traversal validation and insertion — the tree is navigated once, accumulating
+the traversal context as blocks are passed, then new blocks are validated against the accumulated
+context and inserted at the target location.
 
 **Duplicate Block Prevention:**
 
-To prevent attacks or bugs where the same block is submitted multiple times in a single transaction,
-duplicate detection is enforced:
+Duplicate detection is enforced at each insertion point using `existsAsChild`, which checks if the
+first new block's hash matches the first block of any existing branch at that fork point. This
+prevents the same block from being added twice at the same parent.
 
-**Rule 1:** No duplicate block hashes are allowed within a single `UpdateOracle` submission.
+**Fork Creation:**
 
-**Rationale:**
-
-Submitting the same block header multiple times (e.g., `UpdateOracle([Block X, Block X])`) could cause:
-- Confusion in fork tree structure (same block added twice)
-- Incorrect chainwork calculations
-- Potential DoS via unnecessary validation work
-
-Since block hashes uniquely identify headers, any duplicate represents either:
-- A malicious attempt to manipulate fork tree state
-- A buggy off-chain client
-
-Both cases should be rejected.
-
-**Fork Submission Rule (Stalling Prevention):**
-
-To prevent attacks where adversaries submit only competing fork blocks to stall Oracle progress, the
-following validation rule is enforced:
-
-**Rule 2:** If an update transaction includes any blocks that do NOT extend the current canonical tip
-(i.e., fork blocks), the transaction MUST also include at least one block that DOES extend the
-canonical tip.
-
-**Allowed:**
-- Pure canonical updates: Submit only blocks extending canonical tip ✓
-- Canonical + forks: Submit canonical extension(s) together with fork blocks ✓
-
-**Rejected:**
-- Pure fork updates: Submit only fork blocks without canonical extension ✗
-- Duplicate blocks: Submit same block multiple times ✗
-
-**Examples:**
+When new blocks fork off an existing chain (i.e., the insertion point is in the middle of a
+`Blocks` node), the node is split:
 
 ```
-Current Oracle state:
-  Canonical tip: Block 1003
-
-Valid submissions:
-  UpdateOracle([Block 1004])  ✓ (extends canonical)
-  UpdateOracle([Block 1004, Block 1003'])  ✓ (canonical + fork)
-  UpdateOracle([Block 1004, Block 1005])  ✓ (multiple canonical extensions)
-
-Invalid submissions:
-  UpdateOracle([Block 1003'])  ✗ (Rule 2: fork only, no canonical extension)
-  UpdateOracle([Block 1004, Block 1004])  ✗ (Rule 1: duplicate block)
-  UpdateOracle([Block 1003', Block 1002'])  ✗ (Rule 2: only forks)
+Before: Blocks([A, B, C, D, E], cw, End), insert at index 2 (parent = C)
+After:  Blocks([A, B, C], prefixCw,
+            Fork(
+                Blocks([D, E], cw - prefixCw, End),  // existing (left)
+                Blocks([H1, H2], newCw, End)          // new branch (right)
+            ))
 ```
 
-**Rationale:**
-
-Without Rule 2, an attacker could monitor the Bitcoin blockchain and continuously submit competing
-fork blocks without ever advancing the Oracle's canonical chain. This would:
-- Prevent the Oracle from staying current with Bitcoin
-- Block promotion of blocks (requires canonical chain advancement)
-- Stall Oracle progress indefinitely
-
-By requiring at least one canonical extension with any fork submission, the Oracle is guaranteed to
-make forward progress on every update while still allowing legitimate fork competition.
+The existing branch always goes left and the new branch right (Fork ordering invariant).
 
 **2. Fork Competition**
 
-Multiple competing forks coexist in the forks tree. The canonical chain is determined by:
+Multiple competing forks coexist in the binary fork tree. The canonical chain is determined by:
 
-- Cumulative chainwork calculation (sum of block proof-of-work values, where each block's work = 2^256 / (target + 1))
+- Cumulative chainwork calculation (sum of block proof-of-work values, where each block's work =
+  2^256 / (target + 1))
 - Follows Bitcoin's longest chain rule (most accumulated work, not most blocks)
-- Selection happens automatically on every update
+- Tie-breaking: the left (existing/older) branch wins, matching Bitcoin Core's first-seen preference
+- Selection happens when MPF proofs are provided (triggering promotion and garbage collection)
 
 **3. Block Promotion (Maturation)**
 
 Blocks are promoted when they satisfy both criteria:
 
-- **Confirmation Depth**: 100+ blocks deep in the canonical chain
-- **On-chain Aging**: 200+ minutes since the block was added to the forks tree
+- **Confirmation Depth**: 100+ blocks deep in the canonical chain (configurable via
+  `maturationConfirmations` parameter)
+- **On-chain Aging**: 200+ minutes since the block was added to the fork tree (configurable via
+  `challengeAging` parameter)
+
+Promotion is triggered when the submitter provides MPF insertion proofs (non-membership proofs that
+demonstrate the block hash was not already in the confirmed trie). The number of proofs determines
+how many blocks are promoted. Along with promotion, **garbage collection** drops all forks that are
+not on the best chain path, keeping the fork tree compact.
 
 The 200-minute requirement prevents pre-computed attacks: an attacker cannot mine 100+ blocks
 offline and immediately promote them, as they must first exist on-chain for the challenge period.
@@ -366,51 +315,75 @@ implemented in the Binocular Oracle.
 For semantic clarity and type safety, the implementation uses the following type aliases:
 
 ```scala
-type BlockHash = ByteString      // 32-byte SHA256d hash of block header
-type TxHash = ByteString          // 32-byte SHA256d hash of transaction
-type MerkleRoot = ByteString      // 32-byte Merkle tree root hash
-type CompactBits = ByteString     // 4-byte compact difficulty target representation
-type BlockHeaderBytes = ByteString // 80-byte raw Bitcoin block header
+type BlockHash = ByteString         // 32-byte SHA256d hash of block header
+type TxHash = ByteString            // 32-byte SHA256d hash of transaction
+type MerkleRoot = ByteString        // 32-byte Merkle tree root hash
+type CompactBits = ByteString       // 4-byte compact difficulty target representation
+type BlockHeaderBytes = ByteString  // 80-byte raw Bitcoin block header
+type PosixTimeSeconds = BigInt      // Unix timestamp in seconds
+type DeltaSeconds = BigInt          // Time difference in seconds
+type Chainwork = BigInt             // Cumulative proof-of-work
+type MPFRoot = ByteString           // 32-byte Merkle Patricia Forestry root
 ```
 
 The Oracle maintains a single UTxO with the following datum structure:
 
 ```scala
 case class ChainState(
-   // Confirmed state
-   blockHeight: BigInt, // Current confirmed block height
-   blockHash: BlockHash, // Hash of current confirmed block
-   currentTarget: CompactBits, // Difficulty target (compact bits format)
-   blockTimestamp: BigInt, // Timestamp of current confirmed block
-   recentTimestamps: List[BigInt], // Last 11 timestamps (newest first) for median time
-   previousDifficultyAdjustmentTimestamp: BigInt, // For difficulty retarget calculations
-   confirmedBlocksTree: List[BlockHash], // Confirmed blocks for Merkle tree construction
-
-   // Forks tree
-   forksTree: List[ForkBranch] // List of fork branches (unordered)
+    confirmedBlocksRoot: MPFRoot,  // MPF trie root of confirmed block hashes
+    ctx: TraversalCtx,             // Accumulated context from confirmed chain tip
+    forkTree: ForkTree             // Binary tree of unconfirmed block segments
 )
+```
 
-// Minimal block information for fork tracking
+**TraversalCtx** carries the accumulated state from the confirmed chain tip, enabling
+validation of new blocks without storing per-block height, chainwork, or difficulty:
+
+```scala
+case class TraversalCtx(
+    timestamps: List[PosixTimeSeconds],  // Last 11 timestamps (newest first)
+    height: BigInt,                      // Current confirmed block height
+    currentBits: CompactBits,            // Current difficulty target (compact bits)
+    prevDiffAdjTimestamp: PosixTimeSeconds, // For difficulty retarget calculations
+    lastBlockHash: BlockHash             // Hash of last confirmed block
+)
+```
+
+**BlockSummary** stores only essential per-block data. Height, chainwork, and difficulty are
+not stored per block — they are derived from the `TraversalCtx` during tree traversal:
+
+```scala
 case class BlockSummary(
-    hash: BlockHash,       // Block hash
-    height: BigInt,        // Block height
-    chainwork: BigInt,     // Cumulative chainwork at this block
-    timestamp: BigInt,     // Bitcoin block timestamp (for median-time-past)
-    bits: CompactBits,     // Difficulty target (for difficulty validation)
-    addedTimeDelta: BigInt  // currentTime - timestamp at submission (saves CBOR bytes vs absolute time)
+    hash: BlockHash,               // Block hash
+    timestamp: PosixTimeSeconds,   // Bitcoin block timestamp (for MTP calculation)
+    addedTimeDelta: DeltaSeconds   // currentTime - timestamp at submission (for aging)
 )
+```
 
-// A complete chain branch from a fork point to its current tip
-case class ForkBranch(
-    tipHash: BlockHash,              // Current tip of this branch
-    tipHeight: BigInt,               // Height of tip
-    tipChainwork: BigInt,            // Chainwork at tip
-    recentBlocks: List[BlockSummary] // ALL blocks in branch (newest first), removed when promoted
-)
+**ForkTree** is a recursive binary enum representing the tree of unconfirmed block segments:
 
-case class BlockHeader(
-    bytes: BlockHeaderBytes // Raw 80-byte header
-)
+```scala
+enum ForkTree {
+    case Blocks(
+        blocks: List[BlockSummary],  // Non-empty list of consecutive blocks (oldest first)
+        chainwork: Chainwork,        // Cumulative chainwork of this segment
+        next: ForkTree               // Subtree after last block
+    )
+    case Fork(left: ForkTree, right: ForkTree)  // Binary fork point
+    case End                                     // Leaf (no more blocks)
+}
+```
+
+**Fork ordering invariant:** `Fork(left = existing, right = new)`. Every fork-creating operation
+places the pre-existing subtree on the left and the newly submitted branch on the right. This
+mirrors Bitcoin Core's first-seen preference: `CBlockIndexWorkComparator` breaks equal-chainwork
+ties by `nSequenceId`, favoring whichever chain tip was received first. Since `bestChainPath` uses
+`>=` when comparing left vs right chainwork, the left (existing/older) branch wins ties.
+
+**BlockHeader** wraps the raw 80-byte Bitcoin block header:
+
+```scala
+case class BlockHeader(bytes: BlockHeaderBytes)  // Raw 80-byte header
 ```
 
 **BlockHeader Fields** (extracted from `bytes`):
@@ -421,6 +394,68 @@ case class BlockHeader(
 - `timestamp` (bytes 68-71): Block timestamp (Unix epoch seconds)
 - `bits` (bytes 72-75): CompactBits - Difficulty target (compact format)
 - `nonce` (bytes 76-79): Proof-of-work nonce
+
+**OracleAction** defines the redeemer for the Oracle validator:
+
+```scala
+enum OracleAction {
+    case UpdateOracle(
+        blockHeaders: List[BlockHeader],    // New Bitcoin block headers to validate
+        parentPath: Path,                    // Navigation path to parent block in tree
+        mpfInsertProofs: List[List[ProofStep]] // MPF non-membership proofs for promoted blocks
+    )
+    case CloseOracle  // Close stale Oracle and burn NFT
+}
+```
+
+**BitcoinValidatorParams** configures the parameterized validator:
+
+```scala
+case class BitcoinValidatorParams(
+    maturationConfirmations: BigInt,  // Blocks needed for promotion (e.g. 100)
+    challengeAging: BigInt,          // On-chain aging in seconds (e.g. 12000)
+    oneShotTxOutRef: TxOutRef,       // UTxO consumed to mint Oracle NFT
+    closureTimeout: BigInt,          // Staleness threshold for CloseOracle (seconds)
+    owner: PubKeyHash,               // Owner authorized to close Oracle
+    powLimit: BigInt,                 // Proof-of-work limit (mainnet vs testnet)
+    maxBlocksInForkTree: BigInt,     // Maximum blocks allowed in fork tree (e.g. 256)
+    testingMode: Boolean             // If true, skip PoW validation (for testing)
+)
+```
+
+**Path Types:**
+
+Two path types are used for tree navigation, both represented as `List[BigInt]`:
+
+- **Path** (insertion path): Navigates to a specific block within the fork tree. At `Blocks` nodes,
+  the element is a 0-based index into the block list. At `Fork` nodes, 0 = left, 1 = right. An
+  empty path means the parent is the confirmed tip.
+
+- **BestPath** (best-chain path): Navigates through fork nodes to identify the winning chain.
+  Elements are produced/consumed only at `Fork` nodes (0 = left, 1 = right). `Blocks` nodes do not
+  consume path elements.
+
+**Path Example:**
+
+Consider this fork tree (confirmed tip at height 100):
+
+```
+Blocks([A, B, C], cw1,             ← indices 0, 1, 2
+  Fork(                              ← 0=left, 1=right
+    Blocks([D, E], cw2, End),        ← left branch (indices 0, 1)
+    Blocks([F], cw3, End)            ← right branch (index 0)
+  ))
+```
+
+| Action | Path | Meaning |
+|--------|------|---------|
+| Extend after E | `[3, 0, 1]` | Pass through A,B,C (index 3=length), go left at Fork, E is parent (index 1) |
+| Fork at B | `[1]` | B is parent (index 1), new blocks branch off after B |
+| Extend from confirmed tip | `[]` | Empty path, attach at tree root |
+| Extend after F | `[3, 1, 0]` | Pass through A,B,C, go right at Fork, F is parent (index 0) |
+
+The **BestPath** for this tree (assuming `cw1+cw2 > cw1+cw3`) would be `[0]` — just the Fork
+direction (left). `Blocks` nodes don't consume BestPath elements.
 
 ### Bitcoin Consensus Constants
 
@@ -494,7 +529,7 @@ Function compactBitsToTarget(compact: CompactBits) → BigInt:
   return target
 ```
 
-**Implementation Reference:** BitcoinValidator.scala:120-137
+**Implementation Reference:** See `compactBitsToTarget` in `BitcoinHelpers.scala`
 
 #### Algorithm 2: Target to Compact Bits Conversion
 
@@ -540,7 +575,8 @@ Function targetToCompactBits(target: BigInt) → CompactBits:
   return intToBytes(nCompact + nSize × 0x1000000, 4)
 ```
 
-**Implementation Reference:** BitcoinValidator.scala:145-186
+**Implementation Reference:** See `targetToCompactBits` and `targetToCompactBitsV2` (using
+`findFirstSetBit` builtin) in `BitcoinHelpers.scala`
 
 #### Algorithm 3: Block Header Hash
 
@@ -560,7 +596,7 @@ Function blockHeaderHash(header: BlockHeader) → BlockHash:
   return SHA256(SHA256(header.bytes))
 ```
 
-**Implementation Reference:** BitcoinValidator.scala:89-90
+**Implementation Reference:** See `blockHeaderHash` in `BitcoinHelpers.scala`
 
 #### Algorithm 4: Proof-of-Work Validation
 
@@ -586,7 +622,7 @@ Function validateProofOfWork(header: BlockHeader, targetBits: CompactBits) → B
   return hashInt ≤ target
 ```
 
-**Implementation Reference:** BitcoinValidator.scala:357-361
+**Implementation Reference:** PoW check is part of `validateBlock` in `BitcoinValidator.scala`
 
 #### Algorithm 4a: Block Proof Calculation (Chainwork)
 
@@ -625,7 +661,7 @@ Function calculateBlockProof(target: BigInt) → BigInt:
   return TwoTo256 / (target + 1)
 ```
 
-**Implementation Reference:** BitcoinValidator.scala:262-271
+**Implementation Reference:** See `calculateBlockProof` in `BitcoinHelpers.scala`
 
 #### Algorithm 5: Median Time Past
 
@@ -634,26 +670,41 @@ Computes median of last 11 block timestamps for timestamp validation. Matches
 
 **Mathematical Specification:**
 
-Given timestamp list $[t_1, t_2, \ldots, t_n]$ sorted newest-first:
+Given timestamp list $[t_1, t_2, \ldots, t_n]$ where $n \leq 11$:
+
+1. Sort timestamps in ascending order
+2. Return the element at index $\lfloor n/2 \rfloor$
+
 $$
-\text{MedianTimePast}(T) = T[\lfloor n/2 \rfloor]
+\text{MedianTimePast}(T) = \text{sort}(T)[\lfloor n/2 \rfloor]
 $$
+
+**Implementation Details:**
+
+Bitcoin Core collects up to 11 timestamps, sorts them ascending, and returns the middle element.
+The on-chain implementation uses insertion sort (`insertionSort` / `insertAscending`) which is
+efficient for the fixed-size 11-element list. The timestamps are taken from the traversal context
+(`ctx.timestamps.take(11)`), sorted ascending, and the element at index 5 (for a full 11-element
+list) is returned.
 
 **Pseudocode:**
 
 ```
-Function getMedianTimePast(timestamps: List[BigInt]) → BigInt:
-  Input: List of up to 11 timestamps (reverse sorted, newest first)
-  Output: Median timestamp
+Function insertAscending(x: BigInt, sorted: List[BigInt]) → List[BigInt]:
+  if sorted.isEmpty then [x]
+  else if x ≤ sorted.head then x :: sorted
+  else sorted.head :: insertAscending(x, sorted.tail)
 
-  if timestamps.isEmpty then return UnixEpoch
+Function insertionSort(xs: List[BigInt]) → List[BigInt]:
+  xs.foldLeft([])((sorted, x) → insertAscending(x, sorted))
 
-  n ← timestamps.length
-  medianIndex ← n / 2
-  return timestamps[medianIndex]
+// Used in validateBlock:
+sortedTimestamps ← insertionSort(ctx.timestamps.take(11))
+medianTimePast ← sortedTimestamps[5]
 ```
 
-**Implementation Reference:** BitcoinValidator.scala:192-198
+**Implementation Reference:** See `insertionSort` and `insertAscending` in
+`BitcoinValidator.scala`
 
 #### Algorithm 6: Difficulty Adjustment
 
@@ -717,12 +768,13 @@ Function getNextWorkRequired(
   return targetToCompactBits(newTarget)
 ```
 
-**Implementation Reference:** BitcoinValidator.scala:315-343
+**Implementation Reference:** See `getNextWorkRequired` and `calculateNextWorkRequired` in
+`BitcoinHelpers.scala`
 
 #### Algorithm 7: Timestamp Validation
 
 Validates block timestamp against median-time-past and future time limits. Matches
-`ContextualCheckBlockHeader()` in `validation.cpp:4180-4182`.
+`ContextualCheckBlockHeader()` in `validation.cpp`.
 
 **Validation Rules:**
 
@@ -732,186 +784,600 @@ t_{\text{block}} &\leq t_{\text{current}} + 7200
 \end{align*}
 
 Where $T_{\text{recent}}$ are the last 11 block timestamps and $t_{\text{current}}$ is the current
-Cardano slot time.
+time derived from the transaction's validity interval start (in seconds).
 
-**Implementation Reference:** BitcoinValidator.scala:373-378
+**Implementation Reference:** Timestamp checks are part of `validateBlock` in
+`BitcoinValidator.scala`
 
-#### Algorithm 8: State Transition (Block Validation)
+#### Algorithm 8: Block Validation and Context Accumulation
 
-Complete validation and state update for adding a new block. Matches validation logic across Bitcoin
-Core's `validation.cpp`.
+The implementation separates block validation from context accumulation. Two key functions handle
+this:
 
-**Pseudocode:**
+**8a: `accumulateBlock` — Context Accumulation Without Re-validation**
+
+Replays difficulty computation for an already-validated block without re-checking PoW or timestamps.
+Used when walking existing blocks in the tree (e.g., building context before validating new headers,
+or computing chainwork for a prefix during splits).
 
 ```
-Function updateTip(
-  prevState: ChainState,
-  blockHeader: BlockHeader,
-  currentTime: BigInt
-) → ChainState:
+Function accumulateBlock(ctx: TraversalCtx, block: BlockSummary, powLimit: BigInt) → TraversalCtx:
+  newHeight ← ctx.height + 1
+  newTimestamps ← block.timestamp :: ctx.timestamps
 
-  // 1. Extract block data
-  blockTime ← blockHeader.timestamp
-  blockBits ← blockHeader.bits
-  hash ← blockHeaderHash(blockHeader)
-
-  // 2. Validate previous block hash
-  require blockHeader.prevBlockHash = prevState.blockHash,
-    "Previous block hash mismatch"
-
-  // 3. Validate proof-of-work
-  require validateProofOfWork(blockHeader, blockBits),
-    "Invalid proof-of-work"
-
-  // 4. Validate difficulty adjustment
-  nextDifficulty ← getNextWorkRequired(
-    prevState.blockHeight,
-    prevState.currentTarget,
-    prevState.blockTimestamp,
-    prevState.previousDifficultyAdjustmentTimestamp
-  )
-  require blockBits = nextDifficulty,
-    "Incorrect difficulty"
-
-  // 5. Validate timestamp
-  medianTimePast ← getMedianTimePast(prevState.recentTimestamps)
-  require blockTime > medianTimePast,
-    "Timestamp not greater than median"
-  require blockTime ≤ currentTime + MaxFutureBlockTime,
-    "Timestamp too far in future"
-
-  // 6. Validate version
-  require blockHeader.version ≥ 4,
-    "Outdated block version"
-
-  // 7. Update difficulty adjustment timestamp
-  newAdjustmentTime ← if (prevState.blockHeight + 1) mod 2016 = 0
-    then blockTime
-    else prevState.previousDifficultyAdjustmentTimestamp
-
-  // 8. Update recent timestamps (maintain last 11, newest first)
-  newTimestamps ← insertReverseSorted(blockTime, prevState.recentTimestamps)
-  newTimestamps ← newTimestamps.take(11)
-
-  // 9. Return new state
-  return ChainState(
-    blockHeight = prevState.blockHeight + 1,
-    blockHash = hash,
-    currentTarget = nextDifficulty,
-    blockTimestamp = blockTime,
-    recentTimestamps = newTimestamps,
-    previousDifficultyAdjustmentTimestamp = newAdjustmentTime,
-    confirmedBlocksRoot = prevState.confirmedBlocksRoot  // Updated separately
-  )
+  if newHeight mod 2016 = 0 then
+    // Retarget boundary — compute new difficulty
+    newTarget ← calculateNextWorkRequired(
+      ctx.currentBits,
+      ctx.timestamps.head,      // pindexLast->GetBlockTime()
+      ctx.prevDiffAdjTimestamp,  // nFirstBlockTime
+      powLimit
+    )
+    newBits ← targetToCompactByteString(newTarget)
+    return TraversalCtx(newTimestamps, newHeight, newBits,
+                        block.timestamp, block.hash)  // timestamp becomes nFirstBlockTime
+  else
+    return ctx.copy(timestamps = newTimestamps, height = newHeight,
+                    lastBlockHash = block.hash)
 ```
 
-**Implementation Reference:** BitcoinValidator.scala:345-405
+**8b: `validateBlock` — Full Validation + Accumulation**
 
-#### Algorithm 9: Canonical Chain Selection
+Validates a single new block header against all Bitcoin consensus rules and accumulates it into the
+traversal context.
 
-Selects the fork with highest cumulative chainwork. Follows Bitcoin's longest chain rule.
+```
+Function validateBlock(
+  header: BlockHeader, ctx: TraversalCtx,
+  currentTime: PosixTimeSeconds, params: BitcoinValidatorParams
+) → (BlockSummary, TraversalCtx, BlockProof):
+
+  // 1. Header length check (prevents mining shorter/longer payloads)
+  require header.bytes.length = 80
+
+  // 2. Compute block hash
+  hash ← blockHeaderHash(header)
+  hashInt ← LE_to_BigInt(hash)
+
+  // 3. Difficulty — derive expected bits from context
+  bits ← getNextWorkRequired(ctx.height, ctx.currentBits,
+                              ctx.timestamps.head, ctx.prevDiffAdjTimestamp, params.powLimit)
+
+  // 4. Explicit bits check (bad-diffbits) — header must encode correct difficulty
+  require header.bits = bits
+
+  // 5. PoW validation
+  target ← compactBitsToTarget(header.bits)
+  if not params.testingMode then
+    require hashInt ≤ target
+    require target ≤ params.powLimit
+
+  // 6. MTP validation — insertion sort of last 11 timestamps
+  sortedTimestamps ← insertionSort(ctx.timestamps.take(11))
+  medianTimePast ← sortedTimestamps[5]
+  require header.timestamp > medianTimePast
+
+  // 7. Future time validation
+  require header.timestamp ≤ currentTime + MaxFutureBlockTime
+
+  // 8. Chain continuity
+  require header.prevBlockHash = ctx.lastBlockHash
+
+  // 9. Create summary and accumulate context
+  summary ← BlockSummary(hash, header.timestamp, currentTime - header.timestamp)
+  newCtx ← accumulateBlock(ctx, summary, params.powLimit)
+  blockProof ← calculateBlockProof(target)
+
+  return (summary, newCtx, blockProof)
+```
+
+**8c: `validateAndCollectBlocks` — Batch Validation**
+
+Validates a list of headers (oldest-first), returning validated summaries and total segment
+chainwork:
+
+```
+Function validateAndCollectBlocks(
+  headers: List[BlockHeader], ctx: TraversalCtx,
+  currentTime: BigInt, chainwork: BigInt,
+  acc: List[BlockSummary], params: BitcoinValidatorParams
+) → (List[BlockSummary], Chainwork):
+
+  if headers.isEmpty then return (acc.reverse, chainwork)
+  (summary, newCtx, blockProof) ← validateBlock(headers.head, ctx, currentTime, params)
+  return validateAndCollectBlocks(headers.tail, newCtx, currentTime,
+                                  chainwork + blockProof, summary :: acc, params)
+```
+
+**Implementation Reference:** See `accumulateBlock`, `validateBlock`, and
+`validateAndCollectBlocks` in `BitcoinValidator.scala`
+
+#### Algorithm 9: Canonical Chain Selection (`bestChainPath`)
+
+Finds the best (highest cumulative chainwork) chain path through the binary fork tree. Returns a
+triple `(chainwork, depth, bestPath)` where the path enables subsequent operations (promotion, GC)
+to follow the winning chain.
 
 **Mathematical Specification:**
 
-Given forks tree $F$, find canonical tip:
+Given fork tree $T$, find the path to the tip with highest cumulative chainwork:
 $$
-h^* = \arg\max_{h \in \text{Tips}(F)} \text{chainwork}(h)
+\text{path}^* = \arg\max_{\text{path} \in \text{Paths}(T)} \text{chainwork}(\text{path})
 $$
 
-where $\text{Tips}(F)$ are all blocks with no children (leaf nodes).
+with tie-breaking: the left (existing/older) branch wins (`>=`), matching Bitcoin Core's first-seen
+preference.
 
 **Pseudocode:**
 
 ```
-Function selectCanonicalChain(forksTree: List[ForkBranch]) → Option[ForkBranch]:
-  Input: List of fork branches
-  Output: Branch with highest chainwork (or None if empty)
+Function bestChainPath(tree: ForkTree, height: BigInt, chainwork: BigInt)
+    → (Chainwork, Depth, BestPath):
 
-  if forksTree.isEmpty:
-    return None
+  match tree:
+    case Blocks(blocks, cw, next):
+      // Accumulate segment chainwork and block count, recurse into subtree
+      return bestChainPath(next, height + blocks.length, chainwork + cw)
 
-  // Select branch with maximum tip chainwork
-  canonicalBranch ← argmax(forksTree, key = λb. b.tipChainwork)
+    case Fork(left, right):
+      // Recurse both branches, pick higher chainwork
+      (leftWork, leftDepth, leftPath) ← bestChainPath(left, height, chainwork)
+      (rightWork, rightDepth, rightPath) ← bestChainPath(right, height, chainwork)
+      // >= means left (existing) wins ties
+      if leftWork ≥ rightWork then
+        return (leftWork, leftDepth, 0 :: leftPath)
+      else
+        return (rightWork, rightDepth, 1 :: rightPath)
 
-  return Some(canonicalBranch)
+    case End:
+      return (chainwork, height, [])
 ```
 
-#### Algorithm 10: Block Promotion (Maturation)
+**Key Properties:**
 
-Identifies blocks eligible for promotion to confirmed state and moves them from forks tree.
+- Single full tree traversal: O(n) where n is total blocks in tree
+- BestPath contains one element per Fork node (0=left, 1=right)
+- Blocks nodes pass through without consuming path elements
+
+**Implementation Reference:** See `bestChainPath` in `BitcoinValidator.scala`
+
+#### Algorithm 10: Block Promotion and Garbage Collection
+
+Promotion is a three-step process: split promotable blocks, promote and garbage-collect along the
+best path, and apply promotions to confirmed state.
 
 **Promotion Criteria:**
 
-Block $b$ on canonical chain can be promoted if:
+Block $b$ on the best chain can be promoted if:
 
 \begin{align*}
-\text{depth}(b) &\geq 100 \\
-t_{\text{current}} - t_{\text{added}}(b) &\geq 200 \times 60
+\text{bestDepth} - \text{blockHeight}(b) &\geq \text{maturationConfirmations} \\
+t_{\text{current}} - b.\text{timestamp} - b.\text{addedTimeDelta} &\geq \text{challengeAging}
 \end{align*}
 
-**Pseudocode:**
+**Aging derivation:** The second criterion measures wall-clock time since the block was submitted
+to the Oracle. At submission time, `addedTimeDelta` is set to `submitTime - block.timestamp`.
+Substituting:
+
+$$
+t_{\text{current}} - b.\text{timestamp} - (\text{submitTime} - b.\text{timestamp}) = t_{\text{current}} - \text{submitTime}
+$$
+
+So the aging check reduces to: $t_{\text{current}} - \text{submitTime} \geq \text{challengeAging}$
+(time elapsed since the block appeared on-chain).
+
+**10a: `splitPromotable` — Identify Promotable Blocks**
+
+Walks oldest→newest through a block list. Stops at the first ineligible block (blocks are ordered,
+so all subsequent blocks will also be ineligible). The number of promotions is bounded by the
+number of MPF proofs provided by the submitter.
 
 ```
-Function promoteQualifiedBlocks(
-  forksTree: List[ForkBranch],
-  confirmedHeight: BigInt,
-  currentTime: BigInt
-) → (List[BlockHash], List[ForkBranch]):
+Function splitPromotable(blocks, ctx, bestDepth, currentTime, maxPromotions, params)
+    → (promoted, remaining, newCtx):
 
-  // Find canonical branch (highest chainwork)
-  canonicalBranch ← selectCanonicalChain(forksTree)
-  if canonicalBranch.isEmpty:
-    return ([], forksTree)
+  if blocks.isEmpty or maxPromotions ≤ 0 then return ([], blocks, ctx)
 
-  branch ← canonicalBranch.get
-  canonicalTipHeight ← branch.tipHeight
+  block ← blocks.head
+  blockHeight ← ctx.height + 1
+  depth ← bestDepth - blockHeight
+  age ← currentTime - block.timestamp - block.addedTimeDelta
 
-  // Identify promotable blocks from canonical branch's recentBlocks
-  // Process from oldest to newest (tail to head)
-  blockHashesToPromote ← []
-  for block in branch.recentBlocks (oldest first):
-    depth ← canonicalTipHeight - block.height
-    age ← currentTime - block.timestamp - block.addedTimeDelta  // Recovers age from delta
-
-    if depth ≥ 100 and age ≥ 200 × 60 then
-      blockHashesToPromote.append(block.hash)
-    else
-      break  // Stop at first non-qualified block
-
-  // Remove promoted blocks from branch's recentBlocks
-  updatedBranch ← removepromoted blocks from branch
-  updatedForksTree ← replace branch with updatedBranch in forksTree
-
-  return (blockHashesToPromote, updatedForksTree)
+  if depth ≥ params.maturationConfirmations and age ≥ params.challengeAging then
+    newCtx ← accumulateBlock(ctx, block, params.powLimit)
+    (more, rest, finalCtx) ← splitPromotable(blocks.tail, newCtx, bestDepth,
+                                              currentTime, maxPromotions - 1, params)
+    return (block :: more, rest, finalCtx)
+  else
+    return ([], blocks, ctx)
 ```
+
+**10b: `promoteAndGC` — Promote and Garbage-Collect Along Best Path**
+
+Walks the tree following the `bestPath` from `bestChainPath`. At each node:
+
+- **Blocks**: Tries to promote eligible blocks, then recurses into subtree
+- **Fork**: Follows the best branch (per `bestPath`), **drops the other branch entirely** (GC).
+  The Fork node is eliminated — the surviving branch replaces it.
+- **End**: Leaf, nothing to do
+
+```
+Function promoteAndGC(tree, ctx, bestPath, bestDepth, currentTime, numPromotions, params)
+    → (promoted, cleanedTree):
+
+  match tree:
+    case Blocks(blocks, cw, next):
+      (promoted, remaining, newCtx) ← splitPromotable(blocks, ctx, bestDepth,
+                                                       currentTime, numPromotions, params)
+      if promoted.isEmpty then
+        // No promotion — accumulate all blocks, recurse for GC
+        fullCtx ← blocks.foldLeft(ctx)(accumulateBlock)
+        (nextPromoted, cleanedNext) ← promoteAndGC(next, fullCtx, bestPath, ...)
+        return (nextPromoted, Blocks(blocks, cw, cleanedNext))
+      else if remaining.isEmpty then
+        // All promoted — consume node, recurse for more
+        (nextPromoted, cleanedNext) ← promoteAndGC(next, newCtx, bestPath, ...)
+        return (promoted ++ nextPromoted, cleanedNext)
+      else
+        // Partial — promoted blocks removed, rest stays
+        promotedCw ← computeChainwork(promoted, ctx, 0, params.powLimit)
+        return (promoted, Blocks(remaining, cw - promotedCw, next))
+
+    case Fork(left, right):
+      // GC: follow best branch, DROP the other entirely
+      direction ← bestPath.head
+      if direction = 0 then
+        (promoted, cleaned) ← promoteAndGC(left, ctx, bestPath.tail, ...)
+        return (promoted, cleaned)  // right branch dropped
+      else
+        (promoted, cleaned) ← promoteAndGC(right, ctx, bestPath.tail, ...)
+        return (promoted, cleaned)  // left branch dropped
+
+    case End:
+      return ([], End)
+```
+
+**10c: `applyPromotions` — Update Confirmed State**
+
+Applies promoted blocks to the MPF trie using the provided non-membership proofs:
+
+```
+Function applyPromotions(state, promoted, mpfProofs, ctx0, cleanedTree, powLimit) → ChainState:
+  (finalCtx, finalRoot) ← loop over (promoted, mpfProofs):
+    for each (block, proof):
+      newCtx ← accumulateBlock(ctx, block, powLimit)
+      newRoot ← MPF(mpfRoot).insert(block.hash, block.hash, proof)
+    return (newCtx, newRoot)
+
+  return ChainState(
+    confirmedBlocksRoot = finalRoot,
+    ctx = finalCtx.copy(timestamps = finalCtx.timestamps.take(11)),
+    forkTree = cleanedTree
+  )
+```
+
+**Implementation Reference:** See `splitPromotable`, `promoteAndGC`, and `applyPromotions` in
+`BitcoinValidator.scala`
+
+#### Algorithm 11: `validateAndInsert` — Single-Traversal Tree Navigation + Validation + Insertion
+
+Navigates the fork tree along the `parentPath`, validates new block headers against the accumulated
+traversal context, and inserts the resulting block summaries — all in a single traversal.
+
+```
+Function validateAndInsert(tree, path, headers, ctx, currentTime, params) → ForkTree:
+
+  match path:
+    case []:
+      // Parent is confirmed tip — validate and attach at tree root
+      (newBlocks, newCw) ← validateAndCollectBlocks(headers, ctx, currentTime, 0, [], params)
+      newBranch ← Blocks(newBlocks, newCw, End)
+      match tree:
+        case End → newBranch
+        case existing →
+          require not existsAsChild(existing, newBlocks.head.hash)
+          Fork(existing, newBranch)  // existing left, new right
+
+    case pathHead :: pathTail:
+      match tree:
+        case Blocks(blocks, cw, next):
+          // Walk blocks list, accumulating ctx, to index pathHead:
+
+          if pathHead = blocks.length then
+            // Pass-through: all blocks consumed, recurse into subtree
+            Blocks(blocks, cw,
+              validateAndInsert(next, pathTail, headers, accCtx, currentTime, params))
+
+          else  // pathHead < blocks.length: block[pathHead] is the parent
+            parentCtx ← accumulate blocks[0..pathHead] into ctx
+            (newBlocks, newCw) ← validateAndCollectBlocks(headers, parentCtx, ...)
+
+            if pathHead = blocks.length - 1 and next = End then
+              // Append: parent is last block, no subtree
+              Blocks(blocks ++ newBlocks, cw + newCw, End)
+
+            else if pathHead = blocks.length - 1 then
+              // Fork at end: parent is last block, subtree exists
+              require not existsAsChild(next, newBlocks.head.hash)
+              Blocks(blocks, prefixCw, Fork(next, Blocks(newBlocks, newCw, End)))
+
+            else
+              // Mid-split: split Blocks node at pathHead
+              prefix ← blocks[0..pathHead]
+              suffix ← blocks[pathHead+1..]
+              require suffix.head.hash ≠ newBlocks.head.hash
+              prefixCw ← computeChainwork(prefix, ctx)
+              Blocks(prefix, prefixCw,
+                Fork(Blocks(suffix, cw - prefixCw, next),   // existing left
+                     Blocks(newBlocks, newCw, End)))          // new right
+
+        case Fork(left, right):
+          // 0 → recurse left, 1 → recurse right
+          if pathHead = 0 then Fork(validateAndInsert(left, pathTail, ...), right)
+          else Fork(left, validateAndInsert(right, pathTail, ...))
+
+        case End → fail("Path leads to End")
+```
+
+**Implementation Reference:** See `validateAndInsert` and `validateAndInsertInPath` in
+`BitcoinValidator.scala`
+
+#### Algorithm 12: `computeUpdate` — Four-Phase Orchestrator
+
+The main entry point for computing the new `ChainState` after an `UpdateOracle` action:
+
+```
+Function computeUpdate(state, blockHeaders, parentPath, mpfInsertProofs,
+                        currentTime, params) → ChainState:
+
+  // Phase 1: Insert — validate and insert new blocks into tree
+  newTree ← if blockHeaders.isEmpty then state.forkTree
+             else validateAndInsert(state.forkTree, parentPath, blockHeaders,
+                                    state.ctx, currentTime, params)
+  require forkTreeBlockCount(newTree) ≤ params.maxBlocksInForkTree
+
+  numProofs ← mpfInsertProofs.length
+  if numProofs > 0 then
+    // Phase 2: Best chain — find highest-chainwork path
+    (_, bestDepth, bestPath) ← bestChainPath(newTree, state.ctx.height, 0)
+
+    // Phase 3: Promote + GC — promote eligible blocks, drop dead forks
+    (promoted, cleanedTree) ← promoteAndGC(newTree, state.ctx, bestPath,
+                                           bestDepth, currentTime, numProofs, params)
+    require promoted.length = numProofs
+
+    // Phase 4: Apply — update confirmed state with MPF proofs
+    return applyPromotions(state, promoted, mpfInsertProofs,
+                           state.ctx, cleanedTree, params.powLimit)
+  else
+    // Header-only submission — skip promotion and GC
+    return state.copy(forkTree = newTree)
+```
+
+**Key Design Insight:** Steps 2-4 are skipped when no MPF proofs are provided. This enables
+"header-only" submissions where blocks are added to the tree without triggering promotion or
+garbage collection, allowing efficient batching.
+
+**Implementation Reference:** See `computeUpdate` in `BitcoinValidator.scala`
 
 ### Validation Rules Summary
 
 The on-chain validator enforces the following rules:
 
-**Submission Validation** (enforced on the entire `UpdateOracle` transaction):
+**Transaction-Level Validation** (enforced on the entire `UpdateOracle` transaction):
 
-1. **No Duplicates**: No duplicate block hashes allowed in single submission
-2. **Fork Submission Rule**: If submitting any forks, must include ≥1 canonical extension
+1. **Validity Interval**: Transaction validity interval ≤ 10 minutes (`MaxValidityWindow = 600,000
+   ms`), ensuring `validFrom` is close to wall-clock time
+2. **NFT Continuity**: Continuing output must contain the Oracle NFT at the same script address
+3. **Value Preservation**: Non-ADA tokens must be preserved; ADA value can only increase
+4. **Fork Tree Capacity**: Total blocks in fork tree ≤ `maxBlocksInForkTree` parameter
+5. **No Duplicates**: Duplicate detection via `existsAsChild` at insertion points
 
-**Per-Block Validation** (enforced for every block added to the forks tree):
+**Per-Block Validation** (enforced for every block added to the fork tree):
 
-3. **Proof-of-Work**: Block hash ≤ target derived from bits field
-4. **Difficulty**: Bits field matches expected difficulty (retarget every 2016 blocks)
-5. **Timestamps**: Block time > median of last 11 blocks, < current time + 2 hours
-6. **Version**: Block version ≥ 4 (reject outdated versions)
-7. **Chain Continuity**: Previous block hash matches parent in tree
+6. **Header Length**: Block header must be exactly 80 bytes
+7. **Proof-of-Work**: Block hash ≤ target derived from bits field (unless `testingMode`)
+8. **Difficulty Bits Match**: Header's `bits` field must match expected difficulty from context
+   (`bad-diffbits` check)
+9. **Difficulty Adjustment**: At retarget boundaries (every 2016 blocks), new target is computed
+   via `getNextWorkRequired` / `calculateNextWorkRequired`
+10. **Timestamps**: Block time > median of last 11 blocks (MTP), ≤ current time + 2 hours
+11. **Chain Continuity**: `prevBlockHash` must match `ctx.lastBlockHash` (the accumulated tip)
 
 **Promotion Criteria**:
 
-8. **Maturation**: 100+ confirmations AND 200+ minutes on-chain aging
+12. **Maturation**: `maturationConfirmations`+ confirmations (e.g. 100) AND `challengeAging`+
+    seconds on-chain aging (e.g. 200 minutes)
+13. **MPF Proof Count**: Number of promoted blocks must exactly match number of MPF proofs provided
 
-**Security Note**: These validations prevent spam attacks. An attacker cannot submit fake blocks without
-performing valid proof-of-work. Each block must meet Bitcoin's difficulty requirement and have a valid
-hash, making it computationally expensive to create even a single invalid fork. This ensures the forks
-tree only contains blocks that could plausibly be part of the actual Bitcoin blockchain. The submission
-rules (1-2) prevent griefing attacks where malicious actors submit duplicates or only forks to stall
-Oracle progress.
+**Security Note**: These validations prevent spam attacks. An attacker cannot submit fake blocks
+without performing valid proof-of-work. Each block must meet Bitcoin's difficulty requirement and
+have a valid hash, making it computationally expensive to create even a single invalid fork. This
+ensures the fork tree only contains blocks that could plausibly be part of the actual Bitcoin
+blockchain. The validity interval constraint ensures that `addedTimeDelta` values are trustworthy
+for the challenge aging check, preventing manipulation of block ages.
+
+### NFT-Based Oracle Identity
+
+The Oracle UTxO is identified by an NFT minted through a **one-shot minting policy**. The
+validator script serves both as the spending validator (for `UpdateOracle` / `CloseOracle`) and as
+the minting policy (for NFT mint/burn).
+
+**One-Shot Minting Policy:**
+
+The `oneShotTxOutRef` in `BitcoinValidatorParams` specifies a UTxO that must be consumed to mint the
+NFT. Since UTxOs can only be consumed once, this ensures exactly one NFT can ever be minted per
+Oracle deployment.
+
+**Mint (NFT Creation):**
+
+```
+Function mint(params, redeemer, policyId, tx):
+  minted ← tx.mint.tokens(policyId)
+
+  if minted = {empty_token_name: 1} then
+    // Minting: consume the one-shot UTxO
+    require tx.inputs contains params.oneShotTxOutRef
+    // Verify oracle output contains exactly the NFT
+    oracleOutput ← tx.outputs[redeemer.to[BigInt]]
+    require oracleOutput.value.withoutLovelace = {policyId: {empty: 1}}
+    // Verify output goes to script address
+    require oracleOutput.address = ScriptCredential(policyId)
+  else
+    // Burning: allowed unconditionally (used by CloseOracle)
+    require minted = {empty_token_name: -1}
+```
+
+**NFT in UpdateOracle:**
+
+Every `UpdateOracle` transaction must produce a continuing output containing the Oracle NFT:
+
+```
+continuingOutput ← find output where:
+  address matches ownInput.address AND
+  value.quantityOf(policyId, empty_token_name) = 1
+require ownInput.value.withoutLovelace = continuingOutput.value.withoutLovelace
+require continuingOutput.value.lovelaceAmount ≥ ownInput.value.lovelaceAmount
+```
+
+**Implementation Reference:** See `mint` and `spend` (UpdateOracle branch) in
+`BitcoinValidator.scala`
+
+### Oracle Closure
+
+The `CloseOracle` action allows the Oracle owner to close a stale Oracle and recover the ADA locked
+in the Oracle UTxO. This is a safety mechanism — if the Oracle becomes permanently stale (no one
+submits updates), the owner can reclaim the funds.
+
+**Closure Requirements:**
+
+1. **Staleness Check**: The Oracle must be stale — the most recent confirmed block timestamp must
+   be older than `closureTimeout` seconds:
+   ```
+   require currentTime - ctx.timestamps.head > params.closureTimeout
+   ```
+
+2. **Owner Authorization**: The transaction must be signed by `params.owner`:
+   ```
+   require tx.isSignedBy(params.owner)
+   ```
+
+3. **NFT Burn**: The Oracle NFT must be burned:
+   ```
+   require tx.mint.tokens(policyId) = {empty_token_name: -1}
+   ```
+
+**Rationale:**
+
+- The staleness check prevents premature closure of an active Oracle
+- Owner authorization prevents unauthorized closure
+- NFT burning ensures the Oracle identity is permanently retired
+- Together, these prevent the owner from griefing active users while providing a recovery mechanism
+
+**Implementation Reference:** See `spend` (CloseOracle branch) in `BitcoinValidator.scala`
+
+### Parameterized Validator
+
+The Oracle validator is parameterized via `BitcoinValidatorParams`, which is passed as a `Data`
+parameter to the script. This enables:
+
+- **Multiple Oracle Configurations**: Different deployments can use different parameters (e.g.,
+  different `maturationConfirmations` for different risk profiles)
+- **Testnet Compatibility**: `testingMode` skips PoW validation, and `powLimit` can be set to
+  regtest values
+- **Configurable Limits**: `maxBlocksInForkTree` controls datum size bounds
+
+The parameters are immutable once the Oracle is deployed — they are baked into the script address
+via the parameterized validator pattern.
+
+**Parameter Descriptions:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `maturationConfirmations` | Blocks needed for promotion (e.g. 100) |
+| `challengeAging` | On-chain aging in seconds (e.g. 12000 = 200 min) |
+| `oneShotTxOutRef` | UTxO consumed to mint Oracle NFT |
+| `closureTimeout` | Staleness threshold for CloseOracle (seconds) |
+| `owner` | PubKeyHash authorized to close Oracle |
+| `powLimit` | Proof-of-work limit (mainnet vs regtest) |
+| `maxBlocksInForkTree` | Maximum blocks in fork tree (e.g. 256) |
+| `testingMode` | Skip PoW validation (for testing) |
+
+**Implementation Reference:** See `BitcoinValidatorParams` in `BitcoinValidator.scala`
+
+### Validity Interval Constraint
+
+The Oracle validator enforces a maximum transaction validity interval of 10 minutes:
+
+$$
+\text{validTo} - \text{validFrom} \leq 600{,}000 \text{ ms}
+$$
+
+**Purpose:**
+
+The `addedTimeDelta` for each submitted block is computed as:
+
+$$
+\text{addedTimeDelta} = \text{intervalStart} - \text{block.timestamp}
+$$
+
+where `intervalStart` is derived from the transaction's validity interval. If the validity interval
+is too wide, `intervalStart` could be far from the actual wall-clock time, making `addedTimeDelta`
+unreliable. This would undermine the challenge aging check (which relies on `addedTimeDelta` to
+determine how long a block has been on-chain).
+
+By constraining the interval to 10 minutes, we ensure `intervalStart` (and therefore
+`addedTimeDelta`) is within 10 minutes of wall-clock time — sufficient for the 200-minute challenge
+period.
+
+**Implementation Reference:** See `MaxValidityWindow` and the validity interval check in `spend` in
+`BitcoinValidator.scala`
+
+### Transaction Verifier Validator
+
+The **TransactionVerifierValidator** is a separate Plutus contract that enables on-chain verification
+of Bitcoin transaction inclusion proofs against the Binocular Oracle's confirmed state. This enables
+applications to lock funds that can only be spent when a specific Bitcoin transaction is proven to
+exist.
+
+**Data Structures:**
+
+```scala
+case class TxVerifierDatum(
+    expectedTxHash: TxHash,          // Bitcoin tx hash to prove
+    expectedBlockHash: BlockHash,    // Block containing the tx
+    oracleScriptHash: ByteString     // Script hash of Oracle validator
+)
+
+case class TxVerifierRedeemer(
+    txIndex: BigInt,                 // Index of tx in block (0-based)
+    txMerkleProof: List[TxHash],     // Merkle proof from tx to block's merkle root
+    blockMpfProof: List[ProofStep],  // MPF membership proof for block in Oracle
+    blockHeader: BlockHeader         // 80-byte Bitcoin block header
+)
+```
+
+**Verification Steps:**
+
+1. **Find Oracle**: Locate Oracle UTxO in reference inputs by `oracleScriptHash`
+2. **Read Oracle State**: Extract `ChainState` from Oracle's inline datum
+3. **Verify Block Confirmed**: Verify `expectedBlockHash` is in Oracle's `confirmedBlocksRoot`
+   via MPF membership proof
+4. **Verify Block Header**: Compute `blockHeaderHash(blockHeader)` and verify it matches
+   `expectedBlockHash`
+5. **Extract Merkle Root**: Get the transaction merkle root from the block header
+6. **Verify Transaction**: Compute merkle root from `txMerkleProof` starting at `expectedTxHash`
+   with `txIndex`, verify it matches the block's merkle root
+
+**Security Properties:**
+
+- Requires the Oracle UTxO as a **reference input** (not consumed), so the Oracle state is
+  read-only and cannot be modified
+- The MPF membership proof ensures the block is genuinely confirmed by the Oracle
+- Block header hash verification prevents forged headers with arbitrary merkle roots
+- The standard Bitcoin merkle proof ensures the transaction is actually in the block
+
+**Implementation Reference:** See `TransactionVerifierValidator.scala`
 
 ## Communication Protocols
 
@@ -940,10 +1406,10 @@ sequenceDiagram
 
     Cardano->>Validator: Execute validator script
     Validator->>Validator: 1. Validate PoW, difficulty, timestamps
-    Validator->>Validator: 2. Add blocks to forks tree
+    Validator->>Validator: 2. Add blocks to fork tree
     Validator->>Validator: 3. Select canonical chain (max chainwork)
     Validator->>Validator: 4. Promote qualified blocks<br/>(100+ confirmations, 200+ min old)
-    Validator->>Validator: 5. Update confirmed Merkle root
+    Validator->>Validator: 5. Update confirmed MPF root
 
     Validator->>UTxO: Create new Oracle UTxO<br/>(updated state)
     UTxO-->>Observer: Transaction confirmed
@@ -972,7 +1438,7 @@ sequenceDiagram
 
     Party1->>Validator: Submit Fork B extension<br/>(15 blocks, chainwork: Y > X)
     Validator->>Validator: Validate Fork B blocks
-    Validator->>Validator: Add to forks tree
+    Validator->>Validator: Add to fork tree
     Validator->>Validator: Select canonical: Fork B<br/>(higher chainwork)
     Validator->>UTxO: Update state<br/>(Fork A still in tree, Fork B canonical)
 
@@ -984,19 +1450,19 @@ sequenceDiagram
     Validator->>Validator: Select canonical: Fork A<br/>(now higher chainwork)
     Validator->>UTxO: Update state<br/>(Fork A now canonical)
 
-    Note over UTxO: Fork A wins competition<br/>Fork B orphaned (remains in tree)
+    Note over UTxO: Fork A wins competition<br/>Fork B remains in tree until GC
 ```
 
 **Key Points:**
 
-- Multiple forks coexist in the tree
-- Canonical selection happens automatically on each update
-- Orphaned forks remain until pruned (space permitting)
+- Multiple forks coexist in the binary tree until promotion triggers garbage collection
+- Canonical selection happens automatically on each update (highest chainwork)
+- Dead forks are dropped entirely during `promoteAndGC` (not preserved)
 - Follows Bitcoin's longest chain (most chainwork) rule
 
 ### Diagram 3: Block Promotion Process
 
-Detailed timeline showing how blocks move from forks tree to confirmed state.
+Detailed timeline showing how blocks move from fork tree to confirmed state.
 
 ```mermaid
 sequenceDiagram
@@ -1005,10 +1471,10 @@ sequenceDiagram
     participant Forks as Forks Tree
     participant Confirmed as Confirmed State
 
-    Note over Time,Confirmed: Block added to forks tree at t₀
+    Note over Time,Confirmed: Block added to fork tree at t₀
 
     rect rgb(240, 240, 255)
-        Note over Time: t₀: Block B added to forks tree
+        Note over Time: t₀: Block B added to fork tree
         Note over Forks: Block B: depth=0, age=0
     end
 
@@ -1032,7 +1498,7 @@ sequenceDiagram
         Validator->>Forks: Identify qualified blocks
         Forks-->>Validator: Block B qualifies:<br/>depth=120, age=200+ min, on canonical chain
         Validator->>Confirmed: Promote Block B
-        Validator->>Confirmed: Update Merkle tree root
+        Validator->>Confirmed: Update MPF trie root
         Validator->>Forks: Remove Block B from tree
     end
 
@@ -1060,8 +1526,8 @@ graph TB
     end
 
     subgraph On-Chain["Cardano On-Chain"]
-        UTxO[Oracle UTxO<br/>───────<br/>ChainState datum:<br/>• Confirmed state<br/>• Forks tree]
-        Validator[Oracle Validator<br/>─────────────<br/>Bitcoin consensus validation:<br/>• PoW check<br/>• Difficulty adjustment<br/>• Timestamp validation<br/>• Canonical selection<br/>• Block promotion]
+        UTxO["Oracle UTxO + NFT<br/>───────<br/>ChainState datum:<br/>- Confirmed state MPF<br/>- Fork tree"]
+        Validator["Oracle Validator<br/>─────────────<br/>Bitcoin consensus validation:<br/>- PoW check<br/>- Difficulty adjustment<br/>- Timestamp validation<br/>- Canonical selection<br/>- Block promotion"]
     end
 
     subgraph Applications["DApp Layer"]
@@ -1111,61 +1577,58 @@ The Oracle system has two levels of state:
 **1. Oracle-Level State:**
 
 ```
-OracleState = OPERATIONAL
+OracleState ∈ { OPERATIONAL, CLOSED }
 ```
 
-The Oracle UTxO is always operational, accepting update transactions from any party. There is no
-registration, initialization beyond genesis, or shutdown state.
+- **OPERATIONAL**: The Oracle UTxO accepts `UpdateOracle` transactions from any party.
+- **CLOSED**: The Oracle has been closed via `CloseOracle` (NFT burned, UTxO consumed). This is a
+  terminal state — the Oracle cannot be reactivated.
 
-**2. Block-Level States (within forks tree):**
+**2. Block-Level States (within fork tree):**
 
-A block in the forks tree can be in one of the following states:
+A block in the fork tree can be in one of the following states:
 
 ```
 BlockState ∈ {
   UNCONFIRMED_RECENT,    // Recent, not yet qualified for promotion
   QUALIFIED,             // Meets promotion criteria, awaiting transaction
-  CONFIRMED,             // Promoted to confirmed Merkle tree
-  ORPHANED               // Not on canonical chain
+  CONFIRMED,             // Promoted to confirmed MPF trie
+  GARBAGE_COLLECTED      // Dropped during GC (dead fork)
 }
 ```
 
 **State Descriptions:**
 
-- **UNCONFIRMED_RECENT**: Block has been added to forks tree but does not yet meet both promotion
-  criteria (100+ confirmations depth AND 200+ minutes on-chain age).
+- **UNCONFIRMED_RECENT**: Block has been added to fork tree but does not yet meet both promotion
+  criteria (depth ≥ `maturationConfirmations` AND age ≥ `challengeAging`).
 
-- **QUALIFIED**: Block is on the canonical chain (highest chainwork) and satisfies both:
-    - Depth ≥ 100 blocks from canonical tip
-    - Age ≥ 200 minutes since added to forks tree
-
-  Block is eligible for promotion in the next update transaction.
+- **QUALIFIED**: Block is on the best chain (highest chainwork path) and satisfies both promotion
+  criteria. Block is eligible for promotion in the next update transaction that provides MPF proofs.
 
 - **CONFIRMED**: Block has been promoted to the confirmed state. Its hash is now part of the
-  confirmed blocks Merkle tree and it has been removed from the forks tree.
+  confirmed blocks MPF trie and it has been removed from the fork tree.
 
-- **ORPHANED**: Block is not on the current canonical chain. It remains in the forks tree but will
-  not be promoted unless it becomes part of the canonical chain through fork competition.
+- **GARBAGE_COLLECTED**: Block was on a non-best fork that was dropped during `promoteAndGC`. The
+  block is permanently removed from the fork tree. This differs from the old "ORPHANED" state —
+  in the current design, dead forks are not preserved but are entirely dropped during GC.
 
 ### State Transition Diagram
 
 ```mermaid
 stateDiagram-v2
-    [*] --> UNCONFIRMED_RECENT: Block added to<br/>forks tree
+    [*] --> UNCONFIRMED_RECENT: Block added to<br/>fork tree
 
-    UNCONFIRMED_RECENT --> QUALIFIED: On canonical chain AND<br/>depth ≥ 100 AND age ≥ 200min
+    UNCONFIRMED_RECENT --> QUALIFIED: On best chain AND<br/>depth ≥ maturationConfirmations<br/>AND age ≥ challengeAging
 
-    UNCONFIRMED_RECENT --> ORPHANED: Different fork becomes<br/>canonical (higher chainwork)
+    UNCONFIRMED_RECENT --> GARBAGE_COLLECTED: Fork dropped<br/>during promoteAndGC
 
-    ORPHANED --> UNCONFIRMED_RECENT: This fork regains<br/>canonical status
+    QUALIFIED --> CONFIRMED: Update transaction<br/>promotes block (MPF proof)
 
-    QUALIFIED --> CONFIRMED: Update transaction<br/>promotes block
+    QUALIFIED --> GARBAGE_COLLECTED: Fork dropped<br/>during promoteAndGC
 
-    QUALIFIED --> ORPHANED: Different fork becomes<br/>canonical
+    CONFIRMED --> [*]: Block permanently<br/>in confirmed MPF trie
 
-    ORPHANED --> QUALIFIED: This fork regains canonical AND<br/>meets promotion criteria
-
-    CONFIRMED --> [*]: Block permanently<br/>in confirmed state
+    GARBAGE_COLLECTED --> [*]: Block permanently<br/>removed
 ```
 
 ### Transition Rules
@@ -1174,18 +1637,21 @@ stateDiagram-v2
 
 ```
 Precondition: Valid block header with valid PoW, difficulty, timestamps
-Trigger: Update transaction includes new block(s)
+Trigger: UpdateOracle transaction includes new block header(s)
 Guard:
-  - blockHeader.prevBlockHash exists in forks tree OR equals confirmed tip
-  - validateProofOfWork(blockHeader) = true
-  - Difficulty matches expected value
-  - Timestamp > median-time-past, ≤ current time + 2 hours
+  - Header length = 80 bytes
+  - prevBlockHash matches accumulated ctx.lastBlockHash
+  - header.bits matches expected difficulty from getNextWorkRequired
+  - PoW: hash(header) ≤ compactBitsToTarget(header.bits)
+  - Timestamp > MTP (median of last 11 sorted timestamps)
+  - Timestamp ≤ currentTime + MaxFutureBlockTime
+  - No duplicate at insertion point (existsAsChild check)
+  - forkTreeBlockCount ≤ maxBlocksInForkTree
 Actions:
-  - Validate full block header (PoW, difficulty, timestamps, version)
-  - Extract prevBlockHash from header
-  - Create BlockSummary with hash, height, chainwork, timestamp, bits, addedTimeDelta
-  - Either extend existing branch or create new ForkBranch
-  - Add to forksTree
+  - Navigate tree via parentPath, accumulating TraversalCtx
+  - Validate header against accumulated context
+  - Create BlockSummary(hash, timestamp, addedTimeDelta)
+  - Insert into tree (append, split, or new branch)
 Next State: UNCONFIRMED_RECENT
 ```
 
@@ -1193,13 +1659,13 @@ Next State: UNCONFIRMED_RECENT
 
 ```
 Precondition: Block in UNCONFIRMED_RECENT state
-Trigger: Sufficient time/depth accumulated, or canonical chain changes
+Trigger: Sufficient time/depth accumulated on the best chain
 Guard:
-  - Block is on canonical chain (highest chainwork path)
-  - depth(block) ≥ 100 (from canonical tip)
-  - currentTime - block.timestamp - block.addedTimeDelta ≥ 200 × 60
+  - Block is on best chain path (bestChainPath)
+  - bestDepth - blockHeight ≥ params.maturationConfirmations
+  - currentTime - block.timestamp - block.addedTimeDelta ≥ params.challengeAging
 Actions:
-  - Mark block as promotable (implicit in qualification check)
+  - splitPromotable identifies block as eligible
 Next State: QUALIFIED
 ```
 
@@ -1207,41 +1673,34 @@ Next State: QUALIFIED
 
 ```
 Precondition: Block in QUALIFIED state
-Trigger: Any update transaction (automatic check)
+Trigger: UpdateOracle with MPF insertion proofs
 Guard:
-  - Block still on canonical chain
-  - Block still meets promotion criteria
+  - Block on best chain, meets promotion criteria
+  - MPF non-membership proof provided for block hash
 Actions:
-  - Add block hash to confirmed blocks Merkle tree
-  - Update confirmed state (height, hash, timestamps, etc.)
-  - Remove block from forksTree
+  - Insert block hash into confirmed MPF trie
+  - Update TraversalCtx (height, timestamps, difficulty, lastBlockHash)
+  - Remove block from fork tree
 Next State: CONFIRMED (permanent)
 ```
 
-**Transition 4: Become Orphaned**
+**Transition 4: Garbage Collection**
 
 ```
 Precondition: Block in UNCONFIRMED_RECENT or QUALIFIED state
-Trigger: Fork competition - different fork achieves higher chainwork
+Trigger: promoteAndGC encounters Fork node on best path
 Guard:
-  - selectCanonicalChain(forksTree) ≠ path containing this block
+  - Block is NOT on the best chain path
 Actions:
-  - Block remains in forksTree
-  - No longer eligible for promotion
-Next State: ORPHANED
+  - Entire non-best branch is dropped (Fork node eliminated)
+  - Block is permanently removed from fork tree
+Next State: GARBAGE_COLLECTED (permanent)
 ```
 
-**Transition 5: Regain Canonical Status**
-
-```
-Precondition: Block in ORPHANED state
-Trigger: Fork competition - this block's fork regains highest chainwork
-Guard:
-  - selectCanonicalChain(forksTree) = path containing this block
-Actions:
-  - Block becomes eligible again
-Next State: UNCONFIRMED_RECENT or QUALIFIED (depending on depth/age)
-```
+**Note:** Unlike the old "ORPHANED" state where blocks remained in the tree and could potentially
+regain canonical status, garbage-collected blocks are permanently removed. Forks that lose to the
+best chain are dropped entirely during `promoteAndGC`. Binocular can not handle re-organizations
+of confirmed blocks.
 
 ### Invariants
 
@@ -1250,18 +1709,27 @@ The following properties hold at all times:
 1. **Confirmed Validity**: All blocks in CONFIRMED state have been validated against Bitcoin
    consensus rules.
 
-2. **Canonical Uniqueness**: At any time, exactly one chain in the forks tree has the highest
-   chainwork (the canonical chain).
+2. **Canonical Uniqueness**: At any time, exactly one path through the fork tree has the highest
+   chainwork (the best chain), with ties broken in favor of the left (existing) branch.
 
 3. **Promotion Monotonicity**: Confirmed block height is monotonically increasing. Once a block is
    CONFIRMED, it never returns to any other state.
 
 4. **Aging Monotonicity**: A block's `addedTimeDelta` never changes once set. Age only increases.
 
-5. **Depth Consistency**: Depth calculation matches the canonical chain at time of evaluation.
+5. **Depth Consistency**: Depth calculation matches the best chain at time of evaluation.
 
 6. **Challenge Period**: No block transitions UNCONFIRMED_RECENT → QUALIFIED → CONFIRMED in less
-   than 200 minutes from initial addition.
+   than `challengeAging` seconds from initial addition.
+
+7. **Fork Ordering**: In every `Fork` node, the left child is the pre-existing branch and the
+   right child is the newly submitted branch.
+
+8. **Capacity Bound**: The total number of blocks in the fork tree never exceeds
+   `maxBlocksInForkTree`.
+
+9. **NFT Continuity**: The Oracle NFT is preserved across all `UpdateOracle` transactions and
+   burned only during `CloseOracle`.
 
 ## Security Analysis
 
@@ -1319,15 +1787,16 @@ block $b_{n+1}$ being promoted.
 
 For $b_{n+1}$ to be promoted:
 
-1. Must exist in forks tree → passed initial validation
-2. Initial validation (Algorithm 8) checks:
+1. Must exist in fork tree → passed initial validation via `validateBlock`
+2. Initial validation checks:
+    - Header length: 80 bytes ✓
     - PoW: $\text{Hash}(b_{n+1}) \leq \text{target}$ ✓
-    - Difficulty: Matches expected retarget ✓
+    - Difficulty bits match: `header.bits == bits` ✓
+    - Difficulty: Matches expected retarget via `getNextWorkRequired` ✓
     - Timestamps: > median-time-past, < current + 2h ✓
-    - Version: ≥ 4 ✓
-    - Previous block: Links to valid chain ✓
-3. Must be on canonical chain (highest chainwork)
-4. Canonical chain contains only validated blocks
+    - Chain continuity: Links to valid chain ✓
+3. Must be on best chain (highest chainwork via `bestChainPath`)
+4. Best chain contains only validated blocks
 
 Therefore $b_{n+1}$ is valid.
 
@@ -1358,7 +1827,7 @@ Given: At least one honest party $H$ monitors Bitcoin.
 3. **Validation**: On-chain validator validates $b$ against Bitcoin rules. Since $b$ is from
    canonical Bitcoin chain, validation succeeds.
 
-4. **Addition to Forks Tree**: Block $b$ added to forks tree at time $t_0$ with:
+4. **Addition to Fork Tree**: Block $b$ added to fork tree at time $t_0$ with:
     - `addedTimeDelta = t_0 - block.timestamp`
     - On canonical chain (honest $H$ submits real Bitcoin blocks)
 
@@ -1392,7 +1861,7 @@ To attack the Oracle, adversary must:
 
 **Attack Cost Calculation**:
 
-Current Bitcoin parameters (2025 estimates):
+Current Bitcoin parameters (2026 estimates):
 
 - Network hashrate: $H \approx 600$ EH/s
 - Block reward: $R = 3.125$ BTC (post-2024 halving)
@@ -1450,7 +1919,7 @@ to detect and counter pre-computed attacks.
 Given:
 
 - Adversary $A$ pre-computes 100-block Bitcoin fork offline
-- $A$ publishes fork to forks tree at time $t_0$
+- $A$ publishes fork to fork tree at time $t_0$
 - Fork cannot be promoted until $t_0 + 200$ minutes
 
 Honest party $H$ monitoring interval: $\tau$ minutes
@@ -1467,14 +1936,14 @@ Honest party $H$ monitoring interval: $\tau$ minutes
 
 3. **Response Time**:
     - $H$ observes attack fork is not canonical Bitcoin chain
-    - $H$ submits correct Bitcoin blocks to forks tree
+    - $H$ submits correct Bitcoin blocks to fork tree
     - Cardano transaction finality: $\approx 5$ minutes
     - Correct fork added to tree by: $t_0 + \tau + 5$
 
 4. **Canonical Selection**:
     - Correct Bitcoin fork has higher chainwork (real PoW vs pre-computed)
     - Oracle automatically selects correct fork as canonical
-    - Attack fork becomes ORPHANED state
+    - Attack fork is garbage-collected when the honest chain triggers promotion
 
 5. **Required Condition**:
    For attack to succeed: $\tau + 5 > 200$ (honest party responds after aging period)
@@ -1519,19 +1988,22 @@ attempts to get Oracle to confirm it.
 
 **Outcome**: Economically irrational. Would destroy Bitcoin value, making attack self-defeating.
 
-#### Attack 3: Spam Forks Tree
+#### Attack 3: Spam Fork Tree
 
 **Scenario**: Attacker floods Oracle with many fake fork branches to bloat datum size, hoping to
 cause denial-of-service or prevent legitimate updates.
 
 **Mitigation**:
 
-- All blocks must pass validation (PoW, difficulty, timestamps)
+- All blocks must pass validation (PoW, difficulty, timestamps, 80-byte length)
 - Invalid blocks rejected by validator
 - Creating many valid forks requires mining many blocks (expensive)
-- Datum size naturally limits tree size
+- `maxBlocksInForkTree` parameter provides explicit configurable capacity limit
+- Garbage collection during promotion drops non-best forks, freeing space automatically
+- Validity interval constraint (≤ 10 min) prevents manipulation of block ages
 
 **Outcome**: Attack fails. Cannot spam with invalid blocks, and creating valid blocks is expensive.
+The `maxBlocksInForkTree` limit prevents unbounded growth even from valid fork submissions.
 
 #### Attack 4: Censor Oracle Updates
 
@@ -1565,8 +2037,8 @@ This section explains key design choices and parameter selections.
 
 ### Single UTxO vs Multiple Fork UTxOs
 
-**Decision**: Use a single Oracle UTxO containing both confirmed state and forks tree, rather than
-separate UTxOs for each fork.
+**Decision**: Use a single Oracle UTxO, identified by an NFT, containing both confirmed state and
+fork tree, rather than separate UTxOs for each fork.
 
 **Rationale**:
 
@@ -1579,51 +2051,37 @@ separate UTxOs for each fork.
    validator execution
 4. **No Coordination**: Don't need to coordinate between multiple UTxOs or manage UTxO lifecycle
 5. **Predictable Costs**: Transaction costs more predictable with single UTxO
+6. **NFT Identity**: The Oracle NFT provides unique on-chain identification and enables
+   cross-contract references (e.g., TransactionVerifier finds the Oracle via its script hash)
 
 *Trade-offs*:
 
-1. **Datum Size**: Forks tree limited by Cardano datum size constraints
+1. **Datum Size**: Fork tree limited by Cardano datum size constraints (mitigated by
+   `maxBlocksInForkTree` parameter)
 2. **Contention**: Multiple parties updating same UTxO may cause occasional transaction conflicts (
    resolved by retry)
 
-**Analysis**: The benefits of simplicity and atomic operations outweigh the trade-offs. Datum size
-limits naturally bound the forks tree, preventing spam. Transaction contention is rare in practice
-and easily handled by retry logic.
+**Analysis**: The benefits of simplicity and atomic operations outweigh the trade-offs. The
+`maxBlocksInForkTree` parameter provides explicit control over datum size. Transaction contention is
+rare in practice and easily handled by retry logic.
 
-### NIPoPoW Approach
+### Confirmed State: MPF Trie
 
-**Background**: Non-Interactive Proofs of Proof-of-Work (NIPoPoWs) [3] enable efficient proofs that
-a block is part of a blockchain without providing all intermediate blocks. Instead of storing all
-block hashes, NIPoPoWs use a "superblock" structure containing blocks that achieve
-higher-than-required difficulty, forming a compressed chain representation.
+**Decision**: Use Merkle Patricia Forestry (MPF) trie for confirmed blocks, rather than a simple
+Merkle tree or Non-Interactive Proofs of Proof-of-Work (NIPoPoWs).
 
-**Decision**: Use simple Merkle tree accumulator for confirmed blocks rather than NIPoPoW structure.
+**Why MPF Trie Was Chosen Over NIPoPoWs**:
 
-**Rationale**:
+NIPoPoWs [9] enable efficient proofs that a block is part of a blockchain using "superblock"
+structures, without providing all intermediate blocks. However:
 
-*Why NIPoPoWs Were Considered*:
+1. **Script Size Constraints**: NIPoPoW verification requires complex on-chain logic (superblock
+   validation, interlink pointer verification, variable-length proof handling)
+2. **Current Use Cases**: Transaction inclusion proofs need block membership verification, not
+   compressed history
+3. **Tool Support**: NIPoPoW verification is not available in Plutus/Scalus tooling
 
-- Enables light clients to verify proofs with logarithmic communication
-- Reduces storage for applications needing historical proof verification
-- Elegant cryptographic construction
-
-*Why Simple Merkle Tree Was Chosen*:
-
-1. **Implementation Simplicity**: Merkle tree operations well-understood and already implemented in
-   Plutus
-2. **Script Size Constraints**: NIPoPoW verification requires complex on-chain logic
-    - Superblock validation
-    - Interlink pointer verification
-    - Variable-length proof handling
-3. **Current Use Cases**: Transaction inclusion proofs need block header presence, not compressed
-   history
-4. **Sufficient Efficiency**: Applications can query confirmed block hashes via off-chain Oracle
-   state query
-5. **Future Compatibility**: Architecture allows adding NIPoPoW later without breaking changes
-
-*Implementation Comparison*:
-
-| Aspect               | Merkle Tree                   | NIPoPoW                         |
+| Aspect               | MPF Trie                      | NIPoPoW                         |
 |----------------------|-------------------------------|---------------------------------|
 | On-chain complexity  | Simple (hash operations)      | Complex (superblock validation) |
 | Script size          | Small (~1-2 KB)               | Large (~5-10 KB estimated)      |
@@ -1631,67 +2089,103 @@ higher-than-required difficulty, forming a compressed chain representation.
 | Light client support | Requires confirmed list query | Native                          |
 | Current tool support | Excellent (Plutus, Scalus)    | Limited                         |
 
-**Decision**: NIPoPoWs are not planned for integration. Direct block validation was chosen as the
-final approach.
+**Why MPF Trie Was Chosen Over a Simple Merkle Tree**:
 
-### Header Storage Optimization
+1. **Incremental Updates**: MPF supports insertion with non-membership proofs, enabling the Oracle
+   to add confirmed blocks one at a time without rebuilding the entire tree
+2. **Key-Value Store**: MPF maps block hash → block hash, enabling direct lookup
+3. **Efficient Membership Proofs**: O(log n) membership proofs suitable for on-chain verification
+   (used by TransactionVerifier)
+4. **Library Support**: Available as `MerklePatriciaForestry` in the Scalus library
 
-**Decision**: Store only `prevBlockHash` from block headers in the forks tree, rather than full
-80-byte Bitcoin block headers.
+### Minimal BlockSummary (3-Field Design)
+
+**Decision**: Store only `hash`, `timestamp`, and `addedTimeDelta` per block in the fork tree. Other
+fields (height, chainwork, difficulty) are derived from the `TraversalCtx` during tree traversal.
 
 **Rationale**:
 
-*Why Headers Were Considered*:
+*Why More Fields Were Considered*:
 
-- Convenient access to all block metadata (timestamps, merkle roots, nonces)
-- Simpler API for chain walking operations
-- Direct Bitcoin Core data structure analogy
+- Storing `height`, `chainwork`, `bits` per block avoids re-computation during traversal
+- Convenient access to all block metadata without context accumulation
+- Simpler promotion logic (direct field access)
 
 *Why Minimal Storage Was Chosen*:
 
-1. **Validation Timing**: Block headers are only needed during initial validation when adding blocks to the tree. After validation passes, the header data is never accessed again on-chain.
+1. **Context Accumulation**: The `TraversalCtx` carries height, difficulty, and timestamps. As the
+   tree is traversed, `accumulateBlock` updates the context for each block. This avoids storing
+   redundant per-block state.
 
-2. **Datum Size Efficiency**: Storing only `prevBlockHash` (32 bytes) instead of the full header (80 bytes) keeps per-block storage minimal at ~88 bytes versus ~152 bytes, enabling forks tree capacity of ~172-210 blocks instead of ~98 blocks.
+2. **Datum Size Efficiency**: 3-field `BlockSummary` (~45 bytes) vs 6-field (~88 bytes) nearly
+   doubles fork tree capacity (~275 blocks vs ~172 blocks).
 
-3. **Chain Walking Requirements**: Walking the fork tree backwards only requires `prevBlockHash` (32 bytes), not the full header. The map key provides the current block hash.
+3. **Chainwork Storage**: Chainwork is stored per `Blocks` segment (not per block), which is more
+   space-efficient since chainwork only changes at difficulty retarget boundaries.
 
-4. **Promotion Process**: Block promotion only requires:
-   - Block hash (already the map key)
-   - Chainwork comparison (stored separately)
-   - Depth and age checks (stored as `addedTimeDelta`)
-   - The full header is not needed
-
-5. **Application Use**: Applications verifying Bitcoin transaction inclusion proofs provide their own block headers off-chain. They only need to verify:
-   - Block hash exists in Oracle's confirmed Merkle tree
-   - Transaction Merkle proof against header's merkle root
-   - Header validation happens client-side
+4. **Validation Workflow**: Block headers are validated on submission; after validation, only the
+   hash, timestamp, and age delta are needed for promotion checks.
 
 *Storage Comparison*:
 
-| Approach         | Per-Block Storage | Capacity (16 KB tx) | Use Case Coverage |
-|------------------|-------------------|---------------------|-------------------|
-| Full headers     | ~152 bytes        | ~98 blocks          | All fields available |
-| **Optimized**    | **~88 bytes**     | **~172 blocks**     | **All operations supported** |
-
-*Operations Supported*:
-
-- Chain walking: ✓ (uses `prevBlockHash`)
-- Canonical selection: ✓ (uses `chainwork`)
-- Block promotion: ✓ (uses depth + `addedTimeDelta`)
-- Fork competition: ✓ (uses `chainwork` + tree structure)
-- Tree navigation: ✓ (uses `children` list)
+| Approach            | Per-Block Storage | Capacity (16 KB tx) |
+|---------------------|-------------------|---------------------|
+| Full headers        | ~152 bytes        | ~98 blocks          |
+| 6-field BlockSummary| ~88 bytes         | ~172 blocks         |
+| **3-field (current)**| **~45 bytes**    | **~275 blocks**     |
 
 **Implementation Notes**:
 
-The validation workflow becomes:
+The validation workflow:
 
 1. Receive full block header in update transaction
-2. Validate header completely (PoW, difficulty, timestamps, version)
-3. Extract only essential data: `prevBlockHash`, compute `chainwork`
-4. Store minimal `BlockNode(prevBlockHash, chainwork, addedTimeDelta, children)`
+2. Navigate tree via `parentPath`, accumulating `TraversalCtx` along the way
+3. Validate header against accumulated context (PoW, difficulty, timestamps)
+4. Store minimal `BlockSummary(hash, timestamp, addedTimeDelta)`
 5. Discard full header after validation
 
-This optimization maximizes forks tree capacity while maintaining all required protocol operations.
+### Binary ForkTree vs Flat List[ForkBranch]
+
+**Decision**: Use a recursive binary `ForkTree` enum instead of a flat `List[ForkBranch]`.
+
+**Rationale**:
+
+*Why Flat List Was Considered*:
+
+- Simple data structure, easy to reason about
+- O(1) append for new branches
+- Direct mapping to "list of competing chains"
+
+*Why Binary Tree Was Chosen*:
+
+1. **Natural Fork Representation**: Bitcoin forks naturally form a tree (blocks share common
+   prefixes). A binary tree captures this structure precisely, while a flat list loses the prefix
+   relationship between branches.
+
+2. **Shared Prefix Optimization**: Blocks on the common prefix of two forks are stored once in a
+   shared `Blocks` node, not duplicated across branches.
+
+3. **Single-Traversal Operations**: Path-based navigation enables validate-and-insert in a single
+   traversal. The path specifies exactly where in the tree the new blocks attach.
+
+4. **Efficient Promotion + GC**: `promoteAndGC` follows the best path and drops entire non-best
+   subtrees in one pass, without iterating through all branches.
+
+5. **Fork Ordering Invariant**: The left/right convention (existing=left, new=right) enables
+   deterministic tie-breaking matching Bitcoin Core's first-seen preference.
+
+### Path-Based Navigation vs Map-Based Lookup
+
+**Decision**: Use explicit path elements for tree navigation instead of hash-based map lookups.
+
+**Rationale**:
+
+1. **Single Traversal**: Path-based navigation enables validate-and-insert in one tree traversal
+   (no separate lookup + modify steps)
+2. **Context Accumulation**: The path traversal naturally accumulates the `TraversalCtx` needed for
+   validation
+3. **Deterministic**: Paths are computed off-chain and verified on-chain, avoiding on-chain search
+4. **No Map Overhead**: Avoids the overhead of storing a `Map[BlockHash, ...]` on-chain
 
 ### Parameter Justification
 
@@ -1731,7 +2225,7 @@ This optimization maximizes forks tree capacity while maintaining all required p
 **Rationale**:
 
 1. **Pre-computed Attack Prevention** (Theorem 4): Provides challenge window for honest parties
-2. **Response Time**: Sufficient for automated systems to detect and counter (135+ minute buffer)
+2. **Response Time**: Sufficient for automated systems to detect and counter (140+ minute buffer)
 3. **Faster Than Bitcoin**: 200 min < 1000 min (100 blocks), doesn't add latency
 4. **Cardano Slot Duration**: Well-aligned with Cardano's ~20-second slots
 
@@ -1776,9 +2270,9 @@ guarantees.
 
 **2. Datum Size Constraints**
 
-The forks tree is limited by Cardano's maximum datum size. While this naturally prevents spam and
-should accommodate typical Bitcoin fork scenarios (multiple competing forks of reasonable depth),
-extreme cases with many simultaneous deep forks could require pruning strategies.
+The fork tree is limited by Cardano's maximum datum size. The `maxBlocksInForkTree` parameter
+provides an explicit configurable limit (e.g. 256 blocks). This naturally prevents spam and
+accommodates typical Bitcoin fork scenarios.
 
 **Capacity Analysis:**
 
@@ -1792,40 +2286,45 @@ An Oracle update transaction consists of:
 - **Transaction structure**: ~50-100 bytes (inputs count, outputs count, fee, validity interval)
 - **Input (Oracle UTxO)**: ~40 bytes (transaction hash + output index)
 - **Output (new Oracle UTxO)**: ~60-80 bytes (address + value + datum hash/inline marker)
-- **Redeemer**: Variable size, contains Bitcoin block headers being submitted
+- **Redeemer**: Variable size, contains Bitcoin block headers + parent path + MPF proofs
   - Per block header: 80 bytes (raw Bitcoin header)
-  - Typical update (1-10 blocks): 80-800 bytes
-  - Large batch (20 blocks): ~1,600 bytes
-- **Script reference**: 0 bytes (using reference script stored elsewhere) or ~10-20 KB (inline script)
+  - Parent path: ~10-50 bytes (list of BigInts)
+  - MPF proofs: variable (per promoted block)
+  - Typical update (1-10 blocks): ~100-1,000 bytes
+- **Script reference**: 0 bytes (using reference script stored elsewhere)
 - **Witnesses/signatures**: ~100-150 bytes
 
 **Assuming reference script usage** (best practice for large validators):
-
-Total transaction overhead (excluding datum): ~250-650 bytes (typical), up to ~2,700 bytes (large batch)
 
 Conservative estimate: **~500-1,000 bytes transaction overhead**
 
 *Datum Storage Breakdown:*
 
-Confirmed state (fixed overhead):
+ChainState fixed overhead:
 
-- blockHeight, blockHash, currentTarget, blockTimestamp: ~72 bytes
-- recentTimestamps (11 × 8 bytes): ~88 bytes
-- previousDifficultyAdjustmentTimestamp: ~8 bytes
-- confirmedBlocksRoot (Merkle root): 32 bytes
-- Map overhead: ~8 bytes
-- **Total confirmed state**: ~208 bytes
+- confirmedBlocksRoot (MPF root): 32 bytes
+- TraversalCtx:
+  - timestamps (11 × ~5 bytes + list overhead): ~70 bytes
+  - height: ~5 bytes
+  - currentBits: 4 bytes
+  - prevDiffAdjTimestamp: ~5 bytes
+  - lastBlockHash: 32 bytes
+- CBOR structure overhead: ~20 bytes
+- **Total ChainState overhead**: ~170 bytes
 
-Forks tree (per-block storage):
+Fork tree per-block storage (`BlockSummary`):
 
-- Map key (block hash): 32 bytes
-- BlockNode.prevBlockHash: 32 bytes
-- BlockNode.chainwork: ~8 bytes (typical BigInt encoding)
-- BlockNode.addedTimeDelta: ~2-3 bytes (delta is typically 60-60,000 seconds vs ~5 bytes for absolute POSIX time)
-- BlockNode.children (list overhead + 32 bytes per child): ~8 bytes base
-- **Total per block**: ~88 bytes (base) + 32 bytes per child
+- BlockSummary.hash: 32 bytes
+- BlockSummary.timestamp: ~5 bytes
+- BlockSummary.addedTimeDelta: ~3 bytes (delta is typically 60-60,000 seconds)
+- CBOR overhead per block: ~5 bytes
+- **Total per block**: ~45 bytes
 
-For blocks without children (leaf nodes) or with one child (typical case): ~88-120 bytes per block
+Fork tree structural overhead:
+
+- `Blocks` node: list overhead + chainwork (~8 bytes) + enum tag (~3 bytes): ~15 bytes per node
+- `Fork` node: enum tag + two child pointers: ~5 bytes per fork
+- `End` node: ~3 bytes
 
 *Capacity Calculation:*
 
@@ -1835,17 +2334,17 @@ Transaction overhead (conservative): 1,000 bytes
 
 Available for datum: 16,384 - 1,000 = 15,384 bytes
 
-Datum overhead (confirmed state): 208 bytes
+ChainState overhead: 170 bytes
 
-Available for forks tree: 15,384 - 208 = 15,176 bytes
+Available for fork tree: 15,384 - 170 = 15,214 bytes
 
-Maximum blocks (worst case with minimal children): 15,176 / 88 ≈ **172 blocks**
+Per-block cost (BlockSummary + structural): ~50-60 bytes
 
-Maximum blocks (optimistic with no children lists): 15,176 / 72 ≈ **210 blocks**
+Maximum blocks: 15,214 / 55 ≈ **275 blocks**
 
-Note: Using reference scripts (storing validator script separately and referencing it) minimizes
-transaction overhead. Typical updates with 1-10 block headers use ~350-900 bytes of transaction
-overhead, leaving more space for the forks tree.
+This is significantly higher than the old design (~172 blocks) because `BlockSummary` was reduced
+from 6 fields (~88 bytes) to 3 fields (~45 bytes). The `maxBlocksInForkTree` parameter (default
+256) provides an explicit limit well within the datum capacity.
 
 *Historical Analysis:*
 
@@ -1854,23 +2353,24 @@ Bitcoin fork scenarios provide context for capacity requirements:
 - **Typical forks**: 1-6 blocks deep, resolve within ~1 hour
 - **Deep forks**: Rarely exceed 10 blocks (e.g., 2013 fork: 24 blocks, 2015 BIP66: 6 blocks)
 - **Multiple simultaneous forks**: Extremely rare; typically one active fork at a time
-- **100-block confirmation requirement**: Acts as natural pruning—blocks promote and free space
+- **Garbage collection**: Dead forks are dropped during promotion, freeing space automatically
 
-With 172-210 block capacity, the Oracle can accommodate:
+With ~275 block capacity and a configurable `maxBlocksInForkTree` limit, the Oracle can accommodate:
 
 - One deep fork of 100+ blocks (pending promotion)
 - Multiple smaller competing forks simultaneously
 - All historical Bitcoin fork scenarios with substantial margin
 
-**Conclusion**: The datum size naturally bounds the forks tree while providing adequate capacity for
-all realistic Bitcoin fork scenarios. The 100-block confirmation requirement ensures regular pruning
-as blocks promote to confirmed state, maintaining available capacity.
+**Conclusion**: The smaller `BlockSummary` (3 fields instead of 6) combined with the binary tree
+structure provides ample capacity for all realistic scenarios. The `maxBlocksInForkTree` parameter
+gives deployments explicit control over the trade-off between fork tree capacity and datum size.
 
 **3. Historical Query Efficiency**
 
-Applications needing to verify historical Bitcoin transactions must query the confirmed blocks
-Merkle tree. While the tree structure enables efficient inclusion proofs, applications without
-Oracle state access need additional infrastructure.
+Applications needing to verify historical Bitcoin transactions can use the confirmed blocks MPF
+trie. The TransactionVerifier contract enables on-chain verification of Bitcoin transaction
+inclusion proofs by reading the Oracle UTxO as a reference input and verifying MPF membership
+proofs for confirmed blocks.
 
 ### Future Enhancements
 
@@ -1886,11 +2386,11 @@ Design explicit economic incentives for Oracle maintenance:
 
 **Tree Pruning Strategies**
 
-Develop sophisticated pruning algorithms for the forks tree:
+The current implementation includes automatic garbage collection (dead forks are dropped during
+`promoteAndGC`) and a configurable `maxBlocksInForkTree` limit. Future enhancements could include:
 
-- Automatic removal of deeply orphaned forks
-- Configurable depth limits based on datum size
-- Optimal balance between fork preservation and size constraints
+- More granular pruning strategies (e.g., pruning old forks even without promotion)
+- Adaptive limits based on observed fork patterns
 
 **Enhanced Monitoring Infrastructure**
 
@@ -1926,18 +2426,28 @@ consensus rules. The protocol's key contributions include:
    and timestamp validation in Plutus using Scalus, enabling Cardano smart contracts to verify
    Bitcoin blocks without external trust.
 
-2. **Simplified Architecture**: Single Oracle UTxO containing both confirmed state and forks tree,
-   with automatic canonical chain selection and block promotion through chainwork comparison.
+2. **Efficient Architecture**: Single Oracle UTxO identified by an NFT, with a binary `ForkTree`
+   for unconfirmed blocks and Merkle Patricia Forestry (MPF) for confirmed blocks. Minimal 3-field
+   `BlockSummary` maximizes fork tree capacity.
 
 3. **Permissionless Participation**: Anyone can submit updates without registration or bonding
    requirements, with all validation enforced by the on-chain validator.
 
-4. **Security Guarantees**: Formal proofs of safety and liveness properties, combined with
-   quantitative economic analysis demonstrating that attack costs ($46M - $18B) far exceed realistic
-   rewards.
+4. **Configurable Parameters**: The parameterized validator supports different deployment
+   configurations (maturation depth, challenge period, capacity limits, testnet mode).
 
-5. **Challenge Period Defense**: 200-minute on-chain aging requirement prevents pre-computed attacks
-   while maintaining liveness under minimal 1-honest-party assumption.
+5. **Security Guarantees**: Formal proofs of safety and liveness properties, combined with
+   quantitative economic analysis demonstrating that attack costs ($46M - $18B) far exceed realistic
+   rewards. Validity interval constraints ensure trustworthy block aging.
+
+6. **Challenge Period Defense**: Configurable on-chain aging requirement (default 200 minutes)
+   prevents pre-computed attacks while maintaining liveness under minimal 1-honest-party assumption.
+
+7. **Transaction Inclusion Proofs**: The companion TransactionVerifier contract enables on-chain
+   verification of Bitcoin transaction inclusion against the Oracle's confirmed state.
+
+8. **Oracle Lifecycle**: NFT-based identity with one-shot minting, plus a closure mechanism for
+   recovering funds from stale Oracles.
 
 The protocol enables applications to verify Bitcoin transaction inclusion proofs, supporting use
 cases including cross-chain bridges, Bitcoin-backed stablecoins, and decentralized exchanges. By

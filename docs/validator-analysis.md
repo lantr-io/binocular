@@ -232,3 +232,91 @@ def targetToCompactByteString(target: BigInt): CompactBits = {
 | Current | 1.053 ADA | -- |
 | O-01 + O-03 | ~0.90-0.95 ADA | ~10-15% |
 | O-01 + O-02 + O-03 | ~0.65-0.75 ADA | ~30-35% |
+
+---
+
+## O-02 Implementation Report: Store `tipCtx` in `Blocks` Node
+
+**Date:** 2026-04-04
+**Status:** REJECTED — unacceptable security regression
+
+### Implementation Summary
+
+Added `tipCtx: TraversalCtx` field to `ForkTree.Blocks` to cache the traversal context at the tip
+of each segment. This eliminates the O(n) `accumulateBlock` replay in `validateAndInsertInPath`
+(append-at-tip fast path) and `promoteAndGC` (no-promotion path), replacing them with O(1) lookups.
+
+**Files modified:** 8 files, +271/-189 lines
+
+| File | Changes |
+|------|---------|
+| `BitcoinValidator.scala` | Added `tipCtx` field, `trimTipCtx` helper, fast paths in `validateAndInsertInPath`, O(1) `promoteAndGC` |
+| `ForkTreePretty.scala` | Updated 3 pattern match sites |
+| `BitcoinContract.scala` | Reduced `DefaultMaxBlocksInForkTree` 256 → 64 |
+| `OracleConfig.scala` | Updated default to match |
+| `BitcoinValidatorTest.scala` | Updated constructors, assertions |
+| `BitcoinValidatorGenerators.scala` | Added `dummyTipCtx`, updated generators |
+| `ForkTreePropertyTest.scala` | Updated constructors, pattern matches |
+| `BitcoinMainnetCekTest.scala` | Updated pattern matches |
+
+### Performance Results
+
+| Metric | Before | After | Change |
+|--------|--------|-------|--------|
+| **Bifrost fee** | 1.052 ADA | 0.871 ADA | **-17.3%** |
+| Bifrost CPU steps | ~1,190,000,000 | 1,042,483,603 | -12.4% |
+| Bifrost CPU % of limit | ~11.9% | 10.4% | |
+| Bifrost memory | ~4,500,000 | 3,931,805 | -12.6% |
+| Header throughput | 51 headers/tx | 51 headers/tx | unchanged |
+| Promotion throughput | 23 headers+promotions/tx | 23 headers+promotions/tx | unchanged |
+| Contract size | 7,539 bytes | 8,800 bytes | +16.7% |
+
+### Capacity Impact
+
+| Metric | Before | After | Change |
+|--------|--------|-------|--------|
+| **Single branch (linear)** | 368 blocks | 366 blocks | -0.5% |
+| **Balanced tree (griefing)** | **256 blocks** | **64 blocks** | **-75%** |
+| Left-leaning forks | 274 | 95 | -65% |
+| Balanced tree depth | 8 | 6 | -25% |
+
+### Security Analysis: Griefing Attack
+
+The `tipCtx` overhead (~180 bytes per `Blocks` node) has a negligible effect on the normal case
+(linear chain: 1 `Blocks` node, -2 blocks) but a catastrophic effect on the adversarial case
+(balanced tree: 2^d `Blocks` nodes, each paying the full overhead).
+
+**Griefing attack model:** An attacker fills the fork tree with single-block branches, all below
+`maturationConfirmations` (100), so nothing qualifies for promotion. The oracle is halted until
+blocks age out or are displaced.
+
+- **Before:** Attacker must mine **256 valid Bitcoin blocks** to fill the tree
+- **After:** Attacker must mine only **64 valid Bitcoin blocks** — a **4x cost reduction**
+
+The `maxBlocksInForkTree` parameter must be ≤ balanced tree capacity (the worst-case shape an
+attacker can construct). Reducing it from 256 to 64 fundamentally weakens the protocol's resistance
+to griefing attacks.
+
+### Why the Asymmetry?
+
+In a linear chain (normal operation), there is **1 `Blocks` node** storing 1 `tipCtx` — the
+overhead is constant (~180 bytes total). In a balanced griefing tree with depth d, there are
+**2^d `Blocks` nodes**, each storing its own `tipCtx` — the overhead scales as O(2^d × 180 bytes),
+consuming space that would otherwise hold blocks.
+
+This is a fundamental trade-off: per-node caching helps the normal case but punishes the adversarial
+case proportionally to the number of nodes.
+
+### Conclusion
+
+**The O-02 optimization is rejected.** While it achieves a meaningful 17% fee reduction for the
+Bifrost scenario, it reduces griefing attack resistance by 75% (256 → 64 blocks). This is an
+unacceptable security regression that violates the protocol's design assumptions.
+
+The performance gain does not justify weakening the security model. Alternative approaches should
+be explored:
+
+- **O-01 + O-03** (add `blockCount` field + skip prefix reconstruction) offer ~10-15% savings
+  with minimal capacity impact (~8 bytes per node vs ~180 bytes)
+- A hybrid approach storing `tipCtx` only at the deepest tip node (not all nodes) could preserve
+  security while capturing most of the benefit, but adds significant complexity
