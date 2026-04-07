@@ -1,30 +1,27 @@
 package binocular
 
+import binocular.ForkTree.*
+import binocular.OracleAction.*
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 import scalus.*
-import scalus.cardano.ledger.utils.MinTransactionFee
+import scalus.cardano.address.{ShelleyAddress, ShelleyDelegationPart, ShelleyPaymentPart}
 import scalus.cardano.ledger.*
+import scalus.cardano.ledger.utils.MinTransactionFee
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import scalus.cardano.onchain.plutus.prelude
+import scalus.cardano.onchain.plutus.v1.PubKeyHash
 import scalus.cardano.txbuilder.RedeemerPurpose.ForSpend
 import scalus.cardano.txbuilder.txBuilder
-import scalus.compiler.Options
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
-import scalus.testing.kit.ScalusTest
 import scalus.testing.kit.TestUtil.getScriptContextV3
-import scalus.uplc.PlutusV3
+import scalus.testing.kit.{Party, ScalusTest}
 import scalus.uplc.builtin.ByteString
 import scalus.uplc.builtin.ByteString.hex
 import scalus.uplc.builtin.Data.toData
 import scalus.uplc.eval.*
 
 import java.time.Instant
-import binocular.ForkTree.*
-import binocular.OracleAction.*
-import scalus.cardano.address.{ShelleyAddress, ShelleyDelegationPart, ShelleyPaymentPart}
-import scalus.cardano.onchain.plutus.v1.PubKeyHash
-import scalus.testing.kit.Party
 
 class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPropertyChecks {
     private given env: CardanoInfo = CardanoInfo.mainnet
@@ -52,9 +49,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
     )
 
     private val testContract = {
-        given Options = Options.release
+//        given Options = Options.release
 //        Options.release.copy(targetProtocolVersion = MajorProtocolVersion.vanRossemPV)
-        PlutusV3.compile(BitcoinValidator.validate).withErrorTraces(testParams.toData)
+//        PlutusV3.compile(BitcoinValidator.validate).withErrorTraces(testParams.toData)
+        BitcoinContract.makeContract(testParams).withErrorTraces
     }
     private val testScriptAddr = testContract.address(env.network)
     private val testScriptHash = testContract.script.scriptHash
@@ -237,12 +235,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
     }
 
     test("BitcoinValidator size") {
-        given Options =
-            Options.release.copy(targetProtocolVersion = MajorProtocolVersion.vanRossemPV)
-        val contract = PlutusV3.compile(BitcoinValidator.validate).apply(testParams.toData)
+        val contract = BitcoinContract.makeContract(testParams)
         info(s"Contract size: ${contract.script.script.size}")
-//        println(s"Contract size: ${contract.program.showHighlighted}")
-        assert(contract.script.script.size == 7539)
+//        println(contract.program.showHighlighted)
+        assert(contract.script.script.size == 8099)
     }
 
     test("Block header throughput - max headers per transaction") {
@@ -1224,8 +1220,8 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
 
         assert(txSize <= maxTxSize, "Tx size exceeded")
         assert(
-          tx.body.value.fee == Coin(1052397),
-          s"Tx fee ${tx.body.value.fee} != 1052397 lovelace"
+          tx.body.value.fee == Coin(978499),
+          s"Tx fee ${tx.body.value.fee} != 978499 lovelace"
         )
     }
 

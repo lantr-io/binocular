@@ -6,9 +6,9 @@ import scalus.cardano.ledger.MajorProtocolVersion
 import scalus.cardano.onchain.plutus.v1.PubKeyHash
 import scalus.cardano.onchain.plutus.v3.TxOutRef
 import scalus.compiler.Options
+import scalus.uplc.PlutusV3
 import scalus.uplc.builtin.Data
 import scalus.uplc.builtin.Data.toData
-import scalus.uplc.PlutusV3
 import scalus.utils.Hex.toHex
 
 object BitcoinContract {
