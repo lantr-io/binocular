@@ -1,4 +1,4 @@
-val scalusVersion = "0.16.0+37-11f23b8d-SNAPSHOT"
+val scalusVersion = "0.16.0+206-a6df70ab-SNAPSHOT"
 
 // Common settings for all projects
 ThisBuild / scalaVersion := "3.3.7"
@@ -32,7 +32,7 @@ lazy val binocular = (project in file("."))
       run / connectInput := true,
       run / javaOptions += "--sun-misc-unsafe-memory-access=allow",
       Test / parallelExecution := false,
-      Test / test / testOptions += Tests
+      Test / testOptions += Tests
           .Argument(TestFrameworks.ScalaTest, "-l", "binocular.ManualTest"),
       Test / javaOptions ++= Seq("-Xmx2g", "--sun-misc-unsafe-memory-access=allow"),
       addCompilerPlugin("org.scalus" % "scalus-plugin_3.3.7" % scalusVersion),
