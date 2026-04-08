@@ -238,16 +238,7 @@ trait BitcoinValidatorGenerators extends scalus.uplc.test.ArbitraryInstances {
     val testOwner: PubKeyHash = PubKeyHash(Party.Alice.addrKeyHash)
 
     def testParams(testingMode: Boolean = false): BitcoinValidatorParams =
-        BitcoinValidatorParams(
-          maturationConfirmations = 100,
-          challengeAging = 200 * 60,
-          oneShotTxOutRef = testTxOutRef,
-          closureTimeout = 30 * 24 * 60 * 60,
-          owner = testOwner,
-          powLimit = BitcoinHelpers.PowLimit,
-          maxBlocksInForkTree = BitcoinContract.DefaultMaxBlocksInForkTree,
-          testingMode = testingMode
-        )
+        BitcoinValidatorParams.makeMainnet(testTxOutRef, testOwner).copy(testingMode = testingMode)
 
     val testingParams: BitcoinValidatorParams = testParams(testingMode = true)
 

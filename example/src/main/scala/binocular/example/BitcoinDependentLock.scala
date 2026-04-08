@@ -1,6 +1,6 @@
 package binocular.example
 
-import binocular.{reverse, BinocularConfig, BitcoinContract, BlockHeader, ChainState, MerkleTree, SimpleBitcoinRpc, TransactionVerifierContract, TxVerifierDatum, TxVerifierRedeemer}
+import binocular.{reverse, BinocularConfig, BitcoinContract, BitcoinValidatorParams, BlockHeader, ChainState, MerkleTree, SimpleBitcoinRpc, TransactionVerifierContract, TxVerifierDatum, TxVerifierRedeemer}
 import scalus.cardano.address.{Address, Network}
 import scalus.cardano.ledger.{AssetName, Credential, Script, Utxo, Value}
 import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}
@@ -146,7 +146,7 @@ object BitcoinDependentLockApp {
         val dummyTxOutRef = TxOutRef(TxId(BS.fill(32, 0)), BigInt(0))
         val dummyOwner = PubKeyHash(BS.fill(28, 0))
         BitcoinContract
-            .makeContract(BitcoinContract.validatorParams(dummyTxOutRef, dummyOwner))
+            .makeContract(BitcoinValidatorParams.makeMainnet(dummyTxOutRef, dummyOwner))
             .script
             .scriptHash
     }

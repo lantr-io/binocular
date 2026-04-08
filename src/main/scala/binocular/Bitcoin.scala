@@ -158,26 +158,18 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
     //   - allowMinDifficultyBlocks: enabled for testnet3/testnet4/regtest (the 20-minute rule)
     //   - powLimit:                 regtest uses a much higher (easier) limit
     private val validationParams: BitcoinValidatorParams = {
-        val network = config.bitcoinNetwork
-        val powLimit = network match
-            case BitcoinNetwork.Regtest => RegtestPowLimit
-            case _                      => PowLimit
-        BitcoinValidatorParams(
-          maturationConfirmations = 100,
-          challengeAging = 200 * 60,
-          oneShotTxOutRef = v3.TxOutRef(
-            v3
-                .TxId(ByteString.unsafeFromArray(Array.fill(32)(0: Byte))),
-            0
-          ),
-          closureTimeout = 30 * 24 * 60 * 60,
-          owner = v1.PubKeyHash(
-            ByteString.unsafeFromArray(Array.fill(28)(0: Byte))
-          ),
-          powLimit = powLimit,
-          maxBlocksInForkTree = BitcoinContract.DefaultMaxBlocksInForkTree,
-          allowMinDifficultyBlocks = network.allowMinDifficultyBlocks
-        )
+        val zeroTxOutRef =
+            v3.TxOutRef(v3.TxId(ByteString.unsafeFromArray(Array.fill(32)(0: Byte))), 0)
+        val zeroOwner = v1.PubKeyHash(ByteString.unsafeFromArray(Array.fill(28)(0: Byte)))
+        config.bitcoinNetwork match
+            case BitcoinNetwork.Mainnet =>
+                BitcoinValidatorParams.makeMainnet(zeroTxOutRef, zeroOwner)
+            case BitcoinNetwork.Testnet =>
+                BitcoinValidatorParams.makeTestnet(zeroTxOutRef, zeroOwner)
+            case BitcoinNetwork.Testnet4 =>
+                BitcoinValidatorParams.makeTestnet4(zeroTxOutRef, zeroOwner)
+            case BitcoinNetwork.Regtest =>
+                BitcoinValidatorParams.makeRegtest(zeroTxOutRef, zeroOwner)
     }
 
     private def processHeader(currentState: ChainState, headerInfo: BlockHeaderInfo): ChainState =

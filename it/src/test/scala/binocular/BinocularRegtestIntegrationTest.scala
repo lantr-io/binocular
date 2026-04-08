@@ -187,16 +187,8 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
             val txOutRef = TxOutRef(TxId(seedInput.transactionId), BigInt(seedInput.index))
             val testOwner = PubKeyHash(Party.Alice.addrKeyHash)
 
-            val params = BitcoinValidatorParams(
-              maturationConfirmations = 100,
-              challengeAging = 60, // 60 seconds for faster testing
-              oneShotTxOutRef = txOutRef,
-              closureTimeout = 30 * 24 * 60 * 60,
-              owner = testOwner,
-              powLimit = BitcoinHelpers.RegtestPowLimit,
-              maxBlocksInForkTree = BitcoinContract.DefaultMaxBlocksInForkTree,
-              testingMode = false
-            )
+            val params =
+                BitcoinValidatorParams.makeRegtest(txOutRef, testOwner, challengeAging = 60)
 
             val compiled = BitcoinContract.makeContract(params)
             val script = compiled.script

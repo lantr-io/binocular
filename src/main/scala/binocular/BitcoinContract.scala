@@ -3,8 +3,6 @@ package binocular
 import scalus.*
 import scalus.cardano.blueprint.{Blueprint, HasTypeDescription, Preamble, Validator}
 import scalus.cardano.ledger.MajorProtocolVersion
-import scalus.cardano.onchain.plutus.v1.PubKeyHash
-import scalus.cardano.onchain.plutus.v3.TxOutRef
 import scalus.compiler.Options
 import scalus.uplc.PlutusV3
 import scalus.uplc.builtin.Data
@@ -29,30 +27,6 @@ object BitcoinContract {
     // redeemer. This bounds the cheapest griefing attack: filling the tree with single-block
     // branches (all below maturationConfirmations) so nothing qualifies for promotion.
     val DefaultMaxBlocksInForkTree: Int = 256
-
-    /** Build default params from a TxOutRef and owner */
-    def validatorParams(
-        txOutRef: TxOutRef,
-        owner: PubKeyHash,
-        maturationConfirmations: Int = 100,
-        challengeAging: Int = 12000,
-        closureTimeout: Int = 2592000,
-        maxBlocksInForkTree: Int = DefaultMaxBlocksInForkTree,
-        testingMode: Boolean = false,
-        allowMinDifficultyBlocks: Boolean = false,
-        powLimit: BigInt = BitcoinHelpers.PowLimit
-    ): BitcoinValidatorParams =
-        BitcoinValidatorParams(
-          maturationConfirmations = maturationConfirmations,
-          challengeAging = challengeAging,
-          oneShotTxOutRef = txOutRef,
-          closureTimeout = closureTimeout,
-          owner = owner,
-          powLimit = powLimit,
-          maxBlocksInForkTree = maxBlocksInForkTree,
-          testingMode = testingMode,
-          allowMinDifficultyBlocks = allowMinDifficultyBlocks
-        )
 
     lazy val blueprint: Blueprint = {
         val title = "Binocular – a trustless Bitcoin Oracle"

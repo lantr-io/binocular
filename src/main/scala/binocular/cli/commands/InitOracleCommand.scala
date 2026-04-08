@@ -146,18 +146,19 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
         val txOutRef = TxOutRef(TxId(oneShotInput.transactionId), oneShotInput.index)
         val owner = PubKeyHash(hdAccount.paymentKeyHash)
         val bitcoinNetwork = config.bitcoinNode.bitcoinNetwork
-        val powLimit = bitcoinNetwork match
-            case BitcoinNetwork.Regtest => BitcoinHelpers.RegtestPowLimit
-            case _                      => BitcoinHelpers.PowLimit
-        val params = BitcoinContract.validatorParams(
-          txOutRef,
-          owner,
+        val baseParams = bitcoinNetwork match
+            case BitcoinNetwork.Mainnet =>
+                BitcoinValidatorParams.makeMainnet(txOutRef, owner, oracleConf.challengeAging)
+            case BitcoinNetwork.Testnet =>
+                BitcoinValidatorParams.makeTestnet(txOutRef, owner, oracleConf.challengeAging)
+            case BitcoinNetwork.Testnet4 =>
+                BitcoinValidatorParams.makeTestnet4(txOutRef, owner, oracleConf.challengeAging)
+            case BitcoinNetwork.Regtest =>
+                BitcoinValidatorParams.makeRegtest(txOutRef, owner, oracleConf.challengeAging)
+        val params = baseParams.copy(
           maturationConfirmations = oracleConf.maturationConfirmations,
-          challengeAging = oracleConf.challengeAging,
           closureTimeout = oracleConf.closureTimeout,
-          testingMode = oracleConf.testingMode,
-          allowMinDifficultyBlocks = bitcoinNetwork.allowMinDifficultyBlocks,
-          powLimit = powLimit
+          testingMode = oracleConf.testingMode
         )
         val compiled = BitcoinContract.makeContract(params)
         val setup = OracleSetup(params, compiled, hdAccount, provider, network)

@@ -162,15 +162,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
           BigInt(seedInput.index)
         )
         val testOwner = PubKeyHash(Party.Alice.addrKeyHash)
-        val params = BitcoinValidatorParams(
-          maturationConfirmations = 100,
-          challengeAging = 30,
-          oneShotTxOutRef = txOutRef,
-          closureTimeout = 30 * 24 * 60 * 60,
-          owner = testOwner,
-          powLimit = BitcoinHelpers.PowLimit,
-          maxBlocksInForkTree = BitcoinContract.DefaultMaxBlocksInForkTree
-        )
+        val params = BitcoinValidatorParams.makeMainnet(txOutRef, testOwner, challengeAging = 30)
 
         val compiled = BitcoinContract.makeContract(params)
         val script = compiled.script

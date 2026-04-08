@@ -38,15 +38,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
 
     private val testOwner = PubKeyHash(Party.Alice.addrKeyHash)
 
-    private val testParams = BitcoinValidatorParams(
-      maturationConfirmations = 100,
-      challengeAging = 200 * 60, // 200 minutes in seconds
-      oneShotTxOutRef = testTxOutRef,
-      closureTimeout = 30 * 24 * 60 * 60, // 30 days
-      owner = testOwner,
-      powLimit = BitcoinHelpers.PowLimit,
-      maxBlocksInForkTree = BitcoinContract.DefaultMaxBlocksInForkTree
-    )
+    private val testParams = BitcoinValidatorParams.makeMainnet(testTxOutRef, testOwner)
 
     private val testContract = {
 //        given Options = Options.release

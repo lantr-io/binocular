@@ -42,7 +42,7 @@ class OracleNFTTest extends AnyFunSuite, ScalusTest {
         val p = createProvider
         val (input, _) = p.findUtxos(Alice.address).await().toOption.get.head
         val txOutRef = TxOutRef(TxId(input.transactionId), BigInt(input.index))
-        val params = BitcoinContract.validatorParams(txOutRef, testOwner)
+        val params = BitcoinValidatorParams.makeMainnet(txOutRef, testOwner)
         val c = baseContract(params.toData)
         (c, c.script.scriptHash, c.address(env.network))
     }
@@ -71,7 +71,7 @@ class OracleNFTTest extends AnyFunSuite, ScalusTest {
           TxId(hex"1111111111111111111111111111111111111111111111111111111111111111"),
           BigInt(0)
         )
-        val fakeParams = BitcoinContract.validatorParams(fakeTxOutRef, testOwner)
+        val fakeParams = BitcoinValidatorParams.makeMainnet(fakeTxOutRef, testOwner)
         val fakeContract = baseContract(fakeParams.toData)
         val fakeScriptHash = fakeContract.script.scriptHash
         val fakeScriptAddr = fakeContract.address(env.network)

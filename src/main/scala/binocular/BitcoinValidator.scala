@@ -219,6 +219,95 @@ case class BitcoinValidatorParams(
 ) derives FromData,
       ToData
 
+object BitcoinValidatorParams {
+    // Canonical values shared by every network. Match Bitcoin Core where applicable.
+    private val DefaultMaturationConfirmations: BigInt = 100
+    private val DefaultChallengeAging: BigInt = 200 * 60 // 200 minutes
+    private val DefaultClosureTimeout: BigInt = 30 * 24 * 60 * 60 // 30 days
+    private val DefaultMaxBlocksInForkTree: BigInt = BitcoinContract.DefaultMaxBlocksInForkTree
+
+    private def make(
+        oneShotTxOutRef: TxOutRef,
+        owner: PubKeyHash,
+        challengeAging: BigInt,
+        powLimit: BigInt,
+        allowMinDifficultyBlocks: Boolean
+    ): BitcoinValidatorParams = BitcoinValidatorParams(
+      maturationConfirmations = DefaultMaturationConfirmations,
+      challengeAging = challengeAging,
+      oneShotTxOutRef = oneShotTxOutRef,
+      closureTimeout = DefaultClosureTimeout,
+      owner = owner,
+      powLimit = powLimit,
+      maxBlocksInForkTree = DefaultMaxBlocksInForkTree,
+      allowMinDifficultyBlocks = allowMinDifficultyBlocks
+    )
+
+    def makeMainnet(oneShotTxOutRef: TxOutRef, owner: PubKeyHash): BitcoinValidatorParams =
+        makeMainnet(oneShotTxOutRef, owner, DefaultChallengeAging)
+
+    def makeMainnet(
+        oneShotTxOutRef: TxOutRef,
+        owner: PubKeyHash,
+        challengeAging: BigInt
+    ): BitcoinValidatorParams =
+        make(
+          oneShotTxOutRef,
+          owner,
+          challengeAging,
+          powLimit = BitcoinHelpers.PowLimit,
+          allowMinDifficultyBlocks = false
+        )
+
+    def makeTestnet(oneShotTxOutRef: TxOutRef, owner: PubKeyHash): BitcoinValidatorParams =
+        makeTestnet(oneShotTxOutRef, owner, DefaultChallengeAging)
+
+    def makeTestnet(
+        oneShotTxOutRef: TxOutRef,
+        owner: PubKeyHash,
+        challengeAging: BigInt
+    ): BitcoinValidatorParams =
+        make(
+          oneShotTxOutRef,
+          owner,
+          challengeAging,
+          powLimit = BitcoinHelpers.PowLimit,
+          allowMinDifficultyBlocks = true
+        )
+
+    def makeTestnet4(oneShotTxOutRef: TxOutRef, owner: PubKeyHash): BitcoinValidatorParams =
+        makeTestnet4(oneShotTxOutRef, owner, DefaultChallengeAging)
+
+    def makeTestnet4(
+        oneShotTxOutRef: TxOutRef,
+        owner: PubKeyHash,
+        challengeAging: BigInt
+    ): BitcoinValidatorParams =
+        make(
+          oneShotTxOutRef,
+          owner,
+          challengeAging,
+          powLimit = BitcoinHelpers.PowLimit,
+          allowMinDifficultyBlocks = true
+        )
+
+    def makeRegtest(oneShotTxOutRef: TxOutRef, owner: PubKeyHash): BitcoinValidatorParams =
+        makeRegtest(oneShotTxOutRef, owner, DefaultChallengeAging)
+
+    def makeRegtest(
+        oneShotTxOutRef: TxOutRef,
+        owner: PubKeyHash,
+        challengeAging: BigInt
+    ): BitcoinValidatorParams =
+        make(
+          oneShotTxOutRef,
+          owner,
+          challengeAging,
+          powLimit = BitcoinHelpers.RegtestPowLimit,
+          allowMinDifficultyBlocks = true
+        )
+}
+
 @Compile
 object BitcoinValidator extends DataParameterizedValidator {
     import BitcoinHelpers.*
@@ -1074,7 +1163,33 @@ object BitcoinValidator extends DataParameterizedValidator {
 
         require(intervalEndMs - intervalStartMs <= MaxValidityWindow, "Validity interval too wide")
 
-        val intervalStartInSeconds = intervalStartMs / 1000
+        // We use the upper bound of the validity interval (validRange.to) as our notion of
+        // "current time" for two reasons:
+        //
+        //   1. **Bitcoin futurity tolerance**. The validator enforces
+        //      `block.timestamp ≤ currentTime + MaxFutureBlockTime` (matching Bitcoin Core's
+        //      `MAX_FUTURE_BLOCK_TIME = 7200s` rule). If we used `validRange.from` (~5 min in the
+        //      past relative to wall clock, due to off-chain clock-skew protection), then a block
+        //      that Bitcoin Core *just* accepted at the upper edge of its own futurity tolerance
+        //      could be ~5 min outside our window, even though it is a perfectly valid Bitcoin
+        //      block. Using `validRange.to` (~5 min in the future relative to wall clock) ensures
+        //      our window is at least as wide as bitcoind's view of "now + 7200s" by the time the
+        //      script executes. This is especially important on Testnet4 where miners deliberately
+        //      stamp blocks in the future to trigger the 20-min min-difficulty rule.
+        //
+        //   2. **Aging is reference-invariant**. The challenge-aging check is
+        //      `currentTime - block.timestamp - block.addedTimeDelta ≥ challengeAging`. Since
+        //      `addedTimeDelta` is recorded as `currentTime - block.timestamp` *at insertion*, the
+        //      check reduces algebraically to `currentTime_now - currentTime_at_insertion`, i.e.
+        //      pure elapsed wall-clock time, regardless of whether `currentTime` means
+        //      `validRange.from` or `validRange.to` — as long as the choice is consistent.
+        //
+        // Consensus impact: our futurity check becomes ~5 min more permissive than the strictest
+        // Bitcoin Core node, which is bounded above by `MaxValidityWindow = 10 min`. Any block we
+        // accept that bitcoind rejected on futurity grounds at submission time will become valid
+        // in bitcoind within minutes (Bitcoin Core treats `BLOCK_TIME_FUTURE` as transient and
+        // re-evaluates). PoW, MTP, difficulty-bits, and chain-continuity checks are unaffected.
+        val intervalEndInSeconds = intervalEndMs / 1000
 
         val inputs = tx.inputs
         val outputs = tx.outputs
@@ -1098,7 +1213,7 @@ object BitcoinValidator extends DataParameterizedValidator {
                       blockHeaders,
                       parentPath,
                       mpfInsertProofs,
-                      intervalStartInSeconds,
+                      intervalEndInSeconds,
                       params
                     )
 
@@ -1133,7 +1248,7 @@ object BitcoinValidator extends DataParameterizedValidator {
             case OracleAction.CloseOracle =>
                 // 1. Staleness check: last confirmed block timestamp must be > closureTimeout ago
                 require(
-                  intervalStartInSeconds - chainState.ctx.timestamps.head > params.closureTimeout,
+                  intervalEndInSeconds - chainState.ctx.timestamps.head > params.closureTimeout,
                   "Oracle is not stale"
                 )
                 // 2. Owner authorization

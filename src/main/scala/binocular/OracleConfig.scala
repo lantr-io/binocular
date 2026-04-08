@@ -40,22 +40,24 @@ case class OracleConfig(
         for {
             ref <- parseTxOutRef(txOutRef)
             pkh <- parseOwnerPkhString(ownerPkh)
-        } yield BitcoinContract.validatorParams(
-          ref,
-          pkh,
-          maturationConfirmations = maturationConfirmations,
-          challengeAging = challengeAging,
-          closureTimeout = closureTimeout,
-          maxBlocksInForkTree = maxBlocksInForkTree,
-          testingMode = testingMode,
-          allowMinDifficultyBlocks = bitcoinNetwork.allowMinDifficultyBlocks,
-          powLimit = powLimitFor(bitcoinNetwork)
-        )
+        } yield {
+            val base = bitcoinNetwork match
+                case BitcoinNetwork.Mainnet =>
+                    BitcoinValidatorParams.makeMainnet(ref, pkh, challengeAging)
+                case BitcoinNetwork.Testnet =>
+                    BitcoinValidatorParams.makeTestnet(ref, pkh, challengeAging)
+                case BitcoinNetwork.Testnet4 =>
+                    BitcoinValidatorParams.makeTestnet4(ref, pkh, challengeAging)
+                case BitcoinNetwork.Regtest =>
+                    BitcoinValidatorParams.makeRegtest(ref, pkh, challengeAging)
+            base.copy(
+              maturationConfirmations = maturationConfirmations,
+              closureTimeout = closureTimeout,
+              maxBlocksInForkTree = maxBlocksInForkTree,
+              testingMode = testingMode
+            )
+        }
     }
-
-    private def powLimitFor(network: BitcoinNetwork): BigInt = network match
-        case BitcoinNetwork.Regtest => BitcoinHelpers.RegtestPowLimit
-        case _                      => BitcoinHelpers.PowLimit
 
     /** Derive script address for a given Cardano network. The Bitcoin network is required because
       * `allowMinDifficultyBlocks` and `powLimit` are baked into the script bytes, so they affect
