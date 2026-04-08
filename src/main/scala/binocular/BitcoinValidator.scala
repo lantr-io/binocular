@@ -33,6 +33,7 @@ type NonEmptyList[A] = List[A]
 type List11Timestamps = List[PosixTimeSeconds]
 type MPFRoot = ByteString
 
+/*
 case class BlockHeader(bytes: ByteString) derives FromData, ToData {
     inline def version: BigInt =
         byteStringToInteger(false, bytes.slice(0, 4))
@@ -44,6 +45,39 @@ case class BlockHeader(bytes: ByteString) derives FromData, ToData {
     inline def merkleRoot: MerkleRoot = bytes.slice(36, 32)
 
     inline def timestamp: BigInt = byteStringToInteger(false, bytes.slice(68, 4))
+}
+
+ */
+
+opaque type BlockHeader = ByteString
+
+
+object BlockHeader {
+
+  def apply(bytes: ByteString): BlockHeader = {
+    bytes
+  }
+
+  extension (self: BlockHeader)
+    inline def version: BigInt =
+        byteStringToInteger(false, self.slice(0, 4))
+
+    inline def prevBlockHash: BlockHash = self.slice(4, 32)
+
+    inline def bits: CompactBits = self.slice(72, 4)
+
+    inline def merkleRoot: MerkleRoot = self.slice(36, 32)
+
+    inline def timestamp: BigInt = byteStringToInteger(false, self.slice(68, 4))
+
+    inline def bytes: ByteString = self
+
+  @uplcIntrinsic("bData")
+  given ToData[BlockHeader] = (a: BlockHeader) => bData(a)
+
+  @uplcIntrinsic("unBData")
+  given FromData[BlockHeader] = (data) => unBData(data)
+  
 }
 
 case class BlockSummary(
