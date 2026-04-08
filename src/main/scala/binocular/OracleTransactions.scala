@@ -113,12 +113,22 @@ object OracleTransactions {
         matchingUtxos
     }
 
-    /** Compute the validity interval start time that will be used on-chain. */
+    /** Compute the validity interval for an oracle transaction.
+      *
+      * Returns `(validFromInstant, onChainEndTimeSeconds)`:
+      *
+      *   - `validFromInstant` is the wall-clock start of the validity window — pass directly to
+      *     `TxBuilder.validFrom(...)`. The caller adds `MaxValidityWindow` to get `validTo`.
+      *   - `onChainEndTimeSeconds` is the **end** of the validity window in seconds. The on-chain
+      *     validator reads `tx.validRange.to` as its notion of "current time", so this is the value
+      *     that must flow into `BitcoinValidator.computeUpdate` as `currentTime`. See the extended
+      *     rationale in `BitcoinValidator.spend`.
+      */
     def computeValidityIntervalTime(
         cardanoInfo: CardanoInfo,
-        targetTimeSeconds: Option[BigInt] = None
+        targetEndTimeSeconds: Option[BigInt] = None
     ): (Instant, BigInt) = {
-        SlotConfigHelper.computeValidityIntervalTime(cardanoInfo, targetTimeSeconds)
+        SlotConfigHelper.computeValidityIntervalTime(cardanoInfo, targetEndTimeSeconds)
     }
 
     /** Apply Bitcoin headers to ChainState to calculate new state. Uses empty MPF proofs - only
@@ -344,8 +354,8 @@ object OracleTransactions {
 
         val cardanoInfo = provider.cardanoInfo
 
-        // Compute validity interval time from current time
-        val (validityInstant, validatorWillSeeTime) =
+        // Reconstruct the wall-clock validFrom from the previously-computed on-chain end time.
+        val (validityInstant, _) =
             computeValidityIntervalTime(
               cardanoInfo,
               Some(validityIntervalTimeSeconds)

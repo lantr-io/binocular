@@ -52,7 +52,19 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
         Console.step(1, "Connecting to Bitcoin RPC")
         val t1 = System.nanoTime()
         val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
-        Console.success(s"Connected to ${config.bitcoinNode.url}")
+        val info =
+            try rpc.getBlockchainInfo().await(30.seconds)
+            catch {
+                case e: Exception =>
+                    Console.error(s"Connecting to ${config.bitcoinNode.url}: ${e.getMessage}")
+                    Console.error("Make sure:")
+                    Console.error("  1. Bitcoin node is running and accessible")
+                    Console.error("  2. RPC credentials are correct")
+                    break(1)
+            }
+        Console.success(
+          s"Connected to ${config.bitcoinNode.url} (chain=${info.chain}, tip=${info.blocks})"
+        )
         println()
 
         // Step 2

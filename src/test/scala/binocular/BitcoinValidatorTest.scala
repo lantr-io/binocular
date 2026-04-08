@@ -230,7 +230,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         val contract = BitcoinContract.makeContract(testParams)
         info(s"Contract size: ${contract.script.script.size}")
 //        println(contract.program.showHighlighted)
-        assert(contract.script.script.size == 8274)
+        assert(contract.script.script.size == 8276)
     }
 
     test("Block header throughput - max headers per transaction") {
@@ -330,9 +330,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             )
             val utxos: Utxos =
                 Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
-            val validFrom = Instant.ofEpochSecond(lastTimestamp.toLong)
-
-            val validTo = validFrom.plusSeconds(600)
+            // Validator reads validRange.to as currentTime; align validTo with the off-chain
+            // currentTime used to compute expectedState.
+            val validTo = Instant.ofEpochSecond(lastTimestamp.toLong)
+            val validFrom = validTo.minusSeconds(600)
             val draft = txBuilder
                 .references(refScriptUtxo, testContract)
                 .spend(utxo, redeemer)
@@ -536,8 +537,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             )
             val utxos: Utxos =
                 Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
-            val validFrom = Instant.ofEpochSecond(currentTime.toLong)
-            val validTo = validFrom.plusSeconds(600)
+            // Validator reads validRange.to as currentTime; align validTo with the off-chain
+            // currentTime used to compute expectedState.
+            val validTo = Instant.ofEpochSecond(currentTime.toLong)
+            val validFrom = validTo.minusSeconds(600)
 
             val draft = txBuilder
                 .references(refScriptUtxo, testContract)
@@ -1179,8 +1182,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             DatumOption.Inline(stateWith100Blocks.toData)
           )
         )
-        val validFrom = Instant.ofEpochSecond(currentTime.toLong)
-        val validTo = validFrom.plusSeconds(600)
+        // Validator reads validRange.to as currentTime; align validTo with the off-chain
+        // currentTime used to compute expectedState.
+        val validTo = Instant.ofEpochSecond(currentTime.toLong)
+        val validFrom = validTo.minusSeconds(600)
 
         val built = txBuilder
             .spend(feePayerUtxo)
@@ -1212,8 +1217,8 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
 
         assert(txSize <= maxTxSize, "Tx size exceeded")
         assert(
-          tx.body.value.fee == Coin(981972),
-          s"Tx fee ${tx.body.value.fee} != 981972 lovelace"
+          tx.body.value.fee == Coin(982023),
+          s"Tx fee ${tx.body.value.fee} != 982023 lovelace"
         )
     }
 
@@ -1314,8 +1319,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
           ShelleyDelegationPart.Key(fakeStakeKeyHash)
         )
 
-        val validFrom = Instant.ofEpochSecond(currentTime.toLong)
-        val validTo = validFrom.plusSeconds(600)
+        // Validator reads validRange.to as currentTime; align validTo with the off-chain
+        // currentTime used to compute expectedState.
+        val validTo = Instant.ofEpochSecond(currentTime.toLong)
+        val validFrom = validTo.minusSeconds(600)
         val draft = txBuilder
             .references(refScriptUtxo, testContract)
             .spend(utxo, update.toData)
@@ -1349,8 +1356,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         val utxos: Utxos =
             Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
 
-        val validFrom = Instant.ofEpochSecond(currentTime.toLong)
-        val validTo = validFrom.plusSeconds(600)
+        // Validator reads validRange.to as currentTime; align validTo with the off-chain
+        // currentTime used to compute expectedState.
+        val validTo = Instant.ofEpochSecond(currentTime.toLong)
+        val validFrom = validTo.minusSeconds(600)
         val draft = txBuilder
             .references(refScriptUtxo, testContract)
             .spend(utxo, update.toData)
@@ -1429,8 +1438,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
 
         val redeemer = OracleAction.CloseOracle.toData
-        val validFrom = Instant.ofEpochSecond(currentTime.toLong)
-        val validTo = validFrom.plusSeconds(600)
+        // Validator reads validRange.to as currentTime; align validTo with the off-chain
+        // currentTime used to compute expectedState.
+        val validTo = Instant.ofEpochSecond(currentTime.toLong)
+        val validFrom = validTo.minusSeconds(600)
 
         val draft = txBuilder
             .references(refScriptUtxo, testContract)
@@ -1468,8 +1479,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
 
         val redeemer = OracleAction.CloseOracle.toData
-        val validFrom = Instant.ofEpochSecond(currentTime.toLong)
-        val validTo = validFrom.plusSeconds(600)
+        // Validator reads validRange.to as currentTime; align validTo with the off-chain
+        // currentTime used to compute expectedState.
+        val validTo = Instant.ofEpochSecond(currentTime.toLong)
+        val validFrom = validTo.minusSeconds(600)
 
         val draft = txBuilder
             .references(refScriptUtxo, testContract)
@@ -1506,8 +1519,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
 
         val redeemer = OracleAction.CloseOracle.toData
-        val validFrom = Instant.ofEpochSecond(currentTime.toLong)
-        val validTo = validFrom.plusSeconds(600)
+        // Validator reads validRange.to as currentTime; align validTo with the off-chain
+        // currentTime used to compute expectedState.
+        val validTo = Instant.ofEpochSecond(currentTime.toLong)
+        val validFrom = validTo.minusSeconds(600)
 
         // Use a wrong signer (different key hash)
         val wrongSigner = scalus.cardano.ledger.AddrKeyHash(
@@ -1547,8 +1562,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
 
         val redeemer = OracleAction.CloseOracle.toData
-        val validFrom = Instant.ofEpochSecond(currentTime.toLong)
-        val validTo = validFrom.plusSeconds(600)
+        // Validator reads validRange.to as currentTime; align validTo with the off-chain
+        // currentTime used to compute expectedState.
+        val validTo = Instant.ofEpochSecond(currentTime.toLong)
+        val validFrom = validTo.minusSeconds(600)
 
         // No mint/burn — NFT is not burned
         val draft = txBuilder
@@ -1585,8 +1602,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         val utxos: Utxos =
             Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
 
-        val validFrom = Instant.ofEpochSecond(currentTime.toLong)
-        val validTo = validFrom.plusSeconds(600)
+        // Validator reads validRange.to as currentTime; align validTo with the off-chain
+        // currentTime used to compute expectedState.
+        val validTo = Instant.ofEpochSecond(currentTime.toLong)
+        val validFrom = validTo.minusSeconds(600)
         val draft = txBuilder
             .references(refScriptUtxo, testContract)
             .spend(utxo, update.toData)

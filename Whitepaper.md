@@ -784,7 +784,12 @@ t_{\text{block}} &\leq t_{\text{current}} + 7200
 \end{align*}
 
 Where $T_{\text{recent}}$ are the last 11 block timestamps and $t_{\text{current}}$ is the current
-time derived from the transaction's validity interval start (in seconds).
+time derived from the transaction's validity interval **end** (`tx.validRange.to / 1000`). Using
+the upper bound rather than the lower bound widens our futurity tolerance by up to
+`MaxValidityWindow` (10 min) so that blocks at the upper edge of Bitcoin Core's
+`MAX_FUTURE_BLOCK_TIME = 7200s` window (e.g. fresh testnet4 blocks deliberately stamped into the
+future to trigger the 20-minute min-difficulty rule) are accepted by the validator within the same
+real-time window in which Bitcoin Core itself accepts them.
 
 **Implementation Reference:** Timestamp checks are part of `validateBlock` in
 `BitcoinValidator.scala`
@@ -1315,20 +1320,37 @@ $$
 
 **Purpose:**
 
-The `addedTimeDelta` for each submitted block is computed as:
+The validator uses the **end** of the validity interval as its notion of "current time":
 
 $$
-\text{addedTimeDelta} = \text{intervalStart} - \text{block.timestamp}
+t_{\text{current}} = \text{tx.validRange.to} / 1000
 $$
 
-where `intervalStart` is derived from the transaction's validity interval. If the validity interval
-is too wide, `intervalStart` could be far from the actual wall-clock time, making `addedTimeDelta`
-unreliable. This would undermine the challenge aging check (which relies on `addedTimeDelta` to
-determine how long a block has been on-chain).
+The `addedTimeDelta` for each submitted block is then computed as:
 
-By constraining the interval to 10 minutes, we ensure `intervalStart` (and therefore
+$$
+\text{addedTimeDelta} = t_{\text{current}} - \text{block.timestamp}
+$$
+
+If the validity interval were too wide, $t_{\text{current}}$ could be far from the actual
+wall-clock time, making `addedTimeDelta` unreliable. This would undermine the challenge aging
+check (which relies on `addedTimeDelta` to determine how long a block has been on-chain).
+
+By constraining the interval to 10 minutes, we ensure $t_{\text{current}}$ (and therefore
 `addedTimeDelta`) is within 10 minutes of wall-clock time — sufficient for the 200-minute challenge
 period.
+
+**Why `validRange.to` and not `validRange.from`:** Using the interval upper bound widens the
+Bitcoin futurity check (`block.timestamp ≤ currentTime + 7200`) by up to `MaxValidityWindow`
+relative to $t_{\text{wall}} - 5\text{ min}$ (the conservative `validFrom` set off-chain to guard
+against Cardano clock skew). This is the slack required to accept Bitcoin blocks that are at the
+upper edge of Bitcoin Core's own `MAX_FUTURE_BLOCK_TIME = 7200s` tolerance. Aging is reference-
+invariant — `addedTimeDelta` is recorded with the same $t_{\text{current}}$, so the
+challenge-aging check `currentTime - block.timestamp - addedTimeDelta` reduces to pure elapsed
+wall-clock time regardless of whether $t_{\text{current}}$ tracks `validFrom` or `validTo`, as
+long as the choice is consistent. Consensus impact is bounded above by `MaxValidityWindow` and
+the only blocks affected are those bitcoind itself will accept within the next few minutes
+(`BLOCK_TIME_FUTURE` is treated as transient by Bitcoin Core).
 
 **Implementation Reference:** See `MaxValidityWindow` and the validity interval check in `spend` in
 `BitcoinValidator.scala`
