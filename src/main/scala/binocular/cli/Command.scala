@@ -155,7 +155,7 @@ object CommandHelpers {
         config: BinocularConfig
     )(using ExecutionContext): Either[String, OracleSetup] = {
         for {
-            params <- config.oracle.toBitcoinValidatorParams()
+            params <- config.oracle.toBitcoinValidatorParams(config.bitcoinNode.bitcoinNetwork)
             hdAccount <- config.wallet.createHdAccount()
             provider <- config.cardano.createBlockchainProvider()
         } yield {

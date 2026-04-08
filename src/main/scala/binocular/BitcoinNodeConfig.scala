@@ -33,10 +33,11 @@ case class BitcoinNodeConfig(
 
     /** Parse network string to BitcoinNetwork enum */
     def bitcoinNetwork: BitcoinNetwork = network.toLowerCase match {
-        case "mainnet" | "main" => BitcoinNetwork.Mainnet
-        case "testnet" | "test" => BitcoinNetwork.Testnet
-        case "regtest" | "reg"  => BitcoinNetwork.Regtest
-        case _                  => BitcoinNetwork.Mainnet
+        case "mainnet" | "main"   => BitcoinNetwork.Mainnet
+        case "testnet" | "test"   => BitcoinNetwork.Testnet
+        case "testnet4" | "test4" => BitcoinNetwork.Testnet4
+        case "regtest" | "reg"    => BitcoinNetwork.Regtest
+        case _                    => BitcoinNetwork.Mainnet
     }
 
     /** Mask password for logging */
@@ -49,5 +50,19 @@ case class BitcoinNodeConfig(
 enum BitcoinNetwork {
     case Mainnet
     case Testnet
+    case Testnet4
     case Regtest
+
+    /** Bitcoin Core: `consensus.fPowAllowMinDifficultyBlocks`.
+      *
+      * True for any chain where the 20-minute min-difficulty exception applies (testnet3, testnet4,
+      * regtest); false for mainnet. When true, a block whose timestamp exceeds the previous block's
+      * timestamp by more than `2 * TargetBlockTime` (1 200 s) is allowed to use `powLimit` as its
+      * target.
+      */
+    def allowMinDifficultyBlocks: Boolean = this match
+        case Mainnet  => false
+        case Testnet  => true
+        case Testnet4 => true
+        case Regtest  => true
 }

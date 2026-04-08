@@ -128,7 +128,7 @@ object BitcoinDependentLockApp {
             catch { case _: Exception => None }
         configOpt match {
             case Some(config) =>
-                config.oracle.toBitcoinValidatorParams() match {
+                config.oracle.toBitcoinValidatorParams(config.bitcoinNode.bitcoinNetwork) match {
                     case Right(params) =>
                         BitcoinContract.makeContract(params).script.scriptHash
                     case Left(_) =>
@@ -366,16 +366,17 @@ object BitcoinDependentLockApp {
         println()
         println("Step 2: Finding oracle UTxO by NFT...")
 
-        val params = oracleConf.toBitcoinValidatorParams().valueOr { err =>
+        val params = oracleConf.toBitcoinValidatorParams(btcConf.bitcoinNetwork).valueOr { err =>
             System.err.println(s"Error parsing oracle params: $err")
             return 1
         }
         val oracleScriptHash =
             BitcoinContract.makeContract(params).script.scriptHash
         val oracleScriptAddressBech32 =
-            oracleConf.scriptAddress(cardanoConf.cardanoNetwork).valueOr { err =>
-                System.err.println(s"Error deriving oracle script address: $err")
-                return 1
+            oracleConf.scriptAddress(cardanoConf.cardanoNetwork, btcConf.bitcoinNetwork).valueOr {
+                err =>
+                    System.err.println(s"Error deriving oracle script address: $err")
+                    return 1
             }
         val oracleAddress = Address.fromBech32(oracleScriptAddressBech32)
 

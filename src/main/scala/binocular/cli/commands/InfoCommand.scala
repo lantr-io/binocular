@@ -40,9 +40,9 @@ case class InfoCommand() extends Command {
         println(
           s"  Owner PKH: ${if oracle.ownerPkh.nonEmpty then oracle.ownerPkh else "(not set)"}"
         )
-        oracle.toBitcoinValidatorParams() match {
+        oracle.toBitcoinValidatorParams(config.bitcoinNode.bitcoinNetwork) match {
             case Right(params) =>
-                val addr = oracle.scriptAddress(cardano.cardanoNetwork)
+                val addr = oracle.scriptAddress(cardano.cardanoNetwork, btc.bitcoinNetwork)
                 println(s"  Script Address: ${addr.getOrElse("(error)")}")
                 println(s"  Maturation Confirmations: ${params.maturationConfirmations}")
                 println(s"  Challenge Aging: ${params.challengeAging}")

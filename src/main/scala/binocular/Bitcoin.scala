@@ -1,7 +1,7 @@
 package binocular
 import binocular.BitcoinHelpers.*
 import org.apache.pekko.actor.ActorSystem
-import scalus.cardano.onchain.plutus.prelude
+import scalus.cardano.onchain.plutus.{prelude, v1, v3}
 import scalus.cardano.onchain.plutus.v1.TxOutRef
 import scalus.uplc.builtin.Builtins.*
 import scalus.uplc.builtin.ByteString
@@ -132,7 +132,12 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
                     else Future.successful(BigInt(0))
                 })
             }
-            bits = BitcoinChainState.rpcBitsToCompactBits(header.bits)
+            // Use the difficulty bits from the block at the most recent retarget boundary, not
+            // the starting block's bits. On testnet3/testnet4/regtest the starting block could
+            // itself be a min-difficulty block (powLimit), in which case its `bits` would no
+            // longer represent the period's "real" difficulty needed to validate subsequent
+            // blocks. The retarget block's bits always carry the period's true target.
+            bits = BitcoinChainState.rpcBitsToCompactBits(adjustmentHeader.bits)
             // Block hash from RPC is in display order (big-endian), but we store it in internal order (little-endian)
             blockHash = ByteString.fromArray(hexToByteString(header.hash).bytes.reverse.toArray)
         yield ChainState(
@@ -149,27 +154,38 @@ class HeaderSyncWithRpc(config: BitcoinNodeConfig)(using system: ActorSystem) {
         )
     }
 
-    private val mainnetValidationParams = BitcoinValidatorParams(
-      maturationConfirmations = 100,
-      challengeAging = 200 * 60,
-      oneShotTxOutRef = scalus.cardano.onchain.plutus.v3.TxOutRef(
-        scalus.cardano.onchain.plutus.v3.TxId(ByteString.unsafeFromArray(Array.fill(32)(0: Byte))),
-        0
-      ),
-      closureTimeout = 30 * 24 * 60 * 60,
-      owner = scalus.cardano.onchain.plutus.v1.PubKeyHash(
-        ByteString.unsafeFromArray(Array.fill(28)(0: Byte))
-      ),
-      powLimit = PowLimit,
-      maxBlocksInForkTree = BitcoinContract.DefaultMaxBlocksInForkTree
-    )
+    // Validation params derived from the configured Bitcoin network. The network determines:
+    //   - allowMinDifficultyBlocks: enabled for testnet3/testnet4/regtest (the 20-minute rule)
+    //   - powLimit:                 regtest uses a much higher (easier) limit
+    private val validationParams: BitcoinValidatorParams = {
+        val network = config.bitcoinNetwork
+        val powLimit = network match
+            case BitcoinNetwork.Regtest => RegtestPowLimit
+            case _                      => PowLimit
+        BitcoinValidatorParams(
+          maturationConfirmations = 100,
+          challengeAging = 200 * 60,
+          oneShotTxOutRef = v3.TxOutRef(
+            v3
+                .TxId(ByteString.unsafeFromArray(Array.fill(32)(0: Byte))),
+            0
+          ),
+          closureTimeout = 30 * 24 * 60 * 60,
+          owner = v1.PubKeyHash(
+            ByteString.unsafeFromArray(Array.fill(28)(0: Byte))
+          ),
+          powLimit = powLimit,
+          maxBlocksInForkTree = BitcoinContract.DefaultMaxBlocksInForkTree,
+          allowMinDifficultyBlocks = network.allowMinDifficultyBlocks
+        )
+    }
 
     private def processHeader(currentState: ChainState, headerInfo: BlockHeaderInfo): ChainState =
         val header = convertHeader(headerInfo)
         val currentTime = BigInt(System.currentTimeMillis() / 1000)
         val ctx = currentState.ctx
         val (summary, newCtx, _) =
-            BitcoinValidator.validateBlock(header, ctx, currentTime, mainnetValidationParams)
+            BitcoinValidator.validateBlock(header, ctx, currentTime, validationParams)
         ChainState(
           confirmedBlocksRoot = currentState.confirmedBlocksRoot,
           ctx = newCtx.copy(timestamps = newCtx.timestamps.take(BitcoinHelpers.MedianTimeSpan)),

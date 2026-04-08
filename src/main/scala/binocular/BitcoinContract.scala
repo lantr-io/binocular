@@ -38,7 +38,9 @@ object BitcoinContract {
         challengeAging: Int = 12000,
         closureTimeout: Int = 2592000,
         maxBlocksInForkTree: Int = DefaultMaxBlocksInForkTree,
-        testingMode: Boolean = false
+        testingMode: Boolean = false,
+        allowMinDifficultyBlocks: Boolean = false,
+        powLimit: BigInt = BitcoinHelpers.PowLimit
     ): BitcoinValidatorParams =
         BitcoinValidatorParams(
           maturationConfirmations = maturationConfirmations,
@@ -46,9 +48,10 @@ object BitcoinContract {
           oneShotTxOutRef = txOutRef,
           closureTimeout = closureTimeout,
           owner = owner,
-          powLimit = BitcoinHelpers.PowLimit,
+          powLimit = powLimit,
           maxBlocksInForkTree = maxBlocksInForkTree,
-          testingMode = testingMode
+          testingMode = testingMode,
+          allowMinDifficultyBlocks = allowMinDifficultyBlocks
         )
 
     lazy val blueprint: Blueprint = {

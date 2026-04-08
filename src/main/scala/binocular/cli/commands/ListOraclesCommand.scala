@@ -20,7 +20,10 @@ case class ListOraclesCommand(limit: Int) extends Command {
         val oracleConf = config.oracle
 
         val oracleScriptAddress =
-            oracleConf.scriptAddress(cardanoConf.cardanoNetwork) match {
+            oracleConf.scriptAddress(
+              cardanoConf.cardanoNetwork,
+              config.bitcoinNode.bitcoinNetwork
+            ) match {
                 case Left(err) =>
                     System.err.println(s"Error deriving script address: $err")
                     return 1

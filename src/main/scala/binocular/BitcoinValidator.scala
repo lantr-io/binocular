@@ -211,7 +211,11 @@ case class BitcoinValidatorParams(
     owner: PubKeyHash,
     powLimit: BigInt,
     maxBlocksInForkTree: BigInt,
-    testingMode: Boolean = false
+    testingMode: Boolean = false,
+    // Enables Bitcoin Core's `fPowAllowMinDifficultyBlocks` rule (testnet3 / testnet4 / regtest):
+    // a block whose timestamp exceeds the previous block's by more than 2*TargetBlockTime
+    // is allowed to use `powLimit` as its target. False for mainnet.
+    allowMinDifficultyBlocks: Boolean = false
 ) derives FromData,
       ToData
 
@@ -330,14 +334,18 @@ object BitcoinValidator extends DataParameterizedValidator {
         val hashInt = byteStringToInteger(false, hash)
 
         // Difficulty — matches GetNextWorkRequired() in pow.cpp:14-48
-        // At retarget boundaries (height+1 % 2016 == 0), computes new difficulty;
-        // otherwise returns ctx.currentBits unchanged.
+        // At retarget boundaries (height+1 % 2016 == 0), computes new difficulty.
+        // On testnet3/testnet4/regtest with `allowMinDifficultyBlocks`, a block whose timestamp
+        // exceeds the parent's by more than 2*TargetBlockTime may use `powLimit`. Otherwise the
+        // current period's difficulty is returned unchanged.
         val bits = getNextWorkRequired(
           ctx.height,
           ctx.currentBits,
           ctx.timestamps.head,
           ctx.prevDiffAdjTimestamp,
-          params.powLimit
+          params.powLimit,
+          header.timestamp,
+          params.allowMinDifficultyBlocks
         )
         // Bitcoin requires the header's encoded nBits to match the difficulty transition exactly
         // (`bad-diffbits`). Deriving the target from local context alone is not enough, because it
@@ -397,7 +405,8 @@ object BitcoinValidator extends DataParameterizedValidator {
         blocks: NonEmptyList[BlockSummary],
         ctx: TraversalCtx,
         chainwork: Chainwork,
-        powLimit: BigInt
+        powLimit: BigInt,
+        allowMinDifficultyBlocks: Boolean
     ): BigInt = blocks match
         case Nil => chainwork
         case Cons(block, tail) =>
@@ -406,14 +415,17 @@ object BitcoinValidator extends DataParameterizedValidator {
               ctx.currentBits,
               ctx.timestamps.head,
               ctx.prevDiffAdjTimestamp,
-              powLimit
+              powLimit,
+              block.timestamp,
+              allowMinDifficultyBlocks
             )
             val newCtx = accumulateBlock(ctx, block, powLimit)
             computeChainwork(
               tail,
               newCtx,
               chainwork + calculateBlockProof(compactBitsToTarget(bits)),
-              powLimit
+              powLimit,
+              allowMinDifficultyBlocks
             )
 
     /** Validate a list of headers (oldest-first), returning validated summaries and segment
@@ -607,7 +619,8 @@ object BitcoinValidator extends DataParameterizedValidator {
                                                   fullPrefix,
                                                   ctx,
                                                   BigInt(0),
-                                                  params.powLimit
+                                                  params.powLimit,
+                                                  params.allowMinDifficultyBlocks
                                                 )
                                             Blocks(
                                               fullPrefix,
@@ -635,7 +648,8 @@ object BitcoinValidator extends DataParameterizedValidator {
                                           fullPrefix,
                                           ctx,
                                           BigInt(0),
-                                          params.powLimit
+                                          params.powLimit,
+                                          params.allowMinDifficultyBlocks
                                         )
                                     Blocks(
                                       fullPrefix,
@@ -869,7 +883,13 @@ object BitcoinValidator extends DataParameterizedValidator {
                 else
                     // Partial promotion: some blocks promoted, rest remain. Stop recursion —
                     // remaining blocks and subtree stay as-is (subtree GC deferred to future tx).
-                    val promotedCw = computeChainwork(promoted, ctx, 0, params.powLimit)
+                    val promotedCw = computeChainwork(
+                      promoted,
+                      ctx,
+                      0,
+                      params.powLimit,
+                      params.allowMinDifficultyBlocks
+                    )
 //                    log("promoteAndGC computeChainwork")
                     (promoted, Blocks(remaining, cw - promotedCw, next))
 

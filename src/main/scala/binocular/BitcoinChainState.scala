@@ -122,9 +122,13 @@ object BitcoinChainState {
                 fetchTimestamps(heights, Nil)
             }
 
-            // Bits from RPC is in big-endian (display order), but Bitcoin headers use little-endian
-            // Reverse the bytes to match the format in the block header
-            bits = rpcBitsToCompactBits(header.bits)
+            // Use the difficulty bits from the block at the most recent retarget boundary,
+            // not the starting block. On testnet3/testnet4/regtest, the starting block could
+            // itself be a min-difficulty block (powLimit), in which case its `bits` would no
+            // longer represent the period's "real" difficulty needed to validate subsequent
+            // blocks. The retarget block's bits always carry the period's true target.
+            // Bits from RPC is in big-endian (display order); reverse to little-endian.
+            bits = rpcBitsToCompactBits(adjustmentHeader.bits)
             // Block hash from RPC is in display order (big-endian), but we store it in internal order (little-endian)
             blockHash = ByteString.fromArray(header.hash.hexToBytes.reverse)
             // Timestamps are in block order (newest first) — matching how the validator

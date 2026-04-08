@@ -75,7 +75,7 @@ case class ProveTransactionCommand(
 
         given ec: ExecutionContext = ExecutionContext.global
 
-        val params = oracleConf.toBitcoinValidatorParams() match {
+        val params = oracleConf.toBitcoinValidatorParams(config.bitcoinNode.bitcoinNetwork) match {
             case Left(err) =>
                 System.err.println(s"Error deriving params: $err")
                 return Left(1)

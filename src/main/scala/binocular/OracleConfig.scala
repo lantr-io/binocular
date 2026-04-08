@@ -28,8 +28,15 @@ case class OracleConfig(
     testingMode: Boolean = false
 ) derives ConfigReader {
 
-    /** Parse txOutRef and ownerPkh into BitcoinValidatorParams */
-    def toBitcoinValidatorParams(): Either[String, BitcoinValidatorParams] = {
+    /** Parse txOutRef and ownerPkh into BitcoinValidatorParams.
+      *
+      * @param bitcoinNetwork
+      *   determines `allowMinDifficultyBlocks` (testnet3/testnet4/regtest only) and `powLimit`
+      *   (regtest uses a much higher limit). Defaults to mainnet.
+      */
+    def toBitcoinValidatorParams(
+        bitcoinNetwork: BitcoinNetwork = BitcoinNetwork.Mainnet
+    ): Either[String, BitcoinValidatorParams] = {
         for {
             ref <- parseTxOutRef(txOutRef)
             pkh <- parseOwnerPkhString(ownerPkh)
@@ -40,13 +47,25 @@ case class OracleConfig(
           challengeAging = challengeAging,
           closureTimeout = closureTimeout,
           maxBlocksInForkTree = maxBlocksInForkTree,
-          testingMode = testingMode
+          testingMode = testingMode,
+          allowMinDifficultyBlocks = bitcoinNetwork.allowMinDifficultyBlocks,
+          powLimit = powLimitFor(bitcoinNetwork)
         )
     }
 
-    /** Derive script address for a given network */
-    def scriptAddress(network: CardanoNetwork): Either[String, String] = {
-        toBitcoinValidatorParams().map { params =>
+    private def powLimitFor(network: BitcoinNetwork): BigInt = network match
+        case BitcoinNetwork.Regtest => BitcoinHelpers.RegtestPowLimit
+        case _                      => BitcoinHelpers.PowLimit
+
+    /** Derive script address for a given Cardano network. The Bitcoin network is required because
+      * `allowMinDifficultyBlocks` and `powLimit` are baked into the script bytes, so they affect
+      * the script hash and therefore the on-chain address.
+      */
+    def scriptAddress(
+        network: CardanoNetwork,
+        bitcoinNetwork: BitcoinNetwork = BitcoinNetwork.Mainnet
+    ): Either[String, String] = {
+        toBitcoinValidatorParams(bitcoinNetwork).map { params =>
             val scriptHash = BitcoinContract.makeContract(params).script.scriptHash
             val scalusNetwork = network match {
                 case CardanoNetwork.Mainnet => Network.Mainnet

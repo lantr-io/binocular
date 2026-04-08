@@ -319,20 +319,51 @@ object BitcoinHelpers {
                 if value >= head then List.Cons(value, sortedValues)
                 else List.Cons(head, insertReverseSorted(value, tail))
 
-    // Difficulty adjustment - matches GetNextWorkRequired() in pow.cpp:14-48
+    // Difficulty adjustment - matches GetNextWorkRequired() in pow.cpp:14-67
+    //
+    // Bitcoin Core source (paraphrased):
+    //   if ((pindexLast->nHeight+1) % DifficultyAdjustmentInterval() != 0) {
+    //     if (params.fPowAllowMinDifficultyBlocks) {
+    //       if (pblock->GetBlockTime() > pindexLast->GetBlockTime() + nPowTargetSpacing*2)
+    //         return nProofOfWorkLimit;
+    //       else { /* walk back to last non-min-difficulty block */ return pindex->nBits; }
+    //     }
+    //     return pindexLast->nBits;
+    //   }
+    //   return CalculateNextWorkRequired(...);
+    //
+    // The "walk back" loop reduces to `currentTarget` here because Binocular's
+    // `accumulateBlock` never overwrites `ctx.currentBits` between retargets — it
+    // already holds the period's last non-min-difficulty value (the bits computed at
+    // the most recent retarget boundary). Min-difficulty blocks intentionally do NOT
+    // update it.
+    //
+    // @param newBlockTime the timestamp of the block being validated (only consulted when
+    //                     `allowMinDifficultyBlocks` is set)
+    // @param prevBlockTime the timestamp of the previous block (`pindexLast->GetBlockTime()`),
+    //                      used both as `nActualTimespan`'s upper bound at retargets and as
+    //                      the parent timestamp for the testnet 20-minute gap check.
+    // @param allowMinDifficultyBlocks Bitcoin Core's `consensus.fPowAllowMinDifficultyBlocks`
+    //                                 (testnet3 / testnet4 / regtest only).
     def getNextWorkRequired(
         nHeight: BigInt,
         currentTarget: CompactBits,
-        blockTime: BigInt,
+        prevBlockTime: BigInt,
         nFirstBlockTime: BigInt,
-        powLimit: BigInt
+        powLimit: BigInt,
+        newBlockTime: BigInt,
+        allowMinDifficultyBlocks: Boolean
     ): CompactBits = {
         // Only change once per difficulty adjustment interval
         if (nHeight + 1) % DifficultyAdjustmentInterval == BigInt(0) then
             val newTarget =
-                calculateNextWorkRequired(currentTarget, blockTime, nFirstBlockTime, powLimit)
-            val r = targetToCompactByteString(newTarget)
-            r
+                calculateNextWorkRequired(currentTarget, prevBlockTime, nFirstBlockTime, powLimit)
+            targetToCompactByteString(newTarget)
+        else if allowMinDifficultyBlocks && newBlockTime > prevBlockTime + 2 * TargetBlockTime
+        then
+            // testnet/testnet4/regtest 20-minute exception: a block whose timestamp is more
+            // than 2 * TargetBlockTime after its parent may use the proof-of-work limit.
+            targetToCompactByteString(powLimit)
         else currentTarget
     }
 

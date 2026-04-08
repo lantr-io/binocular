@@ -346,11 +346,12 @@ class BitcoinHelpersTest extends AnyFunSuite with ScalusTest with ScalaCheckProp
 
     test("getNextWorkRequired - difficulty adjustment timing") {
         val currentTarget = hex"1d00ffff".reverse
-        val blockTime = BigInt(1234567890)
+        val prevBlockTime = BigInt(1234567890)
         val firstBlockTime =
             BigInt(
               1234567890 - 2016 * 600 / 2
             ) // 2016 blocks * 10 blocks in half the time (should double the difficulty)
+        val newBlockTime = prevBlockTime + 600 // arbitrary; only used by testnet rule
 
         // Test block heights that should NOT trigger difficulty adjustment
         val noAdjustmentHeights = Seq(0, 1, 100, 1000, 2014) // Not at 2016 interval
@@ -358,9 +359,11 @@ class BitcoinHelpersTest extends AnyFunSuite with ScalusTest with ScalaCheckProp
             val result = getNextWorkRequired(
               height,
               currentTarget,
-              blockTime,
+              prevBlockTime,
               firstBlockTime,
-              PowLimit
+              PowLimit,
+              newBlockTime,
+              false
             )
             assert(
               result ==
@@ -374,9 +377,11 @@ class BitcoinHelpersTest extends AnyFunSuite with ScalusTest with ScalaCheckProp
             val result = getNextWorkRequired(
               height,
               currentTarget,
-              blockTime,
+              prevBlockTime,
               firstBlockTime,
-              PowLimit
+              PowLimit,
+              newBlockTime,
+              false
             )
             // Result should be different from currentTarget (actually calculated)
             assert(result != currentTarget, s"Height $height should trigger difficulty adjustment")
@@ -388,31 +393,198 @@ class BitcoinHelpersTest extends AnyFunSuite with ScalusTest with ScalaCheckProp
         // which means nHeight + 1 == 0, only true for height -1 (impossible)
 
         val currentTarget = hex"1d00ffff".reverse // smallest difficulty
-        val blockTime = BigInt(1234567890)
+        val prevBlockTime = BigInt(1234567890)
         val firstBlockTime =
             BigInt(
               1234567890 - 2016 * 600 / 2
             ) // Double block production, should make difficulty harder
+        val newBlockTime = prevBlockTime + 600
 
         // Height 2015: (2015 + 1) % 2016 = 0 (should adjust)
         // With bug: 2015 + (1 % 2016) = 2015 + 1 = 2016 ≠ 0 (would not adjust)
         val result2015 =
-            getNextWorkRequired(2015, currentTarget, blockTime, firstBlockTime, PowLimit)
+            getNextWorkRequired(
+              2015,
+              currentTarget,
+              prevBlockTime,
+              firstBlockTime,
+              PowLimit,
+              newBlockTime,
+              false
+            )
         assert(result2015 != currentTarget, "Height 2015 should trigger difficulty adjustment")
 
         // Height 4031: (4031 + 1) % 2016 = 0 (should adjust)
         val result4031 =
-            getNextWorkRequired(4031, currentTarget, blockTime, firstBlockTime, PowLimit)
+            getNextWorkRequired(
+              4031,
+              currentTarget,
+              prevBlockTime,
+              firstBlockTime,
+              PowLimit,
+              newBlockTime,
+              false
+            )
         assert(result4031 != currentTarget, "Height 4031 should trigger difficulty adjustment")
 
         // Height 1000: (1000 + 1) % 2016 = 1001 ≠ 0 (should not adjust)
         val result1000 =
-            getNextWorkRequired(1000, currentTarget, blockTime, firstBlockTime, PowLimit)
+            getNextWorkRequired(
+              1000,
+              currentTarget,
+              prevBlockTime,
+              firstBlockTime,
+              PowLimit,
+              newBlockTime,
+              false
+            )
         assert(
           result1000 ==
               currentTarget,
           "Height 1000 should not trigger difficulty adjustment"
         )
+    }
+
+    // ------------------------------------------------------------------------
+    // testnet/testnet4/regtest min-difficulty rule (fPowAllowMinDifficultyBlocks)
+    // matches Bitcoin Core pow.cpp::GetNextWorkRequired
+    // ------------------------------------------------------------------------
+
+    private val powLimitCompact: ByteString = targetToCompactByteString(PowLimit)
+
+    test("getNextWorkRequired - testnet rule: gap > 1200s returns powLimit compact bits") {
+        // Bitcoin Core: if (pblock->GetBlockTime() > pindexLast->GetBlockTime() +
+        //               params.nPowTargetSpacing*2) return nProofOfWorkLimit;
+        val currentTarget = hex"1a030ecd".reverse // some normal-difficulty bits
+        val prevBlockTime = BigInt(1714777860L)
+        val firstBlockTime = prevBlockTime - 1000
+        val height = BigInt(100) // not at retarget boundary
+
+        // gap = 1201 — strictly greater than 2*TargetBlockTime — must trigger min-diff
+        val newBlockTime = prevBlockTime + 1201
+        val result = getNextWorkRequired(
+          height,
+          currentTarget,
+          prevBlockTime,
+          firstBlockTime,
+          PowLimit,
+          newBlockTime,
+          true
+        )
+        assert(
+          result == powLimitCompact,
+          s"Expected powLimit compact (${powLimitCompact.toHex}), got ${result.toHex}"
+        )
+    }
+
+    test("getNextWorkRequired - testnet rule: gap == 1200s does NOT trigger min-diff") {
+        // Strict greater-than: gap == 1200 must NOT trigger the rule.
+        val currentTarget = hex"1a030ecd".reverse
+        val prevBlockTime = BigInt(1714777860L)
+        val firstBlockTime = prevBlockTime - 1000
+        val height = BigInt(100)
+        val newBlockTime = prevBlockTime + 1200
+
+        val result = getNextWorkRequired(
+          height,
+          currentTarget,
+          prevBlockTime,
+          firstBlockTime,
+          PowLimit,
+          newBlockTime,
+          true
+        )
+        assert(result == currentTarget, "Gap of exactly 1200s must use currentTarget unchanged")
+    }
+
+    test("getNextWorkRequired - testnet rule: gap <= 1200s returns currentTarget") {
+        val currentTarget = hex"1a030ecd".reverse
+        val prevBlockTime = BigInt(1714777860L)
+        val firstBlockTime = prevBlockTime - 1000
+        val height = BigInt(100)
+
+        // Within the gap window — must use the period's normal difficulty
+        for gap <- Seq(0, 1, 60, 600, 1199, 1200) do
+            val newBlockTime = prevBlockTime + gap
+            val result = getNextWorkRequired(
+              height,
+              currentTarget,
+              prevBlockTime,
+              firstBlockTime,
+              PowLimit,
+              newBlockTime,
+              true
+            )
+            assert(
+              result == currentTarget,
+              s"Gap of ${gap}s must keep currentTarget; got ${result.toHex}"
+            )
+    }
+
+    test("getNextWorkRequired - testnet rule does NOT override retarget at boundary") {
+        // At a retarget boundary the normal difficulty calculation must take precedence,
+        // even if the gap exceeds 1200s. Bitcoin Core: the testnet branch is only entered
+        // when (pindexLast->nHeight+1) % interval != 0.
+        val currentTarget = hex"1d00ffff".reverse
+        val prevBlockTime = BigInt(1714777860L)
+        // Set up so the retarget produces a target *different* from both currentTarget and powLimit.
+        // 2016*600/2 = halve the time → halve the target (double difficulty).
+        val firstBlockTime = prevBlockTime - 2016 * 600 / 2
+        val newBlockTime =
+            prevBlockTime + 5000 // huge gap, would trigger min-diff between retargets
+
+        val resultTestnet = getNextWorkRequired(
+          2015, // (2015+1) % 2016 == 0 → retarget boundary
+          currentTarget,
+          prevBlockTime,
+          firstBlockTime,
+          PowLimit,
+          newBlockTime,
+          true
+        )
+        val resultMainnet = getNextWorkRequired(
+          2015,
+          currentTarget,
+          prevBlockTime,
+          firstBlockTime,
+          PowLimit,
+          newBlockTime,
+          false
+        )
+        assert(
+          resultTestnet == resultMainnet,
+          "Retarget output must be identical regardless of allowMinDifficultyBlocks"
+        )
+        assert(
+          resultTestnet != powLimitCompact,
+          "Retarget at boundary must NOT return powLimit (testnet rule must not apply)"
+        )
+        assert(resultTestnet != currentTarget, "Retarget must actually change the target")
+    }
+
+    test("getNextWorkRequired - mainnet (allowMinDiff=false) ignores gap entirely") {
+        // Without the flag, the new block time is irrelevant — currentTarget is returned
+        // verbatim between retarget boundaries.
+        val currentTarget = hex"1a030ecd".reverse
+        val prevBlockTime = BigInt(1234567890L)
+        val firstBlockTime = prevBlockTime - 1000
+        val height = BigInt(100)
+
+        for gap <- Seq(0, 600, 1200, 1500, 7200, 100000) do
+            val newBlockTime = prevBlockTime + gap
+            val result = getNextWorkRequired(
+              height,
+              currentTarget,
+              prevBlockTime,
+              firstBlockTime,
+              PowLimit,
+              newBlockTime,
+              false
+            )
+            assert(
+              result == currentTarget,
+              s"Mainnet (allowMinDiff=false) must ignore gap=$gap"
+            )
     }
 
     test("targetToCompactBits V1 vs V2 (findFirstSetBit) - CEK ExUnits comparison") {
