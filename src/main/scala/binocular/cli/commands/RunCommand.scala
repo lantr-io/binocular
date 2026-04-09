@@ -113,6 +113,7 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
           "Fork tree",
           s"${currentChainState.forkTree.blockCount} blocks"
         )
+        CommandHelpers.printParams(setup.params)
         // Reconstruct off-chain MPF
         val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
         var currentMpf: OffChainMPF = CommandHelpers

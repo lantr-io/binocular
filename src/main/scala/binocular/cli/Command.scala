@@ -61,6 +61,38 @@ case class ValidOracleUtxo(
 /** Helper utilities for commands */
 object CommandHelpers {
 
+    /** Print BitcoinValidatorParams as an aligned summary via Console.info, suitable for use in
+      * command startup banners. Field order matches BitcoinValidatorParams declaration so the
+      * on-chain parameter set is easy to scan at a glance.
+      */
+    def printParams(params: BitcoinValidatorParams): Unit = {
+        def humanDuration(seconds: BigInt): String = {
+            val s = seconds.toLong
+            if s < 60 then s"${s}s"
+            else if s < 3600 then f"${s / 60.0}%.1fm"
+            else if s < 86400 then f"${s / 3600.0}%.2fh"
+            else f"${s / 86400.0}%.2fd"
+        }
+        Console.info(
+          "oneShotTxOutRef",
+          s"${params.oneShotTxOutRef.id.hash.toHex}#${params.oneShotTxOutRef.idx}"
+        )
+        Console.info("owner", params.owner.hash.toHex)
+        Console.info("powLimit", f"0x${params.powLimit.toString(16)}")
+        Console.info("allowMinDifficultyBlocks", params.allowMinDifficultyBlocks)
+        Console.info("maturationConfirmations", params.maturationConfirmations)
+        Console.info(
+          "challengeAging",
+          s"${params.challengeAging}s (${humanDuration(params.challengeAging)})"
+        )
+        Console.info(
+          "closureTimeout",
+          s"${params.closureTimeout}s (${humanDuration(params.closureTimeout)})"
+        )
+        Console.info("maxBlocksInForkTree", params.maxBlocksInForkTree)
+        Console.info("testingMode", params.testingMode)
+    }
+
     /** Parse UTxO reference string (TX_HASH:OUTPUT_INDEX) */
     def parseUtxo(utxo: String): Either[String, (String, Int)] = {
         val parts = utxo.split(":")

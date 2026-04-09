@@ -1,7 +1,7 @@
 package binocular.cli.commands
 
 import binocular.*
-import binocular.cli.{Command, Console, OracleSetup}
+import binocular.cli.{Command, CommandHelpers, Console, OracleSetup}
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.cardano.onchain.plutus.v1.PubKeyHash
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
@@ -176,6 +176,7 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
         val setup = OracleSetup(params, compiled, hdAccount, provider, network)
         Console.info("Address", setup.scriptAddressBech32)
         Console.info("Owner", owner.hash.toHex)
+        CommandHelpers.printParams(params)
 
         // Step 5
         println()
