@@ -415,7 +415,17 @@ object OracleTransactions {
             .complete(sponsorUtxos, sponsorAddress)
     }
 
-    /** Binary-search for the maximum number of promotions that fit in a valid transaction.
+    /** Binary-search for the maximum-cost update that fits in a valid transaction.
+      *
+      * Two axes are searched:
+      *   1. The number of new headers to add to the fork tree (each header is validated by the
+      *      on-chain script, so this is the dominant ExUnits cost).
+      *   2. The number of confirmed-block promotions performed in the same tx (datum size and a
+      *      smaller incremental cost).
+      *
+      * The outer search varies the header count (descending: try the full batch first, fall back to
+      * fewer if ExUnits/size limits reject it). For each header count, an inner search picks the
+      * largest promotion count that still fits.
       *
       * Returns the signed transaction result, updated chain state, updated off-chain MPF, and the
       * number of promotions performed.
@@ -447,26 +457,25 @@ object OracleTransactions {
                 throw new RuntimeException(s"Failed to fetch sponsor UTxOs: $err")
             }
 
-            // Find total promotable blocks
-            val totalPromotable = computePromotedBlocks(
-              currentChainState,
-              blockHeaders,
-              parentPath,
-              validityIntervalTimeSeconds,
-              params
-            ).length
-
+            val totalHeaders = blockHeaders.length.toInt
             val maxTxSize = protocolParams.maxTxSize
 
-            // Try building with a given number of promotions.
+            // Captures the most recent reason a tryBuild attempt failed, so the search can
+            // surface a meaningful error instead of a generic "no count worked".
+            var lastFailure: String = "no attempts made"
+
+            // Try building with a given number of headers and promotions.
             // Signs the transaction and checks actual CBOR size against protocol limits.
             def tryBuild(
+                headerCount: Int,
                 maxPromotions: Int
             ): Option[(Transaction, ChainState, OffChainMPF)] = {
+                val headersSlice = blockHeaders.take(BigInt(headerCount))
+
                 val (newState, mpfProofs, updatedMpf) =
                     computeUpdateWithProofs(
                       currentChainState,
-                      blockHeaders,
+                      headersSlice,
                       parentPath,
                       validityIntervalTimeSeconds,
                       offChainMpf,
@@ -475,7 +484,11 @@ object OracleTransactions {
                     )
 
                 // Skip if no state change
-                if newState == currentChainState then return None
+                if newState == currentChainState then {
+                    lastFailure =
+                        s"no state change at headerCount=$headerCount maxPromotions=$maxPromotions"
+                    return None
+                }
 
                 try {
                     val builder = buildUpdateTxBuilder(
@@ -487,7 +500,7 @@ object OracleTransactions {
                       oracleUtxo,
                       currentChainState,
                       newState,
-                      blockHeaders,
+                      headersSlice,
                       parentPath,
                       validityIntervalTimeSeconds,
                       referenceScriptUtxo,
@@ -497,45 +510,85 @@ object OracleTransactions {
                     // Validate ExUnits against protocol limits
                     builder.context
                         .validate(Seq(ExUnitsTooBigValidator), protocolParams) match {
-                        case Left(_) => return None
-                        case _       => ()
+                        case Left(err) =>
+                            lastFailure =
+                                s"ExUnits validation failed at headerCount=$headerCount maxPromotions=$maxPromotions: $err"
+                            return None
+                        case _ => ()
                     }
 
                     // Sign and check actual CBOR size (signing adds witness bytes)
                     val tx = builder.sign(signer).transaction
-                    if tx.toCbor.length > maxTxSize then None
-                    else Some((tx, newState, updatedMpf))
+                    if tx.toCbor.length > maxTxSize then {
+                        lastFailure =
+                            s"tx size ${tx.toCbor.length} > maxTxSize $maxTxSize at headerCount=$headerCount maxPromotions=$maxPromotions"
+                        None
+                    } else Some((tx, newState, updatedMpf))
                 } catch {
-                    case _: Exception => None
+                    case e: Exception =>
+                        lastFailure =
+                            s"exception at headerCount=$headerCount maxPromotions=$maxPromotions: ${e.getClass.getSimpleName}: ${e.getMessage}"
+                        None
                 }
             }
 
-            // Binary search for max promotions
-            var low = 0
-            var high = totalPromotable.toInt
-            var best: Option[(Transaction, ChainState, OffChainMPF, Int)] = None
+            // Inner search: for a given header count, find the max promotion count that fits.
+            // Returns the resulting tx (or None if even maxPromotions=0 doesn't fit for this
+            // header count).
+            def bestPromotionsFor(
+                headerCount: Int
+            ): Option[(Transaction, ChainState, OffChainMPF, Int)] = {
+                val headersSlice = blockHeaders.take(BigInt(headerCount))
+                val totalPromotable = computePromotedBlocks(
+                  currentChainState,
+                  headersSlice,
+                  parentPath,
+                  validityIntervalTimeSeconds,
+                  params
+                ).length.toInt
 
-            while low <= high do {
-                val mid = (low + high) / 2
-                tryBuild(mid) match {
-                    case Some((tx, newState, updatedMpf)) =>
-                        best = Some((tx, newState, updatedMpf, mid))
-                        low = mid + 1
+                var low = 0
+                var high = totalPromotable
+                var best: Option[(Transaction, ChainState, OffChainMPF, Int)] = None
+                while low <= high do {
+                    val mid = (low + high) / 2
+                    tryBuild(headerCount, mid) match {
+                        case Some((tx, newState, updatedMpf)) =>
+                            best = Some((tx, newState, updatedMpf, mid))
+                            low = mid + 1
+                        case None =>
+                            high = mid - 1
+                    }
+                }
+                best
+            }
+
+            // Outer search: largest header count that produces a buildable tx.
+            // Allows headerCount=0 only when there are still promotable blocks to flush.
+            val minHeaders = if totalHeaders > 0 then 1 else 0
+            var lowH = minHeaders
+            var highH = totalHeaders
+            var bestOverall: Option[(Transaction, ChainState, OffChainMPF, Int)] = None
+            while lowH <= highH do {
+                val midH = (lowH + highH) / 2
+                bestPromotionsFor(midH) match {
+                    case some @ Some(_) =>
+                        bestOverall = some
+                        lowH = midH + 1
                     case None =>
-                        high = mid - 1
+                        highH = midH - 1
                 }
             }
 
-            // Fall back to 0 promotions if no promotion count worked
-            val (tx, newState, updatedMpf, promotionCount) = best.getOrElse {
-                tryBuild(0) match {
-                    case Some((t, ns, um)) => (t, ns, um, 0)
-                    case None =>
-                        throw new RuntimeException(
-                          "Failed to build transaction even with 0 promotions"
-                        )
+            // If even the smallest header count failed but there might be promotions to flush,
+            // try a promotion-only update (headerCount=0).
+            val (tx, newState, updatedMpf, promotionCount) = bestOverall
+                .orElse(if totalHeaders > 0 then bestPromotionsFor(0) else None)
+                .getOrElse {
+                    throw new RuntimeException(
+                      s"Failed to build any UpdateOracle transaction (last failure: $lastFailure)"
+                    )
                 }
-            }
             val txSize = tx.toCbor.length
             val datumSize = tx.body.value.outputs
                 .find(_.value.inlineDatum.isDefined)

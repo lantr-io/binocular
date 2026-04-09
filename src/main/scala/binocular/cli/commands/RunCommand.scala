@@ -3,7 +3,9 @@ package binocular.cli.commands
 import binocular.*
 import binocular.ForkTreePretty.*
 import binocular.cli.{Command, CommandHelpers, Console}
-import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
+import org.bouncycastle.crypto.digests.Blake2bDigest
+import scalus.uplc.builtin.ByteString
+import scalus.cardano.ledger.{Bech32, TransactionHash, TransactionInput, Utxo}
 import scalus.cardano.node.TransactionStatus
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
@@ -14,6 +16,16 @@ import scala.util.boundary
 import boundary.break
 import scalus.utils.await
 import cats.syntax.either.*
+
+/** CIP-14 native-asset fingerprint: bech32("asset", blake2b-160(policyId ++ assetName)). */
+private def assetFingerprint(policyId: ByteString, assetName: ByteString): String = {
+    val concatenated = policyId.bytes ++ assetName.bytes
+    val digest = new Blake2bDigest(160)
+    digest.update(concatenated, 0, concatenated.length)
+    val hash = new Array[Byte](digest.getDigestSize)
+    digest.doFinal(hash, 0)
+    Bech32.encode("asset", hash)
+}
 
 /** Continuous daemon: read oracle state, submit updates in a loop */
 case class RunCommand(dryRun: Boolean = false) extends Command {
@@ -84,6 +96,18 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
           "Oracle",
           setup.scriptAddress.encode.getOrElse("?")
         )
+        val nftPolicyId = setup.script.scriptHash
+        // Oracle NFT uses an empty asset name (see findOracleUtxo / mint logic).
+        val nftAssetName = ByteString.empty
+        Console.info("NFT policy", nftPolicyId.toHex)
+        Console.info(
+          "NFT asset",
+          assetFingerprint(ByteString.fromArray(nftPolicyId.bytes), nftAssetName)
+        )
+        Console.info(
+          "Oracle UTxO",
+          s"${currentOracleUtxo.input.transactionId.toHex}#${currentOracleUtxo.input.index}"
+        )
         Console.info("Height", currentChainState.ctx.height)
         Console.info(
           "Fork tree",
@@ -112,31 +136,118 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
 
         val batchSize = config.oracle.maxHeadersPerTx
 
+        /** Poll the script address for an oracle UTxO whose input differs from `previousInput`.
+          *
+          * Used after a Pending-timeout or an "inputs already spent" submission error: those are
+          * signals that the previously-submitted tx may have actually been included even though we
+          * gave up waiting for it. If a *new* oracle UTxO appears we adopt it (returning Some). If
+          * after the full timeout the oracle UTxO at the script address is still the same one we
+          * had cached, the previous tx was almost certainly dropped (returning None) and the caller
+          * can safely keep using the cached state.
+          */
+        def waitForOracleUtxoChange(
+            previousInput: TransactionInput,
+            maxAttempts: Int = 60,
+            backoffMs: Long = 2000L
+        ): Option[Utxo] = {
+            var attempt = 0
+            while attempt < maxAttempts do {
+                attempt += 1
+                try {
+                    val fresh = CommandHelpers
+                        .findOracleUtxo(setup.provider, setup.script.scriptHash)
+                        .await(timeout)
+                    if fresh.input != previousInput then return Some(fresh)
+                } catch { case _: Exception => () }
+                Thread.sleep(backoffMs)
+            }
+            None
+        }
+
+        /** Adopt a newly-observed oracle UTxO as the current state. Reconstructs the off-chain MPF;
+          * if reconstruction fails, keeps the existing MPF (the next iteration will fail loudly
+          * rather than silently corrupting state).
+          */
+        def adoptOracleUtxo(utxo: Utxo, source: String): Unit = {
+            val state = utxo.output.requireInlineDatum.to[ChainState]
+            currentOracleUtxo = utxo
+            currentChainState = state
+            currentMpf = CommandHelpers
+                .reconstructMpf(rpc, state, config.oracle.startHeight)
+                .valueOr { err =>
+                    Console.logError(s"MPF reconstruction failed: $err")
+                    currentMpf
+                }
+            Console.logSuccess(
+              s"Adopted oracle state from $source: height=${state.ctx.height}, " +
+                  s"tree=${state.forkTree.blockCount} blocks"
+            )
+        }
+
         /** Re-read oracle UTxO and chain state from the blockchain. Called after tx failure or
           * uncertain confirmation to recover from stale state.
+          *
+          * Guards against indexer lag by rejecting reads that go backwards from the cached
+          * in-memory state — lower height, or same height with a smaller fork tree. In that case
+          * the read is treated as stale, and we retry up to a few times with a short backoff before
+          * giving up and keeping the cached state.
           */
         def refreshOracleState(): Unit = {
-            try {
-                Console.log("Re-reading oracle state...")
-                val utxo = CommandHelpers
-                    .findOracleUtxo(setup.provider, setup.script.scriptHash)
-                    .await(timeout)
-                val state = utxo.output.requireInlineDatum.to[ChainState]
-                currentOracleUtxo = utxo
-                currentChainState = state
-                currentMpf = CommandHelpers
-                    .reconstructMpf(rpc, state, config.oracle.startHeight)
-                    .valueOr { err =>
-                        Console.logError(s"MPF reconstruction failed: $err")
-                        currentMpf // keep existing
+            val maxAttempts = 10
+            val backoffMs = 1000L
+            var attempt = 0
+            var done = false
+            Console.log("Re-reading oracle state...")
+            while !done && attempt < maxAttempts do {
+                attempt += 1
+                try {
+                    val utxo = CommandHelpers
+                        .findOracleUtxo(setup.provider, setup.script.scriptHash)
+                        .await(timeout)
+                    val state = utxo.output.requireInlineDatum.to[ChainState]
+
+                    val cachedHeight = currentChainState.ctx.height
+                    val cachedTreeBlocks = currentChainState.forkTree.blockCount
+                    val newHeight = state.ctx.height
+                    val newTreeBlocks = state.forkTree.blockCount
+
+                    val isStale =
+                        newHeight < cachedHeight ||
+                            (newHeight == cachedHeight && newTreeBlocks < cachedTreeBlocks)
+
+                    if isStale then {
+                        Console.logWarn(
+                          s"Stale read (attempt $attempt/$maxAttempts): " +
+                              s"got height=$newHeight tree=$newTreeBlocks, " +
+                              s"cached height=$cachedHeight tree=$cachedTreeBlocks — retrying"
+                        )
+                        Thread.sleep(backoffMs)
+                    } else {
+                        currentOracleUtxo = utxo
+                        currentChainState = state
+                        currentMpf = CommandHelpers
+                            .reconstructMpf(rpc, state, config.oracle.startHeight)
+                            .valueOr { err =>
+                                Console.logError(s"MPF reconstruction failed: $err")
+                                currentMpf // keep existing
+                            }
+                        Console.logSuccess(
+                          s"State refreshed: height=$newHeight, tree=$newTreeBlocks blocks"
+                        )
+                        done = true
                     }
-                Console.logSuccess(
-                  s"State refreshed: height=${state.ctx.height}, tree=${state.forkTree.blockCount} blocks"
-                )
-            } catch {
-                case e: Exception =>
-                    Console.logError(s"Failed to refresh state: ${e.getMessage}")
+                } catch {
+                    case e: Exception =>
+                        Console.logError(
+                          s"Failed to refresh state (attempt $attempt/$maxAttempts): ${e.getMessage}"
+                        )
+                        Thread.sleep(backoffMs)
+                }
             }
+            if !done then
+                Console.logWarn(
+                  s"Could not obtain a non-stale oracle state after $maxAttempts attempts; keeping cached state"
+                )
         }
 
         // Main loop
@@ -275,28 +386,50 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
                                             confirmedBlocks = Some(updatedMpf.size)
                                           )
                                         )
-                                        // Wait for wallet UTxOs to be indexed before next iteration
+                                        // Wait for both wallet UTxOs AND the new oracle UTxO to
+                                        // be indexed before the next iteration. Without the
+                                        // oracle-side check, the next iteration's
+                                        // findOracleUtxo (used by refresh paths) can return the
+                                        // already-spent previous oracle UTxO and we will build a
+                                        // tx referencing a stale input.
                                         var walletReady = false
-                                        var walletAttempts = 0
-                                        while !walletReady && walletAttempts < 30 do {
+                                        var oracleReady = false
+                                        var attempts = 0
+                                        while (!walletReady || !oracleReady) && attempts < 30 do {
                                             Thread.sleep(1000)
-                                            walletAttempts += 1
-                                            try {
-                                                setup.provider
-                                                    .findUtxos(setup.sponsorAddress)
-                                                    .await(timeout) match {
-                                                    case Right(utxos) =>
-                                                        if utxos.exists { case (input, _) =>
-                                                                input.transactionId.toHex == txResult.txHash
-                                                            }
-                                                        then walletReady = true
-                                                    case Left(_) =>
-                                                }
-                                            } catch { case _: Exception => }
+                                            attempts += 1
+                                            if !walletReady then
+                                                try {
+                                                    setup.provider
+                                                        .findUtxos(setup.sponsorAddress)
+                                                        .await(timeout) match {
+                                                        case Right(utxos) =>
+                                                            if utxos.exists { case (input, _) =>
+                                                                    input.transactionId.toHex == txResult.txHash
+                                                                }
+                                                            then walletReady = true
+                                                        case Left(_) =>
+                                                    }
+                                                } catch { case _: Exception => }
+                                            if !oracleReady then
+                                                try {
+                                                    val freshOracle = CommandHelpers
+                                                        .findOracleUtxo(
+                                                          setup.provider,
+                                                          setup.script.scriptHash
+                                                        )
+                                                        .await(timeout)
+                                                    if freshOracle.input == newInput then
+                                                        oracleReady = true
+                                                } catch { case _: Exception => }
                                         }
                                         if !walletReady then
                                             Console.logWarn(
                                               "Wallet UTxOs not indexed after 30s, continuing anyway"
+                                            )
+                                        if !oracleReady then
+                                            Console.logWarn(
+                                              "New oracle UTxO not indexed after 30s, continuing anyway"
                                             )
                                     case Left(_) =>
                                         Console.logWarn(
@@ -305,15 +438,49 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
                                         refreshOracleState()
                                 }
                             } else {
+                                // Pending after the polling window. The tx may still land —
+                                // wait for the script-address oracle UTxO to change before
+                                // assuming it failed.
                                 Console.logWarn(
-                                  "Tx not confirmed after 60s, re-reading state..."
+                                  "Tx not confirmed after 60s — waiting for oracle UTxO to change..."
                                 )
-                                refreshOracleState()
+                                waitForOracleUtxoChange(currentOracleUtxo.input) match {
+                                    case Some(newUtxo) =>
+                                        Console.logSuccess(
+                                          "Late confirmation detected: oracle UTxO advanced"
+                                        )
+                                        adoptOracleUtxo(newUtxo, "late confirmation")
+                                    case None =>
+                                        Console.logWarn(
+                                          "Oracle UTxO unchanged after wait — assuming tx was dropped"
+                                        )
+                                        refreshOracleState()
+                                }
                             }
 
                         case Left(err) =>
                             Console.logError(s"Tx failed: $err")
-                            refreshOracleState()
+                            // "All inputs are spent" / "BadInputsUTxO" mean a previous tx of
+                            // ours was actually included. Wait for the new oracle UTxO before
+                            // doing anything else, otherwise we will keep rebuilding against
+                            // the now-spent cached input.
+                            val inputsSpent =
+                                err.contains("All inputs are spent") ||
+                                    err.contains("BadInputsUTxO")
+                            if inputsSpent then {
+                                Console.logWarn(
+                                  "Inputs already spent — waiting for new oracle UTxO..."
+                                )
+                                waitForOracleUtxoChange(currentOracleUtxo.input) match {
+                                    case Some(newUtxo) =>
+                                        adoptOracleUtxo(newUtxo, "post-spent recovery")
+                                    case None =>
+                                        Console.logWarn(
+                                          "No new oracle UTxO observed; falling back to refresh"
+                                        )
+                                        refreshOracleState()
+                                }
+                            } else refreshOracleState()
                     }
                 }
             } catch {
