@@ -32,6 +32,7 @@ object CliApp {
         )
         case Relay(dryRun: Boolean)
         case CreateTmtx(btcTxHex: String)
+        case SpendTmtx
 
     /** CLI argument parsers */
     object CliParsers {
@@ -155,6 +156,14 @@ object CliApp {
                     .map(Cmd.CreateTmtx.apply)
             }
 
+        val spendTmtxCommand =
+            Opts.subcommand(
+              "spend-tmtx",
+              "Spend (destroy) all TMTx UTxOs at the script address"
+            ) {
+                Opts(Cmd.SpendTmtx)
+            }
+
         val subcommands =
             versionFlag `orElse`
                 blueprintCommand `orElse`
@@ -168,7 +177,8 @@ object CliApp {
                 deployScriptCommand `orElse`
                 proveCommand `orElse`
                 relayCommand `orElse`
-                createTmtxCommand
+                createTmtxCommand `orElse`
+                spendTmtxCommand
 
         com.monovore.decline.Command(
           name = "binocular",
@@ -230,6 +240,8 @@ object CliApp {
                             RelayCommand(dryRun)
                         case Cmd.CreateTmtx(btcTxHex) =>
                             CreateTmtxCommand(btcTxHex)
+                        case Cmd.SpendTmtx =>
+                            SpendTmtxCommand()
                         case Cmd.Version | Cmd.Blueprint =>
                             return 0 // unreachable: handled above
                     }
