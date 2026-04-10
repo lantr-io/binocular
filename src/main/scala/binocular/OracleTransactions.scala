@@ -533,8 +533,12 @@ object OracleTransactions {
             }
 
             // Inner search: for a given header count, find the max promotion count that fits.
-            // Returns the resulting tx (or None if even maxPromotions=0 doesn't fit for this
-            // header count).
+            // Returns the resulting tx (or None if even the minimum promotion count doesn't
+            // fit for this header count).
+            //
+            // When headerCount=0 the search starts at low=1 because 0 headers + 0 promotions
+            // is always a no-op (newState == currentChainState) and would cause the binary
+            // search to conclude that nothing fits without ever trying an actual promotion.
             def bestPromotionsFor(
                 headerCount: Int
             ): Option[(Transaction, ChainState, OffChainMPF, Int)] = {
@@ -547,7 +551,8 @@ object OracleTransactions {
                   params
                 ).length.toInt
 
-                var low = 0
+                val minPromotions = if headerCount == 0 then 1 else 0
+                var low = minPromotions
                 var high = totalPromotable
                 var best: Option[(Transaction, ChainState, OffChainMPF, Int)] = None
                 while low <= high do {
