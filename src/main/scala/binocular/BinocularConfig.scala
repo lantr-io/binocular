@@ -11,7 +11,8 @@ case class BinocularConfig(
     bitcoinNode: BitcoinNodeConfig,
     cardano: CardanoConfig,
     wallet: WalletConfig,
-    oracle: OracleConfig
+    oracle: OracleConfig,
+    relay: RelayConfig = RelayConfig()
 ) derives ConfigReader
 
 object BinocularConfig {

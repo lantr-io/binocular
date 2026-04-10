@@ -30,6 +30,8 @@ object CliApp {
             proof: Option[String],
             merkleRoot: Option[String]
         )
+        case Relay(dryRun: Boolean)
+        case CreateTmtx(btcTxHex: String)
 
     /** CLI argument parsers */
     object CliParsers {
@@ -135,6 +137,24 @@ object CliApp {
                 )
             }
 
+        val relayCommand =
+            Opts.subcommand(
+              "relay",
+              "Relay signed Bitcoin transactions from Cardano to Bitcoin"
+            ) {
+                dryRunFlag.map(Cmd.Relay.apply)
+            }
+
+        val createTmtxCommand =
+            Opts.subcommand(
+              "create-tmtx",
+              "Create a TMTx UTxO on Cardano (for testing relay)"
+            ) {
+                Opts
+                    .argument[String](metavar = "BTC_TX_HEX")
+                    .map(Cmd.CreateTmtx.apply)
+            }
+
         val subcommands =
             versionFlag `orElse`
                 blueprintCommand `orElse`
@@ -146,7 +166,9 @@ object CliApp {
                 runCommand `orElse`
                 closeCommand `orElse`
                 deployScriptCommand `orElse`
-                proveCommand
+                proveCommand `orElse`
+                relayCommand `orElse`
+                createTmtxCommand
 
         com.monovore.decline.Command(
           name = "binocular",
@@ -204,6 +226,10 @@ object CliApp {
                               proof,
                               merkleRoot
                             )
+                        case Cmd.Relay(dryRun) =>
+                            RelayCommand(dryRun)
+                        case Cmd.CreateTmtx(btcTxHex) =>
+                            CreateTmtxCommand(btcTxHex)
                         case Cmd.Version | Cmd.Blueprint =>
                             return 0 // unreachable: handled above
                     }

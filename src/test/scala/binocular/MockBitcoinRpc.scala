@@ -91,6 +91,10 @@ class MockBitcoinRpc(fixtureDir: String = "src/test/resources/bitcoin_blocks")(u
         }
     }
 
+    def sendRawTransaction(hexString: String): Future[String] = Future {
+        throw new RuntimeException("sendRawTransaction not supported in mock")
+    }
+
     def getBlockchainInfo(): Future[BlockchainInfo] = Future {
         val maxHeight = hashToHeight.values.maxOption.getOrElse(0)
         val bestBlock = loadBlockFixture(maxHeight)

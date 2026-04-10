@@ -16,6 +16,7 @@ trait BitcoinRpc {
     def getBlock(hash: String): Future[BlockInfo]
     def getBlockchainInfo(): Future[BlockchainInfo]
     def getRawTransaction(txid: String): Future[RawTransactionInfo]
+    def sendRawTransaction(hexString: String): Future[String]
 }
 
 /** Lightweight Bitcoin RPC client using Java 11+ HTTP client
@@ -244,6 +245,11 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) ex
                 )
             }.toSeq
         }
+    }
+
+    /** Broadcast a raw transaction to the Bitcoin network */
+    def sendRawTransaction(hexString: String): Future[String] = {
+        call("sendrawtransaction", ujson.Arr(hexString)).map(_.str)
     }
 
     /** Get raw transaction by txid (verbose=true) */
