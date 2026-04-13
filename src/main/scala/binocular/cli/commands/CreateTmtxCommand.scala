@@ -79,10 +79,10 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
         Console.separator()
         println()
 
-        // Build the datum: Constr 0 [ByteString]
+        // Build the datum: Constr 1 [ByteString]
         val btcTxBytes = ByteString.fromHex(btcTxHex)
         import scalus.cardano.onchain.plutus.prelude.List as ScalusList
-        val datum = Data.Constr(0, ScalusList(Data.B(btcTxBytes)))
+        val datum = Data.Constr(1, ScalusList(Data.B(btcTxBytes)))
 
         // Mint TMTx token and send to script address with datum
         val mintAssets = Map(assetName -> 1L)
