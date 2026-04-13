@@ -33,6 +33,7 @@ object CliApp {
         case Relay(dryRun: Boolean)
         case CreateTmtx(btcTxHex: String)
         case SpendTmtx
+        case ConfirmTmtx(dryRun: Boolean)
 
     /** CLI argument parsers */
     object CliParsers {
@@ -164,6 +165,14 @@ object CliApp {
                 Opts(Cmd.SpendTmtx)
             }
 
+        val confirmTmtxCommand =
+            Opts.subcommand(
+              "confirm-tmtx",
+              "Confirm relayed Bitcoin transactions on-chain"
+            ) {
+                dryRunFlag.map(Cmd.ConfirmTmtx.apply)
+            }
+
         val subcommands =
             versionFlag `orElse`
                 blueprintCommand `orElse`
@@ -178,7 +187,8 @@ object CliApp {
                 proveCommand `orElse`
                 relayCommand `orElse`
                 createTmtxCommand `orElse`
-                spendTmtxCommand
+                spendTmtxCommand `orElse`
+                confirmTmtxCommand
 
         com.monovore.decline.Command(
           name = "binocular",
@@ -242,6 +252,8 @@ object CliApp {
                             CreateTmtxCommand(btcTxHex)
                         case Cmd.SpendTmtx =>
                             SpendTmtxCommand()
+                        case Cmd.ConfirmTmtx(dryRun) =>
+                            ConfirmTmtxCommand(dryRun)
                         case Cmd.Version | Cmd.Blueprint =>
                             return 0 // unreachable: handled above
                     }
