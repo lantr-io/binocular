@@ -27,3 +27,6 @@ blockfrost_api_key.txt
 application.conf
 /application-preprod.conf
 /.bitcoin-regtest
+
+# mill
+/out/
