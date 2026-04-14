@@ -7,7 +7,6 @@ import scalus.cardano.ledger.*
 import scalus.cardano.node.{BlockchainProvider, TransactionStatus, UtxoFilter, UtxoQuery, UtxoSource}
 import scalus.cardano.txbuilder.TxBuilder
 import scalus.cardano.wallet.hd.HdAccount
-import scalus.uplc.PlutusV3
 import scalus.uplc.builtin.Data
 
 import scala.concurrent.ExecutionContext
@@ -51,7 +50,7 @@ case class SpendTmtxCommand() extends Command {
         val signer = hdAccount.signerForUtxos
         val sponsorAddress = hdAccount.baseAddress(network)
 
-        val mintingScript = PlutusV3.alwaysOk
+        val mintingScript = TmtxScript.mintingScript
         val policyId = ScriptHash.fromHex(config.relay.tmtxPolicyId)
         val assetName = AssetName.fromString(config.relay.tmtxAssetName)
         val scriptAddress = Address(network, Credential.ScriptHash(policyId))

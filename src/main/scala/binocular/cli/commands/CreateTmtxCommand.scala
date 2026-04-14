@@ -7,7 +7,6 @@ import scalus.cardano.ledger.*
 import scalus.cardano.node.{BlockchainProvider, TransactionStatus}
 import scalus.cardano.txbuilder.TxBuilder
 import scalus.cardano.wallet.hd.HdAccount
-import scalus.uplc.PlutusV3
 import scalus.uplc.builtin.{ByteString, Data}
 
 import scala.concurrent.ExecutionContext
@@ -53,8 +52,8 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
         val signer = hdAccount.signerForUtxos
         val sponsorAddress = hdAccount.baseAddress(network)
 
-        // Use PlutusV3.alwaysOk as the minting policy (matches demo alwaysOK script)
-        val mintingScript = PlutusV3.alwaysOk
+        // Use the project-unique alwaysOk script (salt baked in for distinct policy ID)
+        val mintingScript = TmtxScript.mintingScript
         val policyId = mintingScript.script.scriptHash
         val assetName = AssetName.fromString(config.relay.tmtxAssetName)
         val scriptAddress = Address(network, Credential.ScriptHash(policyId))

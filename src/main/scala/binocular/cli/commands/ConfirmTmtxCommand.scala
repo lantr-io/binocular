@@ -7,7 +7,6 @@ import scalus.cardano.ledger.*
 import scalus.cardano.node.{BlockchainProvider, TransactionStatus, UtxoFilter, UtxoQuery, UtxoSource}
 import scalus.cardano.txbuilder.TxBuilder
 import scalus.cardano.wallet.hd.HdAccount
-import scalus.uplc.PlutusV3
 import scalus.uplc.builtin.{ByteString, Data}
 
 import scala.concurrent.ExecutionContext
@@ -238,7 +237,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
         val network = provider.cardanoInfo.network
         val signer = hdAccount.signerForUtxos
         val sponsorAddress = hdAccount.baseAddress(network)
-        val mintingScript = PlutusV3.alwaysOk
+        val mintingScript = TmtxScript.mintingScript
 
         // TODO: Currently using PlutusV3.alwaysOk for spending. A proper validator
         // should verify that the datum transition contains a valid inclusion proof, which a validator should check
