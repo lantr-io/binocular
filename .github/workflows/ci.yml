@@ -35,7 +35,7 @@ jobs:
             ${{ runner.os }}-mill-
 
       - name: Check formatting and run tests
-        run: ./millw mill.scalalib.scalafmt/checkFormatAll && ./millw binocular.test -- -l binocular.ManualTest
+        run: ./millw mill.scalalib.scalafmt/checkFormatAll && ./millw binocular.test -l binocular.ManualTest
 
       - name: List contract debug files
         if: failure()
