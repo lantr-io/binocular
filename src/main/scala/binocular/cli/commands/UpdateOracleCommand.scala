@@ -147,6 +147,8 @@ case class UpdateOracleCommand(
                 }
             logger.info("MPF reconstructed successfully")
 
+            val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
+
             val highestBlock = if currentChainState.forkTree.nonEmpty then {
                 val maxForkHeight =
                     currentChainState.forkTree
@@ -159,12 +161,18 @@ case class UpdateOracleCommand(
                 currentChainState.ctx.height.toLong
             }
 
-            val startHeight = fromBlock.getOrElse(highestBlock + 1)
+            // Detect reorg: check if oracle's best chain tip matches Bitcoin canonical chain
+            val (reorgParentPath, reorgStartHeight) =
+                CommandHelpers.detectReorgAndComputePath(rpc, currentChainState)
+            val isReorg = reorgStartHeight <= highestBlock
+
+            val startHeight = fromBlock.getOrElse(
+              if isReorg then reorgStartHeight else highestBlock + 1
+            )
             println(s"  Will start from: $startHeight")
             val endHeight = toBlock match {
                 case Some(h) => h
                 case None =>
-                    val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
                     try {
                         rpc.getBlockchainInfo().await(30.seconds).blocks.toLong
                     } catch {
@@ -273,8 +281,6 @@ case class UpdateOracleCommand(
                 Thread.sleep(5000)
             }
 
-            val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
-
             val batches = (startHeight to cappedEndHeight).grouped(batchSize).toList
             val totalBatches = batches.size
 
@@ -343,7 +349,11 @@ case class UpdateOracleCommand(
                     OracleTransactions.computeValidityIntervalTime(
                       setup.provider.cardanoInfo
                     )
-                val parentPath = currentState.forkTree.findTipPath
+                // First batch in a reorg uses the reorg parentPath (points to common ancestor);
+                // subsequent batches use the regular tip path (new best chain tip).
+                val parentPath =
+                    if isReorg && batchIndex == 0 then reorgParentPath
+                    else currentState.forkTree.findTipPath
 
                 if totalBatches == 1 then {
                     println()

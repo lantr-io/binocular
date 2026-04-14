@@ -257,6 +257,10 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
                 val bitcoinInfo = rpc.getBlockchainInfo().await(30.seconds)
                 val bitcoinTip = bitcoinInfo.blocks.toLong
 
+                // Detect reorg and compute correct parentPath
+                val (parentPath, reorgStartHeight) =
+                    CommandHelpers.detectReorgAndComputePath(rpc, currentChainState)
+
                 val highestKnown =
                     if currentChainState.forkTree.nonEmpty then
                         currentChainState.forkTree
@@ -272,9 +276,12 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
                     else 0
                 val maxNewBlocks = maxForkTreeBestChain - bestChainBlocks
 
+                // Use reorgStartHeight if reorg detected, otherwise highestKnown + 1
+                val effectiveStart = reorgStartHeight
+
                 // Fetch new headers if available and fork tree has room
-                val headers = if bitcoinTip > highestKnown && maxNewBlocks > 0 then {
-                    val startHeight = highestKnown + 1
+                val headers = if bitcoinTip >= effectiveStart && maxNewBlocks > 0 then {
+                    val startHeight = effectiveStart
                     val endHeight = Math.min(
                       Math.min(bitcoinTip, startHeight + batchSize - 1),
                       startHeight + maxNewBlocks - 1
@@ -307,7 +314,6 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
 
                 val (_, validityTime) =
                     OracleTransactions.computeValidityIntervalTime(setup.provider.cardanoInfo)
-                val parentPath = currentChainState.forkTree.findTipPath
 
                 // Quick check: is there anything to do?
                 val totalPromotable = OracleTransactions

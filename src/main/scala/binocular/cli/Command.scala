@@ -269,6 +269,88 @@ object CommandHelpers {
         }
     }
 
+    /** Detect a Bitcoin reorg and compute the correct parentPath and block range.
+      *
+      * Compares the oracle's fork tree tip against Bitcoin's canonical chain. If they diverge,
+      * walks backwards from the oracle tip to find the common ancestor, then returns the correct
+      * parentPath and start height for submitting the canonical chain's blocks.
+      *
+      * @return
+      *   `(parentPath, startHeight)` — either the tip path with `highestKnown + 1` (no reorg) or
+      *   the path to the common ancestor with `ancestor + 1` (reorg detected).
+      */
+    def detectReorgAndComputePath(
+        rpc: BitcoinRpc,
+        chainState: ChainState
+    )(using ExecutionContext): (scalus.cardano.onchain.plutus.prelude.List[BigInt], Long) = {
+        import scalus.cardano.onchain.plutus.prelude.List as ScalusList
+        val confirmedHeight = chainState.ctx.height.toLong
+        val forkTree = chainState.forkTree
+
+        if forkTree == ForkTree.End then
+            // Empty fork tree — parent is confirmed tip, start from confirmed + 1
+            (ScalusList.Nil, confirmedHeight + 1)
+        else
+            val highestKnown = forkTree.highestHeight(chainState.ctx.height).toLong
+
+            // Get the hash of the best chain tip in the fork tree
+            forkTree.bestChainTipHash match
+                case scala.None =>
+                    (forkTree.findTipPath, highestKnown + 1)
+                case scala.Some(oracleTipHash) =>
+                    // Get Bitcoin's canonical block hash at the same height
+                    val canonicalHashHex =
+                        rpc.getBlockHash(highestKnown.toInt).await(30.seconds)
+                    val canonicalHash =
+                        ByteString.fromArray(canonicalHashHex.hexToBytes.reverse)
+
+                    if oracleTipHash == canonicalHash then
+                        // No reorg — oracle tip matches Bitcoin canonical chain
+                        (forkTree.findTipPath, highestKnown + 1)
+                    else
+                        // Reorg detected! Walk backwards to find common ancestor
+                        Console.logWarn(
+                          s"Reorg detected at height $highestKnown: " +
+                              s"oracle=${oracleTipHash.toHex}, canonical=${canonicalHash.toHex}"
+                        )
+
+                        var searchHeight = highestKnown - 1
+                        var ancestorFound = false
+                        var ancestorHeight = confirmedHeight
+                        var ancestorHash: ByteString = chainState.ctx.lastBlockHash
+
+                        while !ancestorFound && searchHeight > confirmedHeight do {
+                            val hashHex =
+                                rpc.getBlockHash(searchHeight.toInt).await(30.seconds)
+                            val hash =
+                                ByteString.fromArray(hashHex.hexToBytes.reverse)
+
+                            if forkTree.existsHash(hash) then {
+                                ancestorFound = true
+                                ancestorHeight = searchHeight
+                                ancestorHash = hash
+                            } else searchHeight -= 1
+                        }
+
+                        val parentPath = if ancestorHeight == confirmedHeight then {
+                            Console.logWarn(
+                              s"Common ancestor is confirmed tip at height $confirmedHeight"
+                            )
+                            ScalusList.Nil
+                        } else {
+                            Console.logWarn(
+                              s"Common ancestor found at height $ancestorHeight"
+                            )
+                            forkTree.findPathToHash(ancestorHash).getOrElse {
+                                throw new RuntimeException(
+                                  s"Bug: existsHash found $ancestorHeight but findPathToHash failed"
+                                )
+                            }
+                        }
+
+                        (parentPath, ancestorHeight + 1)
+    }
+
     /** Reconstruct off-chain MPF, checking first if the state has only a single block. */
     def reconstructMpf(
         rpc: SimpleBitcoinRpc,

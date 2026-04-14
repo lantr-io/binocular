@@ -119,6 +119,43 @@ enum ForkTree derives FromData, ToData {
                 case (scala.None, b)                => b
         case End => scala.None
 
+    /** Find the insertion path to the block with the given hash.
+      *
+      * Returns `Some(path)` if the hash is found, `None` otherwise. The returned path is suitable
+      * for use as a `parentPath` in `validateAndInsert`.
+      */
+    def findPathToHash(targetHash: BlockHash): scala.Option[List[BigInt]] = this match
+        case Blocks(blocks, _, next) =>
+            val blocksList = blocks.toScalaList
+            blocksList.zipWithIndex.find(_._1.hash == targetHash) match
+                case scala.Some((_, idx)) => scala.Some(List(BigInt(idx)))
+                case scala.None =>
+                    next.findPathToHash(targetHash) match
+                        case scala.Some(subPath) =>
+                            scala.Some(List.Cons(BigInt(blocksList.size), subPath))
+                        case scala.None => scala.None
+        case Fork(left, right) =>
+            left.findPathToHash(targetHash) match
+                case scala.Some(subPath) => scala.Some(List.Cons(BigInt(0), subPath))
+                case scala.None =>
+                    right.findPathToHash(targetHash) match
+                        case scala.Some(subPath) => scala.Some(List.Cons(BigInt(1), subPath))
+                        case scala.None          => scala.None
+        case End => scala.None
+
+    /** Collect the block hash at the tip of the best chain, or None if tree is empty. */
+    def bestChainTipHash: scala.Option[BlockHash] = this match
+        case Blocks(blocks, _, next) =>
+            next match
+                case End => scala.Some(blocks.last.hash)
+                case _   => next.bestChainTipHash
+        case Fork(left, right) =>
+            val (leftWork, _, _) = BitcoinValidator.bestChainPath(left, 0, 0)
+            val (rightWork, _, _) = BitcoinValidator.bestChainPath(right, 0, 0)
+            if leftWork >= rightWork then left.bestChainTipHash
+            else right.bestChainTipHash
+        case End => scala.None
+
     /** Flatten all blocks in the tree into a single list (depth-first order). */
     def toBlockList: scala.collection.immutable.List[BlockSummary] = this match
         case Blocks(blocks, _, next) =>
