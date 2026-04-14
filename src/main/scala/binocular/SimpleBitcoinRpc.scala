@@ -247,6 +247,19 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) ex
         }
     }
 
+    /** Get wallet transaction by txid (works without -txindex) */
+    def getWalletTransaction(txid: String): Future[RawTransactionInfo] = {
+        call("gettransaction", ujson.Arr(txid)).map { result =>
+            RawTransactionInfo(
+              txid = txid,
+              hash = result.obj.get("wtxid").orElse(result.obj.get("txid")).map(_.str).getOrElse(txid),
+              hex = result("hex").str,
+              blockhash = result.obj.get("blockhash").map(_.str),
+              confirmations = result.obj.get("confirmations").map(_.num.toInt).getOrElse(0)
+            )
+        }
+    }
+
     /** Broadcast a raw transaction to the Bitcoin network */
     def sendRawTransaction(hexString: String): Future[String] = {
         call("sendrawtransaction", ujson.Arr(hexString)).map(_.str)

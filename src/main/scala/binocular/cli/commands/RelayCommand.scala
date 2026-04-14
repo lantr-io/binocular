@@ -27,8 +27,16 @@ enum RelayResult:
     case Relayed(btcTxId: String)
     case Rejected(error: String)
 
-/** UTxO broadcast to Bitcoin, awaiting confirmation before datum update. */
-private case class PendingConfirmation(utxo: Utxo, txBytes: ByteString, btcTxId: String)
+/** UTxO broadcast to Bitcoin, awaiting confirmation before datum update.
+  * @param confirmedOnBitcoin
+  *   true when we already know the tx is confirmed (e.g. -27 error), skip BTC check
+  */
+private case class PendingConfirmation(
+    utxo: Utxo,
+    txBytes: ByteString,
+    btcTxId: String,
+    confirmedOnBitcoin: Boolean = false
+)
 
 /** Transient errors that warrant retrying — everything else is a permanent rejection. */
 private def isTransientError(msg: String): Boolean =
@@ -103,11 +111,30 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
             try {
                 // Check pending items: if BTC tx now confirmed, update Cardano datum
                 for (utxoRef, pending) <- pendingConfirmation.toList do {
-                    try {
-                        val txInfo = rpc.getRawTransaction(pending.btcTxId).await(30.seconds)
-                        if txInfo.confirmations > 0 then
+                    val confirmed: Option[Int] =
+                        if pending.confirmedOnBitcoin then Some(1)
+                        else
+                            try
+                                // Try getRawTransaction first (requires -txindex), fall back to
+                                // gettransaction (wallet transactions only)
+                                val info =
+                                    try rpc.getRawTransaction(pending.btcTxId).await(30.seconds)
+                                    catch
+                                        case _ =>
+                                            rpc.getWalletTransaction(pending.btcTxId)
+                                                .await(30.seconds)
+                                Some(info.confirmations).filter(_ > 0)
+                            catch
+                                case e: Exception =>
+                                    Console.log(
+                                      s"  Waiting for BTC confirmation: BTC txid=${pending.btcTxId}"
+                                    )
+                                    None
+
+                    confirmed match {
+                        case Some(confs) =>
                             Console.log(
-                              s"BTC txid=${pending.btcTxId} confirmed (${txInfo.confirmations} blocks), updating Cardano datum..."
+                              s"BTC txid=${pending.btcTxId} confirmed ($confs block(s)), updating Cardano datum..."
                             )
                             TmtxScript.updateDatum(
                               provider,
@@ -117,7 +144,7 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                               pending.txBytes,
                               timeout
                             ) match {
-                                case Right(cardanoTxHash) =>
+                                case Right(_) =>
                                     pendingConfirmation.remove(utxoRef)
                                     transactions(utxoRef) = RelayResult.Relayed(pending.btcTxId)
                                 case Left(err) =>
@@ -125,11 +152,7 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                                       s"  Cardano datum update failed: $err — will retry"
                                     )
                             }
-                    } catch {
-                        case e: Exception =>
-                            Console.log(
-                              s"  Waiting for BTC confirmation: ${pending.btcTxId} (${e.getMessage})"
-                            )
+                        case None => // still waiting, logged above
                     }
                 }
 
@@ -241,7 +264,8 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                                                                     PendingConfirmation(
                                                                       Utxo(input, output),
                                                                       txBytes,
-                                                                      btcTxId
+                                                                      btcTxId,
+                                                                      confirmedOnBitcoin = true
                                                                     )
                                                             else
                                                                 Console.logWarn(
