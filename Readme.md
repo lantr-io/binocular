@@ -34,6 +34,36 @@ This includes:
 - Running mainnet, testnet, or regtest
 - Troubleshooting common issues
 
+## Testing the relay end-to-end (regtest BTC + preprod Cardano)
+
+The `relay` command broadcasts Bitcoin transactions it finds parked on Cardano
+as TMTx UTxOs. To exercise that flow without waiting on real mempool activity,
+use `regtest-create-tmtx.sh`: it mines regtest funds, crafts a BTC transaction,
+and submits the raw hex as a TMTx on Cardano.
+
+**Prerequisites:**
+
+- `bitcoind` running in regtest mode with an RPC-enabled `bitcoin.conf`
+- The Cardano wallet in `application-regtest.conf` has preprod tADA
+  (override the mnemonic via `WALLET_MNEMONIC` if you'd rather not commit it)
+
+**Run it:**
+
+```bash
+BITCOIN_CONF=/path/to/bitcoin.conf ./regtest-create-tmtx.sh
+```
+
+Optional env overrides: `BINOCULAR_CONFIG` (default `application-regtest.conf`),
+`BTC_WALLET` (default `binocular-regtest`), `BTC_SEND_AMOUNT` (default `0.001`).
+
+**Verify the relay picks it up:**
+
+```bash
+sbt "run --config application-regtest.conf relay --dry-run"
+```
+
+Drop `--dry-run` to actually broadcast to regtest bitcoind.
+
 ## Documentation
 
 ### Generating PDFs
