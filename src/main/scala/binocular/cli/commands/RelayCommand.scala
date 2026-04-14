@@ -30,12 +30,16 @@ enum RelayResult:
 /** UTxO broadcast to Bitcoin, awaiting confirmation before datum update.
   * @param confirmedOnBitcoin
   *   true when we already know the tx is confirmed (e.g. -27 error), skip BTC check
+  * @param broadcastHeight
+  *   block height at broadcast time; if current height exceeds this the tx is confirmed
+  *   (used when -txindex is not enabled and the tx is not a wallet transaction)
   */
 private case class PendingConfirmation(
     utxo: Utxo,
     txBytes: ByteString,
     btcTxId: String,
-    confirmedOnBitcoin: Boolean = false
+    confirmedOnBitcoin: Boolean = false,
+    broadcastHeight: Int = 0
 )
 
 /** Transient errors that warrant retrying — everything else is a permanent rejection. */
@@ -109,6 +113,9 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
 
         while true do {
             try {
+                val currentHeight = try rpc.getBlockchainInfo().await(30.seconds).blocks
+                                   catch case _ => 0
+
                 // Check pending items: if BTC tx now confirmed, update Cardano datum
                 for (utxoRef, pending) <- pendingConfirmation.toList do {
                     val confirmed: Option[Int] =
@@ -116,7 +123,8 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                         else
                             try
                                 // Try getRawTransaction first (requires -txindex), fall back to
-                                // gettransaction (wallet transactions only)
+                                // gettransaction (wallet transactions only), fall back to
+                                // block height check (works when -txindex is not enabled)
                                 val info =
                                     try rpc.getRawTransaction(pending.btcTxId).await(30.seconds)
                                     catch
@@ -125,11 +133,14 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                                                 .await(30.seconds)
                                 Some(info.confirmations).filter(_ > 0)
                             catch
-                                case e: Exception =>
-                                    Console.log(
-                                      s"  Waiting for BTC confirmation: BTC txid=${pending.btcTxId}"
-                                    )
-                                    None
+                                case _ =>
+                                    if currentHeight > pending.broadcastHeight then
+                                        Some(currentHeight - pending.broadcastHeight)
+                                    else
+                                        Console.log(
+                                          s"  Waiting for BTC confirmation: BTC txid=${pending.btcTxId}"
+                                        )
+                                        None
 
                     confirmed match {
                         case Some(confs) =>
@@ -246,7 +257,8 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                                                             PendingConfirmation(
                                                               Utxo(input, output),
                                                               txBytes,
-                                                              txid
+                                                              txid,
+                                                              broadcastHeight = currentHeight
                                                             )
                                                     } catch {
                                                         case e: Exception =>
@@ -265,7 +277,8 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                                                                       Utxo(input, output),
                                                                       txBytes,
                                                                       btcTxId,
-                                                                      confirmedOnBitcoin = true
+                                                                      confirmedOnBitcoin = true,
+                                                                      broadcastHeight = currentHeight
                                                                     )
                                                             else
                                                                 Console.logWarn(
