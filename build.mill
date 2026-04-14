@@ -52,6 +52,9 @@ object binocular extends SbtModule with BuildInfo {
 
     def mainClass = Some("binocular.main")
 
+    // Disable prepended shell script so `java -jar` works on JDK 25+
+    override def prependShellScript = ""
+
     def assemblyRules = Seq(
       Rule.ExcludePattern("META-INF/.*"),
       Rule.ExcludePattern("module-info.class"),
