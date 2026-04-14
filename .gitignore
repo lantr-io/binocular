@@ -26,3 +26,4 @@ blockfrost_api_key.txt
 .contract-debug/
 application.conf
 /application-preprod.conf
+/.bitcoin-regtest

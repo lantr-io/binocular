@@ -1,6 +1,8 @@
 package binocular
 
 import org.scalatest.funsuite.AnyFunSuite
+import scalus.cardano.address.{Address, Network}
+import scalus.cardano.ledger.Credential
 import scalus.uplc.PlutusV3
 
 class TmtxScriptTest extends AnyFunSuite {
@@ -8,7 +10,12 @@ class TmtxScriptTest extends AnyFunSuite {
     test("TmtxScript has a distinct policy ID from PlutusV3.alwaysOk") {
         val alwaysOkHash = PlutusV3.alwaysOk.script.scriptHash.toHex
         val tmtxHash = TmtxScript.mintingScript.script.scriptHash.toHex
-        println(s"\n=== TmtxScript policy ID: $tmtxHash ===\n")
+        val tmtxScriptHex = TmtxScript.mintingScript.script.script.toHex
+        val preprodAddr = Address(Network.Testnet, Credential.ScriptHash(TmtxScript.mintingScript.script.scriptHash))
+            .encode.getOrElse("?")
+        println(s"\n=== TmtxScript policy ID:       $tmtxHash ===")
+        println(s"=== TmtxScript script hex:      $tmtxScriptHex ===")
+        println(s"=== TmtxScript address (preprod): $preprodAddr ===\n")
         assert(
           alwaysOkHash != tmtxHash,
           s"TmtxScript must differ from alwaysOk ($alwaysOkHash)"
