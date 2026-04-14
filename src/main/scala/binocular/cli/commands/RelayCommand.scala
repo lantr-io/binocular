@@ -30,6 +30,10 @@ private def isTransientError(msg: String): Boolean =
         || msg.contains("RPC timeout")
         || msg.contains("HttpTimeoutException")
 
+/** Already confirmed on-chain — treat as success. */
+private def isAlreadyConfirmed(msg: String): Boolean =
+    msg.contains("Transaction outputs already in utxo set") // code -27
+
 case class RelayCommand(dryRun: Boolean = false) extends Command {
 
     override def execute(config: BinocularConfig): Int = {
@@ -110,13 +114,34 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
 
                             for (input, output) <- newUtxos do {
                                 val utxoRef = s"${input.transactionId.toHex}#${input.index}"
-                                Console.log(s"Processing UTxO: $utxoRef")
+                                Console.log(s"Processing Cardano UTxO: $utxoRef")
 
                                 output.inlineDatum match {
                                     case None =>
                                         Console.logWarn(s"  No inline datum, skipping")
                                         transactions(utxoRef) =
                                             RelayResult.Rejected("no inline datum")
+
+                                    case Some(Data.Constr(1, args)) if args.nonEmpty =>
+                                        args.head match {
+                                            case Data.B(txBytes) =>
+                                                val txid = BitcoinHelpers
+                                                    .getTxHash(txBytes)
+                                                    .reverse
+                                                    .toHex
+                                                Console.logSuccess(
+                                                  s"  Already confirmed by Binocular: BTC txid=$txid"
+                                                )
+                                                transactions(utxoRef) =
+                                                    RelayResult.Relayed(txid)
+                                            case other =>
+                                                Console.logWarn(
+                                                  s"  Datum arg is not ByteString: $other"
+                                                )
+                                                transactions(utxoRef) = RelayResult.Rejected(
+                                                  "datum arg is not ByteString"
+                                                )
+                                        }
 
                                     case Some(Data.Constr(0, args)) if args.nonEmpty =>
                                         args.head match {
@@ -138,7 +163,7 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                                                             .sendRawTransaction(txHex)
                                                             .await(30.seconds)
                                                         Console.logSuccess(
-                                                          s"  Broadcast OK: txid=$txid"
+                                                          s"  Broadcast OK: BTC txid=$txid"
                                                         )
                                                         transactions(utxoRef) =
                                                             RelayResult.Relayed(txid)
@@ -150,6 +175,12 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                                                                   s"  Broadcast failed (will retry): $msg"
                                                                 )
                                                             // don't record — will retry
+                                                            else if isAlreadyConfirmed(msg) then
+                                                                Console.logSuccess(
+                                                                  s"  Already confirmed on-chain"
+                                                                )
+                                                                transactions(utxoRef) =
+                                                                    RelayResult.Relayed("already-confirmed")
                                                             else
                                                                 Console.logWarn(
                                                                   s"  Broadcast rejected: $msg"

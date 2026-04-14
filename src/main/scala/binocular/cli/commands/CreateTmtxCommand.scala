@@ -107,8 +107,8 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
                     break(1)
             }
 
-            Console.logSuccess(s"Transaction submitted: $txHash")
-            Console.log("Waiting for confirmation...")
+            Console.logSuccess(s"Cardano tx submitted: $txHash")
+            Console.log("Waiting for Cardano confirmation...")
 
             val status = provider
                 .pollForConfirmation(
@@ -121,7 +121,7 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
             status match {
                 case TransactionStatus.Confirmed =>
                     Console.logSuccess(s"TMTx UTxO created and confirmed!")
-                    Console.info("TxHash", txHash)
+                    Console.info("Cardano txid", txHash)
                     Console.info("Script address", scriptAddress.encode.getOrElse("?"))
                     println()
                     Console.log(

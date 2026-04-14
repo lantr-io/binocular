@@ -120,7 +120,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
 
                             for (input, output) <- newUtxos do {
                                 val utxoRef = s"${input.transactionId.toHex}#${input.index}"
-                                Console.log(s"Processing UTxO: $utxoRef")
+                                Console.log(s"Processing Cardano UTxO: $utxoRef")
 
                                 output.inlineDatum match {
                                     case None =>
@@ -138,7 +138,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
                                                 val btcTxId =
                                                     BitcoinHelpers.getTxHash(txBytes).reverse.toHex
                                                 Console.log(
-                                                  s"  BTC txid: $btcTxId"
+                                                  s"  BTC txid=$btcTxId"
                                                 )
 
                                                 try {
@@ -153,7 +153,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
 
                                                         if dryRun then
                                                             Console.logSuccess(
-                                                              s"  [dry-run] Would update datum to Constr(1)"
+                                                              s"  [dry-run] Would update Cardano datum to Constr(1)"
                                                             )
                                                             processed(utxoRef) =
                                                                 ConfirmResult.Confirmed(
@@ -264,8 +264,8 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
                 case Left(err)   => return Left(err)
             }
 
-            Console.logSuccess(s"  Submitted: $txHash")
-            Console.log("  Waiting for confirmation...")
+            Console.logSuccess(s"  Cardano tx submitted: $txHash")
+            Console.log("  Waiting for Cardano confirmation...")
 
             val status = provider
                 .pollForConfirmation(
@@ -277,7 +277,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
 
             status match {
                 case TransactionStatus.Confirmed =>
-                    Console.logSuccess(s"  Datum updated to Constr(1) — confirmed: $txHash")
+                    Console.logSuccess(s"  Cardano datum updated to Constr(1): Cardano txid=$txHash")
                     Right(txHash)
                 case other =>
                     Left(s"Transaction status: $other")
