@@ -83,6 +83,9 @@ object binocular extends SbtModule with BuildInfo {
         def forkArgs = Seq("-Xmx2g")
         def forkWorkingDir = Task { build.moduleDir }
         override def testSandboxWorkingDir = false
+        def testForked(args: String*) = Task.Command {
+            testTask(Task.Anon { Seq("-l", "binocular.ManualTest") ++ args }, Task.Anon { Seq.empty[String] })()
+        }
     }
 }
 
