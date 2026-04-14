@@ -3,9 +3,11 @@ package binocular.cli.commands
 import binocular.*
 import binocular.cli.{Command, Console}
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{AssetName, Credential, ScriptHash}
-import scalus.cardano.node.{BlockchainProvider, UtxoFilter, UtxoQuery, UtxoSource}
-import scalus.uplc.builtin.Data
+import scalus.cardano.ledger.{AssetName, Credential, ScriptHash, TransactionHash, Utxo}
+import scalus.cardano.node.{BlockchainProvider, TransactionStatus, UtxoFilter, UtxoQuery, UtxoSource}
+import scalus.cardano.txbuilder.TxBuilder
+import scalus.cardano.wallet.hd.HdAccount
+import scalus.uplc.builtin.{ByteString, Data}
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
@@ -13,16 +15,21 @@ import scala.util.boundary
 import boundary.break
 import scalus.utils.await
 
-/** Relay signed Bitcoin transactions from Cardano TMTx UTxOs to Bitcoin.
+/** Relay signed Bitcoin transactions from Cardano TMTx UTxOs to Bitcoin, then update the Cardano
+  * datum to Constr(1) once the BTC transaction is confirmed.
   *
   * Polls Cardano for UTxOs containing the configured TMTx token, extracts the signed Bitcoin
-  * transaction from the inline datum (Constr 0 [ByteString]), and broadcasts it via Bitcoin RPC.
+  * transaction from the inline datum (Constr 0 [ByteString]), broadcasts it via Bitcoin RPC, and
+  * after BTC confirmation updates the datum to Constr(1).
   */
 
 /** Result of attempting to relay a TMTx to Bitcoin. */
 enum RelayResult:
     case Relayed(btcTxId: String)
     case Rejected(error: String)
+
+/** UTxO broadcast to Bitcoin, awaiting confirmation before datum update. */
+private case class PendingConfirmation(utxo: Utxo, txBytes: ByteString, btcTxId: String)
 
 /** Transient errors that warrant retrying — everything else is a permanent rejection. */
 private def isTransientError(msg: String): Boolean =
@@ -48,6 +55,7 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
         val relayConfig = config.relay
         val pollInterval = relayConfig.pollInterval
         val retryInterval = relayConfig.retryInterval
+        val timeout = 120.seconds
 
         val policyId = ScriptHash.fromHex(relayConfig.tmtxPolicyId)
         val assetName = AssetName.fromString(relayConfig.tmtxAssetName)
@@ -58,6 +66,13 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
             case Right(p) => p
             case Left(err) =>
                 Console.error(s"Cardano provider: $err")
+                break(1)
+        }
+
+        val hdAccount: HdAccount = config.wallet.createHdAccount() match {
+            case Right(a) => a
+            case Left(err) =>
+                Console.error(s"Wallet: $err")
                 break(1)
         }
 
@@ -73,17 +88,52 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
         }
 
         Console.info("Cardano", config.cardano.network)
+        Console.info("Wallet", hdAccount.baseAddress(config.cardano.scalusNetwork).encode.getOrElse("?"))
         Console.info("TMTx policy", relayConfig.tmtxPolicyId)
         Console.info("TMTx asset", relayConfig.tmtxAssetName)
         Console.info("Script address", scriptAddress.encode.getOrElse("?"))
         Console.separator()
         println()
 
-        // Track processed TMTx UTxOs: utxoRef -> relay result
+        // Fully processed UTxOs (datum updated to Constr(1) or permanently rejected)
         val transactions = scala.collection.mutable.Map[String, RelayResult]()
+        // Broadcast to Bitcoin, waiting for confirmation before datum update
+        val pendingConfirmation = scala.collection.mutable.Map[String, PendingConfirmation]()
 
         while true do {
             try {
+                // Check pending items: if BTC tx now confirmed, update Cardano datum
+                for (utxoRef, pending) <- pendingConfirmation.toList do {
+                    try {
+                        val txInfo = rpc.getRawTransaction(pending.btcTxId).await(30.seconds)
+                        if txInfo.confirmations > 0 then
+                            Console.log(
+                              s"BTC txid=${pending.btcTxId} confirmed (${txInfo.confirmations} blocks), updating Cardano datum..."
+                            )
+                            updateDatum(
+                              provider,
+                              hdAccount,
+                              scriptAddress,
+                              pending.utxo,
+                              pending.txBytes,
+                              timeout
+                            ) match {
+                                case Right(cardanoTxHash) =>
+                                    pendingConfirmation.remove(utxoRef)
+                                    transactions(utxoRef) = RelayResult.Relayed(pending.btcTxId)
+                                case Left(err) =>
+                                    Console.logError(
+                                      s"  Cardano datum update failed: $err — will retry"
+                                    )
+                            }
+                    } catch {
+                        case e: Exception =>
+                            Console.log(
+                              s"  Waiting for BTC confirmation: ${pending.btcTxId} (${e.getMessage})"
+                            )
+                    }
+                }
+
                 val query = UtxoQuery(UtxoSource.FromAddress(scriptAddress)) &&
                     UtxoFilter.HasAsset(policyId, assetName)
                 val utxosResult = provider.findUtxos(query).await(30.seconds)
@@ -98,7 +148,7 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                     case Right(utxos) =>
                         val newUtxos = utxos.filterNot { case (input, _) =>
                             val key = s"${input.transactionId.toHex}#${input.index}"
-                            transactions.contains(key)
+                            transactions.contains(key) || pendingConfirmation.contains(key)
                         }
 
                         if newUtxos.isEmpty then
@@ -106,8 +156,9 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                                 case RelayResult.Relayed(_) => true; case _ => false
                             }
                             val rejected = transactions.size - relayed
+                            val pending = pendingConfirmation.size
                             Console.logInPlace(
-                              s"Polling... ${utxos.size} TMTx UTxO(s), all processed ($relayed relayed, $rejected rejected)"
+                              s"Polling... ${utxos.size} TMTx UTxO(s): $relayed relayed, $pending awaiting BTC confirmation, $rejected rejected"
                             )
                         else
                             Console.log(s"Found ${newUtxos.size} new TMTx UTxO(s) to relay")
@@ -158,6 +209,10 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                                                     transactions(utxoRef) =
                                                         RelayResult.Relayed("dry-run")
                                                 else
+                                                    val btcTxId = BitcoinHelpers
+                                                        .getTxHash(txBytes)
+                                                        .reverse
+                                                        .toHex
                                                     try {
                                                         val txid = rpc
                                                             .sendRawTransaction(txHex)
@@ -165,8 +220,12 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                                                         Console.logSuccess(
                                                           s"  Broadcast OK: BTC txid=$txid"
                                                         )
-                                                        transactions(utxoRef) =
-                                                            RelayResult.Relayed(txid)
+                                                        pendingConfirmation(utxoRef) =
+                                                            PendingConfirmation(
+                                                              Utxo(input, output),
+                                                              txBytes,
+                                                              txid
+                                                            )
                                                     } catch {
                                                         case e: Exception =>
                                                             val msg = e.getMessage
@@ -177,10 +236,14 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                                                             // don't record — will retry
                                                             else if isAlreadyConfirmed(msg) then
                                                                 Console.logSuccess(
-                                                                  s"  Already confirmed on-chain"
+                                                                  s"  Already confirmed on Bitcoin: BTC txid=$btcTxId"
                                                                 )
-                                                                transactions(utxoRef) =
-                                                                    RelayResult.Relayed("already-confirmed")
+                                                                pendingConfirmation(utxoRef) =
+                                                                    PendingConfirmation(
+                                                                      Utxo(input, output),
+                                                                      txBytes,
+                                                                      btcTxId
+                                                                    )
                                                             else
                                                                 Console.logWarn(
                                                                   s"  Broadcast rejected: $msg"
@@ -216,5 +279,66 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
             }
         }
         0
+    }
+
+    /** Spend the existing TMTx UTxO and recreate it with datum Constr(1, [txBytes]). */
+    private def updateDatum(
+        provider: BlockchainProvider,
+        hdAccount: HdAccount,
+        scriptAddress: Address,
+        utxo: Utxo,
+        txBytes: ByteString,
+        timeout: Duration
+    )(using ExecutionContext): Either[String, String] = {
+        import scalus.cardano.onchain.plutus.prelude.List as ScalusList
+
+        val network = provider.cardanoInfo.network
+        val signer = hdAccount.signerForUtxos
+        val sponsorAddress = hdAccount.baseAddress(network)
+        val mintingScript = TmtxScript.mintingScript
+        val newDatum = Data.Constr(1, ScalusList(Data.B(txBytes)))
+
+        try {
+            Console.log("  Building Cardano datum update transaction...")
+
+            val tx = TxBuilder(provider.cardanoInfo)
+                .spend(utxo, Data.unit, mintingScript)
+                .payTo(scriptAddress, utxo.output.value, newDatum)
+                .complete(provider, sponsorAddress)
+                .await(timeout)
+                .sign(signer)
+                .transaction
+
+            Console.log("  Submitting...")
+
+            val txHash = OracleTransactions.submitTx(provider, tx, timeout) match {
+                case Right(hash) => hash
+                case Left(err)   => return Left(err)
+            }
+
+            Console.logSuccess(s"  Cardano tx submitted: $txHash")
+            Console.log("  Waiting for Cardano confirmation...")
+
+            val status = provider
+                .pollForConfirmation(
+                  TransactionHash.fromHex(txHash),
+                  maxAttempts = 60,
+                  delayMs = 2000
+                )
+                .await(timeout)
+
+            status match {
+                case TransactionStatus.Confirmed =>
+                    Console.logSuccess(
+                      s"  Cardano datum updated to Constr(1): Cardano txid=$txHash"
+                    )
+                    Right(txHash)
+                case other =>
+                    Left(s"Transaction status: $other")
+            }
+        } catch {
+            case e: Exception =>
+                Left(e.getMessage)
+        }
     }
 }
