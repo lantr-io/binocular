@@ -3,9 +3,8 @@ package binocular.cli.commands
 import binocular.*
 import binocular.cli.{Command, Console}
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{AssetName, Credential, ScriptHash, TransactionHash, Utxo}
-import scalus.cardano.node.{BlockchainProvider, TransactionStatus, UtxoFilter, UtxoQuery, UtxoSource}
-import scalus.cardano.txbuilder.TxBuilder
+import scalus.cardano.ledger.{AssetName, Credential, ScriptHash, Utxo}
+import scalus.cardano.node.{BlockchainProvider, UtxoFilter, UtxoQuery, UtxoSource}
 import scalus.cardano.wallet.hd.HdAccount
 import scalus.uplc.builtin.{ByteString, Data}
 
@@ -110,7 +109,7 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                             Console.log(
                               s"BTC txid=${pending.btcTxId} confirmed (${txInfo.confirmations} blocks), updating Cardano datum..."
                             )
-                            updateDatum(
+                            TmtxScript.updateDatum(
                               provider,
                               hdAccount,
                               scriptAddress,
@@ -279,66 +278,5 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
             }
         }
         0
-    }
-
-    /** Spend the existing TMTx UTxO and recreate it with datum Constr(1, [txBytes]). */
-    private def updateDatum(
-        provider: BlockchainProvider,
-        hdAccount: HdAccount,
-        scriptAddress: Address,
-        utxo: Utxo,
-        txBytes: ByteString,
-        timeout: Duration
-    )(using ExecutionContext): Either[String, String] = {
-        import scalus.cardano.onchain.plutus.prelude.List as ScalusList
-
-        val network = provider.cardanoInfo.network
-        val signer = hdAccount.signerForUtxos
-        val sponsorAddress = hdAccount.baseAddress(network)
-        val mintingScript = TmtxScript.mintingScript
-        val newDatum = Data.Constr(1, ScalusList(Data.B(txBytes)))
-
-        try {
-            Console.log("  Building Cardano datum update transaction...")
-
-            val tx = TxBuilder(provider.cardanoInfo)
-                .spend(utxo, Data.unit, mintingScript)
-                .payTo(scriptAddress, utxo.output.value, newDatum)
-                .complete(provider, sponsorAddress)
-                .await(timeout)
-                .sign(signer)
-                .transaction
-
-            Console.log("  Submitting...")
-
-            val txHash = OracleTransactions.submitTx(provider, tx, timeout) match {
-                case Right(hash) => hash
-                case Left(err)   => return Left(err)
-            }
-
-            Console.logSuccess(s"  Cardano tx submitted: $txHash")
-            Console.log("  Waiting for Cardano confirmation...")
-
-            val status = provider
-                .pollForConfirmation(
-                  TransactionHash.fromHex(txHash),
-                  maxAttempts = 60,
-                  delayMs = 2000
-                )
-                .await(timeout)
-
-            status match {
-                case TransactionStatus.Confirmed =>
-                    Console.logSuccess(
-                      s"  Cardano datum updated to Constr(1): Cardano txid=$txHash"
-                    )
-                    Right(txHash)
-                case other =>
-                    Left(s"Transaction status: $other")
-            }
-        } catch {
-            case e: Exception =>
-                Left(e.getMessage)
-        }
     }
 }

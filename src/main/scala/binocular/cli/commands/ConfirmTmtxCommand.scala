@@ -4,10 +4,9 @@ import binocular.*
 import binocular.cli.{Command, Console}
 import scalus.cardano.address.Address
 import scalus.cardano.ledger.*
-import scalus.cardano.node.{BlockchainProvider, TransactionStatus, UtxoFilter, UtxoQuery, UtxoSource}
-import scalus.cardano.txbuilder.TxBuilder
+import scalus.cardano.node.{BlockchainProvider, UtxoFilter, UtxoQuery, UtxoSource}
 import scalus.cardano.wallet.hd.HdAccount
-import scalus.uplc.builtin.{ByteString, Data}
+import scalus.uplc.builtin.Data
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
@@ -161,7 +160,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
                                                                   "dry-run"
                                                                 )
                                                         else
-                                                            updateDatum(
+                                                            TmtxScript.updateDatum(
                                                               provider,
                                                               hdAccount,
                                                               scriptAddress,
@@ -223,68 +222,4 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
         0
     }
 
-    /** Spend the existing TMTx UTxO and recreate it with datum Constr(1, [txBytes]). */
-    private def updateDatum(
-        provider: BlockchainProvider,
-        hdAccount: HdAccount,
-        scriptAddress: Address,
-        utxo: Utxo,
-        txBytes: ByteString,
-        timeout: Duration
-    )(using ExecutionContext): Either[String, String] = {
-        import scalus.cardano.onchain.plutus.prelude.List as ScalusList
-
-        val network = provider.cardanoInfo.network
-        val signer = hdAccount.signerForUtxos
-        val sponsorAddress = hdAccount.baseAddress(network)
-        val mintingScript = TmtxScript.mintingScript
-
-        // TODO: Currently using PlutusV3.alwaysOk for spending. A proper validator
-        // should verify that the datum transition contains a valid inclusion proof, which a validator should check
-        // for now, constr (0, <tx) -> conts(1, <tx>) for simplicity
-        //
-
-        val newDatum = Data.Constr(1, ScalusList(Data.B(txBytes)))
-
-        try {
-            Console.log("  Building datum update transaction...")
-
-            val tx = TxBuilder(provider.cardanoInfo)
-                .spend(utxo, Data.unit, mintingScript)
-                .payTo(scriptAddress, utxo.output.value, newDatum)
-                .complete(provider, sponsorAddress)
-                .await(timeout)
-                .sign(signer)
-                .transaction
-
-            Console.log("  Submitting...")
-
-            val txHash = OracleTransactions.submitTx(provider, tx, timeout) match {
-                case Right(hash) => hash
-                case Left(err)   => return Left(err)
-            }
-
-            Console.logSuccess(s"  Cardano tx submitted: $txHash")
-            Console.log("  Waiting for Cardano confirmation...")
-
-            val status = provider
-                .pollForConfirmation(
-                  TransactionHash.fromHex(txHash),
-                  maxAttempts = 60,
-                  delayMs = 2000
-                )
-                .await(timeout)
-
-            status match {
-                case TransactionStatus.Confirmed =>
-                    Console.logSuccess(s"  Cardano datum updated to Constr(1): Cardano txid=$txHash")
-                    Right(txHash)
-                case other =>
-                    Left(s"Transaction status: $other")
-            }
-        } catch {
-            case e: Exception =>
-                Left(s"${e.getMessage}")
-        }
-    }
 }
