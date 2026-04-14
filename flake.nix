@@ -17,6 +17,7 @@
         pkgs = import nixpkgs { inherit system; };
         jdk = pkgs.openjdk25;
         sbt = pkgs.sbt.override { jre = jdk; };
+        mill = pkgs.mill.override { jre = jdk; };
         visualvm = pkgs.visualvm.override { jdk = jdk; };
       in
       rec {
@@ -27,6 +28,7 @@
             git
             jdk
             sbt
+            mill
             visualvm
             nixpkgs-fmt
             nodejs
