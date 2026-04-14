@@ -18,25 +18,24 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Java and Scala
-        uses: coursier/setup-action@v1
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
-          jvm: temurin:21
-          apps: sbt
+          distribution: temurin
+          java-version: 21
 
-      - name: Cache SBT
+      - name: Cache Mill
         uses: actions/cache@v4
         with:
           path: |
-            ~/.sbt
-            ~/.ivy2/cache
+            ~/.mill
             ~/.cache/coursier
-          key: ${{ runner.os }}-sbt-${{ hashFiles('**/build.sbt', 'project/**') }}
+          key: ${{ runner.os }}-mill-${{ hashFiles('build.mill', '.mill-version') }}
           restore-keys: |
-            ${{ runner.os }}-sbt-
+            ${{ runner.os }}-mill-
 
       - name: Check formatting and run tests
-        run: sbt "scalafmtCheckAll;scalafmtSbtCheck;test"
+        run: ./millw mill.scalalib.scalafmt/checkFormatAll && ./millw binocular.test -- -l binocular.ManualTest
 
       - name: List contract debug files
         if: failure()
