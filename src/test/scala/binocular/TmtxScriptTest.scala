@@ -11,8 +11,10 @@ class TmtxScriptTest extends AnyFunSuite {
         val alwaysOkHash = PlutusV3.alwaysOk.script.scriptHash.toHex
         val tmtxHash = TmtxScript.mintingScript.script.scriptHash.toHex
         val tmtxScriptHex = TmtxScript.mintingScript.script.script.toHex
-        val preprodAddr = Address(Network.Testnet, Credential.ScriptHash(TmtxScript.mintingScript.script.scriptHash))
-            .encode.getOrElse("?")
+        val preprodAddr = Address(
+          Network.Testnet,
+          Credential.ScriptHash(TmtxScript.mintingScript.script.scriptHash)
+        ).encode.getOrElse("?")
         println(s"\n=== TmtxScript policy ID:       $tmtxHash ===")
         println(s"=== TmtxScript script hex:      $tmtxScriptHex ===")
         println(s"=== TmtxScript address (preprod): $preprodAddr ===\n")

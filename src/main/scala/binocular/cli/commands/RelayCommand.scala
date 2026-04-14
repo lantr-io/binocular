@@ -31,8 +31,8 @@ enum RelayResult:
   * @param confirmedOnBitcoin
   *   true when we already know the tx is confirmed (e.g. -27 error), skip BTC check
   * @param broadcastHeight
-  *   block height at broadcast time; if current height exceeds this the tx is confirmed
-  *   (used when -txindex is not enabled and the tx is not a wallet transaction)
+  *   block height at broadcast time; if current height exceeds this the tx is confirmed (used when
+  *   -txindex is not enabled and the tx is not a wallet transaction)
   */
 private case class PendingConfirmation(
     utxo: Utxo,
@@ -99,7 +99,10 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
         }
 
         Console.info("Cardano", config.cardano.network)
-        Console.info("Wallet", hdAccount.baseAddress(config.cardano.scalusNetwork).encode.getOrElse("?"))
+        Console.info(
+          "Wallet",
+          hdAccount.baseAddress(config.cardano.scalusNetwork).encode.getOrElse("?")
+        )
         Console.info("TMTx policy", relayConfig.tmtxPolicyId)
         Console.info("TMTx asset", relayConfig.tmtxAssetName)
         Console.info("Script address", scriptAddress.encode.getOrElse("?"))
@@ -113,8 +116,9 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
 
         while true do {
             try {
-                val currentHeight = try rpc.getBlockchainInfo().await(30.seconds).blocks
-                                   catch case _ => 0
+                val currentHeight =
+                    try rpc.getBlockchainInfo().await(30.seconds).blocks
+                    catch case _ => 0
 
                 // Check pending items: if BTC tx now confirmed, update Cardano datum
                 for (utxoRef, pending) <- pendingConfirmation.toList do {
@@ -216,8 +220,7 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                                                 Console.logSuccess(
                                                   s"  Already confirmed by Binocular: BTC txid=$txid"
                                                 )
-                                                transactions(utxoRef) =
-                                                    RelayResult.Relayed(txid)
+                                                transactions(utxoRef) = RelayResult.Relayed(txid)
                                             case other =>
                                                 Console.logWarn(
                                                   s"  Datum arg is not ByteString: $other"
@@ -278,7 +281,8 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                                                                       txBytes,
                                                                       btcTxId,
                                                                       confirmedOnBitcoin = true,
-                                                                      broadcastHeight = currentHeight
+                                                                      broadcastHeight =
+                                                                          currentHeight
                                                                     )
                                                             else
                                                                 Console.logWarn(

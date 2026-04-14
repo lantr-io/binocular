@@ -252,7 +252,8 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) ex
         call("gettransaction", ujson.Arr(txid)).map { result =>
             RawTransactionInfo(
               txid = txid,
-              hash = result.obj.get("wtxid").orElse(result.obj.get("txid")).map(_.str).getOrElse(txid),
+              hash =
+                  result.obj.get("wtxid").orElse(result.obj.get("txid")).map(_.str).getOrElse(txid),
               hex = result("hex").str,
               blockhash = result.obj.get("blockhash").map(_.str),
               confirmations = result.obj.get("confirmations").map(_.num.toInt).getOrElse(0)
