@@ -1,0 +1,146 @@
+//| mvnDeps: ["com.lihaoyi::mill-contrib-buildinfo:$MILL_VERSION"]
+package build
+import mill.*, scalalib.*, scalalib.SbtModule
+import mill.contrib.buildinfo.BuildInfo
+import mill.scalalib.Assembly.*
+
+val scalusVersion = "0.16.0+206-a6df70ab-SNAPSHOT"
+val binocularVersion = "0.1.0-SNAPSHOT"
+
+object binocular extends SbtModule with BuildInfo {
+
+  def scalaVersion = "3.3.7"
+
+  def scalacOptions = Seq(
+    "-deprecation",
+    "-feature",
+    "-Wunused:imports",
+  )
+
+  def scalacPluginMvnDeps = Seq(
+    mvn"org.scalus:scalus-plugin_3.3.7:$scalusVersion"
+  )
+
+  def repositoriesTask = Task.Anon {
+    super.repositoriesTask() ++ Seq(
+      coursier.maven.MavenRepository(
+        "https://central.sonatype.com/repository/maven-snapshots/"
+      )
+    )
+  }
+
+  def mvnDeps = Seq(
+    mvn"org.scalus::scalus:$scalusVersion",
+    mvn"com.lihaoyi::upickle:4.4.3",
+    mvn"com.typesafe:config:1.4.6",
+    mvn"ch.qos.logback:logback-classic:1.5.32",
+    mvn"com.typesafe.scala-logging::scala-logging:3.9.6",
+    mvn"com.github.pureconfig::pureconfig-core:0.17.10",
+    mvn"org.bouncycastle:bcprov-jdk18on:1.83",
+    mvn"org.bitcoin-s:bitcoin-s-bitcoind-rpc_2.13:1.9.11"
+      .exclude("com.lihaoyi" -> "upickle_2.13")
+      .exclude("com.lihaoyi" -> "ujson_2.13")
+      .exclude("com.lihaoyi" -> "upack_2.13")
+      .exclude("com.lihaoyi" -> "upickle-core_2.13")
+      .exclude("com.lihaoyi" -> "upickle-implicits_2.13")
+      .exclude("com.lihaoyi" -> "geny_2.13"),
+    mvn"org.scalus::scalus-testkit:$scalusVersion",
+    mvn"com.monovore::decline:2.6.0",
+  )
+
+  def forkArgs = Seq("--sun-misc-unsafe-memory-access=allow")
+
+  def mainClass = Some("binocular.main")
+
+  def assemblyRules = Seq(
+    Rule.ExcludePattern("META-INF/.*"),
+    Rule.ExcludePattern("module-info.class"),
+    Rule.Append("reference.conf"),
+    Rule.Append("application.conf"),
+  )
+
+  def resources = Task {
+    super[SbtModule].resources() ++ super[BuildInfo].resources()
+  }
+
+  def buildInfoPackageName = "binocular"
+  def buildInfoMembers = Seq(
+    BuildInfo.Value("name", "binocular"),
+    BuildInfo.Value("version", binocularVersion),
+  )
+
+  object test extends SbtTests with TestModule.ScalaTest {
+    def mvnDeps = Seq(
+      mvn"com.lihaoyi::os-lib:0.11.8",
+      mvn"com.lihaoyi::pprint:0.9.6",
+      mvn"org.scalatest::scalatest:3.2.19",
+      mvn"org.scalatestplus::scalacheck-1-18:3.2.19.0",
+      mvn"org.scalacheck::scalacheck:1.19.0",
+    )
+    def forkArgs = Seq("-Xmx2g", "--sun-misc-unsafe-memory-access=allow")
+  }
+}
+
+object it extends SbtModule {
+
+  def scalaVersion = "3.3.7"
+
+  def scalacOptions = Seq(
+    "-deprecation",
+    "-feature",
+    "-Wunused:imports",
+  )
+
+  def scalacPluginMvnDeps = Seq(
+    mvn"org.scalus:scalus-plugin_3.3.7:$scalusVersion"
+  )
+
+  def repositoriesTask = Task.Anon {
+    super.repositoriesTask() ++ Seq(
+      coursier.maven.MavenRepository(
+        "https://central.sonatype.com/repository/maven-snapshots/"
+      )
+    )
+  }
+
+  def moduleDeps = Seq(binocular)
+
+  object test extends SbtTests with TestModule.ScalaTest {
+    def mvnDeps = Seq(
+      mvn"com.lihaoyi::os-lib:0.11.8",
+      mvn"org.scalatest::scalatest:3.2.19",
+    )
+    def forkArgs = Seq("-Xmx2g", "--sun-misc-unsafe-memory-access=allow")
+    def forkWorkingDir = Task { os.pwd }
+    def forkEnv = Task {
+      super.forkEnv() ++ Map("TESTCONTAINERS_RYUK_DISABLED" -> "true")
+    }
+  }
+}
+
+object example extends SbtModule {
+
+  def scalaVersion = "3.3.7"
+
+  def scalacOptions = Seq(
+    "-deprecation",
+    "-feature",
+    "-Wunused:imports",
+  )
+
+  def scalacPluginMvnDeps = Seq(
+    mvn"org.scalus:scalus-plugin_3.3.7:$scalusVersion"
+  )
+
+  def repositoriesTask = Task.Anon {
+    super.repositoriesTask() ++ Seq(
+      coursier.maven.MavenRepository(
+        "https://central.sonatype.com/repository/maven-snapshots/"
+      )
+    )
+  }
+
+  def moduleDeps = Seq(binocular)
+
+  def mainClass = Some("binocular.example.bitcoinDependentLock")
+}
