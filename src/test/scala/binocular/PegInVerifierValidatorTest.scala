@@ -319,7 +319,7 @@ class PegInVerifierValidatorTest extends AnyFunSuite with ScalusTest {
         assert(result.isInstanceOf[Result.Success], s"Expected success but got: $result")
     }
 
-    test("CEK: fails when peg-in spent via Taproot script-path witness") {
+    test("CEK: fails when peg-in is script-path but treasury is key-path (depositor refund)") {
         val treasuryInput = txInput(fakeTxid(0x10), 0)
 
         val pegInTx = buildPegInTx(
@@ -344,7 +344,7 @@ class PegInVerifierValidatorTest extends AnyFunSuite with ScalusTest {
         assert(result.isInstanceOf[Result.Failure], s"Expected failure but got: $result")
     }
 
-    test("CEK: fails when treasury spent via Taproot script-path witness") {
+    test("CEK: 67% mode succeeds (treasury script-path Y_67, peg-in key-path Y_51)") {
         val treasuryInput = txInput(fakeTxid(0x10), 0)
 
         val pegInTx = buildPegInTx(
@@ -357,7 +357,7 @@ class PegInVerifierValidatorTest extends AnyFunSuite with ScalusTest {
         val pegInTxid = sha2_256(sha2_256(rawPegInTx)).bytes
         val pegInInput = txInputLE(pegInTxid, 0)
 
-        // Treasury uses script-path witness (2 items); peg-in is key-path — must still fail
+        // 67% mode: treasury via Y_67 script leaf (script-path, 2 items), peg-in via Y_51 key-path
         val tmTx = buildWitnessTx(
           inputs = Seq(treasuryInput, pegInInput),
           witnesses = Seq(scriptPathWitness(Array(0x51.toByte), Array.fill(33)(0xc0.toByte)), TaprootKeyPath.dummy)
@@ -366,7 +366,33 @@ class PegInVerifierValidatorTest extends AnyFunSuite with ScalusTest {
 
         val redeemer = buildRedeemer(outpointBytes(treasuryInput), rawPegInTx, 100_000, rawTmTx)
         val result = evalValidator(redeemer)
-        assert(result.isInstanceOf[Result.Failure], s"Expected failure but got: $result")
+        assert(result.isInstanceOf[Result.Success], s"Expected success but got: $result")
+    }
+
+    test("CEK: federation mode succeeds (treasury script-path Y_fed, peg-in script-path Y_fed)") {
+        val treasuryInput = txInput(fakeTxid(0x10), 0)
+
+        val pegInTx = buildPegInTx(
+          prevTxid = fakeTxid(0x01),
+          prevVout = 0,
+          paymentSatoshis = 100_000,
+          scriptPubKey = ScriptPubKey.fromAsmHex("5120" + "0" * 64)
+        )
+        val rawPegInTx = txBytes(pegInTx)
+        val pegInTxid = sha2_256(sha2_256(rawPegInTx)).bytes
+        val pegInInput = txInputLE(pegInTxid, 0)
+
+        // Federation mode: both treasury and peg-in spent via Y_fed script leaf (script-path)
+        val fedScriptPath = scriptPathWitness(Array(0x51.toByte), Array.fill(33)(0xc0.toByte))
+        val tmTx = buildWitnessTx(
+          inputs = Seq(treasuryInput, pegInInput),
+          witnesses = Seq(fedScriptPath, fedScriptPath)
+        )
+        val rawTmTx = txBytes(tmTx)
+
+        val redeemer = buildRedeemer(outpointBytes(treasuryInput), rawPegInTx, 100_000, rawTmTx)
+        val result = evalValidator(redeemer)
+        assert(result.isInstanceOf[Result.Success], s"Expected success but got: $result")
     }
 
     test("CEK: fails when TM is not witness-serialized") {

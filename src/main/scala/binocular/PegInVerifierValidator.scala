@@ -9,7 +9,7 @@ import scalus.uplc.builtin.Builtins.*
 import scalus.uplc.PlutusV3
 
 /** Stake validator that verifies a Bitcoin Treasury Movement (TM) transaction actually consumes a
-  * specific peg-in deposit via the correct Taproot key-path spend.
+  * specific peg-in deposit via a valid Bifrost protocol spending path.
   *
   * Used by Bifrost's `peg_in.ak` via the stake validator delegation pattern. The Aiken side passes
   * a redeemer (as a Data list) containing:
@@ -21,12 +21,15 @@ import scalus.uplc.PlutusV3
   * The Aiken caller verifies these fields match the PegInDatum. This validator's job is Bitcoin
   * transaction parsing and witness inspection:
   *   1. TM tx's first input must spend the treasury UTXO (outpoint match)
-  *   2. Treasury input witness must be a Taproot key-path spend (Y_51 FROST signed it)
-  *   3. Some TM input must have prev_txid == sha256d(raw_peg_in_tx) (peg-in consumed)
-  *   4. Peg-in input witness must be a Taproot key-path spend (same Y_51 FROST, not CSV timeout)
+  *   2. Some TM input must have prev_txid == sha256d(raw_peg_in_tx) (peg-in consumed)
+  *   3. The spending mode must be one of the three valid Bifrost protocol modes:
+  *        - 51% (main line):    treasury key-path Y_51,   peg-in key-path Y_51
+  *        - 67% (aspirational): treasury script-path Y_67, peg-in key-path Y_51
+  *        - Federation:         treasury script-path Y_fed, peg-in script-path Y_fed
   *
-  * Checks 2 and 4 together prove the same FROST federation (Y_51) signed both inputs, ruling out
-  * depositor-refund (4320-block CSV) and federation-emergency script-path spends.
+  * The mode check is: if treasury is key-path then peg-in must also be key-path.
+  * This rules out the only invalid combination (key-path treasury + script-path peg-in),
+  * which would indicate a depositor CSV refund or other non-protocol spend.
   */
 @Compile
 object PegInVerifierValidator {
@@ -50,16 +53,19 @@ object PegInVerifierValidator {
         val firstOutpoint = BitcoinHelpers.firstInputOutpoint(rawTmTx)
         require(firstOutpoint == treasuryUtxoId, "TM first input does not match treasury UTXO")
 
-        // 2. Treasury (input 0) must be a Taproot key-path spend — proves Y_51 FROST signed it
-        require(BitcoinHelpers.isKeyPathWitness(rawTmTx, 0), "Treasury not spent via key path")
-
-        // 3. TM must consume the peg-in tx; find its index among TM inputs
+        // 2. Find the peg-in input index before the witness check
         val pegInTxHash = sha2_256(sha2_256(rawPegInTx))
         val pegInIdx = BitcoinHelpers.findPegInInputIndex(rawTmTx, pegInTxHash)
 
-        // 4. Peg-in input must also be a key-path spend — rules out depositor CSV refund and
-        //    federation emergency path; proves same Y_51 FROST co-signed
-        require(BitcoinHelpers.isKeyPathWitness(rawTmTx, pegInIdx), "Peg-in not spent via key path")
+        // 3. Verify the spending mode matches one of the three valid protocol modes:
+        //      51% (main line)    — treasury key-path  Y_51,  peg-in key-path  Y_51
+        //      67% (aspirational) — treasury script-path Y_67, peg-in key-path  Y_51
+        //      Federation         — treasury script-path Y_fed, peg-in script-path Y_fed
+        //    The one forbidden combination is treasury key-path with peg-in script-path:
+        //    that would indicate a depositor CSV refund or other non-federation script path.
+        val treasuryIsKeyPath = BitcoinHelpers.isKeyPathWitness(rawTmTx, 0)
+        val pegInIsKeyPath = BitcoinHelpers.isKeyPathWitness(rawTmTx, pegInIdx)
+        require(!treasuryIsKeyPath || pegInIsKeyPath, "Key-path treasury requires key-path peg-in")
     }
 
     /** Main validator entry point - rewarding (withdraw) validator function.
