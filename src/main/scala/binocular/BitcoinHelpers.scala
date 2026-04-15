@@ -311,6 +311,90 @@ object BitcoinHelpers {
         val (scriptLength, newOffset) = readVarInt(rawTx, offset + 8) // skip amount
         newOffset + scriptLength
 
+    /** Read the outpoint (prev_txid ++ prev_vout, 36 bytes) of the first input.
+      * Handles both witness-serialized (marker+flag at bytes 4-5) and legacy format.
+      *
+      * @param rawTx Bitcoin transaction bytes (witness or non-witness serialized)
+      * @return 36-byte outpoint of the first input
+      */
+    def firstInputOutpoint(rawTx: ByteString): ByteString =
+        val txInsStart = if isWitnessTransaction(rawTx) then BigInt(6) else BigInt(4)
+        val (numIns, firstInputOffset) = readVarInt(rawTx, txInsStart)
+        require(numIns > 0, "Transaction has no inputs")
+        rawTx.slice(firstInputOffset, 36)
+
+    /** Return the 0-based index of the input whose prev_txid matches `targetPrevTxid`.
+      * Fails with "TM does not spend peg-in tx" if no matching input is found.
+      * Handles both witness-serialized and non-witness tx bytes.
+      *
+      * @param rawTx Bitcoin transaction bytes
+      * @param targetPrevTxid 32-byte txid to find (in internal/LE byte order, i.e. sha256d output)
+      * @return 0-based index of the matching input
+      */
+    def findPegInInputIndex(rawTx: ByteString, targetPrevTxid: TxHash): BigInt =
+        val txInsStart = if isWitnessTransaction(rawTx) then BigInt(6) else BigInt(4)
+        val (numIns, firstInputOffset) = readVarInt(rawTx, txInsStart)
+        def loop(remaining: BigInt, offset: BigInt, index: BigInt): BigInt =
+            if remaining == BigInt(0) then fail("TM does not spend peg-in tx")
+            else
+                val prevTxid = rawTx.slice(offset, 32)
+                val (scriptLen, afterVarInt) = readVarInt(rawTx, offset + 36)
+                val nextOffset = afterVarInt + scriptLen + 4 // skip sequence (4 bytes)
+                if prevTxid == targetPrevTxid then index
+                else loop(remaining - 1, nextOffset, index + 1)
+        loop(numIns, firstInputOffset, 0)
+
+    /** Return the byte offset where the witness data begins in a witness-serialized tx.
+      * The witness section follows immediately after all inputs and all outputs.
+      * Fails if the transaction is not witness-serialized.
+      *
+      * @param rawTx Witness-serialized Bitcoin transaction bytes
+      * @return Byte offset of the first byte of the witness section
+      */
+    def findWitnessSectionOffset(rawTx: ByteString): BigInt =
+        require(isWitnessTransaction(rawTx), "Transaction is not witness-serialized")
+        val afterInputs = skipTxIns(rawTx, 6) // 6 = version(4) + marker(1) + flag(1)
+        skipTxOuts(rawTx, afterInputs)
+
+    /** Skip one witness stack entry and return the offset of the next witness.
+      * Witness wire format: [varint stackItems][for each: varint len + bytes]
+      *
+      * @param rawTx Bitcoin transaction bytes
+      * @param offset Byte offset of the varint that starts this witness's stack item count
+      * @return Byte offset immediately after this witness
+      */
+    def skipOneWitness(rawTx: ByteString, offset: BigInt): BigInt =
+        val (stackItems, afterCount) = readVarInt(rawTx, offset)
+        def loop(n: BigInt, off: BigInt): BigInt =
+            if n == BigInt(0) then off
+            else
+                val (itemLen, afterLen) = readVarInt(rawTx, off)
+                loop(n - 1, afterLen + itemLen)
+        loop(stackItems, afterCount)
+
+    /** Return true iff the witness at `inputIndex` is a Taproot key-path spend:
+      * exactly one stack item of 64 or 65 bytes (a bare Schnorr signature).
+      *
+      * Taproot script-path spends always place at least a leaf script AND a control block
+      * on the stack (>=2 items), so `stackItems == 1` is a sufficient discriminator.
+      * 64 bytes = SIGHASH_DEFAULT (implicit); 65 bytes = explicit hash type byte appended.
+      *
+      * @param rawTx Witness-serialized Bitcoin transaction bytes
+      * @param inputIndex 0-based index of the input whose witness to inspect
+      * @return true if witness is key-path, false if it is a script-path spend
+      */
+    def isKeyPathWitness(rawTx: ByteString, inputIndex: BigInt): Boolean =
+        val witnessStart = findWitnessSectionOffset(rawTx)
+        def skip(n: BigInt, off: BigInt): BigInt =
+            if n == BigInt(0) then off
+            else skip(n - 1, skipOneWitness(rawTx, off))
+        val witnessOff = skip(inputIndex, witnessStart)
+        val (stackItems, afterCount) = readVarInt(rawTx, witnessOff)
+        if stackItems != BigInt(1) then false
+        else
+            val (itemLen, _) = readVarInt(rawTx, afterCount)
+            itemLen >= BigInt(64) && itemLen <= BigInt(65)
+
     // Insert a timestamp into a sorted list while maintaining order
     def insertReverseSorted(value: BigInt, sortedValues: List[BigInt]): List[BigInt] =
         sortedValues match
