@@ -50,41 +50,11 @@ class PegInVerifierValidatorTest extends AnyFunSuite with ScalusTest {
     private def txBytes(tx: Transaction): ByteString =
         ByteString.fromArray(tx.bytes.toArray)
 
-    /** Build a minimal raw witness-serialized transaction from scratch, bypassing bitcoin-s
-      * ScriptWitness type validation. Used for tests that need witness stacks bitcoin-s would reject
-      * (e.g., script-path witnesses with fake control blocks).
-      *
-      * Wire format: [version 4B][0x00][0x01][nInputs][inputs][nOutputs][outputs][witnesses][locktime 4B]
-      * Each witness: [nStackItems varint][item len varint + bytes]...
-      *
-      * @param inputOutpoints 36-byte outpoints (prevTxid 32B LE + vout 4B LE) per input
-      * @param witnessStacks  per-input list of raw stack item byte arrays
+    /** Build a fake script-path witness from raw stack items (2+ items = not a key-path spend).
+      * Uses raw ScriptWitness because TaprootScriptPath validates the real Taproot stack format.
       */
-    private def rawWitnessTxBytes(
-        inputOutpoints: Seq[Array[Byte]],
-        witnessStacks: Seq[Seq[Array[Byte]]]
-    ): ByteString = {
-        require(inputOutpoints.length == witnessStacks.length)
-        val buf = scala.collection.mutable.ArrayBuffer[Byte]()
-        buf ++= Array(0x02, 0x00, 0x00, 0x00).map(_.toByte) // version 2
-        buf += 0x00.toByte                                   // marker
-        buf += 0x01.toByte                                   // flag
-        buf += inputOutpoints.length.toByte                  // input count
-        for outpoint <- inputOutpoints do
-            buf ++= outpoint                                 // 36-byte outpoint
-            buf += 0x00.toByte                               // empty scriptSig
-            buf ++= Array(0xff, 0xff, 0xff, 0xff).map(_.toByte) // sequence
-        buf += 0x01.toByte                                   // 1 dummy output
-        buf ++= Array.fill(8)(0x00.toByte)                   // value = 0
-        buf += 0x00.toByte                                   // empty scriptPubKey
-        for stack <- witnessStacks do
-            buf += stack.length.toByte                       // stack item count
-            for item <- stack do
-                buf += item.length.toByte                    // item length
-                buf ++= item                                 // item bytes
-        buf ++= Array(0x00, 0x00, 0x00, 0x00).map(_.toByte) // locktime
-        ByteString.fromArray(buf.toArray)
-    }
+    private def scriptPathWitness(items: Array[Byte]*): ScriptWitness =
+        ScriptWitness(items.map(ByteVector(_)).toVector)
 
     /** Create a TransactionInput from a 32-byte txid (display/BE order) and vout. */
     private def txInput(txidBE: Array[Byte], vout: Int): TransactionInput = {
@@ -173,7 +143,6 @@ class PegInVerifierValidatorTest extends AnyFunSuite with ScalusTest {
           redeemer = redeemer,
           scriptInfo = RewardingScript(credential)
         )
-        println(testContract.program.showHighlighted)
         testProgram.applyArg(scriptContext.toData).evaluateDebug
     }
 
@@ -361,16 +330,14 @@ class PegInVerifierValidatorTest extends AnyFunSuite with ScalusTest {
         )
         val rawPegInTx = txBytes(pegInTx)
         val pegInTxid = sha2_256(sha2_256(rawPegInTx)).bytes
-        val pegInOutpointBytes = pegInTxid ++ Array.fill(4)(0.toByte)
+        val pegInInput = txInputLE(pegInTxid, 0)
 
-        // Treasury is key-path (1 item, 64 bytes); peg-in uses a script-path witness (2 items)
-        // rawWitnessTxBytes bypasses bitcoin-s TaprootScriptPath construction validation
-        val keyPath = Seq(Array.fill(64)(0x00.toByte))
-        val scriptPath = Seq(Array(0x51.toByte), Array.fill(33)(0xc0.toByte))
-        val rawTmTx = rawWitnessTxBytes(
-          inputOutpoints = Seq(outpointBytes(treasuryInput).bytes, pegInOutpointBytes),
-          witnessStacks = Seq(keyPath, scriptPath)
+        // Treasury is key-path; peg-in uses a script-path witness (2 items: script + control block)
+        val tmTx = buildWitnessTx(
+          inputs = Seq(treasuryInput, pegInInput),
+          witnesses = Seq(TaprootKeyPath.dummy, scriptPathWitness(Array(0x51.toByte), Array.fill(33)(0xc0.toByte)))
         )
+        val rawTmTx = txBytes(tmTx)
 
         val redeemer = buildRedeemer(outpointBytes(treasuryInput), rawPegInTx, 100_000, rawTmTx)
         val result = evalValidator(redeemer)
@@ -388,15 +355,14 @@ class PegInVerifierValidatorTest extends AnyFunSuite with ScalusTest {
         )
         val rawPegInTx = txBytes(pegInTx)
         val pegInTxid = sha2_256(sha2_256(rawPegInTx)).bytes
-        val pegInOutpointBytes = pegInTxid ++ Array.fill(4)(0.toByte)
+        val pegInInput = txInputLE(pegInTxid, 0)
 
         // Treasury uses script-path witness (2 items); peg-in is key-path — must still fail
-        val keyPath = Seq(Array.fill(64)(0x00.toByte))
-        val scriptPath = Seq(Array(0x51.toByte), Array.fill(33)(0xc0.toByte))
-        val rawTmTx = rawWitnessTxBytes(
-          inputOutpoints = Seq(outpointBytes(treasuryInput).bytes, pegInOutpointBytes),
-          witnessStacks = Seq(scriptPath, keyPath)
+        val tmTx = buildWitnessTx(
+          inputs = Seq(treasuryInput, pegInInput),
+          witnesses = Seq(scriptPathWitness(Array(0x51.toByte), Array.fill(33)(0xc0.toByte)), TaprootKeyPath.dummy)
         )
+        val rawTmTx = txBytes(tmTx)
 
         val redeemer = buildRedeemer(outpointBytes(treasuryInput), rawPegInTx, 100_000, rawTmTx)
         val result = evalValidator(redeemer)

@@ -76,22 +76,15 @@ object PegInVerifierValidator {
         val rawPegInTx = unBData(fields.tail.head)
         // fields.tail.tail.head is peg_in_amount — not needed for this verification
         val rawTmTx = unBData(fields.tail.tail.tail.head)
-
         verifyTmSpendsPegIn(treasuryUtxoId, rawPegInTx, rawTmTx)
     }
 
-    /** Raw ScriptContext entry point for Scalus compilation. */
-    def validate(scData: Data): Unit = {
-        val sc = unConstrData(scData).snd
-        val txInfoData = sc.head
-        val redeemer = sc.tail.head
-        val scriptInfo = unConstrData(sc.tail.tail.head)
-        // ScriptInfo.RewardingScript has constructor index 2
-        if scriptInfo.fst == BigInt(2) then
-            val credential = scriptInfo.snd.head.to[Credential]
-            val txInfo = txInfoData.to[TxInfo]
-            reward(redeemer, credential, txInfo)
-        else fail("Not a rewarding script")
+    inline def validate(scData: Data): Unit = {
+        val sc = scData.to[ScriptContext]
+        sc.scriptInfo match
+            case ScriptInfo.RewardingScript(credential) =>
+                reward(sc.redeemer, credential, sc.txInfo)
+            case _ => fail("Not a rewarding script")
     }
 }
 
