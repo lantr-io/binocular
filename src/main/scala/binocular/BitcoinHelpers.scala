@@ -372,6 +372,22 @@ object BitcoinHelpers {
                 loop(n - 1, afterLen + itemLen)
         loop(stackItems, afterCount)
 
+    /** Return the number of stack items in the witness of input at `inputIndex`.
+      * Used to classify Taproot spending paths.
+      *
+      * @param rawTx Witness-serialized Bitcoin transaction bytes
+      * @param inputIndex 0-based index of the input whose witness to inspect
+      * @return number of stack items in the witness
+      */
+    def witnessStackSize(rawTx: ByteString, inputIndex: BigInt): BigInt =
+        val witnessStart = findWitnessSectionOffset(rawTx)
+        def skip(n: BigInt, off: BigInt): BigInt =
+            if n == BigInt(0) then off
+            else skip(n - 1, skipOneWitness(rawTx, off))
+        val witnessOff = skip(inputIndex, witnessStart)
+        val (stackItems, _) = readVarInt(rawTx, witnessOff)
+        stackItems
+
     /** Return true iff the witness at `inputIndex` is a Taproot key-path spend:
       * exactly one stack item of 64 or 65 bytes (a bare Schnorr signature).
       *
@@ -381,7 +397,7 @@ object BitcoinHelpers {
       *
       * @param rawTx Witness-serialized Bitcoin transaction bytes
       * @param inputIndex 0-based index of the input whose witness to inspect
-      * @return true if witness is key-path, false if it is a script-path spend
+      * @return true if witness is key-path (1 item, 64-65 bytes)
       */
     def isKeyPathWitness(rawTx: ByteString, inputIndex: BigInt): Boolean =
         val witnessStart = findWitnessSectionOffset(rawTx)
@@ -394,6 +410,24 @@ object BitcoinHelpers {
         else
             val (itemLen, _) = readVarInt(rawTx, afterCount)
             itemLen >= BigInt(64) && itemLen <= BigInt(65)
+
+    /** Return true iff the witness at `inputIndex` is a Taproot script-path spend:
+      * exactly 3 stack items — [sig, leaf_script, control_block].
+      *
+      * All Bifrost protocol script-path spends use single-sig scripts (Y_67 OP_CHECKSIG,
+      * or <timeout> OP_CSV OP_DROP <Y_fed> OP_CHECKSIG), which require exactly one signature
+      * as witness input, so the total witness stack is always 3 items.
+      *
+      * A depositor CSV refund requires the depositor's pubkey as an explicit witness item
+      * (so the script can verify HASH160(pubkey) == stored_hash), giving 4 items.
+      * Count == 3 reliably distinguishes federation/Y_67 script-path from depositor refund.
+      *
+      * @param rawTx Witness-serialized Bitcoin transaction bytes
+      * @param inputIndex 0-based index of the input whose witness to inspect
+      * @return true if witness is a 3-item protocol script-path
+      */
+    def isValidScriptPathWitness(rawTx: ByteString, inputIndex: BigInt): Boolean =
+        witnessStackSize(rawTx, inputIndex) == BigInt(3)
 
     // Insert a timestamp into a sorted list while maintaining order
     def insertReverseSorted(value: BigInt, sortedValues: List[BigInt]): List[BigInt] =

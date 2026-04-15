@@ -50,11 +50,27 @@ class PegInVerifierValidatorTest extends AnyFunSuite with ScalusTest {
     private def txBytes(tx: Transaction): ByteString =
         ByteString.fromArray(tx.bytes.toArray)
 
-    /** Build a fake script-path witness from raw stack items (2+ items = not a key-path spend).
-      * Uses raw ScriptWitness because TaprootScriptPath validates the real Taproot stack format.
+    /** Fake 3-item protocol script-path witness: [sig (64 B), leaf_script (34 B), ctrl_block (65 B)].
+      * Matches the structure of all Bifrost 1-of-1 script-path spends (Y_67 OP_CHECKSIG or
+      * timeout OP_CSV OP_DROP Y_fed OP_CHECKSIG). Byte content is arbitrary — Bitcoin validates
+      * signatures; the Cardano validator only checks item count to classify the spending path.
       */
-    private def scriptPathWitness(items: Array[Byte]*): ScriptWitness =
-        ScriptWitness(items.map(ByteVector(_)).toVector)
+    private def scriptPathWitness: ScriptWitness = ScriptWitness(Vector(
+        ByteVector(Array.fill(64)(0x00.toByte)),         // fake Schnorr signature
+        ByteVector(Array(0x20.toByte) ++ Array.fill(32)(0xab.toByte) ++ Array(0xac.toByte)), // fake leaf script
+        ByteVector(Array(0xc0.toByte) ++ Array.fill(64)(0x01.toByte))  // fake control block
+    ))
+
+    /** Fake 4-item depositor CSV-refund witness: [sig, pubkey (32 B), leaf_script, ctrl_block].
+      * Depositor refund scripts do `OP_HASH160 <hash> OP_EQUALVERIFY OP_CHECKSIG`, which requires
+      * the x-only pubkey as an explicit witness item — producing 4 items total.
+      */
+    private def depositorRefundWitness: ScriptWitness = ScriptWitness(Vector(
+        ByteVector(Array.fill(64)(0x00.toByte)),         // fake sig
+        ByteVector(Array.fill(32)(0xdd.toByte)),          // fake x-only pubkey (32 bytes)
+        ByteVector(Array(0x20.toByte) ++ Array.fill(32)(0xab.toByte) ++ Array(0xac.toByte)), // fake leaf script
+        ByteVector(Array(0xc0.toByte) ++ Array.fill(64)(0x01.toByte))  // fake control block
+    ))
 
     /** Create a TransactionInput from a 32-byte txid (display/BE order) and vout. */
     private def txInput(txidBE: Array[Byte], vout: Int): TransactionInput = {
@@ -335,7 +351,7 @@ class PegInVerifierValidatorTest extends AnyFunSuite with ScalusTest {
         // Treasury is key-path; peg-in uses a script-path witness (2 items: script + control block)
         val tmTx = buildWitnessTx(
           inputs = Seq(treasuryInput, pegInInput),
-          witnesses = Seq(TaprootKeyPath.dummy, scriptPathWitness(Array(0x51.toByte), Array.fill(33)(0xc0.toByte)))
+          witnesses = Seq(TaprootKeyPath.dummy, scriptPathWitness)
         )
         val rawTmTx = txBytes(tmTx)
 
@@ -360,7 +376,7 @@ class PegInVerifierValidatorTest extends AnyFunSuite with ScalusTest {
         // 67% mode: treasury via Y_67 script leaf (script-path, 2 items), peg-in via Y_51 key-path
         val tmTx = buildWitnessTx(
           inputs = Seq(treasuryInput, pegInInput),
-          witnesses = Seq(scriptPathWitness(Array(0x51.toByte), Array.fill(33)(0xc0.toByte)), TaprootKeyPath.dummy)
+          witnesses = Seq(scriptPathWitness, TaprootKeyPath.dummy)
         )
         val rawTmTx = txBytes(tmTx)
 
@@ -383,7 +399,7 @@ class PegInVerifierValidatorTest extends AnyFunSuite with ScalusTest {
         val pegInInput = txInputLE(pegInTxid, 0)
 
         // Federation mode: both treasury and peg-in spent via Y_fed script leaf (script-path)
-        val fedScriptPath = scriptPathWitness(Array(0x51.toByte), Array.fill(33)(0xc0.toByte))
+        val fedScriptPath = scriptPathWitness
         val tmTx = buildWitnessTx(
           inputs = Seq(treasuryInput, pegInInput),
           witnesses = Seq(fedScriptPath, fedScriptPath)
@@ -393,6 +409,60 @@ class PegInVerifierValidatorTest extends AnyFunSuite with ScalusTest {
         val redeemer = buildRedeemer(outpointBytes(treasuryInput), rawPegInTx, 100_000, rawTmTx)
         val result = evalValidator(redeemer)
         assert(result.isInstanceOf[Result.Success], s"Expected success but got: $result")
+    }
+
+    test("CEK: fails when peg-in uses depositor refund witness (4 items) even in federation mode") {
+        val treasuryInput = txInput(fakeTxid(0x10), 0)
+
+        val pegInTx = buildPegInTx(
+          prevTxid = fakeTxid(0x01),
+          prevVout = 0,
+          paymentSatoshis = 100_000,
+          scriptPubKey = ScriptPubKey.fromAsmHex("5120" + "0" * 64)
+        )
+        val rawPegInTx = txBytes(pegInTx)
+        val pegInTxid = sha2_256(sha2_256(rawPegInTx)).bytes
+        val pegInInput = txInputLE(pegInTxid, 0)
+
+        // Federation-mode treasury (3 items) but peg-in via depositor CSV refund (4 items)
+        val tmTx = buildWitnessTx(
+          inputs = Seq(treasuryInput, pegInInput),
+          witnesses = Seq(scriptPathWitness, depositorRefundWitness)
+        )
+        val rawTmTx = txBytes(tmTx)
+
+        val redeemer = buildRedeemer(outpointBytes(treasuryInput), rawPegInTx, 100_000, rawTmTx)
+        val result = evalValidator(redeemer)
+        assert(result.isInstanceOf[Result.Failure], s"Expected failure but got: $result")
+    }
+
+    test("CEK: fails when treasury has invalid witness structure (not 1 or 3 items)") {
+        val treasuryInput = txInput(fakeTxid(0x10), 0)
+
+        val pegInTx = buildPegInTx(
+          prevTxid = fakeTxid(0x01),
+          prevVout = 0,
+          paymentSatoshis = 100_000,
+          scriptPubKey = ScriptPubKey.fromAsmHex("5120" + "0" * 64)
+        )
+        val rawPegInTx = txBytes(pegInTx)
+        val pegInTxid = sha2_256(sha2_256(rawPegInTx)).bytes
+        val pegInInput = txInputLE(pegInTxid, 0)
+
+        // 2-item treasury witness (neither key-path nor a protocol script-path)
+        val invalidTreasuryWitness = ScriptWitness(Vector(
+            ByteVector(Array.fill(64)(0x00.toByte)),
+            ByteVector(Array.fill(33)(0xc0.toByte))
+        ))
+        val tmTx = buildWitnessTx(
+          inputs = Seq(treasuryInput, pegInInput),
+          witnesses = Seq(invalidTreasuryWitness, TaprootKeyPath.dummy)
+        )
+        val rawTmTx = txBytes(tmTx)
+
+        val redeemer = buildRedeemer(outpointBytes(treasuryInput), rawPegInTx, 100_000, rawTmTx)
+        val result = evalValidator(redeemer)
+        assert(result.isInstanceOf[Result.Failure], s"Expected failure but got: $result")
     }
 
     test("CEK: fails when TM is not witness-serialized") {
