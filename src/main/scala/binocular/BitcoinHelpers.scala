@@ -356,12 +356,89 @@ object BitcoinHelpers {
         val afterInputs = skipTxIns(rawTx, 6) // 6 = version(4) + marker(1) + flag(1)
         skipTxOuts(rawTx, afterInputs)
 
+    // ============================================================================
+    // Taproot witness classification (BIP341 / BIP342)
+    //
+    // Wire format for each input's witness inside a segwit transaction:
+    //
+    //   [varint: N]                     ← number of stack items
+    //   [varint: len][len bytes]         ← item 0
+    //   [varint: len][len bytes]         ← item 1
+    //   ...                             ← item N-1
+    //
+    // The witness section contains one such block per transaction input,
+    // in input order. An input with no witness data has N = 0 (single 0x00 byte).
+    //
+    // KEY-PATH SPEND (BIP341 §Script validation rules, key-path)
+    // ──────────────────────────────────────────────────────────
+    // N = 1, item 0 = 64-byte Schnorr signature (SIGHASH_DEFAULT)
+    //                or 65-byte sig with explicit hash type appended.
+    //
+    //   01          ← N = 1
+    //   40          ← item 0 length = 64
+    //   <sig 64B>   ← bare Schnorr signature over the tweaked key Q
+    //
+    // SCRIPT-PATH SPEND (BIP341 §Script validation rules, script-path)
+    // ─────────────────────────────────────────────────────────────────
+    // N = (script_inputs) + 2.  The last two items are always:
+    //   item[N-2]: the leaf script being executed
+    //   item[N-1]: the control block
+    //
+    // Control block layout (BIP341 §Script validation rules):
+    //   byte 0     : (leaf_version & 0xfe) | parity_of_output_key_Q
+    //                  0xc0 = Tapscript leaf version (BIP342) + even Q
+    //                  0xc1 = Tapscript leaf version + odd  Q
+    //   bytes 1-32 : internal key x-coordinate (Y_51 in Bifrost)
+    //   bytes 33+  : Merkle path — one 32-byte sibling hash per tree level
+    //                  depth 0 (single leaf, no siblings): 33 bytes total
+    //                  depth 1 (2-leaf tree):              65 bytes total
+    //                  depth 2 (4-leaf tree):              97 bytes total
+    //
+    // BIFROST PROTOCOL SCRIPT LEAVES — always 3-item witnesses
+    // ─────────────────────────────────────────────────────────
+    // All Bifrost script leaves are single-signature (`<key> OP_CHECKSIG`
+    // or `<timeout> OP_CSV OP_DROP <key> OP_CHECKSIG`).  These scripts need
+    // exactly one witness stack input (the signature), so the witness is:
+    //
+    //   item 0: signature            (64 B)
+    //   item 1: leaf script          (e.g. 34 B for <32B key> OP_CHECKSIG)
+    //   item 2: control block        (65 B for a 2-leaf tree at depth 1)
+    //
+    // Example — Y_67 script leaf spend on the treasury:
+    //
+    //   03                            ← N = 3
+    //   40  <sig 64B>                 ← Schnorr sig over the TM sighash
+    //   22  20 <Y_67 32B> ac          ← script: OP_PUSHBYTES_32 <Y_67> OP_CHECKSIG
+    //   41  c0 <Y_51 32B> <hash 32B>  ← control block: leaf_ver=0xc0, internal=Y_51, 1 sibling
+    //
+    // DEPOSITOR CSV REFUND — always 4-item witness
+    // ─────────────────────────────────────────────
+    // The depositor refund leaf script:
+    //   <4320> OP_CSV OP_DROP OP_DUP OP_HASH160 <hash160(pubkey) 20B> OP_EQUALVERIFY OP_CHECKSIG
+    //
+    // It hardcodes only the HASH160 of the pubkey, not the pubkey itself.
+    // At spend time the depositor must supply the full x-only pubkey as a
+    // witness item so the script can verify OP_HASH160 matches.  This adds
+    // one extra item compared with a federation spend, giving 4 items total:
+    //
+    //   04                            ← N = 4
+    //   40  <sig 64B>                 ← Schnorr sig
+    //   20  <pubkey 32B>              ← depositor x-only pubkey (needed for HASH160 check)
+    //   XX  <refund script>           ← leaf script
+    //   41  <control block 65B>       ← control block
+    //
+    // This 3-vs-4 item count is the reliable discriminator between a
+    // legitimate federation sweep and a depositor CSV refund.
+    // ============================================================================
+
     /** Skip one witness stack entry and return the offset of the next witness.
-      * Witness wire format: [varint stackItems][for each: varint len + bytes]
+      *
+      * Each input's witness begins at `offset` with the varint item count, followed by
+      * `[varint len][len bytes]` for each item. See wire-format comment block above.
       *
       * @param rawTx Bitcoin transaction bytes
       * @param offset Byte offset of the varint that starts this witness's stack item count
-      * @return Byte offset immediately after this witness
+      * @return Byte offset immediately after this witness (= start of the next input's witness)
       */
     def skipOneWitness(rawTx: ByteString, offset: BigInt): BigInt =
         val (stackItems, afterCount) = readVarInt(rawTx, offset)
@@ -373,11 +450,14 @@ object BitcoinHelpers {
         loop(stackItems, afterCount)
 
     /** Return the number of stack items in the witness of input at `inputIndex`.
-      * Used to classify Taproot spending paths.
+      *
+      * Navigates to the target input's witness by skipping `inputIndex` witnesses
+      * (each starting with its own item-count varint), then reads and returns that varint.
+      * See wire-format comment block above for encoding details.
       *
       * @param rawTx Witness-serialized Bitcoin transaction bytes
       * @param inputIndex 0-based index of the input whose witness to inspect
-      * @return number of stack items in the witness
+      * @return number of stack items (N) in that input's witness
       */
     def witnessStackSize(rawTx: ByteString, inputIndex: BigInt): BigInt =
         val witnessStart = findWitnessSectionOffset(rawTx)
@@ -385,19 +465,23 @@ object BitcoinHelpers {
             if n == BigInt(0) then off
             else skip(n - 1, skipOneWitness(rawTx, off))
         val witnessOff = skip(inputIndex, witnessStart)
+        // witnessOff points to the varint N (item count) that opens this input's witness block.
+        // readVarInt returns (N, offset_after_N); we only need N here.
         val (stackItems, _) = readVarInt(rawTx, witnessOff)
         stackItems
 
-    /** Return true iff the witness at `inputIndex` is a Taproot key-path spend:
-      * exactly one stack item of 64 or 65 bytes (a bare Schnorr signature).
+    /** Return true iff the witness at `inputIndex` is a Taproot key-path spend.
       *
-      * Taproot script-path spends always place at least a leaf script AND a control block
-      * on the stack (>=2 items), so `stackItems == 1` is a sufficient discriminator.
-      * 64 bytes = SIGHASH_DEFAULT (implicit); 65 bytes = explicit hash type byte appended.
+      * A key-path spend has exactly 1 witness item: a bare Schnorr signature.
+      *   - 64 bytes: SIGHASH_DEFAULT (implicit, most common)
+      *   - 65 bytes: explicit hash type byte appended
+      *
+      * Any script-path spend has ≥ 2 items (script inputs + leaf_script + control_block),
+      * so item count = 1 is a sufficient discriminator.
       *
       * @param rawTx Witness-serialized Bitcoin transaction bytes
       * @param inputIndex 0-based index of the input whose witness to inspect
-      * @return true if witness is key-path (1 item, 64-65 bytes)
+      * @return true if witness is a key-path spend (N=1, item length 64-65)
       */
     def isKeyPathWitness(rawTx: ByteString, inputIndex: BigInt): Boolean =
         val witnessStart = findWitnessSectionOffset(rawTx)
@@ -411,20 +495,25 @@ object BitcoinHelpers {
             val (itemLen, _) = readVarInt(rawTx, afterCount)
             itemLen >= BigInt(64) && itemLen <= BigInt(65)
 
-    /** Return true iff the witness at `inputIndex` is a Taproot script-path spend:
-      * exactly 3 stack items — [sig, leaf_script, control_block].
+    /** Return true iff the witness at `inputIndex` is a Bifrost protocol script-path spend.
       *
-      * All Bifrost protocol script-path spends use single-sig scripts (Y_67 OP_CHECKSIG,
-      * or <timeout> OP_CSV OP_DROP <Y_fed> OP_CHECKSIG), which require exactly one signature
-      * as witness input, so the total witness stack is always 3 items.
+      * All Bifrost script leaves require exactly 1 signature as witness input
+      * (Y_67 OP_CHECKSIG; or timeout OP_CSV OP_DROP Y_fed OP_CHECKSIG), producing
+      * exactly 3 witness items:
+      *   item 0: signature  (64 B)
+      *   item 1: leaf script
+      *   item 2: control block  (33 + 32*depth bytes; 65 B for a 2-leaf tree)
       *
-      * A depositor CSV refund requires the depositor's pubkey as an explicit witness item
-      * (so the script can verify HASH160(pubkey) == stored_hash), giving 4 items.
-      * Count == 3 reliably distinguishes federation/Y_67 script-path from depositor refund.
+      * The depositor CSV refund leaf (`OP_HASH160 <hash> OP_EQUALVERIFY OP_CHECKSIG`)
+      * requires the depositor's x-only pubkey as an explicit witness item so the script
+      * can verify HASH160(pubkey) == stored_hash.  This gives 4 items, not 3.
+      *
+      * Count == 3 is therefore a reliable discriminator: it accepts Y_67 and Y_fed
+      * script-path spends while rejecting depositor refunds and malformed witnesses.
       *
       * @param rawTx Witness-serialized Bitcoin transaction bytes
       * @param inputIndex 0-based index of the input whose witness to inspect
-      * @return true if witness is a 3-item protocol script-path
+      * @return true if witness is a 3-item protocol script-path (N=3)
       */
     def isValidScriptPathWitness(rawTx: ByteString, inputIndex: BigInt): Boolean =
         witnessStackSize(rawTx, inputIndex) == BigInt(3)
