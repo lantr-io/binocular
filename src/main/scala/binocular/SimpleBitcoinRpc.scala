@@ -194,10 +194,18 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) ex
                 }
             }
 
-            val txs = result("tx").arr.map { tx =>
+            val txs = result("tx").arr.zipWithIndex.map { (tx, _) =>
+                val vouts = tx("vout").arr.map { vout =>
+                    VoutInfo(
+                      index = vout("n").num.toInt,
+                      scriptPubKey = vout("scriptPubKey")("hex").str,
+                      valueBtc = vout("value").num
+                    )
+                }.toSeq
                 TransactionInfo(
                   txid = tx("txid").str,
-                  hex = tx("hex").str
+                  hex = tx("hex").str,
+                  vouts = vouts
                 )
             }.toSeq
 
@@ -261,6 +269,10 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) ex
         }
     }
 
+    /** Check if a transaction output is still unspent (true = unspent, false = spent/missing) */
+    def isTxOutUnspent(txid: String, vout: Int): Future[Boolean] =
+        call("gettxout", ujson.Arr(txid, vout)).map(result => result != ujson.Null)
+
     /** Broadcast a raw transaction to the Bitcoin network */
     def sendRawTransaction(hexString: String): Future[String] = {
         call("sendrawtransaction", ujson.Arr(hexString)).map(_.str)
@@ -294,10 +306,18 @@ case class BlockHeaderInfo(
     chainwork: Option[String] = None
 )
 
+/** A single transaction output */
+case class VoutInfo(
+    index: Int,
+    scriptPubKey: String, // hex-encoded scriptPubKey
+    valueBtc: Double
+)
+
 /** Transaction information */
 case class TransactionInfo(
     txid: String,
-    hex: String
+    hex: String,
+    vouts: Seq[VoutInfo] = Seq.empty
 )
 
 /** Full block with transactions */
