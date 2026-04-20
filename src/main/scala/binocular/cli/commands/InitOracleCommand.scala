@@ -175,6 +175,7 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
         val compiled = BitcoinContract.makeContract(params)
         val setup = OracleSetup(params, compiled, hdAccount, provider, network)
         Console.info("Address", setup.scriptAddressBech32)
+        Console.info("Script Hash", setup.script.scriptHash.toHex)
         Console.info("Owner", owner.hash.toHex)
         CommandHelpers.printParams(params)
 
