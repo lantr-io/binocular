@@ -366,8 +366,10 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
 
                     result match {
                         case Right((txResult, newChainState, updatedMpf, promotions)) =>
+                            val appliedHeaders =
+                                newChainState.forkTree.blockCount - currentChainState.forkTree.blockCount + promotions
                             Console.log(
-                              s"Update: +${headers.size} headers, $promotions promoted | tree: ${newChainState.forkTree.blockCount} blocks"
+                              s"Update: +$appliedHeaders/${headers.size} headers, $promotions promoted | tree: ${newChainState.forkTree.blockCount} blocks"
                             )
                             Console.log(
                               s"Submitting... datum: ${txResult.datumSize} B, tx: ${txResult.txSize} B"
