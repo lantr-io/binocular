@@ -314,7 +314,12 @@ object CommandHelpers {
                               s"oracle=${oracleTipHash.toHex}, canonical=${canonicalHash.toHex}"
                         )
 
-                        var searchHeight = highestKnown - 1
+                        // Start at highestKnown, not highestKnown - 1: the canonical block at
+                        // highestKnown differs from the oracle's *best* tip there, but may
+                        // already be present in the tree on a non-best branch (equal-chainwork
+                        // fork). Missing that case caused us to re-fetch and re-submit a block
+                        // that's already in the tree.
+                        var searchHeight = highestKnown
                         var ancestorFound = false
                         var ancestorHeight = confirmedHeight
                         var ancestorHash: ByteString = chainState.ctx.lastBlockHash
