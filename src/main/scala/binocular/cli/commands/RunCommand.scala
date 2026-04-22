@@ -183,6 +183,12 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
               s"Adopted oracle state from $source: height=${state.ctx.height}, " +
                   s"tree=${state.forkTree.blockCount} blocks"
             )
+            println(
+              state.forkTree.pretty(
+                state.ctx.height,
+                confirmedBlocks = Some(currentMpf.size)
+              )
+            )
         }
 
         /** Re-read oracle UTxO and chain state from the blockchain. Called after tx failure or
@@ -234,6 +240,12 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
                             }
                         Console.logSuccess(
                           s"State refreshed: height=$newHeight, tree=$newTreeBlocks blocks"
+                        )
+                        println(
+                          state.forkTree.pretty(
+                            state.ctx.height,
+                            confirmedBlocks = Some(currentMpf.size)
+                          )
                         )
                         done = true
                     }
