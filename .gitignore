@@ -30,3 +30,7 @@ application.conf
 
 # mill
 /out/
+docs/forktree-spec-v2.md
+application-*.conf
+mermaid-filter.err
+docs/superpowers/
