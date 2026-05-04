@@ -135,15 +135,22 @@ case class UpdateOracleCommand(
             println(s"  Block Hash: ${currentChainState.ctx.lastBlockHash.toHex}")
             println(s"  Fork Tree Size: ${currentChainState.forkTree.blockCount}")
 
-            val offChainMpfInit: OffChainMPF = CommandHelpers
-                .reconstructMpf(
-                  new SimpleBitcoinRpc(config.bitcoinNode),
-                  currentChainState,
-                  config.oracle.startHeight
-                )
-                .valueOr { err =>
-                    System.err.println(s"  Error: $err")
-                    break(1)
+            val offChainMpfInit: OffChainMPF =
+                try
+                    CommandHelpers
+                        .reconstructMpf(
+                          new SimpleBitcoinRpc(config.bitcoinNode),
+                          currentChainState,
+                          config.oracle.startHeight
+                        )
+                        .valueOr { err =>
+                            System.err.println(s"  Error: $err")
+                            break(1)
+                        }
+                catch {
+                    case e: CommandHelpers.DeepReorgException =>
+                        System.err.println(s"  Error: ${e.getMessage}")
+                        break(1)
                 }
             logger.info("MPF reconstructed successfully")
 
@@ -163,7 +170,17 @@ case class UpdateOracleCommand(
 
             // Detect reorg: check if oracle's best chain tip matches Bitcoin canonical chain
             val (reorgParentPath, reorgStartHeight) =
-                CommandHelpers.detectReorgAndComputePath(rpc, currentChainState)
+                try
+                    CommandHelpers.detectReorgAndComputePath(
+                      rpc,
+                      currentChainState,
+                      offChainMpfInit
+                    )
+                catch {
+                    case e: CommandHelpers.DeepReorgException =>
+                        System.err.println(s"  Error: ${e.getMessage}")
+                        break(1)
+                }
             val isReorg = reorgStartHeight <= highestBlock
 
             val startHeight = fromBlock.getOrElse(

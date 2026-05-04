@@ -116,15 +116,22 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
         CommandHelpers.printParams(setup.params)
         // Reconstruct off-chain MPF
         val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
-        var currentMpf: OffChainMPF = CommandHelpers
-            .reconstructMpf(
-              rpc,
-              currentChainState,
-              config.oracle.startHeight
-            )
-            .valueOr { err =>
-                Console.error(err)
-                break(1)
+        var currentMpf: OffChainMPF =
+            try
+                CommandHelpers
+                    .reconstructMpf(
+                      rpc,
+                      currentChainState,
+                      config.oracle.startHeight
+                    )
+                    .valueOr { err =>
+                        Console.error(err)
+                        break(1)
+                    }
+            catch {
+                case e: CommandHelpers.DeepReorgException =>
+                    Console.error(e.getMessage)
+                    break(1)
             }
         Console.success(s"MPF reconstructed: ${currentMpf.size} confirmed blocks")
         println(
@@ -271,7 +278,11 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
 
                 // Detect reorg and compute correct parentPath
                 val (parentPath, reorgStartHeight) =
-                    CommandHelpers.detectReorgAndComputePath(rpc, currentChainState)
+                    CommandHelpers.detectReorgAndComputePath(
+                      rpc,
+                      currentChainState,
+                      currentMpf
+                    )
 
                 val highestKnown =
                     if currentChainState.forkTree.nonEmpty then
@@ -505,6 +516,9 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
                     }
                 }
             } catch {
+                case e: CommandHelpers.DeepReorgException =>
+                    Console.logError(e.getMessage)
+                    break(1)
                 case e: Exception =>
                     Console.logError(
                       s"Error: ${e.getMessage} — retrying in ${retryInterval}s"

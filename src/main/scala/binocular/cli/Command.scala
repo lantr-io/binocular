@@ -261,12 +261,99 @@ object CommandHelpers {
             if rebuilt.rootHash != expectedRoot then
                 Left(
                   s"Rebuilt MPF root does not match on-chain confirmedBlocksRoot. " +
-                      s"Expected: ${expectedRoot.toHex}, got: ${rebuilt.rootHash.toHex}"
+                      s"Expected: ${expectedRoot.toHex}, got: ${rebuilt.rootHash.toHex}. " +
+                      s"The oracle's confirmed history (${startHeight}..${endHeight}) commits " +
+                      s"to block hashes that differ from this bitcoind's current canonical " +
+                      s"chain in that range. Likely cause: a reorg below the oracle's confirmed " +
+                      s"tip orphaned one or more committed blocks. The on-chain root is a " +
+                      s"hash commitment, so the exact divergence height cannot be recovered " +
+                      s"from chain state alone — manual recovery required (re-init the oracle " +
+                      s"from a current canonical height)."
                 )
             else Right(rebuilt)
         } catch {
             case e: Exception => Left(s"Error rebuilding MPF: ${e.getMessage}")
         }
+    }
+
+    /** Bitcoin reorged below the oracle's confirmed tip.
+      *
+      * The oracle's confirmed-state hash at `confirmedHeight` no longer matches the canonical
+      * chain. The protocol cannot auto-recover (the on-chain MPF root commits to the orphaned
+      * history), so the syncer must halt and the operator must re-init.
+      *
+      * `deepestConfirmedAncestor`, when present, is the deepest height ≤ `confirmedHeight` whose
+      * canonical hash is still present in the off-chain MPF — i.e., the depth at which the
+      * orphaning starts. `None` means no canonical hash was found in the MPF within the searched
+      * window (reorg is at least `searchedDepth` blocks deep, or beyond the oracle's known
+      * history).
+      */
+    final class DeepReorgException(
+        val confirmedHeight: Long,
+        val oracleHash: ByteString,
+        val canonicalHash: ByteString,
+        val deepestConfirmedAncestor: Option[(Long, ByteString)],
+        val searchedDepth: Option[Long]
+    ) extends RuntimeException(
+          DeepReorgException.format(
+            confirmedHeight,
+            oracleHash,
+            canonicalHash,
+            deepestConfirmedAncestor,
+            searchedDepth
+          )
+        )
+
+    object DeepReorgException {
+        private[cli] def format(
+            confirmedHeight: Long,
+            oracleHash: ByteString,
+            canonicalHash: ByteString,
+            deepestConfirmedAncestor: Option[(Long, ByteString)],
+            searchedDepth: Option[Long]
+        ): String = {
+            val ancestorLine = deepestConfirmedAncestor match {
+                case Some((h, hash)) =>
+                    val orphaned = confirmedHeight - h
+                    s"deepest confirmed ancestor still on canonical chain: height $h " +
+                        s"(${hash.toHex}); $orphaned confirmed block(s) orphaned"
+                case None =>
+                    searchedDepth match {
+                        case Some(n) =>
+                            s"no canonical block within last $n heights matches the " +
+                                s"off-chain MPF — reorg deeper than searched window or beyond " +
+                                s"oracle's known confirmed history"
+                        case None =>
+                            "off-chain MPF not consulted (deep reorg detected before MPF " +
+                                "reconstruction)"
+                    }
+            }
+            "Deep reorg: oracle's confirmed tip is no longer on Bitcoin's canonical chain. " +
+                s"Confirmed height $confirmedHeight: oracle=${oracleHash.toHex}, " +
+                s"canonical=${canonicalHash.toHex}. " + ancestorLine + ". " +
+                "Manual recovery required (re-init the oracle from a current canonical height)."
+        }
+    }
+
+    /** Walk down from `confirmedHeight - 1` to `max(0, confirmedHeight - maxLookback)`, returning
+      * the deepest height whose canonical hash is present in the off-chain MPF. Bounded so a hard
+      * stop happens quickly on misconfigured chains where no ancestor is reachable. */
+    def findDeepestConfirmedAncestor(
+        rpc: BitcoinRpc,
+        mpf: OffChainMPF,
+        confirmedHeight: Long,
+        maxLookback: Long
+    )(using ExecutionContext): Option[(Long, ByteString)] = {
+        val lowerBound = math.max(0L, confirmedHeight - maxLookback)
+        var h = confirmedHeight - 1
+        var found: Option[(Long, ByteString)] = scala.None
+        while found.isEmpty && h >= lowerBound do {
+            val hashHex = rpc.getBlockHash(h.toInt).await(30.seconds)
+            val hash = ByteString.fromArray(hashHex.hexToBytes.reverse)
+            if mpf.get(hash).isDefined then found = Some((h, hash))
+            else h -= 1
+        }
+        found
     }
 
     /** Detect a Bitcoin reorg and compute the correct parentPath and block range.
@@ -275,13 +362,20 @@ object CommandHelpers {
       * walks backwards from the oracle tip to find the common ancestor, then returns the correct
       * parentPath and start height for submitting the canonical chain's blocks.
       *
+      * If the divergence reaches the confirmed tip itself — i.e., no fork-tree block is on
+      * canonical and `ctx.lastBlockHash` does not match canonical at `confirmedHeight` — the
+      * confirmed history has been orphaned. The protocol cannot auto-recover from that, so this
+      * throws [[DeepReorgException]] with diagnostic info pinpointing where the orphaning starts.
+      *
       * @return
       *   `(parentPath, startHeight)` — either the tip path with `highestKnown + 1` (no reorg) or
       *   the path to the common ancestor with `ancestor + 1` (reorg detected).
       */
     def detectReorgAndComputePath(
         rpc: BitcoinRpc,
-        chainState: ChainState
+        chainState: ChainState,
+        mpf: OffChainMPF,
+        deepReorgLookback: Long = 2016
     )(using ExecutionContext): (scalus.cardano.onchain.plutus.prelude.List[BigInt], Long) = {
         import scalus.cardano.onchain.plutus.prelude.List as ScalusList
         val confirmedHeight = chainState.ctx.height.toLong
@@ -338,6 +432,29 @@ object CommandHelpers {
                         }
 
                         val parentPath = if ancestorHeight == confirmedHeight then {
+                            // Fork tree had no block on canonical. Verify the confirmed tip is
+                            // itself canonical before returning Nil — otherwise the next fetched
+                            // header's prevBlockHash will not match ctx.lastBlockHash and the
+                            // syncer would loop forever on "Parent hash mismatch".
+                            val confirmedCanonicalHex =
+                                rpc.getBlockHash(confirmedHeight.toInt).await(30.seconds)
+                            val confirmedCanonical =
+                                ByteString.fromArray(confirmedCanonicalHex.hexToBytes.reverse)
+                            if chainState.ctx.lastBlockHash != confirmedCanonical then {
+                                val deepest = findDeepestConfirmedAncestor(
+                                  rpc,
+                                  mpf,
+                                  confirmedHeight,
+                                  deepReorgLookback
+                                )
+                                throw new DeepReorgException(
+                                  confirmedHeight = confirmedHeight,
+                                  oracleHash = chainState.ctx.lastBlockHash,
+                                  canonicalHash = confirmedCanonical,
+                                  deepestConfirmedAncestor = deepest,
+                                  searchedDepth = Some(deepReorgLookback)
+                                )
+                            }
                             Console.logWarn(
                               s"Common ancestor is confirmed tip at height $confirmedHeight"
                             )
@@ -356,18 +473,38 @@ object CommandHelpers {
                         (parentPath, ancestorHeight + 1)
     }
 
-    /** Reconstruct off-chain MPF, checking first if the state has only a single block. */
+    /** Reconstruct off-chain MPF, checking first if the state has only a single block.
+      *
+      * Throws [[DeepReorgException]] when the oracle's stored hash at `confirmedHeight` does not
+      * match this bitcoind's canonical hash at the same height. That guarantees the rebuild would
+      * fail, and surfaces the same diagnostic that [[detectReorgAndComputePath]] uses in the
+      * steady-state loop.
+      */
     def reconstructMpf(
         rpc: SimpleBitcoinRpc,
         chainState: ChainState,
         startHeight: Option[Long]
     )(using ExecutionContext): Either[String, OffChainMPF] = {
+        val confirmedHeight = chainState.ctx.height.toLong
+        val confirmedCanonicalHex =
+            rpc.getBlockHash(confirmedHeight.toInt).await(30.seconds)
+        val confirmedCanonical =
+            ByteString.fromArray(confirmedCanonicalHex.hexToBytes.reverse)
+        if chainState.ctx.lastBlockHash != confirmedCanonical then
+            throw new DeepReorgException(
+              confirmedHeight = confirmedHeight,
+              oracleHash = chainState.ctx.lastBlockHash,
+              canonicalHash = confirmedCanonical,
+              deepestConfirmedAncestor = scala.None,
+              searchedDepth = scala.None
+            )
+
         val initialMpf =
             OffChainMPF.empty.insert(chainState.ctx.lastBlockHash, chainState.ctx.lastBlockHash)
         if initialMpf.rootHash == chainState.confirmedBlocksRoot then Right(initialMpf)
         else
             startHeight match {
-                case None =>
+                case scala.None =>
                     Left(
                       "Previous promotions detected but ORACLE_START_HEIGHT not configured"
                     )
@@ -375,7 +512,7 @@ object CommandHelpers {
                     rebuildMpf(
                       rpc,
                       h,
-                      chainState.ctx.height.toLong,
+                      confirmedHeight,
                       chainState.confirmedBlocksRoot
                     )
             }
