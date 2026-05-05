@@ -1,4 +1,4 @@
-val scalusVersion = "0.16.0+206-a6df70ab-SNAPSHOT"
+val scalusVersion = "0.17.0"
 
 // Common settings for all projects
 ThisBuild / scalaVersion := "3.3.7"

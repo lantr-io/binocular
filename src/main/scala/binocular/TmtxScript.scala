@@ -29,13 +29,13 @@ object TmtxScript {
 
     /** PlutusV3 script: always succeeds.
       *
-      * Compiled with `Options.release` (error tagging on) and `optimizeUplc = false` so the salt
-      * ByteString survives as a UPLC constant and the script hash is distinct.
+      * Compiled with `Options.releaseUntagged` (no `_scalusTag` wrapper) and `optimizeUplc = false`
+      * so the salt ByteString survives as a UPLC constant and the script hash is distinct.
       */
     lazy val mintingScript: PlutusV3[Data => Unit] =
         PlutusV3
             .compile((s: ByteString) => (_: Data) => ())(using
-              Options.release.copy(optimizeUplc = false)
+              Options.releaseUntagged.copy(optimizeUplc = false)
             )
             .apply(salt)
 
