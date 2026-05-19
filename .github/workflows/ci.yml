@@ -24,18 +24,18 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - name: Cache Mill
+      - name: Cache sbt
         uses: actions/cache@v4
         with:
           path: |
-            ~/.mill
+            ~/.sbt
             ~/.cache/coursier
-          key: ${{ runner.os }}-mill-${{ hashFiles('build.mill', '.mill-version') }}
+          key: ${{ runner.os }}-sbt-${{ hashFiles('build.sbt', 'project/build.properties', 'project/plugins.sbt') }}
           restore-keys: |
-            ${{ runner.os }}-mill-
+            ${{ runner.os }}-sbt-
 
       - name: Check formatting and run tests
-        run: ./millw mill.scalalib.scalafmt/checkFormatAll && ./millw binocular.test -l binocular.ManualTest
+        run: sbt scalafmtCheckAll compileAll "testOnly binocular.*"
 
       - name: List contract debug files
         if: failure()
