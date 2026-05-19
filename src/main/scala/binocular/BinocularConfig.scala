@@ -1,5 +1,8 @@
 package binocular
 
+import binocular.bitcoin.BitcoinNodeConfig
+import binocular.oracle.{CardanoConfig, OracleConfig, WalletConfig}
+import binocular.watchtower.RelayConfig
 import pureconfig.*
 
 /** Top-level configuration — single entry point.

@@ -1,6 +1,9 @@
 package binocular.cli
 
 import binocular.*
+import binocular.bitcoin.*
+import binocular.oracle.*
+import binocular.watchtower.*
 import scalus.cardano.address.{Address, Network}
 import scalus.cardano.ledger.{AssetName, ScriptHash, ScriptRef, TransactionOutput, Utxo, Value}
 import scalus.cardano.node.BlockchainProvider

@@ -1,4 +1,8 @@
-package binocular
+package binocular.watchtower
+
+import binocular.*
+import binocular.bitcoin.*
+import binocular.oracle.*
 
 import scalus.cardano.onchain.plutus.prelude.{List, *}
 import scalus.cardano.onchain.plutus.v1.Credential

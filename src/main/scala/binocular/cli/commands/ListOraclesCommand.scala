@@ -1,6 +1,9 @@
 package binocular.cli.commands
 
 import binocular.*
+import binocular.bitcoin.*
+import binocular.oracle.*
+import binocular.watchtower.*
 import binocular.cli.{Command, CommandHelpers}
 import scalus.cardano.address.Address
 import scalus.cardano.ledger.Utxo

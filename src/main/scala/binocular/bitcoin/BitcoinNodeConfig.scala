@@ -1,4 +1,8 @@
-package binocular
+package binocular.bitcoin
+
+import binocular.*
+import binocular.oracle.*
+import binocular.watchtower.*
 
 import pureconfig.*
 import java.net.URI

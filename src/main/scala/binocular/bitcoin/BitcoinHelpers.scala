@@ -1,4 +1,8 @@
-package binocular
+package binocular.bitcoin
+
+import binocular.*
+import binocular.oracle.*
+import binocular.watchtower.*
 
 import scalus.uplc.builtin.*
 import scalus.uplc.builtin.Builtins.*

@@ -1,5 +1,9 @@
 package binocular
 
+import binocular.bitcoin.*
+import binocular.oracle.*
+import binocular.watchtower.*
+
 import org.scalatest.funsuite.AnyFunSuite
 import scalus.cardano.address.{Address, Network}
 import scalus.cardano.ledger.Credential

@@ -1,7 +1,11 @@
 package binocular
 
-import binocular.BitcoinHelpers.*
-import binocular.ForkTree.*
+import binocular.bitcoin.*
+import binocular.oracle.*
+import binocular.watchtower.*
+
+import binocular.bitcoin.BitcoinHelpers.*
+import binocular.oracle.ForkTree.*
 import org.scalacheck.Gen
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import org.scalatest.funsuite.AnyFunSuite

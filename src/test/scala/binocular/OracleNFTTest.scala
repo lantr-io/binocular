@@ -1,5 +1,9 @@
 package binocular
 
+import binocular.bitcoin.*
+import binocular.oracle.*
+import binocular.watchtower.*
+
 import org.scalatest.funsuite.AnyFunSuite
 import scalus.cardano.ledger.*
 import scalus.cardano.node.Emulator

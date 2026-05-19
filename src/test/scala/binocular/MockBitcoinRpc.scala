@@ -1,5 +1,9 @@
 package binocular
 
+import binocular.bitcoin.*
+import binocular.oracle.*
+import binocular.watchtower.*
+
 import scala.concurrent.{ExecutionContext, Future}
 
 /** Mock Bitcoin RPC that reads from test fixtures */

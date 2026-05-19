@@ -1,5 +1,9 @@
 package binocular
 
+import binocular.bitcoin.*
+import binocular.oracle.*
+import binocular.watchtower.*
+
 import org.scalatest.Tag
 import org.scalatest.funsuite.AnyFunSuite
 import scalus.cardano.ledger.{AssetName, CardanoInfo, Coin, DatumOption, Input, Output, ScriptRef, TransactionHash, Utxos, Value}
@@ -18,7 +22,7 @@ import scalus.uplc.builtin.Data.toData
 import scalus.uplc.eval.Result
 
 import java.time.Instant
-import binocular.OracleAction.*
+import binocular.oracle.OracleAction.*
 import scalus.cardano.onchain.plutus.v1.PubKeyHash
 import scalus.testing.kit.Party
 

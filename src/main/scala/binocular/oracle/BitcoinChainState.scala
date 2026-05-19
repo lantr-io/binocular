@@ -1,4 +1,8 @@
-package binocular
+package binocular.oracle
+
+import binocular.*
+import binocular.bitcoin.*
+import binocular.watchtower.*
 
 import scalus.uplc.builtin.ByteString
 import scalus.cardano.onchain.plutus.prelude

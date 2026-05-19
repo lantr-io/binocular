@@ -1,4 +1,8 @@
-package binocular
+package binocular.oracle
+
+import binocular.*
+import binocular.bitcoin.*
+import binocular.watchtower.*
 
 import scalus.*
 import scalus.cardano.blueprint.{Blueprint, HasTypeDescription, Preamble, Validator}

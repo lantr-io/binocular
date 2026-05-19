@@ -1,6 +1,8 @@
 package binocular.utils
 
-import binocular.{BinocularConfig, BitcoinNodeConfig, MerkleTree, SimpleBitcoinRpc}
+import binocular.BinocularConfig
+import binocular.bitcoin.{BitcoinNodeConfig, SimpleBitcoinRpc}
+import binocular.oracle.MerkleTree
 import org.apache.pekko.actor.ActorSystem
 import scalus.uplc.builtin.ByteString
 import upickle.default.*
@@ -289,7 +291,7 @@ object BitcoinDataFetcher {
     }
 
     private def generateMerkleProofTestCase(blockData: BlockData): MerkleProofTestCase = {
-        import binocular.reverse
+        import binocular.oracle.reverse
         // Convert transaction hashes to ByteString (reversed for merkle tree)
         val txHashes = blockData.transactions.map { txHex =>
             ByteString.fromHex(txHex).reverse

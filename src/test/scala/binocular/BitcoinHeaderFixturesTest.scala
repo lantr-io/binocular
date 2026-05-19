@@ -1,5 +1,9 @@
 package binocular
 
+import binocular.bitcoin.*
+import binocular.oracle.*
+import binocular.watchtower.*
+
 import org.scalatest.funsuite.AnyFunSuite
 import scalus.uplc.builtin.ByteString.hex
 

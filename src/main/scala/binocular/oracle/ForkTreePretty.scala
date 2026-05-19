@@ -1,6 +1,10 @@
-package binocular
+package binocular.oracle
 
-import binocular.ForkTree.*
+import binocular.*
+import binocular.bitcoin.*
+import binocular.watchtower.*
+
+import binocular.oracle.ForkTree.*
 
 import java.time.{Instant, ZoneId}
 import java.time.format.DateTimeFormatter

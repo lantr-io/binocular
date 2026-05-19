@@ -1,6 +1,10 @@
-package binocular
+package binocular.oracle
 
-import binocular.ForkTree.{Blocks, End, Fork}
+import binocular.*
+import binocular.bitcoin.*
+import binocular.watchtower.*
+
+import binocular.oracle.ForkTree.{Blocks, End, Fork}
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry as MPF
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import scalus.cardano.onchain.plutus.prelude.List.*

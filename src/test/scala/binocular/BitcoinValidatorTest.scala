@@ -1,7 +1,11 @@
 package binocular
 
-import binocular.ForkTree.*
-import binocular.OracleAction.*
+import binocular.bitcoin.*
+import binocular.oracle.*
+import binocular.watchtower.*
+
+import binocular.oracle.ForkTree.*
+import binocular.oracle.OracleAction.*
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 import scalus.*
@@ -143,7 +147,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
     }
 
     test("ForkTree pretty print - various tree shapes") {
-        import binocular.ForkTreePretty.*
+        import binocular.oracle.ForkTreePretty.*
 
         // Use realistic-ish timestamps
         val baseTime = BigInt(1700000000L) // ~Nov 2023
@@ -1763,7 +1767,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         val (fixture, header) = BlockFixture.loadWithHeader(startHeight + 1)
         val wrongBits = ByteString.fromHex("1d00ffff").reverse
         val mutatedHeader =
-            binocular.BlockHeader(
+            binocular.oracle.BlockHeader(
               header.bytes.slice(0, 72) ++ wrongBits ++ header.bytes.slice(76, 4)
             )
 
@@ -1801,7 +1805,7 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         )
 
         val (fixture, header) = BlockFixture.loadWithHeader(startHeight + 1)
-        val extendedHeader = binocular.BlockHeader(header.bytes ++ hex"00010203")
+        val extendedHeader = binocular.oracle.BlockHeader(header.bytes ++ hex"00010203")
 
         val ex = intercept[Exception] {
             BitcoinValidator.validateBlock(

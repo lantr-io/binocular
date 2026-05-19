@@ -1,7 +1,10 @@
 package binocular.cli.commands
 
 import binocular.*
-import binocular.ForkTreePretty.*
+import binocular.bitcoin.*
+import binocular.oracle.*
+import binocular.watchtower.*
+import binocular.oracle.ForkTreePretty.*
 import binocular.cli.{Command, CommandHelpers}
 import scalus.cardano.ledger.Utxo
 import scalus.uplc.builtin.Data.fromData

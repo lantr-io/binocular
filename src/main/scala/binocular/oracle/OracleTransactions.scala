@@ -1,12 +1,16 @@
-package binocular
+package binocular.oracle
 
-import binocular.util.SlotConfigHelper
+import binocular.*
+import binocular.bitcoin.*
+import binocular.watchtower.*
+
+import binocular.oracle.SlotConfigHelper
 import scalus.cardano.address.Address
 import scalus.cardano.ledger.{AssetName, CardanoInfo, PlutusScript, ScriptHash, ScriptRef, Transaction, TransactionHash, TransactionOutput, Utxo, Utxos, Value}
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.txbuilder.TxBuilder
 import scalus.uplc.builtin.Data
-import binocular.OracleAction.*
+import binocular.oracle.OracleAction.*
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep

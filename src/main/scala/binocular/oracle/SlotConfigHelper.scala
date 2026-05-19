@@ -1,6 +1,10 @@
-package binocular.util
+package binocular.oracle
 
-import binocular.BitcoinValidator
+import binocular.*
+import binocular.bitcoin.*
+import binocular.watchtower.*
+
+import binocular.oracle.BitcoinValidator
 import scalus.cardano.ledger.CardanoInfo
 
 import java.time.Instant

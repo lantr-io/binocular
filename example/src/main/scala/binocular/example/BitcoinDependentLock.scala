@@ -1,6 +1,9 @@
 package binocular.example
 
-import binocular.{reverse, BinocularConfig, BitcoinContract, BitcoinValidatorParams, BlockHeader, ChainState, MerkleTree, SimpleBitcoinRpc, TransactionVerifierContract, TxVerifierDatum, TxVerifierRedeemer}
+import binocular.BinocularConfig
+import binocular.bitcoin.SimpleBitcoinRpc
+import binocular.oracle.{reverse, BitcoinContract, BitcoinValidatorParams, BlockHeader, ChainState, MerkleTree}
+import binocular.watchtower.{TransactionVerifierContract, TxVerifierDatum, TxVerifierRedeemer}
 import scalus.cardano.address.{Address, Network}
 import scalus.cardano.ledger.{AssetName, Credential, Script, Utxo, Value}
 import scalus.cardano.txbuilder.{TransactionSigner, TxBuilder}

@@ -1,5 +1,9 @@
 package binocular
 
+import binocular.bitcoin.*
+import binocular.oracle.*
+import binocular.watchtower.*
+
 import org.apache.pekko.actor.ActorSystem
 import org.bitcoins.core.protocol.blockchain.BlockHeader as BtcHeader
 import org.bitcoins.rpc.client.v27.BitcoindV27RpcClient

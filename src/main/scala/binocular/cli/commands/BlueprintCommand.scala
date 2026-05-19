@@ -1,6 +1,9 @@
 package binocular.cli.commands
 
 import binocular.*
+import binocular.bitcoin.*
+import binocular.oracle.*
+import binocular.watchtower.*
 import binocular.cli.Command
 
 /** Print CIP-57 Blueprint JSON to stdout */

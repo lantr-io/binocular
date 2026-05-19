@@ -1,6 +1,9 @@
 package binocular.cli
 
 import binocular.*
+import binocular.bitcoin.*
+import binocular.oracle.*
+import binocular.watchtower.*
 import binocular.cli.commands.*
 import com.monovore.decline.*
 import cats.implicits.*

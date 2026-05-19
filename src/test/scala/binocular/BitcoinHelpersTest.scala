@@ -1,6 +1,10 @@
 package binocular
 
-import binocular.BitcoinHelpers.*
+import binocular.bitcoin.*
+import binocular.oracle.*
+import binocular.watchtower.*
+
+import binocular.bitcoin.BitcoinHelpers.*
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 import scalus.*
