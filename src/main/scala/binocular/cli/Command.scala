@@ -340,7 +340,8 @@ object CommandHelpers {
 
     /** Walk down from `confirmedHeight - 1` to `max(0, confirmedHeight - maxLookback)`, returning
       * the deepest height whose canonical hash is present in the off-chain MPF. Bounded so a hard
-      * stop happens quickly on misconfigured chains where no ancestor is reachable. */
+      * stop happens quickly on misconfigured chains where no ancestor is reachable.
+      */
     def findDeepestConfirmedAncestor(
         rpc: BitcoinRpc,
         mpf: OffChainMPF,

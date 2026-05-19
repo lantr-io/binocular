@@ -9,14 +9,11 @@ import scalus.uplc.PlutusV3
 import scalus.uplc.builtin.*
 import scalus.uplc.builtin.Builtins.*
 
-/** Rewarding-script validator that gates peg-in completion on a depositor
-  * BIP340 Schnorr signature.
+/** Rewarding-script validator that gates peg-in completion on a depositor BIP340 Schnorr signature.
   *
-  * Used as the target of `PegInDatum.ownerAuth =
-  * CardanoWithdrawScript { hash = thisScriptHash }`. When the depositor
-  * completes a peg-in, the completion transaction must include a 0-ADA
-  * withdrawal from this script's reward account. Cardano then runs this
-  * validator, which:
+  * Used as the target of `PegInDatum.ownerAuth = CardanoWithdrawScript { hash = thisScriptHash }`.
+  * When the depositor completes a peg-in, the completion transaction must include a 0-ADA
+  * withdrawal from this script's reward account. Cardano then runs this validator, which:
   *
   *   1. reads the peg-in input (index supplied via redeemer),
   *   2. parses its inline datum as [[PegInDatum]],
@@ -24,13 +21,12 @@ import scalus.uplc.builtin.Builtins.*
   *   4. verifies the depositor's Schnorr signature with
   *      `verifySchnorrSecp256k1Signature(datum.userSourceChainPubKey, msg, sig)`.
   *
-  * The xonly used for verification is read from the datum, so this validator
-  * is NOT parameterized per-depositor. One deployment serves every peg-in.
+  * The xonly used for verification is read from the datum, so this validator is NOT parameterized
+  * per-depositor. One deployment serves every peg-in.
   *
-  * Caveat: relies on the watchtower (or whoever minted the PegInRequest)
-  * having honestly populated `userSourceChainPubKey` from the BTC OP_RETURN.
-  * `peg-in.ak`'s mint handler doesn't enforce this today (TODO at line 97),
-  * so the bridge as a whole still has a watchtower-honesty assumption at
+  * Caveat: relies on the watchtower (or whoever minted the PegInRequest) having honestly populated
+  * `userSourceChainPubKey` from the BTC OP_RETURN. `peg-in.ak`'s mint handler doesn't enforce this
+  * today (TODO at line 97), so the bridge as a whole still has a watchtower-honesty assumption at
   * mint time. See `internal-docs/bitfrost/watchtower/pegin-step.md`.
   */
 @Compile

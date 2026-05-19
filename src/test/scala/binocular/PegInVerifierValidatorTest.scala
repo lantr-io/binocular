@@ -6,10 +6,7 @@ import binocular.watchtower.*
 
 import org.bitcoins.core.currency.Satoshis
 import org.bitcoins.core.number.{Int32, UInt32}
-import org.bitcoins.core.protocol.script.{
-    EmptyScriptPubKey, EmptyScriptSignature, ScriptPubKey, ScriptSignature,
-    ScriptWitness, TaprootKeyPath
-}
+import org.bitcoins.core.protocol.script.{EmptyScriptPubKey, EmptyScriptSignature, ScriptPubKey, ScriptSignature, ScriptWitness, TaprootKeyPath}
 import org.bitcoins.core.protocol.transaction.*
 import org.bitcoins.crypto.{DoubleSha256Digest, DoubleSha256DigestBE}
 import org.scalatest.funsuite.AnyFunSuite
@@ -31,9 +28,9 @@ class PegInVerifierValidatorTest extends AnyFunSuite with ScalusTest {
 
     // --- bitcoin-s helpers ---
 
-    /** Build a witness-serialized Bitcoin tx from given inputs, witnesses, and a single dummy output.
-      * Each input must have a corresponding witness entry. Use `TaprootKeyPath.dummy` for key-path
-      * spends and `scriptPathWitness` for fake script-path spends in failure tests.
+    /** Build a witness-serialized Bitcoin tx from given inputs, witnesses, and a single dummy
+      * output. Each input must have a corresponding witness entry. Use `TaprootKeyPath.dummy` for
+      * key-path spends and `scriptPathWitness` for fake script-path spends in failure tests.
       */
     private def buildWitnessTx(
         inputs: Seq[TransactionInput],
@@ -47,34 +44,41 @@ class PegInVerifierValidatorTest extends AnyFunSuite with ScalusTest {
           TransactionWitness(witnesses.toVector)
         )
 
-    /** Serialize a transaction to bytes.
-      * BaseTransaction → non-witness bytes (used for peg-in tx, rawPegInTx).
-      * WitnessTransaction → full witness-serialized bytes (used for TM tx, rawTmTx).
+    /** Serialize a transaction to bytes. BaseTransaction → non-witness bytes (used for peg-in tx,
+      * rawPegInTx). WitnessTransaction → full witness-serialized bytes (used for TM tx, rawTmTx).
       */
     private def txBytes(tx: Transaction): ByteString =
         ByteString.fromArray(tx.bytes.toArray)
 
-    /** Fake 3-item protocol script-path witness: [sig (64 B), leaf_script (34 B), ctrl_block (65 B)].
-      * Matches the structure of all Bifrost 1-of-1 script-path spends (Y_67 OP_CHECKSIG or
+    /** Fake 3-item protocol script-path witness: [sig (64 B), leaf_script (34 B), ctrl_block (65
+      * B)]. Matches the structure of all Bifrost 1-of-1 script-path spends (Y_67 OP_CHECKSIG or
       * timeout OP_CSV OP_DROP Y_fed OP_CHECKSIG). Byte content is arbitrary — Bitcoin validates
       * signatures; the Cardano validator only checks item count to classify the spending path.
       */
-    private def scriptPathWitness: ScriptWitness = ScriptWitness(Vector(
-        ByteVector(Array.fill(64)(0x00.toByte)),         // fake Schnorr signature
-        ByteVector(Array(0x20.toByte) ++ Array.fill(32)(0xab.toByte) ++ Array(0xac.toByte)), // fake leaf script
-        ByteVector(Array(0xc0.toByte) ++ Array.fill(64)(0x01.toByte))  // fake control block
-    ))
+    private def scriptPathWitness: ScriptWitness = ScriptWitness(
+      Vector(
+        ByteVector(Array.fill(64)(0x00.toByte)), // fake Schnorr signature
+        ByteVector(
+          Array(0x20.toByte) ++ Array.fill(32)(0xab.toByte) ++ Array(0xac.toByte)
+        ), // fake leaf script
+        ByteVector(Array(0xc0.toByte) ++ Array.fill(64)(0x01.toByte)) // fake control block
+      )
+    )
 
     /** Fake 4-item depositor CSV-refund witness: [sig, pubkey (32 B), leaf_script, ctrl_block].
       * Depositor refund scripts do `OP_HASH160 <hash> OP_EQUALVERIFY OP_CHECKSIG`, which requires
       * the x-only pubkey as an explicit witness item — producing 4 items total.
       */
-    private def depositorRefundWitness: ScriptWitness = ScriptWitness(Vector(
-        ByteVector(Array.fill(64)(0x00.toByte)),         // fake sig
-        ByteVector(Array.fill(32)(0xdd.toByte)),          // fake x-only pubkey (32 bytes)
-        ByteVector(Array(0x20.toByte) ++ Array.fill(32)(0xab.toByte) ++ Array(0xac.toByte)), // fake leaf script
-        ByteVector(Array(0xc0.toByte) ++ Array.fill(64)(0x01.toByte))  // fake control block
-    ))
+    private def depositorRefundWitness: ScriptWitness = ScriptWitness(
+      Vector(
+        ByteVector(Array.fill(64)(0x00.toByte)), // fake sig
+        ByteVector(Array.fill(32)(0xdd.toByte)), // fake x-only pubkey (32 bytes)
+        ByteVector(
+          Array(0x20.toByte) ++ Array.fill(32)(0xab.toByte) ++ Array(0xac.toByte)
+        ), // fake leaf script
+        ByteVector(Array(0xc0.toByte) ++ Array.fill(64)(0x01.toByte)) // fake control block
+      )
+    )
 
     /** Create a TransactionInput from a 32-byte txid (display/BE order) and vout. */
     private def txInput(txidBE: Array[Byte], vout: Int): TransactionInput = {
@@ -190,7 +194,9 @@ class PegInVerifierValidatorTest extends AnyFunSuite with ScalusTest {
         val redeemer = buildRedeemer(outpointBytes(treasuryInput), rawPegInTx, 100_000, rawTmTx)
         val result = evalValidator(redeemer)
         assert(result.isInstanceOf[Result.Success], s"Expected success but got: $result")
-        info(s"CPU: ${result.asInstanceOf[Result.Success].budget.steps}, Mem: ${result.asInstanceOf[Result.Success].budget.memory}")
+        info(
+          s"CPU: ${result.asInstanceOf[Result.Success].budget.steps}, Mem: ${result.asInstanceOf[Result.Success].budget.memory}"
+        )
     }
 
     test("CEK: fails when first input is not treasury") {
@@ -260,8 +266,10 @@ class PegInVerifierValidatorTest extends AnyFunSuite with ScalusTest {
         val tmTx = buildWitnessTx(
           inputs = Seq(treasuryInput, otherInput1, otherInput2, pegInInput),
           witnesses = Seq(
-            TaprootKeyPath.dummy, TaprootKeyPath.dummy,
-            TaprootKeyPath.dummy, TaprootKeyPath.dummy
+            TaprootKeyPath.dummy,
+            TaprootKeyPath.dummy,
+            TaprootKeyPath.dummy,
+            TaprootKeyPath.dummy
           )
         )
         val rawTmTx = txBytes(tmTx)
@@ -302,7 +310,8 @@ class PegInVerifierValidatorTest extends AnyFunSuite with ScalusTest {
           DoubleSha256DigestBE.fromBytes(ByteVector(fakeTxid(0x10))),
           UInt32.zero
         )
-        val scriptSig = ScriptSignature.fromAsmBytes(ByteVector(0x00, 0x14) ++ ByteVector.fill(20)(0xab))
+        val scriptSig =
+            ScriptSignature.fromAsmBytes(ByteVector(0x00, 0x14) ++ ByteVector.fill(20)(0xab))
         val treasuryInput = TransactionInput(treasuryOutpoint, scriptSig, UInt32.max)
 
         val pegInTx = buildPegInTx(
@@ -317,7 +326,8 @@ class PegInVerifierValidatorTest extends AnyFunSuite with ScalusTest {
           DoubleSha256Digest.fromBytes(ByteVector(pegInTxid)),
           UInt32.zero
         )
-        val pegInScriptSig = ScriptSignature.fromAsmBytes(ByteVector(0x00, 0x14) ++ ByteVector.fill(20)(0xcd))
+        val pegInScriptSig =
+            ScriptSignature.fromAsmBytes(ByteVector(0x00, 0x14) ++ ByteVector.fill(20)(0xcd))
         val pegInInputWithScript = TransactionInput(pegInOutpoint, pegInScriptSig, UInt32.max)
 
         val tmTx = WitnessTransaction(
@@ -454,10 +464,12 @@ class PegInVerifierValidatorTest extends AnyFunSuite with ScalusTest {
         val pegInInput = txInputLE(pegInTxid, 0)
 
         // 2-item treasury witness (neither key-path nor a protocol script-path)
-        val invalidTreasuryWitness = ScriptWitness(Vector(
+        val invalidTreasuryWitness = ScriptWitness(
+          Vector(
             ByteVector(Array.fill(64)(0x00.toByte)),
             ByteVector(Array.fill(33)(0xc0.toByte))
-        ))
+          )
+        )
         val tmTx = buildWitnessTx(
           inputs = Seq(treasuryInput, pegInInput),
           witnesses = Seq(invalidTreasuryWitness, TaprootKeyPath.dummy)

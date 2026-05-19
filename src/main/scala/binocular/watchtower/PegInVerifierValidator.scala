@@ -27,13 +27,13 @@ import scalus.uplc.PlutusV3
   *   1. TM tx's first input must spend the treasury UTXO (outpoint match)
   *   2. Some TM input must have prev_txid == sha256d(raw_peg_in_tx) (peg-in consumed)
   *   3. The spending mode must be one of the three valid Bifrost protocol modes:
-  *        - 51% (main line):    treasury key-path Y_51,   peg-in key-path Y_51
-  *        - 67% (aspirational): treasury script-path Y_67, peg-in key-path Y_51
-  *        - Federation:         treasury script-path Y_fed, peg-in script-path Y_fed
+  *      - 51% (main line): treasury key-path Y_51, peg-in key-path Y_51
+  *      - 67% (aspirational): treasury script-path Y_67, peg-in key-path Y_51
+  *      - Federation: treasury script-path Y_fed, peg-in script-path Y_fed
   *
-  * The mode check is: if treasury is key-path then peg-in must also be key-path.
-  * This rules out the only invalid combination (key-path treasury + script-path peg-in),
-  * which would indicate a depositor CSV refund or other non-protocol spend.
+  * The mode check is: if treasury is key-path then peg-in must also be key-path. This rules out the
+  * only invalid combination (key-path treasury + script-path peg-in), which would indicate a
+  * depositor CSV refund or other non-protocol spend.
   */
 @Compile
 object PegInVerifierValidator {
@@ -67,14 +67,14 @@ object PegInVerifierValidator {
         //    A depositor CSV-refund spend requires the pubkey as an explicit witness item
         //    (the leaf script does HASH160 check), so it produces 4 items.
         //    Exactly 3 items therefore reliably identifies a protocol script-path.
-        val treasuryKeyPath    = BitcoinHelpers.isKeyPathWitness(rawTmTx, 0)
+        val treasuryKeyPath = BitcoinHelpers.isKeyPathWitness(rawTmTx, 0)
         val treasuryScriptPath = BitcoinHelpers.isValidScriptPathWitness(rawTmTx, 0)
         require(
           treasuryKeyPath || treasuryScriptPath,
           "Treasury witness is not a valid protocol spend (expected 1- or 3-item Taproot witness)"
         )
 
-        val pegInKeyPath    = BitcoinHelpers.isKeyPathWitness(rawTmTx, pegInIdx)
+        val pegInKeyPath = BitcoinHelpers.isKeyPathWitness(rawTmTx, pegInIdx)
         val pegInScriptPath = BitcoinHelpers.isValidScriptPathWitness(rawTmTx, pegInIdx)
         require(
           pegInKeyPath || pegInScriptPath,
