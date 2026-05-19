@@ -38,7 +38,7 @@ jobs:
             ${{ runner.os }}-sbt-
 
       - name: Check formatting and run tests
-        run: sbt scalafmtCheckAll compileAll "testOnly binocular.*"
+        run: sbt ";scalafmtCheckAll;compileAll;testOnly binocular.*"
 
       - name: List contract debug files
         if: failure()
