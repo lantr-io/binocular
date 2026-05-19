@@ -315,11 +315,13 @@ object BitcoinHelpers {
         val (scriptLength, newOffset) = readVarInt(rawTx, offset + 8) // skip amount
         newOffset + scriptLength
 
-    /** Read the outpoint (prev_txid ++ prev_vout, 36 bytes) of the first input.
-      * Handles both witness-serialized (marker+flag at bytes 4-5) and legacy format.
+    /** Read the outpoint (prev_txid ++ prev_vout, 36 bytes) of the first input. Handles both
+      * witness-serialized (marker+flag at bytes 4-5) and legacy format.
       *
-      * @param rawTx Bitcoin transaction bytes (witness or non-witness serialized)
-      * @return 36-byte outpoint of the first input
+      * @param rawTx
+      *   Bitcoin transaction bytes (witness or non-witness serialized)
+      * @return
+      *   36-byte outpoint of the first input
       */
     def firstInputOutpoint(rawTx: ByteString): ByteString =
         val txInsStart = if isWitnessTransaction(rawTx) then BigInt(6) else BigInt(4)
@@ -327,13 +329,16 @@ object BitcoinHelpers {
         require(numIns > 0, "Transaction has no inputs")
         rawTx.slice(firstInputOffset, 36)
 
-    /** Return the 0-based index of the input whose prev_txid matches `targetPrevTxid`.
-      * Fails with "TM does not spend peg-in tx" if no matching input is found.
-      * Handles both witness-serialized and non-witness tx bytes.
+    /** Return the 0-based index of the input whose prev_txid matches `targetPrevTxid`. Fails with
+      * "TM does not spend peg-in tx" if no matching input is found. Handles both witness-serialized
+      * and non-witness tx bytes.
       *
-      * @param rawTx Bitcoin transaction bytes
-      * @param targetPrevTxid 32-byte txid to find (in internal/LE byte order, i.e. sha256d output)
-      * @return 0-based index of the matching input
+      * @param rawTx
+      *   Bitcoin transaction bytes
+      * @param targetPrevTxid
+      *   32-byte txid to find (in internal/LE byte order, i.e. sha256d output)
+      * @return
+      *   0-based index of the matching input
       */
     def findPegInInputIndex(rawTx: ByteString, targetPrevTxid: TxHash): BigInt =
         val txInsStart = if isWitnessTransaction(rawTx) then BigInt(6) else BigInt(4)
@@ -348,12 +353,14 @@ object BitcoinHelpers {
                 else loop(remaining - 1, nextOffset, index + 1)
         loop(numIns, firstInputOffset, 0)
 
-    /** Return the byte offset where the witness data begins in a witness-serialized tx.
-      * The witness section follows immediately after all inputs and all outputs.
-      * Fails if the transaction is not witness-serialized.
+    /** Return the byte offset where the witness data begins in a witness-serialized tx. The witness
+      * section follows immediately after all inputs and all outputs. Fails if the transaction is
+      * not witness-serialized.
       *
-      * @param rawTx Witness-serialized Bitcoin transaction bytes
-      * @return Byte offset of the first byte of the witness section
+      * @param rawTx
+      *   Witness-serialized Bitcoin transaction bytes
+      * @return
+      *   Byte offset of the first byte of the witness section
       */
     def findWitnessSectionOffset(rawTx: ByteString): BigInt =
         require(isWitnessTransaction(rawTx), "Transaction is not witness-serialized")
@@ -440,9 +447,12 @@ object BitcoinHelpers {
       * Each input's witness begins at `offset` with the varint item count, followed by
       * `[varint len][len bytes]` for each item. See wire-format comment block above.
       *
-      * @param rawTx Bitcoin transaction bytes
-      * @param offset Byte offset of the varint that starts this witness's stack item count
-      * @return Byte offset immediately after this witness (= start of the next input's witness)
+      * @param rawTx
+      *   Bitcoin transaction bytes
+      * @param offset
+      *   Byte offset of the varint that starts this witness's stack item count
+      * @return
+      *   Byte offset immediately after this witness (= start of the next input's witness)
       */
     def skipOneWitness(rawTx: ByteString, offset: BigInt): BigInt =
         val (stackItems, afterCount) = readVarInt(rawTx, offset)
@@ -455,13 +465,16 @@ object BitcoinHelpers {
 
     /** Return the number of stack items in the witness of input at `inputIndex`.
       *
-      * Navigates to the target input's witness by skipping `inputIndex` witnesses
-      * (each starting with its own item-count varint), then reads and returns that varint.
-      * See wire-format comment block above for encoding details.
+      * Navigates to the target input's witness by skipping `inputIndex` witnesses (each starting
+      * with its own item-count varint), then reads and returns that varint. See wire-format comment
+      * block above for encoding details.
       *
-      * @param rawTx Witness-serialized Bitcoin transaction bytes
-      * @param inputIndex 0-based index of the input whose witness to inspect
-      * @return number of stack items (N) in that input's witness
+      * @param rawTx
+      *   Witness-serialized Bitcoin transaction bytes
+      * @param inputIndex
+      *   0-based index of the input whose witness to inspect
+      * @return
+      *   number of stack items (N) in that input's witness
       */
     def witnessStackSize(rawTx: ByteString, inputIndex: BigInt): BigInt =
         val witnessStart = findWitnessSectionOffset(rawTx)
@@ -480,12 +493,15 @@ object BitcoinHelpers {
       *   - 64 bytes: SIGHASH_DEFAULT (implicit, most common)
       *   - 65 bytes: explicit hash type byte appended
       *
-      * Any script-path spend has ≥ 2 items (script inputs + leaf_script + control_block),
-      * so item count = 1 is a sufficient discriminator.
+      * Any script-path spend has ≥ 2 items (script inputs + leaf_script + control_block), so item
+      * count = 1 is a sufficient discriminator.
       *
-      * @param rawTx Witness-serialized Bitcoin transaction bytes
-      * @param inputIndex 0-based index of the input whose witness to inspect
-      * @return true if witness is a key-path spend (N=1, item length 64-65)
+      * @param rawTx
+      *   Witness-serialized Bitcoin transaction bytes
+      * @param inputIndex
+      *   0-based index of the input whose witness to inspect
+      * @return
+      *   true if witness is a key-path spend (N=1, item length 64-65)
       */
     def isKeyPathWitness(rawTx: ByteString, inputIndex: BigInt): Boolean =
         val witnessStart = findWitnessSectionOffset(rawTx)
@@ -501,23 +517,24 @@ object BitcoinHelpers {
 
     /** Return true iff the witness at `inputIndex` is a Bifrost protocol script-path spend.
       *
-      * All Bifrost script leaves require exactly 1 signature as witness input
-      * (Y_67 OP_CHECKSIG; or timeout OP_CSV OP_DROP Y_fed OP_CHECKSIG), producing
-      * exactly 3 witness items:
-      *   item 0: signature  (64 B)
-      *   item 1: leaf script
-      *   item 2: control block  (33 + 32*depth bytes; 65 B for a 2-leaf tree)
+      * All Bifrost script leaves require exactly 1 signature as witness input (Y_67 OP_CHECKSIG; or
+      * timeout OP_CSV OP_DROP Y_fed OP_CHECKSIG), producing exactly 3 witness items: item 0:
+      * signature (64 B) item 1: leaf script item 2: control block (33 + 32*depth bytes; 65 B for a
+      * 2-leaf tree)
       *
-      * The depositor CSV refund leaf (`OP_HASH160 <hash> OP_EQUALVERIFY OP_CHECKSIG`)
-      * requires the depositor's x-only pubkey as an explicit witness item so the script
-      * can verify HASH160(pubkey) == stored_hash.  This gives 4 items, not 3.
+      * The depositor CSV refund leaf (`OP_HASH160 <hash> OP_EQUALVERIFY OP_CHECKSIG`) requires the
+      * depositor's x-only pubkey as an explicit witness item so the script can verify
+      * HASH160(pubkey) == stored_hash. This gives 4 items, not 3.
       *
-      * Count == 3 is therefore a reliable discriminator: it accepts Y_67 and Y_fed
-      * script-path spends while rejecting depositor refunds and malformed witnesses.
+      * Count == 3 is therefore a reliable discriminator: it accepts Y_67 and Y_fed script-path
+      * spends while rejecting depositor refunds and malformed witnesses.
       *
-      * @param rawTx Witness-serialized Bitcoin transaction bytes
-      * @param inputIndex 0-based index of the input whose witness to inspect
-      * @return true if witness is a 3-item protocol script-path (N=3)
+      * @param rawTx
+      *   Witness-serialized Bitcoin transaction bytes
+      * @param inputIndex
+      *   0-based index of the input whose witness to inspect
+      * @return
+      *   true if witness is a 3-item protocol script-path (N=3)
       */
     def isValidScriptPathWitness(rawTx: ByteString, inputIndex: BigInt): Boolean =
         witnessStackSize(rawTx, inputIndex) == BigInt(3)

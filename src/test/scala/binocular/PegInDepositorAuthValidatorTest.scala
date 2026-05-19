@@ -17,10 +17,9 @@ import scodec.bits.ByteVector
 
 /** CEK-evaluation tests for [[PegInDepositorAuthValidator]].
   *
-  * Builds a synthetic Plutus V3 ScriptContext (one peg-in input bearing an
-  * inline `PegInDatum`, a rewarding-script invocation as the entry point),
-  * produces a real BIP340 Schnorr signature via bitcoin-s `ECPrivateKey`,
-  * and asserts the validator accepts/rejects as expected.
+  * Builds a synthetic Plutus V3 ScriptContext (one peg-in input bearing an inline `PegInDatum`, a
+  * rewarding-script invocation as the entry point), produces a real BIP340 Schnorr signature via
+  * bitcoin-s `ECPrivateKey`, and asserts the validator accepts/rejects as expected.
   */
 class PegInDepositorAuthValidatorTest extends AnyFunSuite with ScalusTest {
 
@@ -49,8 +48,8 @@ class PegInDepositorAuthValidatorTest extends AnyFunSuite with ScalusTest {
       resolved = pegInTxOut(datum)
     )
 
-    /** Build a minimal ScriptContext: one input (the peg-in), rewarding-script
-      * invocation, no other tx data.
+    /** Build a minimal ScriptContext: one input (the peg-in), rewarding-script invocation, no other
+      * tx data.
       */
     private def buildScriptContext(
         datum: PegInDatum,
@@ -82,9 +81,9 @@ class PegInDepositorAuthValidatorTest extends AnyFunSuite with ScalusTest {
         )
     }
 
-    /** Construct a complete `PegInDatum` populated with placeholder values for
-      * everything other than `pegInUtxoId` and `userSourceChainPubKey`, which
-      * are the only fields the validator inspects.
+    /** Construct a complete `PegInDatum` populated with placeholder values for everything other
+      * than `pegInUtxoId` and `userSourceChainPubKey`, which are the only fields the validator
+      * inspects.
       */
     private def datumFor(pegInUtxoId: ByteString, xonly: ByteString): PegInDatum =
         PegInDatum(

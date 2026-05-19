@@ -13,24 +13,22 @@ import scala.concurrent.{ExecutionContext, Future}
 
 /** Scans recent Bitcoin blocks for Bifrost peg-in transactions.
   *
-  * A peg-in is identified by an OP_RETURN output with the payload:
-  *   "BFR" || depositor_data (32 bytes) = 35 bytes total
+  * A peg-in is identified by an OP_RETURN output with the payload: "BFR" || depositor_data (32
+  * bytes) = 35 bytes total
   *
-  * scriptPubKey hex prefix: 6a23424652
-  *   6a     = OP_RETURN
-  *   23     = PUSH 35 bytes
-  *   424652 = "BFR" (0x42 0x46 0x52)
-  *   <32 bytes> = depositor data (Cardano payment credential)
+  * scriptPubKey hex prefix: 6a23424652 6a = OP_RETURN 23 = PUSH 35 bytes 424652 = "BFR" (0x42 0x46
+  * 0x52) <32 bytes> = depositor data (Cardano payment credential)
   *
-  * Note: technical_documentation.md specifies 20-byte HASH160, but actual testnet4
-  * transactions use 32 bytes of depositor data after "BFR".
+  * Note: technical_documentation.md specifies 20-byte HASH160, but actual testnet4 transactions use
+  * 32 bytes of depositor data after "BFR".
   */
 object BifrostPegInScanner {
 
     // OP_RETURN PUSH35 "BFR"
     private val PegInPrefix = "6a23424652"
 
-    private val DateFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneOffset.UTC)
+    private val DateFmt =
+        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneOffset.UTC)
 
     case class OutputStatus(vout: VoutInfo, unspent: Boolean)
 
@@ -38,7 +36,7 @@ object BifrostPegInScanner {
         blockHeight: Int,
         blockTime: Long,
         txid: String,
-        depositorData: String,     // 32 bytes after "BFR" as hex
+        depositorData: String, // 32 bytes after "BFR" as hex
         outputs: Seq[OutputStatus] // non-OP_RETURN outputs with spent/unspent status
     )
 
@@ -110,7 +108,9 @@ object BifrostPegInScanner {
                         println(s"block=${p.blockHeight}  date=$date  txid=${p.txid}")
                         p.outputs.foreach { os =>
                             val status = if os.unspent then "UNSPENT" else "SPENT"
-                            println(f"  vout=${os.vout.index}  ${os.vout.valueBtc}%.8f BTC  $status")
+                            println(
+                              f"  vout=${os.vout.index}  ${os.vout.valueBtc}%.8f BTC  $status"
+                            )
                         }
                         println(s"  depositor: ${p.depositorData}")
                         println()
