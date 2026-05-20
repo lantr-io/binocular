@@ -2,7 +2,7 @@ package binocular
 
 import binocular.bitcoin.BitcoinNodeConfig
 import binocular.oracle.{CardanoConfig, OracleConfig, WalletConfig}
-import binocular.watchtower.RelayConfig
+import binocular.watchtower.{BridgeConfig, RelayConfig}
 import pureconfig.*
 
 /** Top-level configuration — single entry point.
@@ -15,7 +15,8 @@ case class BinocularConfig(
     cardano: CardanoConfig,
     wallet: WalletConfig,
     oracle: OracleConfig,
-    relay: RelayConfig = RelayConfig()
+    relay: RelayConfig = RelayConfig(),
+    bridge: BridgeConfig = BridgeConfig()
 ) derives ConfigReader
 
 object BinocularConfig {

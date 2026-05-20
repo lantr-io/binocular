@@ -279,10 +279,24 @@ object BitcoinHelpers {
             val outsEnd = skipTxOuts(rawTx, txOutsOffset)
             val txIns = rawTx.slice(txInsStartIndex, txOutsOffset - txInsStartIndex)
             val txOuts = rawTx.slice(txOutsOffset, outsEnd - txOutsOffset)
-            val lockTimeOsset = outsEnd + 1 + 1 + 32 // Skip witness data
-            val lockTime = rawTx.slice(lockTimeOsset, 4)
+            // nLockTime is always the final 4 bytes. The witness section between the outputs and
+            // the locktime has a variable, per-input layout (a stack of items per input), so it
+            // cannot be skipped with a fixed offset — slicing from the end avoids parsing it.
+            val lockTime = rawTx.slice(rawTx.length - 4, 4)
             version ++ txIns ++ txOuts ++ lockTime
         else rawTx
+
+    /** Satoshi value of output `voutIndex`, read as the 8-byte little-endian amount directly from
+      * the raw tx. Exact and matching how the on-chain validator parses deposit amounts — unlike
+      * rounding bitcoind's decimal-BTC `value`, which is a lossy `Double`.
+      */
+    def outputValueSat(rawTx: ByteString, voutIndex: BigInt): BigInt =
+        val txInsStart = if isWitnessTransaction(rawTx) then BigInt(6) else BigInt(4)
+        val (_, afterOutputCount) = readVarInt(rawTx, skipTxIns(rawTx, txInsStart))
+        def walkToOutput(remaining: BigInt, offset: BigInt): BigInt =
+            if remaining == BigInt(0) then offset
+            else walkToOutput(remaining - 1, skipTxOut(rawTx, offset))
+        byteStringToInteger(false, rawTx.slice(walkToOutput(voutIndex, afterOutputCount), 8))
 
     def getCoinbaseTxHash(coinbaseTx: CoinbaseTx): TxHash =
         val serializedTx = coinbaseTx.version

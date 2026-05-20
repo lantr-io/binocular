@@ -2,6 +2,9 @@ package binocular.watchtower
 
 import scalus.uplc.builtin.*
 import scalus.uplc.builtin.Data.{FromData, ToData}
+import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
+import scalus.cardano.onchain.plutus.prelude.List as ScalusList
+import scalus.cardano.onchain.plutus.v3.TxOutRef
 
 // Scalus mirrors of ft-bifrost-bridge's Aiken types in
 // onchain/lib/bifrost/types/{general,peg-in}.ak. Variant order and field
@@ -30,5 +33,21 @@ case class PegInDatum(
 case class PegInDepositorAuthRedeemer(
     pegInInputIndex: BigInt,
     signature: ByteString
+) derives FromData,
+      ToData
+
+// Aiken `bifrost/types/peg-in.{PegInRequest, PegInMintRedeemer}`. Field order
+// is positional in the Plutus Constr — keep it identical to the .ak file.
+case class PegInRequest(
+    expectedDatum: PegInDatum,
+    blockHeader: ByteString,
+    blockHeaderInSourceChainInclusionProof: ScalusList[ProofStep],
+    txInBlockHeaderInclusionProof: ScalusList[ByteString]
+) derives FromData,
+      ToData
+
+case class PegInMintRedeemer(
+    inputRef: TxOutRef,
+    newPegInRequest: PegInRequest
 ) derives FromData,
       ToData
