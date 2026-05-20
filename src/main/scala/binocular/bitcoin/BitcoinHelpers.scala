@@ -279,8 +279,10 @@ object BitcoinHelpers {
             val outsEnd = skipTxOuts(rawTx, txOutsOffset)
             val txIns = rawTx.slice(txInsStartIndex, txOutsOffset - txInsStartIndex)
             val txOuts = rawTx.slice(txOutsOffset, outsEnd - txOutsOffset)
-            val lockTimeOsset = outsEnd + 1 + 1 + 32 // Skip witness data
-            val lockTime = rawTx.slice(lockTimeOsset, 4)
+            // nLockTime is always the final 4 bytes. The witness section between the outputs and
+            // the locktime has a variable, per-input layout (a stack of items per input), so it
+            // cannot be skipped with a fixed offset — slicing from the end avoids parsing it.
+            val lockTime = rawTx.slice(rawTx.length - 4, 4)
             version ++ txIns ++ txOuts ++ lockTime
         else rawTx
 

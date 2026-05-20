@@ -37,6 +37,7 @@ object CliApp {
         case CreateTmtx(btcTxHex: String)
         case SpendTmtx
         case ConfirmTmtx(dryRun: Boolean)
+        case PegInRequest(btcTxId: String, dryRun: Boolean)
 
     /** CLI argument parsers */
     object CliParsers {
@@ -176,6 +177,14 @@ object CliApp {
                 dryRunFlag.map(Cmd.ConfirmTmtx.apply)
             }
 
+        val pegInRequestCommand =
+            Opts.subcommand(
+              "pegin-request",
+              "Mint a PegInRequest on Cardano for a confirmed BTC peg-in tx"
+            ) {
+                (btcTxIdArg, dryRunFlag).mapN(Cmd.PegInRequest.apply)
+            }
+
         val subcommands =
             versionFlag `orElse`
                 blueprintCommand `orElse`
@@ -191,7 +200,8 @@ object CliApp {
                 relayCommand `orElse`
                 createTmtxCommand `orElse`
                 spendTmtxCommand `orElse`
-                confirmTmtxCommand
+                confirmTmtxCommand `orElse`
+                pegInRequestCommand
 
         com.monovore.decline.Command(
           name = "binocular",
@@ -257,6 +267,8 @@ object CliApp {
                             SpendTmtxCommand()
                         case Cmd.ConfirmTmtx(dryRun) =>
                             ConfirmTmtxCommand(dryRun)
+                        case Cmd.PegInRequest(btcTxId, dryRun) =>
+                            PegInRequestCommand(btcTxId, dryRun)
                         case Cmd.Version | Cmd.Blueprint =>
                             return 0 // unreachable: handled above
                     }
