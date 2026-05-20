@@ -27,7 +27,6 @@ object PegInRequestTx {
         pegInContract: PegInContract,
         oracleUtxo: Utxo,
         inputRefUtxo: Utxo,
-        datum: PegInDatum,
         request: PegInRequest,
         lovelaceAmount: Long = 5_000_000L
     )(using ExecutionContext): Future[Transaction] = {
@@ -43,11 +42,13 @@ object PegInRequestTx {
         val nftValue =
             Value.lovelace(lovelaceAmount) + Value.asset(pegInContract.policyId, assetName, 1L)
 
+        // The output datum MUST equal the redeemer's expected_datum (peg_in.ak checks
+        // peg_in_output.datum == InlineDatum(expected_datum)) — derive it, never pass it separately.
         TxBuilder(provider.cardanoInfo)
             .spend(inputRefUtxo)
             .references(oracleUtxo)
             .mint(pegInContract.script, Map(assetName -> 1L), redeemer)
-            .payTo(pegInContract.address(network), nftValue, datum)
+            .payTo(pegInContract.address(network), nftValue, request.expectedDatum)
             .complete(provider, sponsorAddress)
             .map(_.sign(signer).transaction)
     }

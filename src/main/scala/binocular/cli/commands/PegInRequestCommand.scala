@@ -34,6 +34,19 @@ case class PegInRequestCommand(btcTxId: String, dryRun: Boolean = false) extends
         given ec: ExecutionContext = ExecutionContext.global
         val timeout = config.oracle.transactionTimeout.seconds
 
+        def hexBytes(label: String, s: String, expectedChars: Option[Int]): ByteString = {
+            val isHex = s.length % 2 == 0 && s.forall(c => "0123456789abcdefABCDEF".contains(c))
+            if !isHex || expectedChars.exists(_ != s.length) then {
+                val want = expectedChars.fold("even-length hex")(n => s"$n hex chars")
+                Console.error(s"Invalid $label: expected $want, got '$s'")
+                break(1)
+            }
+            ByteString.fromHex(s)
+        }
+
+        // Fail fast on a malformed txid before any oracle/RPC work.
+        hexBytes("BTC txid", btcTxId, Some(64))
+
         val setup = CommandHelpers.setupOracle(config).valueOr { err =>
             Console.error(err); break(1)
         }
@@ -54,8 +67,8 @@ case class PegInRequestCommand(btcTxId: String, dryRun: Boolean = false) extends
         val pegIn = PegInContract(
           blueprint,
           ByteString.fromArray(oraclePolicyId.bytes),
-          ByteString.fromHex(config.bridge.configNftPolicyId),
-          ByteString.fromHex(config.bridge.configNftAssetName)
+          hexBytes("bridge.config-nft-policy-id", config.bridge.configNftPolicyId, Some(56)),
+          hexBytes("bridge.config-nft-asset-name", config.bridge.configNftAssetName, None)
         )
         Console.info("Oracle policy", oraclePolicyId.toHex)
         Console.info("Peg-in policy", pegIn.policyId.toHex)
@@ -147,15 +160,7 @@ case class PegInRequestCommand(btcTxId: String, dryRun: Boolean = false) extends
         val tx =
             try
                 PegInRequestTx
-                    .build(
-                      provider,
-                      setup.hdAccount,
-                      pegIn,
-                      oracleUtxo,
-                      inputRefUtxo,
-                      datum,
-                      request
-                    )
+                    .build(provider, setup.hdAccount, pegIn, oracleUtxo, inputRefUtxo, request)
                     .await(timeout)
             catch {
                 case e: Exception =>

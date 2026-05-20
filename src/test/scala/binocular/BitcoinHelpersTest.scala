@@ -648,4 +648,18 @@ class BitcoinHelpersTest extends AnyFunSuite with ScalusTest with ScalaCheckProp
                 case (_, Result.Failure(e2, _, _, _)) =>
                     fail(s"$name: V2 failed: $e2")
     }
+
+    test("stripWitnessData/getTxHash and outputValueSat handle a multi-witness segwit tx") {
+        // Real testnet4 peg-in a0de4d80…a6a9: 1 input whose P2WPKH witness has two stack items
+        // (sig + pubkey) — not the single 32-byte item the old fixed-offset stripper assumed;
+        // 3 outputs (P2TR deposit, OP_RETURN, P2WPKH change).
+        val raw =
+            hex"02000000000101356b117962c255979987aa8b81723ade6970d4bf33c388e6a5d23c457922d5460100000000fdffffff03a00f000000000000225120a2a3570b1ee47bc53fca38957cf00ff3e28c86f26ea44f1a201acd0c76e05a980000000000000000256a2342465258fa3124fb35dd599963ab984f3069078272c180c2f18be1bdcbf09aabf8a7d32003000000000000160014211f2a4b78b71a887ffec9a1d18cd30fe00a657e02483045022100a6a372071f69f28a170cbefe0829b861354b36b1b26caa67ea4e0974d04b87a1022065ab3e15b6675e414bdcbc30247675270a6b5e6a9c1bc5ab4d3757658eaa3e9e01210358fa3124fb35dd599963ab984f3069078272c180c2f18be1bdcbf09aabf8a7d300000000"
+        // txid in internal (little-endian) order — i.e. display a0de4d80…a6a9 reversed.
+        val expectedTxidLE =
+            hex"a9a621f3732858981d1f5ef4ff88fac7400dbc0faa86039bbebc5dd0804ddea0"
+        assert(getTxHash(raw).toHex == expectedTxidLE.toHex)
+        // vout 0 carries 4000 sat (0x0fa0, little-endian a00f…).
+        assert(outputValueSat(raw, BigInt(0)) == BigInt(4000))
+    }
 }

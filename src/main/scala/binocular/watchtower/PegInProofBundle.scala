@@ -122,7 +122,10 @@ object PegInProofBundle {
             txInBlockMerklePath = merklePath.toIndexedSeq,
             mpfHeaderInclusionProof = mpfProof,
             pegInVout = pegIn.index,
-            pegInAmountSat = math.round(pegIn.valueBtc * 1e8),
+            // Exact 8-byte LE amount from the raw tx (matches on-chain parsing), not a rounded Double.
+            pegInAmountSat = BitcoinHelpers
+                .outputValueSat(ByteString.fromHex(ourTx.hex), BigInt(pegIn.index))
+                .toLong,
             userSourceChainPubKey = userXonly
           )
         )
