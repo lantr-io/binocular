@@ -104,8 +104,23 @@ case class PegInRequestCommand(btcTxId: String, dryRun: Boolean = false) extends
         Console.info("Depositor xonly", bundle.userSourceChainPubKey.toHex)
         println()
 
+        // owner_auth = the depositor-auth withdraw script, parameterized by the fBTC asset so it
+        // can bind the completion's fBTC output to the depositor's chosen recipient. Placeholder
+        // bridged-token params for now (finalized with the config NFT at deploy time / F3).
+        val authParams = PegInDepositorAuthParams(
+          pegInScriptHash = ByteString.fromArray(pegIn.policyId.bytes),
+          bridgedTokenPolicyId = hexBytes(
+            "bridge.bridged-token-policy-id",
+            config.bridge.bridgedTokenPolicyId,
+            Some(56)
+          ),
+          bridgedTokenAssetName =
+              hexBytes("bridge.bridged-token-asset-name", config.bridge.bridgedTokenAssetName, None)
+        )
         val ownerAuthHash =
-            ByteString.fromArray(PegInDepositorAuthContract.contract.script.scriptHash.bytes)
+            ByteString.fromArray(
+              PegInDepositorAuthContract.makeContract(authParams).script.scriptHash.bytes
+            )
         // BTC outpoint: 32-byte internal (LE) txid ++ 4-byte little-endian vout
         val vout = bundle.pegInVout
         val voutLE = Array[Byte](
