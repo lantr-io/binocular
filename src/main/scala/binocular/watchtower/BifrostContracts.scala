@@ -126,7 +126,8 @@ object BridgedTokenContract {
 /** The `completed_peg_ins_merkle_tree` one-shot NFT policy + state validator: params
   * `(configNFTPolicyId, configNFTAssetName, one_shot_input_ref)`. policyId = ConfigDatum index 6;
   * asset name = `sha2_256(serialise_data(one_shot))` = index 7. The MPF state UTxO (datum = root,
-  * empty `0x00*32` at mint) lives at this script's address and is spent+recreated on each completion.
+  * empty `0x00*32` at mint) lives at this script's address and is spent+recreated on each
+  * completion.
   */
 final case class CompletedPegInsContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash
