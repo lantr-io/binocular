@@ -5,8 +5,7 @@ import binocular.oracle.*
 import binocular.watchtower.*
 import binocular.cli.{Command, CommandHelpers, Console}
 
-import scalus.cardano.address.Address as CardanoAddress
-import scalus.cardano.ledger.{AssetName, Coin, Credential, Transaction, TransactionHash, Utxo, Value}
+import scalus.cardano.ledger.{AssetName, Transaction, TransactionHash, Utxo, Value}
 import scalus.cardano.node.{BlockchainProvider, TransactionStatus}
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import scalus.cardano.txbuilder.TxBuilder
@@ -176,6 +175,19 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
         Console.success(s"Config NFT minted: $configTxHash")
         Console.info("config address", configContract.address(network).encode.getOrElse("?"))
         println()
+
+        // Wait for the address-based UTxO index to reflect tx 1 before building tx 2, so tx 2's
+        // fee/change selection doesn't pick tx 1's already-spent inputs (pollForConfirmation
+        // checks tx status, not the address index). Same convention as InitOracleCommand.
+        OracleTransactions.waitForUtxoAtAddress(
+          provider,
+          sponsorAddress,
+          TransactionHash.fromHex(configTxHash),
+          timeout
+        ) match {
+            case Left(err) => Console.error(err); break(1)
+            case _         =>
+        }
 
         // --- Tx 2: mint the completed-peg-ins NFT (empty MPF root) to its script address ---
         Console.step(2, "Minting completed-peg-ins MPF NFT")
