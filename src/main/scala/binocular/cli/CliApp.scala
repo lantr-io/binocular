@@ -38,6 +38,7 @@ object CliApp {
         case SpendTmtx
         case ConfirmTmtx(dryRun: Boolean)
         case PegInRequest(btcTxId: String, dryRun: Boolean)
+        case DeployBridge(dryRun: Boolean)
 
     /** CLI argument parsers */
     object CliParsers {
@@ -185,6 +186,14 @@ object CliApp {
                 (btcTxIdArg, dryRunFlag).mapN(Cmd.PegInRequest.apply)
             }
 
+        val deployBridgeCommand =
+            Opts.subcommand(
+              "deploy-bridge",
+              "Deploy the ft-bifrost-bridge completion contracts (config NFT + completed-peg-ins MPF)"
+            ) {
+                dryRunFlag.map(Cmd.DeployBridge.apply)
+            }
+
         val subcommands =
             versionFlag `orElse`
                 blueprintCommand `orElse`
@@ -201,7 +210,8 @@ object CliApp {
                 createTmtxCommand `orElse`
                 spendTmtxCommand `orElse`
                 confirmTmtxCommand `orElse`
-                pegInRequestCommand
+                pegInRequestCommand `orElse`
+                deployBridgeCommand
 
         com.monovore.decline.Command(
           name = "binocular",
@@ -269,6 +279,8 @@ object CliApp {
                             ConfirmTmtxCommand(dryRun)
                         case Cmd.PegInRequest(btcTxId, dryRun) =>
                             PegInRequestCommand(btcTxId, dryRun)
+                        case Cmd.DeployBridge(dryRun) =>
+                            DeployBridgeCommand(dryRun)
                         case Cmd.Version | Cmd.Blueprint =>
                             return 0 // unreachable: handled above
                     }
