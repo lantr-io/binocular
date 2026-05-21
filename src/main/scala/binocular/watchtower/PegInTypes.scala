@@ -32,10 +32,11 @@ case class PegInDatum(
 
 // Parameters for PegInDepositorAuthValidator.
 //   - `pegInScriptHash`: the peg_in_validator script hash. The validator selects the
-//     peg-in input as the UNIQUE input at this script address (mirroring peg-in.ak's
-//     `expect [peg_in_input]`), NOT by a caller-supplied index — otherwise an attacker
-//     could point at a decoy input bearing a fake PegInDatum with their own xonly and
-//     bypass the depositor's signature.
+//     peg-in input as the UNIQUE input whose payment credential is this script hash
+//     (matching peg-in.ak's `payment_credential == credential` + `expect [peg_in_input]`;
+//     the staking credential is ignored, as upstream), NOT by a caller-supplied index —
+//     otherwise an attacker could point at a decoy input bearing a fake PegInDatum with
+//     their own xonly and bypass the depositor's signature.
 //   - `bridgedToken{PolicyId,AssetName}`: the fBTC asset, so the validator can require
 //     the minted fBTC is paid to the recipient the depositor signed for (recipient-binding).
 case class PegInDepositorAuthParams(

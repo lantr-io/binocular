@@ -20,8 +20,10 @@ import scalus.uplc.builtin.Data.toData
   * peg-in, the completion transaction must include a 0-ADA withdrawal from this script's reward
   * account; Cardano then runs this validator, which:
   *
-  *   1. selects the peg-in input as the unique input at the `pegInScriptHash` address (mirroring
-  *      `peg-in.ak`'s `expect [peg_in_input]`) and parses its inline [[PegInDatum]];
+  *   1. selects the peg-in input as the unique input whose payment credential is `pegInScriptHash`
+  *      (matching `peg-in.ak`'s `payment_credential == credential` filter +
+  *      `expect [peg_in_input]`; the staking part is ignored, exactly as upstream) and parses its
+  *      inline [[PegInDatum]];
   *   2. requires an output (index from redeemer) that pays exactly `peg_in_amount` fBTC
   *      (`bridgedToken{Policy,AssetName}` params) to the redeemer's `recipient` address;
   *   3. verifies the depositor's Schnorr signature over the per-mint message
@@ -56,18 +58,20 @@ object PegInDepositorAuthValidator {
     ): Unit = {
         val r = redeemer.to[PegInDepositorAuthRedeemer]
 
-        // Select the peg-in input as the UNIQUE input at the peg_in_validator script address,
-        // mirroring peg-in.ak's `expect [peg_in_input]`. A caller-supplied index must NOT be
-        // trusted: an attacker could point it at a decoy input carrying a fake PegInDatum with
-        // their own xonly and bypass the real depositor's signature. peg-in.ak aborts the
-        // completion unless exactly one input sits at this address, so the genuine peg-in is the
-        // only candidate here too.
+        // Select the peg-in input as the UNIQUE input whose payment credential is the
+        // peg_in_validator script hash — matching peg-in.ak's `payment_credential == credential`
+        // filter + `expect [peg_in_input]` (the staking credential is ignored, exactly as
+        // upstream). A caller-supplied index must NOT be trusted: an attacker could point it at a
+        // decoy input carrying a fake PegInDatum with their own xonly and bypass the real
+        // depositor's signature. peg-in.ak aborts the completion unless exactly one such input
+        // exists, so the genuine peg-in is the only candidate here too.
         val pegInCredential = Credential.ScriptCredential(params.pegInScriptHash)
         val pegInInput = tx.inputs.filter { in =>
             in.resolved.address.credential.toData == pegInCredential.toData
         } match
             case List.Cons(only, List.Nil) => only.resolved
-            case _ => fail("Expected exactly one peg-in input at the peg-in script address")
+            case _ =>
+                fail("Expected exactly one input with the peg-in script payment credential")
 
         val datum = pegInInput.datum match
             case OutputDatum.OutputDatum(d) => d.to[PegInDatum]
