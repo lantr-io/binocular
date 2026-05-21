@@ -29,7 +29,10 @@ final class BifrostBlueprint(json: ujson.Value) {
 
 object BifrostBlueprint {
     def fromFile(path: String): BifrostBlueprint =
-        new BifrostBlueprint(ujson.read(Files.readString(Paths.get(path))))
+        fromString(Files.readString(Paths.get(path)))
+
+    def fromString(json: String): BifrostBlueprint =
+        new BifrostBlueprint(ujson.read(json))
 }
 
 /** The `peg_in_validator` parameterized with its three on-chain params. The script hash is the
