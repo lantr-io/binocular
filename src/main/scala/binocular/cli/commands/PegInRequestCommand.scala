@@ -108,6 +108,7 @@ case class PegInRequestCommand(btcTxId: String, dryRun: Boolean = false) extends
         // can bind the completion's fBTC output to the depositor's chosen recipient. Placeholder
         // bridged-token params for now (finalized with the config NFT at deploy time / F3).
         val authParams = PegInDepositorAuthParams(
+          pegInScriptHash = ByteString.fromArray(pegIn.policyId.bytes),
           bridgedTokenPolicyId = hexBytes(
             "bridge.bridged-token-policy-id",
             config.bridge.bridgedTokenPolicyId,

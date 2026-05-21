@@ -25,10 +25,13 @@ import scodec.bits.ByteVector
   */
 class PegInDepositorAuthValidatorTest extends AnyFunSuite with ScalusTest {
 
-    // --- fixed fBTC asset params (placeholder, mirrors BridgeConfig defaults) ---
+    // --- fixed params (arbitrary test values; the fBTC policy need NOT match BridgeConfig's
+    //     all-zeros default — these are local to the CEK fixture) ---
     private val fbtcPolicy = filledBytes(0xbb, 28)
     private val fbtcAsset = ByteString.fromHex("6642544300000000")
-    private val authParams = PegInDepositorAuthParams(fbtcPolicy, fbtcAsset)
+    // The peg_in_validator script hash; the validator selects the peg-in input by this address.
+    private val pegInScriptHash = filledBytes(0xab, 28)
+    private val authParams = PegInDepositorAuthParams(pegInScriptHash, fbtcPolicy, fbtcAsset)
 
     private val testContract = PegInDepositorAuthContract.makeContract(authParams).withErrorTraces
     private val testProgram = testContract.program.deBruijnedProgram
@@ -47,9 +50,9 @@ class PegInDepositorAuthValidatorTest extends AnyFunSuite with ScalusTest {
     private def addr(seed: Int): Address =
         Address(Credential.ScriptCredential(scriptHash28(seed)), Option.None)
 
-    /** Build a script-address output holding the peg-in datum inline. */
+    /** Build a peg-in-address output holding the peg-in datum inline. */
     private def pegInTxOut(datum: PegInDatum): TxOut = TxOut(
-      address = Address(Credential.ScriptCredential(scriptHash28(0xab)), Option.None),
+      address = Address(Credential.ScriptCredential(pegInScriptHash), Option.None),
       value = Value.zero,
       datum = OutputDatum.OutputDatum(datum.toData),
       referenceScript = Option.None
@@ -68,14 +71,27 @@ class PegInDepositorAuthValidatorTest extends AnyFunSuite with ScalusTest {
       referenceScript = Option.None
     )
 
-    /** ScriptContext: one peg-in input, the given outputs, rewarding-script entry. */
+    /** A decoy input at a NON-peg-in address bearing a fake PegInDatum (e.g. attacker's xonly). */
+    private def decoyInput(fakeDatum: PegInDatum): TxInInfo = TxInInfo(
+      outRef = TxOutRef(TxId(filledBytes(0x02, 32)), BigInt(1)),
+      resolved = TxOut(
+        address = Address(Credential.ScriptCredential(scriptHash28(0xee)), Option.None),
+        value = Value.zero,
+        datum = OutputDatum.OutputDatum(fakeDatum.toData),
+        referenceScript = Option.None
+      )
+    )
+
+    /** ScriptContext: the peg-in input plus any `extraInputs`, the given outputs, rewarding entry.
+      */
     private def buildScriptContext(
         datum: PegInDatum,
         redeemer: Data,
-        outputs: ScalusList[TxOut]
+        outputs: ScalusList[TxOut],
+        extraInputs: ScalusList[TxInInfo] = ScalusList.Nil
     ): ScriptContext = {
         val txInfo = TxInfo(
-          inputs = ScalusList.Cons(pegInInput(datum), ScalusList.Nil),
+          inputs = ScalusList.Cons(pegInInput(datum), extraInputs),
           outputs = outputs,
           id = TxId(filledBytes(0x00, 32))
         )
@@ -123,7 +139,6 @@ class PegInDepositorAuthValidatorTest extends AnyFunSuite with ScalusTest {
         fbtcOutputIndex: BigInt = BigInt(0)
     ): Data =
         PegInDepositorAuthRedeemer(
-          pegInInputIndex = BigInt(0),
           fbtcOutputIndex = fbtcOutputIndex,
           recipient = recipient,
           treasuryMovementBtcTxid = btcTxid,
@@ -199,6 +214,54 @@ class PegInDepositorAuthValidatorTest extends AnyFunSuite with ScalusTest {
         )
         val result = testProgram.applyArg(sc.toData).evaluateDebug
         assert(!result.isSuccess, "Expected failure when sig is from a different key")
+    }
+
+    test("decoy input with attacker datum is ignored; real depositor sig still required") {
+        // The index-substitution attack: an attacker adds a decoy input (at a non-peg-in
+        // address) carrying a fake PegInDatum with THEIR OWN xonly, and signs with their own
+        // key. The validator must still select the real peg-in input (by script address) and
+        // verify against the real depositor's xonly — so the attacker's signature fails.
+        val pegInUtxoId = filledBytes(0x42, 36)
+        val recipient = addr(0x10)
+        val aliceXonly =
+            ByteString.fromArray(ECPrivateKey.freshPrivateKey.schnorrPublicKey.bytes.toArray)
+        val attacker = freshKeyAndSig(mintMessage(pegInUtxoId, recipient.toData))
+
+        val realDatum = datumFor(pegInUtxoId, aliceXonly) // real peg-in: Alice's key
+        val fakeDatum = datumFor(pegInUtxoId, attacker.xonly) // decoy: attacker's key
+        val sc = buildScriptContext(
+          realDatum,
+          redeemerFor(recipient.toData, attacker.signature),
+          ScalusList.Cons(fbtcOut(recipient, pegInAmount), ScalusList.Nil),
+          extraInputs = ScalusList.Cons(decoyInput(fakeDatum), ScalusList.Nil)
+        )
+        val result = testProgram.applyArg(sc.toData).evaluateDebug
+        assert(
+          !result.isSuccess,
+          "Decoy input must not let an attacker bypass the depositor signature"
+        )
+    }
+
+    test("two inputs at the peg-in address are rejected (ambiguous)") {
+        val pegInUtxoId = filledBytes(0x42, 36)
+        val recipient = addr(0x10)
+        val ks = freshKeyAndSig(mintMessage(pegInUtxoId, recipient.toData))
+        val datum = datumFor(pegInUtxoId, ks.xonly)
+        val secondPegIn = TxInInfo(
+          outRef = TxOutRef(TxId(filledBytes(0x03, 32)), BigInt(0)),
+          resolved = pegInTxOut(datum)
+        )
+        val sc = buildScriptContext(
+          datum,
+          redeemerFor(recipient.toData, ks.signature),
+          ScalusList.Cons(fbtcOut(recipient, pegInAmount), ScalusList.Nil),
+          extraInputs = ScalusList.Cons(secondPegIn, ScalusList.Nil)
+        )
+        val result = testProgram.applyArg(sc.toData).evaluateDebug
+        assert(
+          !result.isSuccess,
+          "Expected failure when more than one input sits at the peg-in address"
+        )
     }
 
     test("signature over a different recipient fails") {

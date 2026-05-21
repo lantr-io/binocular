@@ -1,6 +1,7 @@
 package binocular.watchtower
 
 import scalus.cardano.onchain.plutus.prelude.*
+import scalus.cardano.onchain.plutus.v1.Credential
 import scalus.cardano.onchain.plutus.v2.OutputDatum
 import scalus.cardano.onchain.plutus.v3.*
 import scalus.compiler.{Compile, Options}
@@ -19,7 +20,8 @@ import scalus.uplc.builtin.Data.toData
   * peg-in, the completion transaction must include a 0-ADA withdrawal from this script's reward
   * account; Cardano then runs this validator, which:
   *
-  *   1. reads the peg-in input (index from redeemer) and parses its inline [[PegInDatum]];
+  *   1. selects the peg-in input as the unique input at the `pegInScriptHash` address (mirroring
+  *      `peg-in.ak`'s `expect [peg_in_input]`) and parses its inline [[PegInDatum]];
   *   2. requires an output (index from redeemer) that pays exactly `peg_in_amount` fBTC
   *      (`bridgedToken{Policy,AssetName}` params) to the redeemer's `recipient` address;
   *   3. verifies the depositor's Schnorr signature over the per-mint message
@@ -54,10 +56,18 @@ object PegInDepositorAuthValidator {
     ): Unit = {
         val r = redeemer.to[PegInDepositorAuthRedeemer]
 
-        // Direct index lookup over scanning saves O(n) tailList traversals. A wrong index can't
-        // help an attacker — the sig is bound to the input's own xonly + pegInUtxoId, and the
-        // recipient/amount checks are bound to the fBTC output below.
-        val pegInInput = tx.inputs.at(r.pegInInputIndex).resolved
+        // Select the peg-in input as the UNIQUE input at the peg_in_validator script address,
+        // mirroring peg-in.ak's `expect [peg_in_input]`. A caller-supplied index must NOT be
+        // trusted: an attacker could point it at a decoy input carrying a fake PegInDatum with
+        // their own xonly and bypass the real depositor's signature. peg-in.ak aborts the
+        // completion unless exactly one input sits at this address, so the genuine peg-in is the
+        // only candidate here too.
+        val pegInCredential = Credential.ScriptCredential(params.pegInScriptHash)
+        val pegInInput = tx.inputs.filter { in =>
+            in.resolved.address.credential.toData == pegInCredential.toData
+        } match
+            case List.Cons(only, List.Nil) => only.resolved
+            case _ => fail("Expected exactly one peg-in input at the peg-in script address")
 
         val datum = pegInInput.datum match
             case OutputDatum.OutputDatum(d) => d.to[PegInDatum]

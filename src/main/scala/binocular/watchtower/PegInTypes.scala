@@ -30,10 +30,16 @@ case class PegInDatum(
 ) derives FromData,
       ToData
 
-// Parameters for PegInDepositorAuthValidator: the fBTC (bridged_token) asset the
-// completion mints. They let the auth validator require that the minted fBTC is paid
-// to the recipient the depositor signed for (recipient-binding).
+// Parameters for PegInDepositorAuthValidator.
+//   - `pegInScriptHash`: the peg_in_validator script hash. The validator selects the
+//     peg-in input as the UNIQUE input at this script address (mirroring peg-in.ak's
+//     `expect [peg_in_input]`), NOT by a caller-supplied index — otherwise an attacker
+//     could point at a decoy input bearing a fake PegInDatum with their own xonly and
+//     bypass the depositor's signature.
+//   - `bridgedToken{PolicyId,AssetName}`: the fBTC asset, so the validator can require
+//     the minted fBTC is paid to the recipient the depositor signed for (recipient-binding).
 case class PegInDepositorAuthParams(
+    pegInScriptHash: ByteString,
     bridgedTokenPolicyId: ByteString,
     bridgedTokenAssetName: ByteString
 ) derives FromData,
@@ -44,8 +50,8 @@ case class PegInDepositorAuthParams(
 // it. `treasuryMovementBtcTxid` is the confirmed TM txid the mint references. Together
 // these implement the per-mint signing message of technical_documentation.md
 // §"Complete peg-in": sig over "BFR-mint-v1" ‖ btc_txid ‖ peg_in_utxo_id ‖ recipient.
+// The peg-in input is found by script address (see params), not passed here.
 case class PegInDepositorAuthRedeemer(
-    pegInInputIndex: BigInt,
     fbtcOutputIndex: BigInt,
     recipient: Data,
     treasuryMovementBtcTxid: ByteString,
