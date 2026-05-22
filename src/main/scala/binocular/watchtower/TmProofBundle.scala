@@ -37,6 +37,10 @@ object TmProofBundle {
     sealed trait ProduceError extends Product with Serializable
     final case class TxNotConfirmed(txId: String) extends ProduceError
     final case class TxNotInBlock(txId: String, blockHash: String) extends ProduceError
+    /** The TM is confirmed on Bitcoin but its block is not (yet) in the oracle's
+      * `confirmed_blocks_root` — the oracle lags Bitcoin; retry once it catches up.
+      */
+    final case class BlockNotConfirmedByOracle(txId: String, blockHash: String) extends ProduceError
 
     /** Build the inclusion proof for `tmTxId`.
       *
@@ -78,6 +82,9 @@ object TmProofBundle {
 
         val blockHashLE =
             BitcoinHelpers.blockHeaderHash(BlockHeader(ByteString.fromHex(headerHex)))
+        // proveMembership throws if the block isn't in the MPF; the oracle lagging Bitcoin is a
+        // normal state, so surface it as a structured error instead of an uncaught crash.
+        if mpf.get(blockHashLE).isEmpty then return Left(BlockNotConfirmedByOracle(raw.txid, block.hash))
         val mpfProof = mpf.proveMembership(blockHashLE)
 
         Right(

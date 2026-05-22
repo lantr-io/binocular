@@ -45,7 +45,7 @@ object CliApp {
             pir: String,
             tm: String,
             recipient: String,
-            signature: String,
+            signature: Option[String],
             priorPegins: List[String],
             dryRun: Boolean
         )
@@ -229,7 +229,11 @@ object CliApp {
                 val recipientOpt =
                     Opts.option[String]("recipient", "fBTC recipient Cardano address (bech32)")
                 val signatureOpt = Opts
-                    .option[String]("signature", "Depositor BIP340 Schnorr signature (64-byte hex)")
+                    .option[String](
+                      "signature",
+                      "Depositor BIP340 Schnorr signature (64-byte hex); omit with --dry-run to print the digest to sign"
+                    )
+                    .orNone
                 val priorOpt = Opts
                     .options[String](
                       "prior-pegin",

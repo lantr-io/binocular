@@ -47,7 +47,7 @@ case class PegInCompleteCommand(
     pirRef: String,
     tmTxId: String,
     recipient: String,
-    signature: String,
+    signature: Option[String],
     priorPegins: List[String] = Nil,
     dryRun: Boolean = false
 ) extends Command {
@@ -75,11 +75,25 @@ case class PegInCompleteCommand(
         }
 
         hexBytes("BTC TM txid", tmTxId, Some(64))
-        val sigBytes = hexBytes("signature", signature, Some(128))
+        // Validate the signature's format up front if supplied, but don't *require* it yet: the
+        // intended flow is `--dry-run` (no signature) to print the digest, sign it, then re-run with
+        // --signature. Presence is enforced only for the real (non-dry-run) submit, below.
+        val sigBytesOpt: Option[ByteString] = signature.map(hexBytes("signature", _, Some(128)))
         val pirInput = parseRef("--pir", pirRef)
-        val recipientLedger =
-            try Address.fromBech32(recipient)
-            catch { case e: Exception => Console.error(s"Invalid --recipient: ${e.getMessage}"); break(1) }
+        // Resolve the recipient all the way to its plutus form here, inside the guard, so a
+        // bech32-valid but non-payment address (stake/Byron) fails cleanly rather than throwing an
+        // uncaught exception later when getAddress runs.
+        val (recipientLedger, recipientData) =
+            try {
+                val addr = Address.fromBech32(recipient)
+                (addr, LedgerToPlutusTranslation.getAddress(addr).toData)
+            } catch {
+                case e: Exception =>
+                    Console.error(
+                      s"Invalid --recipient (must be a bech32 payment address): ${e.getMessage}"
+                    )
+                    break(1)
+            }
 
         val setup = CommandHelpers.setupOracle(config).valueOr { err => Console.error(err); break(1) }
         val provider = setup.provider
@@ -142,12 +156,15 @@ case class PegInCompleteCommand(
         }
         val datum = pirUtxo.output.inlineDatum.map(fromData[PegInDatum])
             .getOrElse { Console.error("PIR has no inline PegInDatum"); break(1) }
-        if datum.sourceChainTreasuryUtxoId.length != 36 then
-            Console.warn(
-              s"PIR source_chain_treasury_utxo_id is ${datum.sourceChainTreasuryUtxoId.length} bytes " +
-                  "(expected 36 = TM input-0 outpoint). legit_TM_verifier will reject this unless the " +
-                  "PIR was minted with the real treasury outpoint."
-            )
+        if datum.sourceChainTreasuryUtxoId.length != 36 then {
+            val msg =
+                s"PIR source_chain_treasury_utxo_id is ${datum.sourceChainTreasuryUtxoId.length} bytes " +
+                    "(expected 36 = TM input-0 outpoint). legit_TM_verifier would reject this — re-mint " +
+                    "the PIR with `pegin-request <txid> --tm <TM txid>`."
+            // A real submit would deterministically fail on-chain (and waste fees), so hard-stop.
+            // In --dry-run we only warn, so the operator can still see the digest below.
+            if dryRun then Console.warn(msg) else { Console.error(msg); break(1) }
+        }
 
         val cpiUtxo = findWithAsset(cpiContract.address(network), cpiPolicy, cpiAsset)
             .getOrElse { Console.error("Completed-peg-ins MPF UTxO not found"); break(1) }
@@ -188,12 +205,20 @@ case class PegInCompleteCommand(
             )
             break(1)
         }
+        // proveNonMembership throws if the key is already present, so check first and give a clean
+        // message (already completed, or the current id was mistakenly passed as --prior-pegin).
+        if tree.get(datum.pegInUtxoId).isDefined then {
+            Console.error(
+              s"Peg-in ${datum.pegInUtxoId.toHex} is already in the completed-peg-ins tree — " +
+                  "already completed, or its id was passed as --prior-pegin."
+            )
+            break(1)
+        }
         val cpiProof = tree.proveNonMembership(datum.pegInUtxoId)
         val cpiNewRoot = tree.insert(datum.pegInUtxoId, datum.pegInUtxoId).rootHash
         println()
 
-        // --- recipient binding + signing message ---
-        val recipientData = LedgerToPlutusTranslation.getAddress(recipientLedger).toData
+        // --- signing message (recipientData was resolved up front, in the recipient guard) ---
         // Internal (LE) txid, matching the peg_in_utxo_id convention.
         val tmTxidLE = ByteString.fromArray(tmTxId.hexToBytes.reverse)
         val msgPreimage = Builtins.appendByteString(
@@ -211,6 +236,14 @@ case class PegInCompleteCommand(
         if dryRun then {
             Console.success("Dry-run complete (assembled proofs + redeemers; not building tx)")
             break(0)
+        }
+
+        val sigBytes = sigBytesOpt.getOrElse {
+            Console.error(
+              "--signature is required for a real run. Re-run with --dry-run to print the digest, " +
+                  "sign it with `sign-pegin-msg`, then pass --signature <64-byte hex>."
+            )
+            break(1)
         }
 
         Console.step(4, "Building + submitting completion tx")
