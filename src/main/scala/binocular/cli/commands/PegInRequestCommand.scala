@@ -24,7 +24,11 @@ import cats.syntax.either.*
   * depositor input. The BTC tx must already be in a block that the oracle's `confirmed_blocks_root`
   * commits to.
   */
-case class PegInRequestCommand(btcTxId: String, dryRun: Boolean = false) extends Command {
+case class PegInRequestCommand(
+    btcTxId: String,
+    tmTxId: Option[String] = None,
+    dryRun: Boolean = false
+) extends Command {
 
     override def execute(config: BinocularConfig): Int = boundary {
         Console.header("Binocular Peg-In Request")
@@ -132,12 +136,34 @@ case class PegInRequestCommand(btcTxId: String, dryRun: Boolean = false) extends
         val pegInUtxoId =
             ByteString.fromArray(btcTxId.hexToBytes.reverse) ++ ByteString.fromArray(voutLE)
 
+        // `source_chain_treasury_utxo_id` is the outpoint the sweeping TM consumes as its FIRST
+        // input — exactly what `legit_TM_verifier` checks at completion (`firstInputOutpoint(TM) ==
+        // treasury_utxo_id`). The mint path doesn't read it, but the completion path requires the
+        // datum to carry it, so derive it here from the (already confirmed) TM when `--tm` is given.
+        // Without it the PIR can be minted but can never be completed (left empty, with a warning).
+        val treasuryUtxoId: ByteString = tmTxId match {
+            case Some(tm) =>
+                val tmRaw =
+                    try rpc.getRawTransaction(tm).await(timeout)
+                    catch {
+                        case e: Exception =>
+                            Console.error(s"Fetching TM tx $tm: ${e.getMessage}"); break(1)
+                    }
+                BitcoinHelpers.firstInputOutpoint(ByteString.fromHex(tmRaw.hex))
+            case None =>
+                Console.warn(
+                  "No --tm given: source_chain_treasury_utxo_id left empty — this PIR cannot be " +
+                      "completed (legit_TM_verifier needs the TM's input-0 outpoint)."
+                )
+                ByteString.empty
+        }
+
         val datum = PegInDatum(
           ownerAuth = AuthorizationMethod.CardanoWithdrawScript(ownerAuthHash),
           sourceChainPegInRawTx = bundle.rawTxHex,
           sourceChainPegInRawTxIndex = BigInt(bundle.txIndex),
           pegInUtxoId = pegInUtxoId,
-          sourceChainTreasuryUtxoId = ByteString.empty, // placeholder; mint path does not check it
+          sourceChainTreasuryUtxoId = treasuryUtxoId,
           pegInAmount = BigInt(bundle.pegInAmountSat),
           userSourceChainPubKey = bundle.userSourceChainPubKey
         )

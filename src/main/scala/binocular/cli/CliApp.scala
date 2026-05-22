@@ -37,7 +37,7 @@ object CliApp {
         case CreateTmtx(btcTxHex: String)
         case SpendTmtx
         case ConfirmTmtx(dryRun: Boolean)
-        case PegInRequest(btcTxId: String, dryRun: Boolean)
+        case PegInRequest(btcTxId: String, tmTxId: Option[String], dryRun: Boolean)
         case DeployBridge(dryRun: Boolean)
         case RegisterBridgeCreds(dryRun: Boolean)
         case PegInComplete(
@@ -192,7 +192,14 @@ object CliApp {
               "pegin-request",
               "Mint a PegInRequest on Cardano for a confirmed BTC peg-in tx"
             ) {
-                (btcTxIdArg, dryRunFlag).mapN(Cmd.PegInRequest.apply)
+                val tmOpt = Opts
+                    .option[String](
+                      "tm",
+                      "Sweeping Treasury Movement BTC txid — derives source_chain_treasury_utxo_id " +
+                          "(its input-0 outpoint), required for the PIR to be completable"
+                    )
+                    .orNone
+                (btcTxIdArg, tmOpt, dryRunFlag).mapN(Cmd.PegInRequest.apply)
             }
 
         val deployBridgeCommand =
@@ -319,8 +326,8 @@ object CliApp {
                             SpendTmtxCommand()
                         case Cmd.ConfirmTmtx(dryRun) =>
                             ConfirmTmtxCommand(dryRun)
-                        case Cmd.PegInRequest(btcTxId, dryRun) =>
-                            PegInRequestCommand(btcTxId, dryRun)
+                        case Cmd.PegInRequest(btcTxId, tmTxId, dryRun) =>
+                            PegInRequestCommand(btcTxId, tmTxId, dryRun)
                         case Cmd.DeployBridge(dryRun) =>
                             DeployBridgeCommand(dryRun)
                         case Cmd.RegisterBridgeCreds(dryRun) =>
