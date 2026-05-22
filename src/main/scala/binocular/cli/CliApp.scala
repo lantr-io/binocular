@@ -39,6 +39,15 @@ object CliApp {
         case ConfirmTmtx(dryRun: Boolean)
         case PegInRequest(btcTxId: String, dryRun: Boolean)
         case DeployBridge(dryRun: Boolean)
+        case RegisterBridgeCreds(dryRun: Boolean)
+        case PegInComplete(
+            pir: String,
+            tm: String,
+            recipient: String,
+            signature: String,
+            priorPegins: List[String],
+            dryRun: Boolean
+        )
 
     /** CLI argument parsers */
     object CliParsers {
@@ -194,6 +203,37 @@ object CliApp {
                 dryRunFlag.map(Cmd.DeployBridge.apply)
             }
 
+        val registerBridgeCredsCommand =
+            Opts.subcommand(
+              "register-bridge-creds",
+              "Register the 3 withdraw reward credentials (peg_in, owner_auth, legit_TM_verifier)"
+            ) {
+                dryRunFlag.map(Cmd.RegisterBridgeCreds.apply)
+            }
+
+        val pegInCompleteCommand =
+            Opts.subcommand(
+              "pegin-complete",
+              "Complete a peg-in: mint fBTC to --recipient and record it in the completed-peg-ins MPF"
+            ) {
+                val pirOpt = Opts.option[String]("pir", "PegInRequest UTxO (TX_HASH#INDEX)")
+                val tmOpt = Opts.option[String]("tm", "Confirmed Treasury Movement BTC txid (64 hex)")
+                val recipientOpt =
+                    Opts.option[String]("recipient", "fBTC recipient Cardano address (bech32)")
+                val signatureOpt = Opts
+                    .option[String]("signature", "Depositor BIP340 Schnorr signature (64-byte hex)")
+                val priorOpt = Opts
+                    .options[String](
+                      "prior-pegin",
+                      "peg_in_utxo_id of an earlier completion (repeatable, insertion order)"
+                    )
+                    .map(_.toList)
+                    .withDefault(Nil)
+                (pirOpt, tmOpt, recipientOpt, signatureOpt, priorOpt, dryRunFlag).mapN(
+                  Cmd.PegInComplete.apply
+                )
+            }
+
         val subcommands =
             versionFlag `orElse`
                 blueprintCommand `orElse`
@@ -211,7 +251,9 @@ object CliApp {
                 spendTmtxCommand `orElse`
                 confirmTmtxCommand `orElse`
                 pegInRequestCommand `orElse`
-                deployBridgeCommand
+                deployBridgeCommand `orElse`
+                registerBridgeCredsCommand `orElse`
+                pegInCompleteCommand
 
         com.monovore.decline.Command(
           name = "binocular",
@@ -281,6 +323,10 @@ object CliApp {
                             PegInRequestCommand(btcTxId, dryRun)
                         case Cmd.DeployBridge(dryRun) =>
                             DeployBridgeCommand(dryRun)
+                        case Cmd.RegisterBridgeCreds(dryRun) =>
+                            RegisterBridgeCredsCommand(dryRun)
+                        case Cmd.PegInComplete(pir, tm, recipient, signature, priorPegins, dryRun) =>
+                            PegInCompleteCommand(pir, tm, recipient, signature, priorPegins, dryRun)
                         case Cmd.Version | Cmd.Blueprint =>
                             return 0 // unreachable: handled above
                     }

@@ -73,8 +73,12 @@ class BifrostContractsTest extends AnyFunSuite {
     }
 
     test("peg_in policy (= withdraw hash) matches the deployed value") {
+        // Changed from ced3ce66… after the on-chain TM witness-strip fix to peg-in.ak (the
+        // CompletePegIn handler now calls bitcoin.strip_witness_data), which alters the shared
+        // peg_in_validator compiledCode. The other three policies are unchanged. The PIRs minted
+        // under the old policy are orphaned and must be re-minted under this one.
         val pegIn = PegInContract(blueprint, oraclePolicy, configPolicy, configAssetName)
-        assert(hex(pegIn.policyId) == "ced3ce66db0af2c6684685ca212bf3b4b0de4ae51494817be03b914e")
+        assert(hex(pegIn.policyId) == "7d66c4f3f74fdf3fed6b3da3bb8b18c79a29a03e4ce37e47925d5759")
     }
 
     // --- determinism + parameter-sensitivity ---

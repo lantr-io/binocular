@@ -23,5 +23,11 @@ case class BridgeConfig(
     configNftPolicyId: String = "00000000000000000000000000000000000000000000000000000000",
     configNftAssetName: String = "",
     bridgedTokenPolicyId: String = "00000000000000000000000000000000000000000000000000000000",
-    bridgedTokenAssetName: String = "6642544300000000" // "fBTC\0\0\0\0" placeholder
+    bridgedTokenAssetName: String = "6642544300000000", // "fBTC\0\0\0\0" placeholder
+    // The one-shot wallet UTxO (TX_HASH#INDEX) consumed when the completed-peg-ins MPF NFT was
+    // minted in deploy-bridge (F3). It fixes that validator's parameter set, hence its script hash
+    // (= policyId) and NFT asset name = hash_output_ref(one_shot). pegin-complete needs it to
+    // reconstruct the script in order to SPEND the MPF UTxO. The config NFT, by contrast, is only a
+    // reference input, so it is located by its NFT and needs no script. Empty until F3 is deployed.
+    completedPegInsOneShotRef: String = ""
 ) derives ConfigReader

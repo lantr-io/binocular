@@ -49,3 +49,25 @@ case class CompletedPegInsMintRedeemer(
     inputRef: TxOutRef
 ) derives FromData,
       ToData
+
+// Spend redeemer for `completed-peg-ins-merkle-tree.ak::SpendRedeemer`. The spend handler reads
+// config[10] = peg_in_withdraw_script_hash, then requires the peg_in withdraw redeemer at
+// `pegInWithdrawRedeemerIndex` to be a `Withdraw(Script(peg_in_withdraw_hash))` carrying a
+// CompletePegIn action, and that a withdrawal from that script is present. Both indices are
+// computed from the assembled tx (see PegInCompleteTx).
+case class CompletedPegInsSpendRedeemer(
+    configRefInputIndex: BigInt,
+    pegInWithdrawRedeemerIndex: BigInt
+) derives FromData,
+      ToData
+
+// Mint redeemer for `bridged-token.ak::MintRedeemer` (the fBTC policy). For a positive mint it reads
+// config[1] = bridged_token_asset_name and config[10] = peg_in_withdraw_script_hash, then requires
+// the peg_in withdraw redeemer at `wantedPegWithdrawRedeemerIndex` to be a CompletePegIn withdraw of
+// that script. `configRefInputIndex` + `wantedPegWithdrawRedeemerIndex` are computed from the
+// assembled tx.
+case class BridgedTokenMintRedeemer(
+    configRefInputIndex: BigInt,
+    wantedPegWithdrawRedeemerIndex: BigInt
+) derives FromData,
+      ToData

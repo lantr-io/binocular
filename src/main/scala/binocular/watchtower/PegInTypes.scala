@@ -75,3 +75,42 @@ case class PegInMintRedeemer(
     newPegInRequest: PegInRequest
 ) derives FromData,
       ToData
+
+// Aiken `bifrost/types/peg-in.{InputCompletePegIn, ActionType, PegInWithdrawRedeemer}` — the
+// `withdraw(CompletePegIn)` path of peg_in.ak (lines 173-336). Field order is positional in the
+// Plutus Constr; keep identical to the .ak records, and keep `ActionType` variant order
+// (Cancel = constr 0, CompletePegIn = constr 1) so the wire tags line up.
+//
+// The four index fields are computed from the *assembled* transaction (see PegInCompleteTx):
+//   - completedPegInUtxosInputIndex  : position of the completed-peg-ins UTxO in sorted inputs
+//   - completedPegInUtxosOutputIndex : position of the updated completed-peg-ins output
+//   - tmtilaspisvshWithdrawRedeemerIndex : position of the legit_TM_verifier withdraw redeemer in
+//     the on-chain redeemer list (sorted by (RedeemerTag, index): all Spend, then Mint, then Reward)
+//   - configRefInputIndex (on PegInWithdrawRedeemer) : position of the config-NFT UTxO in sorted
+//     reference inputs.
+case class InputCompletePegIn(
+    blockHeader: ByteString,
+    blockHeaderInSourceChainInclusionProof: ScalusList[ProofStep],
+    treasuryMovementRawTx: ByteString,
+    treasuryMovementTxIndex: BigInt,
+    treasuryMovementTxInclusionProof: ScalusList[ByteString],
+    pegInInCompletedPegInsExclusionProof: ScalusList[ProofStep]
+) derives FromData,
+      ToData
+
+enum PegInActionType derives FromData, ToData {
+    case Cancel(burntPegInNftAssetName: ByteString)
+    case CompletePegIn(
+        completePegInInfo: InputCompletePegIn,
+        completedPegInUtxosInputIndex: BigInt,
+        completedPegInUtxosOutputIndex: BigInt,
+        addedPegInToCompletedPegInsInclusionProof: ScalusList[ProofStep],
+        tmtilaspisvshWithdrawRedeemerIndex: BigInt
+    )
+}
+
+case class PegInWithdrawRedeemer(
+    configRefInputIndex: BigInt,
+    actionType: PegInActionType
+) derives FromData,
+      ToData
