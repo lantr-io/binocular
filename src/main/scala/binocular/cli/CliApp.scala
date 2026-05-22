@@ -40,6 +40,7 @@ object CliApp {
         case PegInRequest(btcTxId: String, tmTxId: Option[String], dryRun: Boolean)
         case DeployBridge(dryRun: Boolean)
         case RegisterBridgeCreds(dryRun: Boolean)
+        case SignPeginMsg(keyPath: String, message: String)
         case PegInComplete(
             pir: String,
             tm: String,
@@ -241,6 +242,18 @@ object CliApp {
                 )
             }
 
+        val signPeginMsgCommand =
+            Opts.subcommand(
+              "sign-pegin-msg",
+              "BIP340-sign the pegin-complete digest with a depositor WIF (prints the --signature)"
+            ) {
+                val keyOpt = Opts
+                    .option[String]("key", "Path to depositor WIF file (e.g. heimdall/.keys/alice.wif)")
+                val msgOpt = Opts
+                    .option[String]("message", "32-byte sha2_256 digest hex from pegin-complete --dry-run")
+                (keyOpt, msgOpt).mapN(Cmd.SignPeginMsg.apply)
+            }
+
         val subcommands =
             versionFlag `orElse`
                 blueprintCommand `orElse`
@@ -260,7 +273,8 @@ object CliApp {
                 pegInRequestCommand `orElse`
                 deployBridgeCommand `orElse`
                 registerBridgeCredsCommand `orElse`
-                pegInCompleteCommand
+                pegInCompleteCommand `orElse`
+                signPeginMsgCommand
 
         com.monovore.decline.Command(
           name = "binocular",
@@ -332,6 +346,8 @@ object CliApp {
                             DeployBridgeCommand(dryRun)
                         case Cmd.RegisterBridgeCreds(dryRun) =>
                             RegisterBridgeCredsCommand(dryRun)
+                        case Cmd.SignPeginMsg(keyPath, message) =>
+                            SignPeginMsgCommand(keyPath, message)
                         case Cmd.PegInComplete(pir, tm, recipient, signature, priorPegins, dryRun) =>
                             PegInCompleteCommand(pir, tm, recipient, signature, priorPegins, dryRun)
                         case Cmd.Version | Cmd.Blueprint =>
