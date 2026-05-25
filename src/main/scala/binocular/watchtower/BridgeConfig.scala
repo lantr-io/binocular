@@ -36,5 +36,9 @@ case class BridgeConfig(
     // authorized key, which lives in the control datum and can rotate freely. policy = 28-byte hex;
     // name = hex asset name. Empty = placeholder (until the control UTxO is deployed).
     tmControlNftPolicy: String = "",
-    tmControlNftName: String = ""
+    tmControlNftName: String = "",
+    // The 28-byte pubkey-hash written into the TM-control datum at deploy = the key authorized to
+    // mint TM NFTs (the SPO/poster key — on the devnet, heimdall's Cardano signing key; get it from
+    // `heimdall wallet-address`). Default for deploy-bridge's --authorized-minter.
+    tmAuthorizedMinter: String = ""
 ) derives ConfigReader

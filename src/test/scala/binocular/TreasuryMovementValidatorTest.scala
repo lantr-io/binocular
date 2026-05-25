@@ -305,4 +305,44 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         val sc = scriptContext(tmValue, confirmedDatum(), rdmr)
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
+
+    // --- OneShotMint (the TM-control NFT policy) ---
+
+    private def oneShotMintContext(spentRef: TxOutRef, policy: ByteString): ScriptContext =
+        ScriptContext(
+          txInfo = TxInfo(
+            inputs = PList.from(
+              List(
+                TxInInfo(
+                  spentRef,
+                  TxOut(
+                    Address(Credential.ScriptCredential(filled(0xaa, 28)), Option.None),
+                    tmValue
+                  )
+                )
+              )
+            ),
+            mint = Value.unsafeFromList(PList((policy, PList((ByteString.empty, BigInt(1)))))),
+            id = TxId(filled(0x00, 32))
+          ),
+          redeemer = Data.unit,
+          scriptInfo = ScriptInfo.MintingScript(policy)
+        )
+
+    test("OneShotMint: mints when the one-shot outpoint is consumed") {
+        val ref = TxOutRef(TxId(filled(0x05, 32)), BigInt(0))
+        val oneShot = OneShotMintContract.contract(ref)
+        val prog = oneShot.program.deBruijnedProgram
+        val policy = ByteString.fromArray(oneShot.script.scriptHash.bytes)
+        assert(prog.applyArg(oneShotMintContext(ref, policy).toData).evaluateDebug.isSuccess)
+    }
+
+    test("OneShotMint: fails when the one-shot outpoint is not consumed") {
+        val ref = TxOutRef(TxId(filled(0x05, 32)), BigInt(0))
+        val other = TxOutRef(TxId(filled(0x06, 32)), BigInt(0))
+        val oneShot = OneShotMintContract.contract(ref)
+        val prog = oneShot.program.deBruijnedProgram
+        val policy = ByteString.fromArray(oneShot.script.scriptHash.bytes)
+        assert(!prog.applyArg(oneShotMintContext(other, policy).toData).evaluateDebug.isSuccess)
+    }
 }

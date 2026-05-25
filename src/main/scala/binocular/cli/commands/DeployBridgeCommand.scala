@@ -35,7 +35,11 @@ import cats.syntax.either.*
   * Demo scope: peg-out / treasury / source-chain / block-header config entries are dummies (the
   * peg-in completion path doesn't read them).
   */
-case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
+case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: Boolean = false)
+    extends Command {
+
+    // TM-control NFT asset name (the control UTxO it tags holds the TmControlDatum).
+    private val TmControlAssetName: ByteString = ByteString.fromString("TMCTRL")
 
     // Config NFT asset name (arbitrary; recorded as config asset name).
     private val ConfigAssetName: ByteString = ByteString.fromString("BIFCFG")
@@ -60,6 +64,22 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
         val sponsorAddress = setup.sponsorAddress
         val oraclePolicyId = ByteString.fromArray(setup.script.scriptHash.bytes)
 
+        // The key authorized to mint TM NFTs (written into the TM-control datum).
+        val minterHex =
+            authorizedMinter.filter(_.nonEmpty).getOrElse(config.bridge.tmAuthorizedMinter)
+        val authorizedMinterBS =
+            if minterHex.length == 56 && minterHex.forall(c => "0123456789abcdefABCDEF".contains(c))
+            then ByteString.fromHex(minterHex)
+            else if dryRun then {
+                Console.warn("authorized-minter unset/invalid — zeros for dry-run"); Dummy28
+            } else {
+                Console.error(
+                  "Set --authorized-minter (or bridge.tm-authorized-minter) to the 28-byte (56 hex) " +
+                      "authorized-minter pkh (e.g. `heimdall wallet-address` → payment key hash)"
+                )
+                break(1)
+            }
+
         val blueprint =
             try BifrostBlueprint.fromFile(config.bridge.plutusJson)
             catch {
@@ -78,10 +98,10 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
         val pureAda = walletUtxos
             .filter(u => u.output.value.assets.isEmpty && u.output.value.coin.value >= 5_000_000L)
             .sortBy(-_.output.value.coin.value)
-        val (configOneShot, cpiOneShot) = pureAda match {
-            case a :: b :: _ => (a, b)
+        val (configOneShot, cpiOneShot, tmControlOneShot) = pureAda match {
+            case a :: b :: c :: _ => (a, b, c)
             case _ =>
-                Console.error("Need >=2 pure-ADA wallet UTxOs (>=5 ADA each) for the one-shots");
+                Console.error("Need >=3 pure-ADA wallet UTxOs (>=5 ADA each) for the one-shots");
                 break(1)
         }
 
@@ -89,6 +109,11 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
             TxOutRef(TxId(u.input.transactionId), u.input.index)
         val configRef = refOf(configOneShot)
         val cpiRef = refOf(cpiOneShot)
+        val tmControlRef = refOf(tmControlOneShot)
+
+        // TM-control one-shot NFT — authenticates the control UTxO (TmControlDatum).
+        val tmControlContract = OneShotMintContract.contract(tmControlRef)
+        val tmControlPolicy = ByteString.fromArray(tmControlContract.script.scriptHash.bytes)
 
         // --- compute the deterministic hash chain ---
         val configContract =
@@ -142,6 +167,10 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
         Console.info("completed-peg-ins asset", cpiAssetName.toHex)
         Console.info("peg_in withdraw hash", pegInWithdrawHash.toHex)
         Console.info("legit_TM_verifier hash", legitTmVerifierHash.toHex)
+        Console.info("TM-control one-shot", s"${tmControlRef.id.hash.toHex}#${tmControlRef.idx}")
+        Console.info("TM-control NFT policy", tmControlPolicy.toHex)
+        Console.info("TM-control NFT asset", TmControlAssetName.toHex)
+        Console.info("authorized minter", authorizedMinterBS.toHex)
         println()
 
         if dryRun then {
@@ -217,6 +246,46 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
         )
         println()
 
+        OracleTransactions.waitForUtxoAtAddress(
+          provider,
+          sponsorAddress,
+          TransactionHash.fromHex(cpiTxHash),
+          timeout
+        ) match {
+            case Left(err) => Console.error(err); break(1)
+            case _         =>
+        }
+
+        // --- Tx 3: mint the TM-control NFT to the (immutable, spend=False) config address, carrying
+        //     the TmControlDatum that names the authorized TM-NFT minter. The one-shot policy makes
+        //     the NFT unforgeable; config.ak's spend=False makes the control UTxO immutable. ---
+        Console.step(3, "Minting TM-control NFT")
+        val tmControlAsset = AssetName(TmControlAssetName)
+        val tmControlValue =
+            Value.lovelace(2_000_000L) + Value.asset(
+              tmControlContract.script.scriptHash,
+              tmControlAsset,
+              1L
+            )
+        val tmControlDatum = TmControlDatum(authorizedMinterBS)
+        val tmControlTx =
+            try
+                TxBuilder(provider.cardanoInfo)
+                    .spend(tmControlOneShot)
+                    .mint(tmControlContract, Map(tmControlAsset -> 1L), Data.unit)
+                    .payTo(configContract.address(network), tmControlValue, tmControlDatum.toData)
+                    .complete(provider, sponsorAddress)
+                    .await(timeout)
+                    .sign(signer)
+                    .transaction
+            catch {
+                case e: Exception =>
+                    Console.error(s"Building TM-control tx: ${e.getMessage}"); break(1)
+            }
+        val tmControlTxHash = submitAndConfirm(provider, tmControlTx, timeout)
+        Console.success(s"TM-control NFT minted: $tmControlTxHash")
+        println()
+
         Console.separator()
         Console.success(
           "Bridge deployed. Set these in binocular.bridge and re-mint the PegInRequests:"
@@ -225,6 +294,8 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
         Console.info("config-nft-asset-name", ConfigAssetName.toHex)
         Console.info("bridged-token-policy-id", bridgedTokenPolicy.toHex)
         Console.info("bridged-token-asset-name", BridgedTokenAssetName.toHex)
+        Console.info("tm-control-nft-policy", tmControlPolicy.toHex)
+        Console.info("tm-control-nft-name", TmControlAssetName.toHex)
         Console.separator()
         0
     }
