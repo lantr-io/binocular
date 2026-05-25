@@ -2,13 +2,12 @@ package binocular.cli.commands
 
 import binocular.*
 import binocular.bitcoin.*
-import binocular.oracle.*
+import binocular.oracle.reverse
 import binocular.watchtower.*
-import binocular.cli.{Command, Console}
+import binocular.cli.{Command, CommandHelpers, Console}
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{AssetName, Credential, ScriptHash, Utxo}
-import scalus.cardano.node.{BlockchainProvider, UtxoFilter, UtxoQuery, UtxoSource}
-import scalus.cardano.wallet.hd.HdAccount
+import scalus.cardano.ledger.Credential
+import scalus.cardano.node.BlockchainProvider
 import scalus.uplc.builtin.{ByteString, Data}
 
 import scala.concurrent.ExecutionContext
@@ -16,34 +15,25 @@ import scala.concurrent.duration.*
 import scala.util.boundary
 import boundary.break
 import scalus.utils.await
+import cats.syntax.either.*
 
-/** Relay signed Bitcoin transactions from Cardano TMTx UTxOs to Bitcoin, then update the Cardano
-  * datum to Constr(1) once the BTC transaction is confirmed.
+/** Watchtower relay: carry SPO-signed Treasury Movement (TM) transactions from Cardano to Bitcoin.
   *
-  * Polls Cardano for UTxOs containing the configured TMTx token, extracts the signed Bitcoin
-  * transaction from the inline datum (Constr 0 [ByteString]), broadcasts it via Bitcoin RPC, and
-  * after BTC confirmation updates the datum to Constr(1).
+  * Polls the [[TreasuryMovementValidator]] address for **Unconfirmed** TM UTxOs (datum
+  * `Constr(0, [signed_btc_tx])`, as posted by heimdall's `publish.rs`), extracts the signed Bitcoin
+  * transaction, and broadcasts it to the Bitcoin node. This is the Cardano→Bitcoin transport step of
+  * the protocol (technical_documentation.md: "Watchtowers monitor `treasury_movement.ak` … and
+  * broadcast it to the source blockchain network").
+  *
+  * Broadcast-only: it does **not** touch the Cardano datum. The validated `Unconfirmed → Confirmed`
+  * transition is `confirm-tmtx` (which proves Bitcoin inclusion against the Binocular oracle).
+  * `Confirmed` (`Constr 1`) UTxOs are skipped here.
   */
 
-/** Result of attempting to relay a TMTx to Bitcoin. */
+/** Result of attempting to relay a TM to Bitcoin. */
 enum RelayResult:
     case Relayed(btcTxId: String)
     case Rejected(error: String)
-
-/** UTxO broadcast to Bitcoin, awaiting confirmation before datum update.
-  * @param confirmedOnBitcoin
-  *   true when we already know the tx is confirmed (e.g. -27 error), skip BTC check
-  * @param broadcastHeight
-  *   block height at broadcast time; if current height exceeds this the tx is confirmed (used when
-  *   -txindex is not enabled and the tx is not a wallet transaction)
-  */
-private case class PendingConfirmation(
-    utxo: Utxo,
-    txBytes: ByteString,
-    btcTxId: String,
-    confirmedOnBitcoin: Boolean = false,
-    broadcastHeight: Int = 0
-)
 
 /** Transient errors that warrant retrying — everything else is a permanent rejection. */
 private def isTransientError(msg: String): Boolean =
@@ -58,7 +48,7 @@ private def isAlreadyConfirmed(msg: String): Boolean =
 case class RelayCommand(dryRun: Boolean = false) extends Command {
 
     override def execute(config: BinocularConfig): Int = {
-        Console.header("Binocular TMTx Relay")
+        Console.header("Binocular TM Relay (Cardano → Bitcoin)")
         if dryRun then Console.warn("Dry-run mode — will check once and exit without broadcasting")
         println()
         runRelay(config)
@@ -66,261 +56,115 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
 
     private def runRelay(config: BinocularConfig): Int = boundary {
         given ec: ExecutionContext = ExecutionContext.global
-        val relayConfig = config.relay
-        val pollInterval = relayConfig.pollInterval
-        val retryInterval = relayConfig.retryInterval
-        val timeout = 120.seconds
+        val pollInterval = config.relay.pollInterval
+        val retryInterval = config.relay.retryInterval
+        val timeout = config.oracle.transactionTimeout.seconds
 
-        val policyId = ScriptHash.fromHex(relayConfig.tmtxPolicyId)
-        val assetName = AssetName.fromString(relayConfig.tmtxAssetName)
-        val scriptAddress =
-            Address(config.cardano.scalusNetwork, Credential.ScriptHash(policyId))
-
-        val provider: BlockchainProvider = config.cardano.createBlockchainProvider() match {
-            case Right(p) => p
-            case Left(err) =>
-                Console.error(s"Cardano provider: $err")
-                break(1)
-        }
-
-        val hdAccount: HdAccount = config.wallet.createHdAccount() match {
-            case Right(a) => a
-            case Left(err) =>
-                Console.error(s"Wallet: $err")
-                break(1)
-        }
+        val setup = CommandHelpers.setupOracle(config).valueOr { err => Console.error(err); break(1) }
+        val provider: BlockchainProvider = setup.provider
+        val network = setup.network
+        val oracleScriptHashBS = ByteString.fromArray(setup.script.scriptHash.bytes)
+        val tmScript = TreasuryMovementContract.contract(oracleScriptHashBS)
+        val tmAddress = Address(network, Credential.ScriptHash(tmScript.script.scriptHash))
 
         val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
-
         try {
             val info = rpc.getBlockchainInfo().await(30.seconds)
             Console.info("Bitcoin", s"${config.bitcoinNode.url} (${info.chain})")
         } catch {
-            case e: Exception =>
-                Console.error(s"Bitcoin RPC: ${e.getMessage}")
-                break(1)
+            case e: Exception => Console.error(s"Bitcoin RPC: ${e.getMessage}"); break(1)
         }
-
         Console.info("Cardano", config.cardano.network)
-        Console.info(
-          "Wallet",
-          hdAccount.baseAddress(config.cardano.scalusNetwork).encode.getOrElse("?")
-        )
-        Console.info("TMTx policy", relayConfig.tmtxPolicyId)
-        Console.info("TMTx asset", relayConfig.tmtxAssetName)
-        Console.info("Script address", scriptAddress.encode.getOrElse("?"))
+        Console.info("TM validator", tmScript.script.scriptHash.toHex)
+        Console.info("TM address", tmAddress.encode.getOrElse("?"))
         Console.separator()
         println()
 
-        // Fully processed UTxOs (datum updated to Constr(1) or permanently rejected)
-        val transactions = scala.collection.mutable.Map[String, RelayResult]()
-        // Broadcast to Bitcoin, waiting for confirmation before datum update
-        val pendingConfirmation = scala.collection.mutable.Map[String, PendingConfirmation]()
+        // utxoRef -> outcome; avoids rebroadcasting the same UTxO within a run.
+        val processed = scala.collection.mutable.Map[String, RelayResult]()
 
         while true do {
             try {
-                val currentHeight =
-                    try rpc.getBlockchainInfo().await(30.seconds).blocks
-                    catch case _ => 0
-
-                // Check pending items: if BTC tx now confirmed, update Cardano datum
-                for (utxoRef, pending) <- pendingConfirmation.toList do {
-                    val confirmed: Option[Int] =
-                        if pending.confirmedOnBitcoin then Some(1)
-                        else
-                            try
-                                // Try getRawTransaction first (requires -txindex), fall back to
-                                // gettransaction (wallet transactions only), fall back to
-                                // block height check (works when -txindex is not enabled)
-                                val info =
-                                    try rpc.getRawTransaction(pending.btcTxId).await(30.seconds)
-                                    catch
-                                        case _ =>
-                                            rpc.getWalletTransaction(pending.btcTxId)
-                                                .await(30.seconds)
-                                Some(info.confirmations).filter(_ > 0)
-                            catch
-                                case _ =>
-                                    if currentHeight > pending.broadcastHeight then
-                                        Some(currentHeight - pending.broadcastHeight)
-                                    else
-                                        Console.log(
-                                          s"  Waiting for BTC confirmation: BTC txid=${pending.btcTxId}"
-                                        )
-                                        None
-
-                    confirmed match {
-                        case Some(confs) =>
-                            Console.log(
-                              s"BTC txid=${pending.btcTxId} confirmed ($confs block(s)), updating Cardano datum..."
-                            )
-                            TmtxScript.updateDatum(
-                              provider,
-                              hdAccount,
-                              scriptAddress,
-                              pending.utxo,
-                              pending.txBytes,
-                              timeout
-                            ) match {
-                                case Right(_) =>
-                                    pendingConfirmation.remove(utxoRef)
-                                    transactions(utxoRef) = RelayResult.Relayed(pending.btcTxId)
-                                case Left(err) =>
-                                    Console.logError(
-                                      s"  Cardano datum update failed: $err — will retry"
-                                    )
-                            }
-                        case None => // still waiting, logged above
-                    }
-                }
-
-                val query = UtxoQuery(UtxoSource.FromAddress(scriptAddress)) &&
-                    UtxoFilter.HasAsset(policyId, assetName)
-                val utxosResult = provider.findUtxos(query).await(30.seconds)
-
-                utxosResult match {
-                    case Left(err) =>
-                        Console.logWarn(s"UTxO query: $err")
-
-                    case Right(utxos) if utxos.isEmpty =>
-                        Console.logInPlace("Polling... no TMTx UTxOs found")
-
+                provider.findUtxos(tmAddress).await(timeout) match {
+                    case Left(err) => Console.logWarn(s"UTxO query: $err")
                     case Right(utxos) =>
-                        val newUtxos = utxos.filterNot { case (input, _) =>
-                            val key = s"${input.transactionId.toHex}#${input.index}"
-                            transactions.contains(key) || pendingConfirmation.contains(key)
+                        val newUtxos = utxos.toList.filterNot { case (in, _) =>
+                            processed.contains(s"${in.transactionId.toHex}#${in.index}")
                         }
-
                         if newUtxos.isEmpty then
-                            val relayed = transactions.values.count {
-                                case RelayResult.Relayed(_) => true; case _ => false
-                            }
-                            val rejected = transactions.size - relayed
-                            val pending = pendingConfirmation.size
+                            val relayed = processed.values.count { case RelayResult.Relayed(_) => true; case _ => false }
                             Console.logInPlace(
-                              s"Polling... ${utxos.size} TMTx UTxO(s): $relayed relayed, $pending awaiting BTC confirmation, $rejected rejected"
+                              s"Polling... ${utxos.size} UTxO(s) at TM address, $relayed relayed"
                             )
                         else
-                            Console.log(s"Found ${newUtxos.size} new TMTx UTxO(s) to relay")
-
-                            for (input, output) <- newUtxos do {
-                                val utxoRef = s"${input.transactionId.toHex}#${input.index}"
-                                Console.log(s"Processing Cardano UTxO: $utxoRef")
-
-                                output.inlineDatum match {
-                                    case None =>
-                                        Console.logWarn(s"  No inline datum, skipping")
-                                        transactions(utxoRef) =
-                                            RelayResult.Rejected("no inline datum")
-
-                                    case Some(Data.Constr(1, args)) if args.nonEmpty =>
-                                        args.head match {
-                                            case Data.B(txBytes) =>
-                                                val txid = BitcoinHelpers
-                                                    .getTxHash(txBytes)
-                                                    .reverse
-                                                    .toHex
-                                                Console.logSuccess(
-                                                  s"  Already confirmed by Binocular: BTC txid=$txid"
-                                                )
-                                                transactions(utxoRef) = RelayResult.Relayed(txid)
-                                            case other =>
-                                                Console.logWarn(
-                                                  s"  Datum arg is not ByteString: $other"
-                                                )
-                                                transactions(utxoRef) = RelayResult.Rejected(
-                                                  "datum arg is not ByteString"
-                                                )
-                                        }
-
+                            for (in, out) <- newUtxos do
+                                val utxoRef = s"${in.transactionId.toHex}#${in.index}"
+                                out.inlineDatum match {
                                     case Some(Data.Constr(0, args)) if args.nonEmpty =>
                                         args.head match {
-                                            case Data.B(txBytes) =>
-                                                val txHex = txBytes.toHex
-                                                Console.log(
-                                                  s"  BTC tx: ${txHex.take(40)}... (${txBytes.size} bytes)"
-                                                )
-
-                                                if dryRun then
-                                                    Console.logSuccess(
-                                                      s"  [dry-run] Would broadcast ${txBytes.size} bytes"
-                                                    )
-                                                    transactions(utxoRef) =
-                                                        RelayResult.Relayed("dry-run")
-                                                else
-                                                    val btcTxId = BitcoinHelpers
-                                                        .getTxHash(txBytes)
-                                                        .reverse
-                                                        .toHex
-                                                    try {
-                                                        val txid = rpc
-                                                            .sendRawTransaction(txHex)
-                                                            .await(30.seconds)
-                                                        Console.logSuccess(
-                                                          s"  Broadcast OK: BTC txid=$txid"
-                                                        )
-                                                        pendingConfirmation(utxoRef) =
-                                                            PendingConfirmation(
-                                                              Utxo(input, output),
-                                                              txBytes,
-                                                              txid,
-                                                              broadcastHeight = currentHeight
-                                                            )
-                                                    } catch {
-                                                        case e: Exception =>
-                                                            val msg = e.getMessage
-                                                            if isTransientError(msg) then
-                                                                Console.logError(
-                                                                  s"  Broadcast failed (will retry): $msg"
-                                                                )
-                                                            // don't record — will retry
-                                                            else if isAlreadyConfirmed(msg) then
-                                                                Console.logSuccess(
-                                                                  s"  Already confirmed on Bitcoin: BTC txid=$btcTxId"
-                                                                )
-                                                                pendingConfirmation(utxoRef) =
-                                                                    PendingConfirmation(
-                                                                      Utxo(input, output),
-                                                                      txBytes,
-                                                                      btcTxId,
-                                                                      confirmedOnBitcoin = true,
-                                                                      broadcastHeight =
-                                                                          currentHeight
-                                                                    )
-                                                            else
-                                                                Console.logWarn(
-                                                                  s"  Broadcast rejected: $msg"
-                                                                )
-                                                                transactions(utxoRef) =
-                                                                    RelayResult.Rejected(msg)
-                                                    }
-
+                                            case Data.B(txBytes) => relayOne(rpc, utxoRef, txBytes, processed)
                                             case other =>
-                                                Console.logWarn(
-                                                  s"  Datum arg is not ByteString: $other"
-                                                )
-                                                transactions(utxoRef) = RelayResult.Rejected(
-                                                  "datum arg is not ByteString"
-                                                )
+                                                Console.logWarn(s"  $utxoRef datum arg not ByteString: $other")
+                                                processed(utxoRef) = RelayResult.Rejected("datum arg not ByteString")
                                         }
-
-                                    case Some(other) =>
-                                        Console.logWarn(s"  Unexpected datum shape: $other")
-                                        transactions(utxoRef) =
-                                            RelayResult.Rejected("unexpected datum shape")
+                                    case Some(Data.Constr(1, _)) =>
+                                        Console.log(s"  $utxoRef already Confirmed (Constr 1) — skipping")
+                                        processed(utxoRef) = RelayResult.Relayed("already-confirmed")
+                                    case other =>
+                                        Console.logWarn(s"  $utxoRef unexpected datum: $other")
+                                        processed(utxoRef) = RelayResult.Rejected("unexpected datum")
                                 }
-                            }
                 }
 
                 if dryRun then break(0)
                 Thread.sleep(pollInterval * 1000L)
-
             } catch {
                 case e: Exception =>
                     Console.logError(s"Error: ${e.getMessage} — retrying in ${retryInterval}s")
+                    if dryRun then break(1)
                     Thread.sleep(retryInterval * 1000L)
             }
         }
         0
+    }
+
+    /** Broadcast one Unconfirmed TM's signed Bitcoin tx (broadcast-only — no Cardano write). */
+    private def relayOne(
+        rpc: SimpleBitcoinRpc,
+        utxoRef: String,
+        txBytes: ByteString,
+        processed: scala.collection.mutable.Map[String, RelayResult]
+    )(using ExecutionContext): Unit = {
+        // getTxHash strips witness data, which recurses on a tx-declared input count — a crafted
+        // UTxO at the TM address could StackOverflow. Guard so a poison UTxO is skipped, not fatal.
+        val btcTxId =
+            try BitcoinHelpers.getTxHash(txBytes).reverse.toHex
+            catch {
+                case t: Throwable =>
+                    Console.logWarn(s"  $utxoRef: malformed TM bytes — skipping (${t.getClass.getSimpleName})")
+                    processed(utxoRef) = RelayResult.Rejected("malformed")
+                    return
+            }
+        Console.log(s"  $utxoRef: TM btc txid=$btcTxId (${txBytes.size} bytes)")
+        if dryRun then
+            Console.logSuccess(s"    [dry-run] would broadcast ${txBytes.size} bytes")
+            processed(utxoRef) = RelayResult.Relayed("dry-run")
+        else
+            try {
+                val txid = rpc.sendRawTransaction(txBytes.toHex).await(30.seconds)
+                Console.logSuccess(s"    Broadcast OK: BTC txid=$txid")
+                processed(utxoRef) = RelayResult.Relayed(txid)
+            } catch {
+                case e: Exception =>
+                    val msg = e.getMessage
+                    if isTransientError(msg) then
+                        Console.logError(s"    Broadcast failed (will retry): $msg")
+                    else if isAlreadyConfirmed(msg) then
+                        Console.logSuccess(s"    Already on Bitcoin: BTC txid=$btcTxId")
+                        processed(utxoRef) = RelayResult.Relayed(btcTxId)
+                    else
+                        Console.logWarn(s"    Broadcast rejected: $msg")
+                        processed(utxoRef) = RelayResult.Rejected(msg)
+            }
     }
 }
