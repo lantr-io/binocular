@@ -37,6 +37,7 @@ object CliApp {
         case CreateTmtx(btcTxHex: String)
         case SpendTmtx
         case ConfirmTmtx(dryRun: Boolean)
+        case TmScript
         case PegInRequest(btcTxId: String, tmTxId: Option[String], dryRun: Boolean)
         case DeployBridge(authorizedMinter: Option[String], dryRun: Boolean)
         case RegisterBridgeCreds(dryRun: Boolean)
@@ -188,6 +189,14 @@ object CliApp {
                 dryRunFlag.map(Cmd.ConfirmTmtx.apply)
             }
 
+        val tmScriptCommand =
+            Opts.subcommand(
+              "tm-script",
+              "Export the TreasuryMovementValidator policy id + address + CBOR (for heimdall to mint under)"
+            ) {
+                Opts(Cmd.TmScript)
+            }
+
         val pegInRequestCommand =
             Opts.subcommand(
               "pegin-request",
@@ -288,6 +297,7 @@ object CliApp {
                 createTmtxCommand `orElse`
                 spendTmtxCommand `orElse`
                 confirmTmtxCommand `orElse`
+                tmScriptCommand `orElse`
                 pegInRequestCommand `orElse`
                 deployBridgeCommand `orElse`
                 registerBridgeCredsCommand `orElse`
@@ -358,6 +368,8 @@ object CliApp {
                             SpendTmtxCommand()
                         case Cmd.ConfirmTmtx(dryRun) =>
                             ConfirmTmtxCommand(dryRun)
+                        case Cmd.TmScript =>
+                            TmScriptCommand()
                         case Cmd.PegInRequest(btcTxId, tmTxId, dryRun) =>
                             PegInRequestCommand(btcTxId, tmTxId, dryRun)
                         case Cmd.DeployBridge(authorizedMinter, dryRun) =>
