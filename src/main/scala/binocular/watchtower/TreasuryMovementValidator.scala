@@ -7,7 +7,7 @@ import binocular.oracle.{BlockHeader, ChainState}
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry as MPF
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import scalus.cardano.onchain.plutus.prelude.{List as ScalusList, *}
-import scalus.cardano.onchain.plutus.v1.Credential
+import scalus.cardano.onchain.plutus.v1.{Credential, PubKeyHash}
 import scalus.cardano.onchain.plutus.v2.OutputDatum
 import scalus.cardano.onchain.plutus.v3.*
 import scalus.compiler.{Compile, Options}
@@ -248,34 +248,78 @@ object TreasuryMovementValidator {
         require(equalsData(actual, expected), "Confirmed datum does not match parsed TM")
     }
 
-    /** Entry point: parse the ScriptContext (spending purpose only) and run [[spend]]. */
-    def validate(oracleScriptHash: ByteString, scData: Data): Unit = {
+    /** Minting policy for the TM NFT — the policy id IS this script's hash, so the NFT and the
+      * spend logic share one script. Gated by an authority signature (the SPO/poster key): minting
+      * a new TM NFT requires exactly +1 of the NFT (empty asset name) AND the authority's
+      * signature; burning (draining a Confirmed TM) is permissionless cleanup.
+      *
+      * This is the single-key "level B" gate — the precursor to the protocol's roster +
+      * leader-election (technical_documentation.md §"Post signed TM"). Only the authority key can
+      * create a legitimate TM NFT, so a Confirmed TM UTxO bearing this policy's token is authentic.
+      */
+    def mint(authorityPkh: ByteString, ownPolicyId: ByteString, tx: TxInfo): Unit = {
+        val minted = tx.mint.quantityOf(ownPolicyId, ByteString.empty)
+        if minted > BigInt(0) then {
+            require(minted == BigInt(1), "TM mint: must mint exactly one TM NFT")
+            require(
+              signedByAuthority(tx.signatories, authorityPkh),
+              "TM mint: not signed by the authority"
+            )
+        } else
+            // minted < 0 => burning a TM NFT (drain). Permissionless cleanup. minted == 0 (only other
+            // asset names under this policy) is rejected.
+            require(minted < BigInt(0), "TM mint: nothing minted/burned under the TM policy")
+    }
+
+    /** True iff `pkh` is among the transaction's signatories. */
+    def signedByAuthority(sigs: ScalusList[PubKeyHash], pkh: ByteString): Boolean = {
+        def loop(remaining: ScalusList[PubKeyHash]): Boolean =
+            remaining match
+                case ScalusList.Nil           => false
+                case ScalusList.Cons(s, tail) => if s.hash == pkh then true else loop(tail)
+        loop(sigs)
+    }
+
+    /** Entry point: dispatch on script purpose — minting (the TM NFT) or spending (the Confirm
+      * transition).
+      */
+    def validate(oracleScriptHash: ByteString, authorityPkh: ByteString, scData: Data): Unit = {
         val sc = unConstrData(scData).snd
         val txInfo = sc.head.to[TxInfo]
         val redeemer = sc.tail.head
         val scriptInfo = unConstrData(sc.tail.tail.head)
-        if scriptInfo.fst == BigInt(1) then
+        val tag = scriptInfo.fst
+        if tag == BigInt(0) then
+            // MintingScript(policyId): policyId is this script's own hash.
+            val ownPolicyId = unBData(scriptInfo.snd.head)
+            mint(authorityPkh, ownPolicyId, txInfo)
+        else if tag == BigInt(1) then
+            // SpendingScript(txOutRef, datum)
             val ownRef = scriptInfo.snd.head.to[TxOutRef]
             val datumOpt = scriptInfo.snd.tail.head.to[Option[Datum]]
             spend(oracleScriptHash, datumOpt, txInfo, ownRef, redeemer)
-        else fail("TM validator: not a spending script")
+        else fail("TM validator: unsupported script purpose")
     }
 }
 
-/** The TM validator parameterized with the Binocular oracle script hash. The compiled script's hash
-  * is the TM UTxO address; `Unconfirmed` UTxOs are locked here and spent into `Confirmed` ones.
+/** The TM validator parameterized with the Binocular oracle script hash and the TM-NFT mint
+  * authority pubkey-hash. The compiled script's hash is BOTH the TM UTxO address (spend) and the TM
+  * NFT policy id (mint). `Unconfirmed` UTxOs are locked here and spent into `Confirmed` ones; the
+  * TM NFT can only be minted by the authority.
   */
 object TreasuryMovementContract {
     given opts: Options = Options.release
 
-    /** Curried form: `oracleScriptHash -> (scriptContext -> ())`. Applied via `.apply`, exactly
-      * like the always-ok scaffold bakes in its salt.
+    /** Curried form: `oracleScriptHash -> authorityPkh -> (scriptContext -> ())`. Applied via
+      * `.apply`, exactly like the always-ok scaffold bakes in its salt.
       */
-    lazy val parameterized: PlutusV3[ByteString => (Data => Unit)] =
+    lazy val parameterized: PlutusV3[ByteString => (ByteString => (Data => Unit))] =
         PlutusV3.compile((oracleScriptHash: ByteString) =>
-            (scData: Data) => TreasuryMovementValidator.validate(oracleScriptHash, scData)
+            (authorityPkh: ByteString) =>
+                (scData: Data) =>
+                    TreasuryMovementValidator.validate(oracleScriptHash, authorityPkh, scData)
         )
 
-    def contract(oracleScriptHash: ByteString): PlutusV3[Data => Unit] =
-        parameterized.apply(oracleScriptHash)
+    def contract(oracleScriptHash: ByteString, authorityPkh: ByteString): PlutusV3[Data => Unit] =
+        parameterized.apply(oracleScriptHash).apply(authorityPkh)
 }

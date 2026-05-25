@@ -70,7 +70,8 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
             }
         val oracleScriptHashBS =
             ByteString.fromArray(BitcoinContract.makeContract(oracleParams).script.scriptHash.bytes)
-        val tmScript = TreasuryMovementContract.contract(oracleScriptHashBS)
+        val tmAuthorityBS = ByteString.fromHex(config.bridge.tmAuthorityPkh)
+        val tmScript = TreasuryMovementContract.contract(oracleScriptHashBS, tmAuthorityBS)
         val scriptAddress = Address(network, Credential.ScriptHash(tmScript.script.scriptHash))
 
         Console.info("Cardano", config.cardano.network)

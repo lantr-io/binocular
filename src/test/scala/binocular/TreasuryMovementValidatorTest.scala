@@ -7,7 +7,7 @@ import binocular.watchtower.*
 import org.scalatest.funsuite.AnyFunSuite
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import scalus.cardano.onchain.plutus.prelude.{List as PList, *}
-import scalus.cardano.onchain.plutus.v1.{Address, Credential, Value}
+import scalus.cardano.onchain.plutus.v1.{Address, Credential, PubKeyHash, Value}
 import scalus.cardano.onchain.plutus.v2.OutputDatum
 import scalus.cardano.onchain.plutus.v3.*
 import scalus.cardano.onchain.plutus.v3.ScriptInfo.SpendingScript
@@ -33,6 +33,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
 
     private val oracleHash = filled(0xcd, 28)
     private val tmScriptHash = filled(0xab, 28)
+    private val authorityPkh = filled(0x7a, 28)
     private val tmValue = Value.lovelace(2_000_000)
 
     private def filled(v: Int, n: Int): ByteString =
@@ -145,8 +146,24 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           scriptInfo = SpendingScript(ownRef, Option.Some(unconfirmedDatum))
         )
 
-    private lazy val program =
-        TreasuryMovementContract.contract(oracleHash).program.deBruijnedProgram
+    private lazy val compiled = TreasuryMovementContract.contract(oracleHash, authorityPkh)
+    private lazy val program = compiled.program.deBruijnedProgram
+    // The TM NFT policy id == this script's own hash.
+    private lazy val tmPolicy: ByteString = ByteString.fromArray(compiled.script.scriptHash.bytes)
+
+    /** A minting ScriptContext: mint `nftQty` of the TM NFT, signed by `sigs`. */
+    private def mintContext(nftQty: BigInt, sigs: PList[PubKeyHash]): ScriptContext =
+        ScriptContext(
+          txInfo = TxInfo(
+            inputs = PList.from(List(tmInput(tmValue, unconfirmedDatum))),
+            outputs = PList.Nil,
+            mint = Value.unsafeFromList(PList((tmPolicy, PList((ByteString.empty, nftQty))))),
+            signatories = sigs,
+            id = TxId(filled(0x00, 32))
+          ),
+          redeemer = Data.unit,
+          scriptInfo = ScriptInfo.MintingScript(tmPolicy)
+        )
 
     private def confirmedDatum(
         swept: PList[ByteString] = expectedSwept,
@@ -156,9 +173,29 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     // --- tests ---
 
     test("contract compiles to UPLC and has a stable script hash") {
-        val hash = TreasuryMovementContract.contract(oracleHash).script.scriptHash.toHex
+        val hash = compiled.script.scriptHash.toHex
         println(s"\n=== TreasuryMovementValidator script hash: $hash ===\n")
         assert(hash.length == 56)
+    }
+
+    test("TM NFT mint: +1 signed by the authority succeeds") {
+        val sc = mintContext(BigInt(1), PList.from(List(PubKeyHash(authorityPkh))))
+        assert(program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("TM NFT mint: +1 without the authority signature fails") {
+        val sc = mintContext(BigInt(1), PList.from(List(PubKeyHash(filled(0x11, 28)))))
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("TM NFT mint: minting more than one fails") {
+        val sc = mintContext(BigInt(2), PList.from(List(PubKeyHash(authorityPkh))))
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("TM NFT burn: −1 is permissionless (no authority needed)") {
+        val sc = mintContext(BigInt(-1), PList.Nil)
+        assert(program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
 
     test("TmDatum / redeemer Data round-trip") {

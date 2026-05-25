@@ -66,7 +66,8 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
         val provider: BlockchainProvider = setup.provider
         val network = setup.network
         val oracleScriptHashBS = ByteString.fromArray(setup.script.scriptHash.bytes)
-        val tmScript = TreasuryMovementContract.contract(oracleScriptHashBS)
+        val tmAuthorityBS = ByteString.fromHex(config.bridge.tmAuthorityPkh)
+        val tmScript = TreasuryMovementContract.contract(oracleScriptHashBS, tmAuthorityBS)
         val tmAddress = Address(network, Credential.ScriptHash(tmScript.script.scriptHash))
 
         val rpc = new SimpleBitcoinRpc(config.bitcoinNode)

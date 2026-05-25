@@ -57,8 +57,10 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
         val oraclePolicyId = setup.script.scriptHash
         val oracleScriptHashBS = ByteString.fromArray(oraclePolicyId.bytes)
 
-        // The TM UTxO lives at the validator address (parameterized by the oracle script hash).
-        val tmScript = TreasuryMovementContract.contract(oracleScriptHashBS)
+        // The TM UTxO lives at the validator address (parameterized by the oracle script hash + the
+        // TM-NFT mint authority pubkey-hash).
+        val tmAuthorityBS = ByteString.fromHex(config.bridge.tmAuthorityPkh)
+        val tmScript = TreasuryMovementContract.contract(oracleScriptHashBS, tmAuthorityBS)
         val tmAddress = Address(network, Credential.ScriptHash(tmScript.script.scriptHash))
 
         val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
