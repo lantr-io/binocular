@@ -6,7 +6,7 @@ import binocular.oracle.reverse
 import binocular.watchtower.*
 import binocular.cli.{Command, CommandHelpers, Console}
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.Credential
+import scalus.cardano.ledger.{AssetName, Credential}
 import scalus.cardano.node.BlockchainProvider
 import scalus.uplc.builtin.{ByteString, Data}
 
@@ -72,6 +72,9 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
           ByteString.fromHex(config.bridge.tmControlNftName)
         )
         val tmAddress = Address(network, Credential.ScriptHash(tmScript.script.scriptHash))
+        // The TM NFT (policy = validator's own hash, empty asset name) marks genuine TM UTxOs.
+        val tmNftPolicy = tmScript.script.scriptHash
+        val tmNftAsset = AssetName.empty
 
         val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
         try {
@@ -94,9 +97,11 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                 provider.findUtxos(tmAddress).await(timeout) match {
                     case Left(err) => Console.logWarn(s"UTxO query: $err")
                     case Right(utxos) =>
-                        val newUtxos = utxos.toList.filterNot { case (in, _) =>
-                            processed.contains(s"${in.transactionId.toHex}#${in.index}")
-                        }
+                        val newUtxos = utxos.toList
+                            .filter { case (_, out) => out.value.hasAsset(tmNftPolicy, tmNftAsset) }
+                            .filterNot { case (in, _) =>
+                                processed.contains(s"${in.transactionId.toHex}#${in.index}")
+                            }
                         if newUtxos.isEmpty then
                             val relayed = processed.values.count {
                                 case RelayResult.Relayed(_) => true; case _ => false

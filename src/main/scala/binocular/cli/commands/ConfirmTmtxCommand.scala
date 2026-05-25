@@ -65,6 +65,10 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
           ByteString.fromHex(config.bridge.tmControlNftName)
         )
         val tmAddress = Address(network, Credential.ScriptHash(tmScript.script.scriptHash))
+        // The TM NFT: policy = the validator's own script hash, empty asset name (minted by the
+        // validator's mint branch). Only UTxOs carrying it are genuine TM UTxOs.
+        val tmNftPolicy = tmScript.script.scriptHash
+        val tmNftAsset = AssetName.empty
 
         val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
         try {
@@ -107,7 +111,11 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
                         val unconfirmed = utxos.toList
                             .collect { case (in, out) =>
                                 out.inlineDatum match
-                                    case Some(Data.Constr(0, args)) if args.nonEmpty =>
+                                    case Some(Data.Constr(0, args))
+                                        if args.nonEmpty && out.value.hasAsset(
+                                          tmNftPolicy,
+                                          tmNftAsset
+                                        ) =>
                                         args.head match
                                             case Data.B(tx) => Some((Utxo(in, out), tx))
                                             case _          => None
