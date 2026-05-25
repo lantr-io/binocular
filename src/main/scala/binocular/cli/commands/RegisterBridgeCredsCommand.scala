@@ -18,19 +18,20 @@ import boundary.break
 import scalus.utils.await
 import cats.syntax.either.*
 
-/** Register the reward (stake) credentials of the three withdraw scripts the peg-in completion tx
-  * uses, so Conway will accept the 0-ADA withdrawals from them.
+/** Register the reward (stake) credential of the `peg_in` withdraw script the peg-in completion tx
+  * uses, so Conway will accept its 0-ADA withdrawal.
   *
-  * The `withdraw(CompletePegIn)` path runs three rewarding scripts — `peg_in`, `owner_auth`
-  * ([[PegInDepositorAuthValidator]]) and `legit_TM_verifier` ([[PegInVerifierValidator]]). Conway
-  * rejects a withdrawal whose reward account is not registered, and certificates are validated
-  * against the *pre-transaction* ledger state, so registration must happen in an earlier tx — it
-  * cannot be folded into the completion tx itself.
+  * Since B1 (Confirmed-TM reference) the `withdraw(CompletePegIn)` path runs only ONE rewarding
+  * script — `peg_in` itself (the stake-validator delegation pattern: the PIR + completed-peg-ins
+  * spends and the fBTC mint all require a withdrawal from the peg_in script). The former
+  * `owner_auth` and `legit_TM_verifier` withdrawals are gone (depositor auth is embedded in
+  * `peg_in.ak`, and the TM proof moved to `confirm-tmtx`). Conway rejects a withdrawal whose reward
+  * account is not registered, and certificates validate against the *pre-transaction* ledger state,
+  * so registration must happen in an earlier tx — it cannot be folded into the completion tx.
   *
   * Registration uses the deposit-less Shelley `RegCert` (`registerStake(stakeAddress)`), which does
-  * NOT execute the stake script — important here, because all three scripts `fail` on any
-  * non-Rewarding purpose. (Same approach as ft-bifrost-bridge's offchain spo-demo
-  * `registerBanWithdrawCredential`.)
+  * NOT execute the stake script — important because the peg_in script `fail`s on any non-Rewarding
+  * purpose. (Same approach as ft-bifrost-bridge's offchain spo-demo `registerBanWithdrawCredential`.)
   *
   * This is a one-shot setup step: registering an already-registered credential makes the tx fail,
   * so run it once after the bridge config + the (re-minted) peg_in policy are fixed. It does NOT
@@ -78,36 +79,19 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
             hexBytes("bridge.config-nft-policy-id", config.bridge.configNftPolicyId, Some(56))
         val configNftAsset =
             hexBytes("bridge.config-nft-asset-name", config.bridge.configNftAssetName, None)
-        val bridgedTokenPolicy =
-            hexBytes("bridge.bridged-token-policy-id", config.bridge.bridgedTokenPolicyId, Some(56))
-        val bridgedTokenAsset =
-            hexBytes("bridge.bridged-token-asset-name", config.bridge.bridgedTokenAssetName, None)
 
-        // peg_in withdraw script (= peg_in policy) — config[10].
-        val pegIn = PegInContract(blueprint, oraclePolicyId, configNftPolicy, configNftAsset)
+        // peg_in withdraw script (= peg_in policy) — config[10]. Its hash now depends on the TM-NFT
+        // policy (peg_in.ak's 4th param), so apply the same value here.
+        val pegIn = PegInContract(
+          blueprint,
+          oraclePolicyId,
+          configNftPolicy,
+          configNftAsset,
+          CommandHelpers.tmNftPolicy(config, setup.script.scriptHash)
+        )
         val pegInHash = pegIn.policyId
 
-        // owner_auth — recipient-binding depositor-auth withdraw, parameterized by peg_in hash +
-        // the fBTC asset.
-        val ownerAuthHash = PegInDepositorAuthContract
-            .makeContract(
-              PegInDepositorAuthParams(
-                pegInScriptHash = ByteString.fromArray(pegInHash.bytes),
-                bridgedTokenPolicyId = bridgedTokenPolicy,
-                bridgedTokenAssetName = bridgedTokenAsset
-              )
-            )
-            .script
-            .scriptHash
-
-        // legit_TM_verifier — fixed (unparameterized) — config[12].
-        val legitTmHash = PegInVerifierContract.contract.script.scriptHash
-
-        val creds: List[(String, ScriptHash)] = List(
-          "peg_in" -> pegInHash,
-          "owner_auth" -> ownerAuthHash,
-          "legit_TM_verifier" -> legitTmHash
-        )
+        val creds: List[(String, ScriptHash)] = List("peg_in" -> pegInHash)
 
         Console.info("Oracle policy", oraclePolicyId.toHex)
         creds.foreach { case (name, h) =>
@@ -121,7 +105,7 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
             break(0)
         }
 
-        Console.step(1, "Registering 3 withdraw reward credentials")
+        Console.step(1, "Registering the peg_in withdraw reward credential")
         val signer = setup.hdAccount.signerForUtxos
         val tx =
             try {
@@ -157,7 +141,7 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
         println()
         Console.separator()
         Console.tx("Registration TX", txHash)
-        Console.success("All 3 withdraw reward credentials registered.")
+        Console.success("peg_in withdraw reward credential registered.")
         Console.separator()
         0
     }

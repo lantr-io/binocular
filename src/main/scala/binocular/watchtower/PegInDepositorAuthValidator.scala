@@ -13,6 +13,12 @@ import scalus.uplc.builtin.Data.toData
 /** Rewarding-script validator that gates peg-in completion on a depositor BIP340 Schnorr signature
   * AND binds the minted fBTC to the recipient the depositor chose.
   *
+  * NOTE (B1): the peg-in *completion* path no longer delegates to this withdraw — the same Schnorr
+  * auth + recipient-binding is now embedded directly in `peg_in.ak::CompletePegIn`, with `btc_txid`
+  * read from the referenced Confirmed TM UTxO. This validator remains the `PegInDatum.ownerAuth`
+  * target (the `Cancel` path) and the home of [[mintTag]] (reused by `pegin-complete` to build the
+  * signing digest). The reward logic below documents the per-mint message it shares with `peg_in.ak`.
+  *
   * Used as the target of `PegInDatum.ownerAuth = CardanoWithdrawScript { hash = thisScriptHash }`.
   * `peg_in.ak`'s completion only checks the fBTC *amount*; it delegates *who is authorized and
   * where the fBTC goes* to `owner_auth`. So the recipient-binding from the protocol spec

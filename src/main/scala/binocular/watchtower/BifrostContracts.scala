@@ -53,13 +53,15 @@ object PegInContract {
         blueprint: BifrostBlueprint,
         oraclePolicyId: ByteString,
         configNftPolicyId: ByteString,
-        configNftAssetName: ByteString
+        configNftAssetName: ByteString,
+        tmNftPolicyId: ByteString
     ): PegInContract = {
         val base = Program.fromCborHex(blueprint.compiledCode(ValidatorTitle))
         val applied = base
             .$(Data.B(oraclePolicyId))
             .$(Data.B(configNftPolicyId))
             .$(Data.B(configNftAssetName))
+            .$(Data.B(tmNftPolicyId))
         PegInContract(Script.PlutusV3(applied.cborByteString))
     }
 

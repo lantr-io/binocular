@@ -128,11 +128,20 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         val cpiPolicy = ByteString.fromArray(cpiContract.policyId.bytes)
         val cpiAssetName = CompletedPegInsContract.assetName(cpiRef)
 
-        val pegIn = PegInContract(blueprint, oraclePolicyId, configPolicy, ConfigAssetName)
-        val pegInWithdrawHash = ByteString.fromArray(pegIn.policyId.bytes)
+        // TM-NFT policy = the TreasuryMovementValidator script hash (oracle hash + the TM-control
+        // NFT minted in this same deploy tx). peg_in.ak references the Confirmed TM UTxO by this NFT
+        // (its 4th param), so the peg_in hash depends on it.
+        val tmNftPolicy = ByteString.fromArray(
+          TreasuryMovementContract
+              .contract(oraclePolicyId, tmControlPolicy, TmControlAssetName)
+              .script
+              .scriptHash
+              .bytes
+        )
 
-        val legitTmVerifierHash =
-            ByteString.fromArray(PegInVerifierContract.contract.script.scriptHash.bytes)
+        val pegIn =
+            PegInContract(blueprint, oraclePolicyId, configPolicy, ConfigAssetName, tmNftPolicy)
+        val pegInWithdrawHash = ByteString.fromArray(pegIn.policyId.bytes)
 
         val configDatum = ConfigDatum(
           bridgedTokenPolicyId = bridgedTokenPolicy,
@@ -147,7 +156,9 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
           completedPegOutsMerkleTreeAssetName = ByteString.empty,
           pegInWithdrawScriptHash = pegInWithdrawHash,
           pegOutWithdrawScriptHash = Dummy28,
-          legitTmAndPegInSpentVerifierScriptHash = legitTmVerifierHash,
+          // config[12] legit_TM_verifier — retired in B1 (the TM proof moved to confirm-tmtx and
+          // peg_in.ak no longer delegates to a verifier withdraw); kept as a dummy for layout.
+          legitTmAndPegInSpentVerifierScriptHash = Dummy28,
           legitTmAndPegOutProducedVerifierScriptHash = Dummy28,
           legitTmAndPegOutNotProducedVerifierScriptHash = Dummy28,
           treasuryNftPolicyId = Dummy28,
@@ -166,7 +177,7 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         Console.info("completed-peg-ins policy", cpiPolicy.toHex)
         Console.info("completed-peg-ins asset", cpiAssetName.toHex)
         Console.info("peg_in withdraw hash", pegInWithdrawHash.toHex)
-        Console.info("legit_TM_verifier hash", legitTmVerifierHash.toHex)
+        Console.info("TM-NFT policy (peg_in param)", tmNftPolicy.toHex)
         Console.info("TM-control one-shot", s"${tmControlRef.id.hash.toHex}#${tmControlRef.idx}")
         Console.info("TM-control NFT policy", tmControlPolicy.toHex)
         Console.info("TM-control NFT asset", TmControlAssetName.toHex)

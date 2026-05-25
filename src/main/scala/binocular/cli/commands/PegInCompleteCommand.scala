@@ -1,7 +1,6 @@
 package binocular.cli.commands
 
 import binocular.*
-import binocular.bitcoin.*
 import binocular.oracle.*
 import binocular.watchtower.*
 import binocular.cli.{Command, CommandHelpers, Console}
@@ -22,19 +21,24 @@ import boundary.break
 import scalus.utils.await
 import cats.syntax.either.*
 
-/** F4: build + submit the peg-in completion tx — mint `peg_in_amount` fBTC to `--recipient` and
+/** B1: build + submit the peg-in completion tx — mint `peg_in_amount` fBTC to `--recipient` and
   * record the peg-in in the completed-peg-ins MPF. See [[PegInCompleteTx]] for the tx shape and the
-  * on-chain requirements (`peg_in.ak::withdraw(CompletePegIn)` + the 3 rewarding scripts).
+  * on-chain requirements (`peg_in.ak::withdraw(CompletePegIn)`).
+  *
+  * Instead of re-proving the Treasury Movement, this references the **Confirmed TM UTxO** produced
+  * by `confirm-tmtx` at the [[TreasuryMovementValidator]] address (authenticated by the TM NFT). It
+  * locates the Confirmed UTxO whose `swept_peg_in_utxo_ids` contains this peg-in, reads `btc_txid`
+  * from its datum, and binds the depositor signature + fBTC output to `--recipient`.
   *
   * Permissionless except for the depositor's BIP340 Schnorr signature, which is produced externally
-  * (e.g. with `heimdall/.keys/alice.wif`) and passed via `--signature`. The command prints the
-  * exact 32-byte message digest to sign so the off-chain signer binds to the same recipient + TM +
-  * peg-in.
+  * (e.g. with `heimdall/.keys/alice.wif` via `sign-pegin-msg`) and passed via `--signature`. The
+  * command prints the exact 32-byte message digest to sign (it binds the same recipient + TM +
+  * peg-in).
   *
-  * Preconditions (one-time setup): the 3 withdraw reward creds are registered
-  * (`register-bridge-creds`), and the PegInRequest's `source_chain_treasury_utxo_id` is the TM's
-  * input-0 outpoint (else the `legit_TM_verifier` fails). `--prior-pegin` must be supplied for
-  * every earlier completion so the completed-peg-ins MPF reconstructs to the on-chain root.
+  * Preconditions (one-time setup): the peg_in withdraw reward cred is registered
+  * (`register-bridge-creds`), the TM has been confirmed (`confirm-tmtx`), and `--prior-pegin` is
+  * supplied for every earlier completion so the completed-peg-ins MPF reconstructs to the on-chain
+  * root.
   */
 case class PegInCompleteCommand(
     pirRef: String,
@@ -68,6 +72,9 @@ case class PegInCompleteCommand(
         }
 
         hexBytes("BTC TM txid", tmTxId, Some(64))
+        // The TM txid the depositor expects, in internal (LE) byte order — to cross-check against
+        // the Confirmed datum's btc_txid (which `confirm-tmtx` stores LE).
+        val expectedTmTxidLE = ByteString.fromArray(tmTxId.hexToBytes.reverse)
         // Validate the signature's format up front if supplied, but don't *require* it yet: the
         // intended flow is `--dry-run` (no signature) to print the digest, sign it, then re-run with
         // --signature. Presence is enforced only for the real (non-dry-run) submit, below.
@@ -93,7 +100,7 @@ case class PegInCompleteCommand(
         }
         val provider = setup.provider
         val network = setup.network
-        val oraclePolicyId = setup.script.scriptHash
+        val oracleScriptHash = setup.script.scriptHash
 
         val blueprint =
             try BifrostBlueprint.fromFile(config.bridge.plutusJson)
@@ -107,8 +114,6 @@ case class PegInCompleteCommand(
             hexBytes("bridge.config-nft-policy-id", config.bridge.configNftPolicyId, Some(56))
         val configNftAsset =
             hexBytes("bridge.config-nft-asset-name", config.bridge.configNftAssetName, None)
-        val bridgedTokenPolicyBS =
-            hexBytes("bridge.bridged-token-policy-id", config.bridge.bridgedTokenPolicyId, Some(56))
         val bridgedTokenAsset =
             AssetName(
               hexBytes("bridge.bridged-token-asset-name", config.bridge.bridgedTokenAssetName, None)
@@ -125,27 +130,25 @@ case class PegInCompleteCommand(
         )
         val cpiRef = TxOutRef(TxId(cpiRefInput.transactionId), cpiRefInput.index)
 
-        val oraclePolicyBS = ByteString.fromArray(oraclePolicyId.bytes)
-        val pegIn = PegInContract(blueprint, oraclePolicyBS, configNftPolicy, configNftAsset)
+        // TM-NFT policy = TreasuryMovementValidator hash; both the peg_in 4th param and the marker
+        // on the Confirmed TM UTxO this completion references.
+        val tmNftPolicyBS = CommandHelpers.tmNftPolicy(config, oracleScriptHash)
+        val tmNftPolicy = ScriptHash.fromHex(tmNftPolicyBS.toHex)
+        val tmAddress = Address(network, Credential.ScriptHash(tmNftPolicy))
+
+        val oraclePolicyBS = ByteString.fromArray(oracleScriptHash.bytes)
+        val pegIn =
+            PegInContract(blueprint, oraclePolicyBS, configNftPolicy, configNftAsset, tmNftPolicyBS)
         val cpiContract =
             CompletedPegInsContract(blueprint, configNftPolicy, configNftAsset, cpiRef)
         val cpiPolicy = cpiContract.policyId
         val cpiAsset = AssetName(CompletedPegInsContract.assetName(cpiRef))
         val bridgedToken = BridgedTokenContract(blueprint, configNftPolicy, configNftAsset)
-        val ownerAuth = PegInDepositorAuthContract
-            .makeContract(
-              PegInDepositorAuthParams(
-                pegInScriptHash = ByteString.fromArray(pegIn.policyId.bytes),
-                bridgedTokenPolicyId = bridgedTokenPolicyBS,
-                bridgedTokenAssetName = bridgedTokenAsset.bytes
-              )
-            )
-            .script
-        val verifier = PegInVerifierContract.contract.script
 
         Console.info("Peg-in policy", pegIn.policyId.toHex)
         Console.info("fBTC policy", bridgedToken.policyId.toHex)
         Console.info("completed-peg-ins policy", cpiPolicy.toHex)
+        Console.info("TM validator / NFT policy", tmNftPolicy.toHex)
         println()
 
         // --- locate the UTxOs ---
@@ -158,7 +161,7 @@ case class PegInCompleteCommand(
                 case Left(_) => None
             }
 
-        Console.step(1, "Locating UTxOs (PIR, completed-peg-ins, config, oracle)")
+        Console.step(1, "Locating UTxOs (PIR, completed-peg-ins, config, Confirmed TM)")
         val pirUtxo = provider.findUtxos(pegIn.address(network)).await(timeout) match {
             case Right(us) =>
                 us.toList
@@ -171,15 +174,6 @@ case class PegInCompleteCommand(
         val datum = pirUtxo.output.inlineDatum
             .map(fromData[PegInDatum])
             .getOrElse { Console.error("PIR has no inline PegInDatum"); break(1) }
-        if datum.sourceChainTreasuryUtxoId.length != 36 then {
-            val msg =
-                s"PIR source_chain_treasury_utxo_id is ${datum.sourceChainTreasuryUtxoId.length} bytes " +
-                    "(expected 36 = TM input-0 outpoint). legit_TM_verifier would reject this — re-mint " +
-                    "the PIR with `pegin-request <txid> --tm <TM txid>`."
-            // A real submit would deterministically fail on-chain (and waste fees), so hard-stop.
-            // In --dry-run we only warn, so the operator can still see the digest below.
-            if dryRun then Console.warn(msg) else { Console.error(msg); break(1) }
-        }
 
         val cpiUtxo = findWithAsset(cpiContract.address(network), cpiPolicy, cpiAsset)
             .getOrElse { Console.error("Completed-peg-ins MPF UTxO not found"); break(1) }
@@ -193,31 +187,49 @@ case class PegInCompleteCommand(
           AssetName(configNftAsset)
         )
             .getOrElse { Console.error("Config NFT UTxO not found"); break(1) }
-        val oracleUtxo =
-            try CommandHelpers.findOracleUtxo(provider, oraclePolicyId).await(timeout)
-            catch { case e: Exception => Console.error(e.getMessage); break(1) }
-        val chainState = CommandHelpers
-            .parseChainState(oracleUtxo)
-            .getOrElse { Console.error("Oracle UTxO has no valid ChainState"); break(1) }
-        println()
 
-        // --- TM inclusion proof (reuse the oracle confirmed-blocks MPF) ---
-        Console.step(2, s"Building TM inclusion proof for $tmTxId")
-        val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
-        val obMpf = CommandHelpers
-            .reconstructMpf(rpc, chainState, config.oracle.startHeight)
-            .valueOr { err =>
-                Console.error(s"Rebuilding confirmed-blocks MPF: $err"); break(1)
-            }
-        val tm = TmProofBundle.produce(rpc, obMpf, tmTxId).await(timeout) match {
-            case Right(b)  => b
-            case Left(err) => Console.error(s"TM proof: $err"); break(1)
+        // Find the Confirmed TM UTxO: carries the TM NFT and a `Confirmed` datum whose
+        // swept_peg_in_utxo_ids includes this peg-in. This is the trust anchor — its btc_txid is
+        // what the depositor signs over, and peg-in.ak reads the swept membership on-chain.
+        val confirmedTmUtxo: Utxo = provider.findUtxos(tmAddress).await(timeout) match {
+            case Left(err) => Console.error(s"Fetching TM UTxOs: $err"); break(1)
+            case Right(us) =>
+                us.toList.collectFirst {
+                    case (i, o)
+                        if o.value.hasAsset(tmNftPolicy, AssetName.empty) &&
+                            o.inlineDatum.exists { d =>
+                                fromData[TmDatum](d) match {
+                                    case TmDatum.Confirmed(_, swept, _) =>
+                                        swept.toScalaList.contains(datum.pegInUtxoId)
+                                    case _ => false
+                                }
+                            } =>
+                        Utxo(i, o)
+                }.getOrElse {
+                    Console.error(
+                      s"No Confirmed TM UTxO at $tmAddress sweeps peg-in ${datum.pegInUtxoId.toHex}. " +
+                          "Run `confirm-tmtx` for the TM first."
+                    )
+                    break(1)
+                }
         }
-        Console.info("TM in block at index", tm.txIndex)
+        val confirmedDatum = confirmedTmUtxo.output.inlineDatum.map(fromData[TmDatum]).get
+        val btcTxidLE = confirmedDatum match {
+            case TmDatum.Confirmed(txid, _, _) => txid
+            case _                             => Console.error("TM UTxO is not Confirmed"); break(1)
+        }
+        if btcTxidLE != expectedTmTxidLE then {
+            Console.error(
+              s"Confirmed TM btc_txid ${btcTxidLE.reverse.toHex} != --tm $tmTxId. " +
+                  "Pass the txid of the TM that swept this peg-in."
+            )
+            break(1)
+        }
+        Console.info("Confirmed TM UTxO", s"${confirmedTmUtxo.input.transactionId.toHex}#${confirmedTmUtxo.input.index}")
         println()
 
         // --- completed-peg-ins MPF: reconstruct, verify root, produce proofs ---
-        Console.step(3, "Reconstructing completed-peg-ins MPF + proofs")
+        Console.step(2, "Reconstructing completed-peg-ins MPF + proofs")
         val cpiDatum = cpiUtxo.output.inlineDatum
             .map(fromData[CompletedPegInsMerkleTreeDatum])
             .getOrElse { Console.error("Completed-peg-ins UTxO has no datum"); break(1) }
@@ -246,12 +258,11 @@ case class PegInCompleteCommand(
         println()
 
         // --- signing message (recipientData was resolved up front, in the recipient guard) ---
-        // Internal (LE) txid, matching the peg_in_utxo_id convention.
-        val tmTxidLE = ByteString.fromArray(tmTxId.hexToBytes.reverse)
+        // btc_txid is taken from the Confirmed datum (authoritative, internal/LE byte order).
         val msgPreimage = Builtins.appendByteString(
           PegInDepositorAuthValidator.mintTag,
           Builtins.appendByteString(
-            tmTxidLE,
+            btcTxidLE,
             Builtins.appendByteString(datum.pegInUtxoId, Builtins.serialiseData(recipientData))
           )
         )
@@ -273,7 +284,7 @@ case class PegInCompleteCommand(
             break(1)
         }
 
-        Console.step(4, "Building + submitting completion tx")
+        Console.step(3, "Building + submitting completion tx")
         val tx =
             try
                 PegInCompleteTx
@@ -283,25 +294,16 @@ case class PegInCompleteCommand(
                       scripts = PegInCompleteTx.Scripts(
                         pegIn.script,
                         cpiContract.script,
-                        bridgedToken.script,
-                        ownerAuth,
-                        verifier
+                        bridgedToken.script
                       ),
-                      inputs = PegInCompleteTx.Inputs(pirUtxo, cpiUtxo, oracleUtxo, configUtxo),
+                      inputs =
+                          PegInCompleteTx.Inputs(pirUtxo, cpiUtxo, configUtxo, confirmedTmUtxo),
                       datum = datum,
                       recipientAddress = recipientLedger,
                       recipientData = recipientData,
-                      tmProof = PegInCompleteTx.TmProof(
-                        tm.blockHeader,
-                        tm.mpfHeaderInclusionProof,
-                        tm.rawTxFull,
-                        BigInt(tm.txIndex),
-                        scalus.cardano.onchain.plutus.prelude.List.from(tm.txInBlockMerklePath)
-                      ),
+                      signature = sigBytes,
                       completedPegInsProof = cpiProof,
                       completedPegInsNewRoot = cpiNewRoot,
-                      treasuryMovementBtcTxid = tmTxidLE,
-                      signature = sigBytes,
                       bridgedTokenPolicy = bridgedToken.policyId,
                       bridgedTokenAsset = bridgedTokenAsset,
                       completedPegInsPolicy = cpiPolicy,

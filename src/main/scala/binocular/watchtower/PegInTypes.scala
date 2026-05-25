@@ -76,36 +76,34 @@ case class PegInMintRedeemer(
 ) derives FromData,
       ToData
 
-// Aiken `bifrost/types/peg-in.{InputCompletePegIn, ActionType, PegInWithdrawRedeemer}` — the
-// `withdraw(CompletePegIn)` path of peg_in.ak (lines 173-336). Field order is positional in the
-// Plutus Constr; keep identical to the .ak records, and keep `ActionType` variant order
-// (Cancel = constr 0, CompletePegIn = constr 1) so the wire tags line up.
+// Aiken `bifrost/types/peg-in.{ActionType, PegInWithdrawRedeemer}` — the `withdraw(CompletePegIn)`
+// path of peg_in.ak. Field order is positional in the Plutus Constr; keep identical to the .ak
+// records, and keep `ActionType` variant order (Cancel = constr 0, CompletePegIn = constr 1) so the
+// wire tags line up.
 //
-// The four index fields are computed from the *assembled* transaction (see PegInCompleteTx):
-//   - completedPegInUtxosInputIndex  : position of the completed-peg-ins UTxO in sorted inputs
-//   - completedPegInUtxosOutputIndex : position of the updated completed-peg-ins output
-//   - tmtilaspisvshWithdrawRedeemerIndex : position of the legit_TM_verifier withdraw redeemer in
-//     the on-chain redeemer list (sorted by (RedeemerTag, index): all Spend, then Mint, then Reward)
+// B1 (full wiring): CompletePegIn no longer carries the TM inline proof. It references the Confirmed
+// TM UTxO (authenticated by the TM NFT, supplied as a reference input — peg-in.ak finds it by NFT)
+// and reads `btc_txid` + `swept_peg_in_utxo_ids` from its datum, and it embeds the depositor's
+// BIP340 Schnorr auth + recipient-binding directly:
+//   - recipient                     : the depositor's chosen Cardano address (as Data, the Plutus
+//     Address form) — bound into both the signed message and the fBTC output.
+//   - fbtcOutputIndex               : output paying `peg_in_amount` fBTC to `recipient`.
+//   - depositorSignature            : BIP340 over sha2_256("BFR-mint-v1"‖btc_txid‖peg_in_utxo_id‖recipient).
+//   - completedPegInUtxosInputIndex : position of the completed-peg-ins UTxO in sorted inputs.
+//   - completedPegInUtxosOutputIndex: position of the updated completed-peg-ins output.
+//   - addedPegInToCompletedPegInsInclusionProof / pegInInCompletedPegInsExclusionProof : MPF proofs.
 //   - configRefInputIndex (on PegInWithdrawRedeemer) : position of the config-NFT UTxO in sorted
 //     reference inputs.
-case class InputCompletePegIn(
-    blockHeader: ByteString,
-    blockHeaderInSourceChainInclusionProof: ScalusList[ProofStep],
-    treasuryMovementRawTx: ByteString,
-    treasuryMovementTxIndex: BigInt,
-    treasuryMovementTxInclusionProof: ScalusList[ByteString],
-    pegInInCompletedPegInsExclusionProof: ScalusList[ProofStep]
-) derives FromData,
-      ToData
-
 enum PegInActionType derives FromData, ToData {
     case Cancel(burntPegInNftAssetName: ByteString)
     case CompletePegIn(
-        completePegInInfo: InputCompletePegIn,
+        recipient: Data,
+        fbtcOutputIndex: BigInt,
+        depositorSignature: ByteString,
         completedPegInUtxosInputIndex: BigInt,
         completedPegInUtxosOutputIndex: BigInt,
         addedPegInToCompletedPegInsInclusionProof: ScalusList[ProofStep],
-        tmtilaspisvshWithdrawRedeemerIndex: BigInt
+        pegInInCompletedPegInsExclusionProof: ScalusList[ProofStep]
     )
 }
 

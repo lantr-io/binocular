@@ -63,22 +63,32 @@ class BifrostContractsTest extends AnyFunSuite {
         assert(hex(bt.policyId) == "2fb4053064cd915983b4573967ae70c5c76c674d31107092d5122712")
     }
 
-    test("completed-peg-ins policy + asset name match the deployed values") {
+    test("completed-peg-ins policy + asset name match the B1 rebuild") {
+        // policyId changed after the B1 peg-in.ak rewrite: completed-peg-ins-merkle-tree.ak imports
+        // the `CompletePegIn` type, whose redeemer fields changed, so its shared compiledCode (and
+        // thus the policy hash) moved from 64b45a49…. The asset name = sha2_256(serialiseData(ref))
+        // is independent of compiledCode and is unchanged.
         val cpi = CompletedPegInsContract(blueprint, configPolicy, configAssetName, cpiRef)
-        assert(hex(cpi.policyId) == "64b45a4901e58c1085790a34a0feb9c3fabd9e8bc38aa128a760cd05")
+        assert(hex(cpi.policyId) == "017fa184276b60fa63517fc59e5c993e578b0c4b2d36d9dcabe12df5")
         assert(
           CompletedPegInsContract.assetName(cpiRef).toHex
               == "bc7b1b2eec39061b7e2561b81163c6b037e59e27930db71a704122d952ea772d"
         )
     }
 
-    test("peg_in policy (= withdraw hash) matches the deployed value") {
-        // Changed from ced3ce66… after the on-chain TM witness-strip fix to peg-in.ak (the
-        // CompletePegIn handler now calls bitcoin.strip_witness_data), which alters the shared
-        // peg_in_validator compiledCode. The other three policies are unchanged. The PIRs minted
-        // under the old policy are orphaned and must be re-minted under this one.
-        val pegIn = PegInContract(blueprint, oraclePolicy, configPolicy, configAssetName)
-        assert(hex(pegIn.policyId) == "7d66c4f3f74fdf3fed6b3da3bb8b18c79a29a03e4ce37e47925d5759")
+    // The TM-NFT policy param peg_in.ak takes as its 4th argument (= the TreasuryMovementValidator
+    // script hash). A fixed 28-byte placeholder here — B1 has not been deployed, so this test is a
+    // regression lock over the (4-param) CIP-57 encoding, not an on-chain-validated value.
+    private val tmNftPolicy =
+        ByteString.fromHex("1111111111111111111111111111111111111111111111111111111111")
+
+    test("peg_in policy (= withdraw hash) is stable for the B1 4-param encoding") {
+        // B1 rewrite (reference Confirmed TM UTxO + embed depositor auth) + the new tm_nft_policy_id
+        // param change peg_in_validator's compiledCode and hash (was 7d66c4f3…). PIRs minted under
+        // the old policy are orphaned and must be re-minted under this one.
+        val pegIn =
+            PegInContract(blueprint, oraclePolicy, configPolicy, configAssetName, tmNftPolicy)
+        assert(hex(pegIn.policyId) == "dd5b422e0612e5eba5b4d5d164196e44ea9bf154f72d0e75343e9a5f")
     }
 
     // --- determinism + parameter-sensitivity ---
