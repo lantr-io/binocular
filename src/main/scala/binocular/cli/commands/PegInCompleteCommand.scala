@@ -191,32 +191,33 @@ case class PegInCompleteCommand(
         // Find the Confirmed TM UTxO: carries the TM NFT and a `Confirmed` datum whose
         // swept_peg_in_utxo_ids includes this peg-in. This is the trust anchor — its btc_txid is
         // what the depositor signs over, and peg-in.ak reads the swept membership on-chain.
-        val confirmedTmUtxo: Utxo = provider.findUtxos(tmAddress).await(timeout) match {
-            case Left(err) => Console.error(s"Fetching TM UTxOs: $err"); break(1)
-            case Right(us) =>
-                us.toList.collectFirst {
-                    case (i, o)
-                        if o.value.hasAsset(tmNftPolicy, AssetName.empty) &&
-                            o.inlineDatum.exists { d =>
-                                fromData[TmDatum](d) match {
-                                    case TmDatum.Confirmed(_, swept, _) =>
-                                        swept.toScalaList.contains(datum.pegInUtxoId)
-                                    case _ => false
+        // Decode defensively: anyone can park a UTxO carrying a (tmNftPolicy, "") token at the TM
+        // address with a non-TmDatum / poison inline datum, and fromData throws on a shape it can't
+        // decode. Guard each candidate with Try so one bad UTxO can't crash the command, and capture
+        // the decoded btc_txid here so we never re-decode (no second .get on an Option).
+        val confirmedHit: Option[(Utxo, ByteString)] =
+            provider.findUtxos(tmAddress).await(timeout) match {
+                case Left(err) => Console.error(s"Fetching TM UTxOs: $err"); break(1)
+                case Right(us) =>
+                    us.toList.iterator
+                        .filter(_._2.value.hasAsset(tmNftPolicy, AssetName.empty))
+                        .flatMap { case (i, o) =>
+                            o.inlineDatum
+                                .flatMap(d => scala.util.Try(fromData[TmDatum](d)).toOption)
+                                .collect {
+                                    case TmDatum.Confirmed(txid, swept, _)
+                                        if swept.toScalaList.contains(datum.pegInUtxoId) =>
+                                        (Utxo(i, o), txid)
                                 }
-                            } =>
-                        Utxo(i, o)
-                }.getOrElse {
-                    Console.error(
-                      s"No Confirmed TM UTxO at $tmAddress sweeps peg-in ${datum.pegInUtxoId.toHex}. " +
-                          "Run `confirm-tmtx` for the TM first."
-                    )
-                    break(1)
-                }
-        }
-        val confirmedDatum = confirmedTmUtxo.output.inlineDatum.map(fromData[TmDatum]).get
-        val btcTxidLE = confirmedDatum match {
-            case TmDatum.Confirmed(txid, _, _) => txid
-            case _                             => Console.error("TM UTxO is not Confirmed"); break(1)
+                        }
+                        .nextOption()
+            }
+        val (confirmedTmUtxo, btcTxidLE) = confirmedHit.getOrElse {
+            Console.error(
+              s"No Confirmed TM UTxO at $tmAddress sweeps peg-in ${datum.pegInUtxoId.toHex}. " +
+                  "Run `confirm-tmtx` for the TM first."
+            )
+            break(1)
         }
         if btcTxidLE != expectedTmTxidLE then {
             Console.error(
@@ -260,7 +261,7 @@ case class PegInCompleteCommand(
         // --- signing message (recipientData was resolved up front, in the recipient guard) ---
         // btc_txid is taken from the Confirmed datum (authoritative, internal/LE byte order).
         val msgPreimage = Builtins.appendByteString(
-          PegInDepositorAuthValidator.mintTag,
+          BifrostMessages.mintTag,
           Builtins.appendByteString(
             btcTxidLE,
             Builtins.appendByteString(datum.pegInUtxoId, Builtins.serialiseData(recipientData))

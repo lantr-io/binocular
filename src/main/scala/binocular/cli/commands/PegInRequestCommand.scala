@@ -109,24 +109,7 @@ case class PegInRequestCommand(
         Console.info("Depositor xonly", bundle.userSourceChainPubKey.toHex)
         println()
 
-        // owner_auth = the depositor-auth withdraw script, parameterized by the fBTC asset so it
-        // can bind the completion's fBTC output to the depositor's chosen recipient. Placeholder
-        // bridged-token params for now (finalized with the config NFT at deploy time / F3).
-        val authParams = PegInDepositorAuthParams(
-          pegInScriptHash = ByteString.fromArray(pegIn.policyId.bytes),
-          bridgedTokenPolicyId = hexBytes(
-            "bridge.bridged-token-policy-id",
-            config.bridge.bridgedTokenPolicyId,
-            Some(56)
-          ),
-          bridgedTokenAssetName =
-              hexBytes("bridge.bridged-token-asset-name", config.bridge.bridgedTokenAssetName, None)
-        )
-        val ownerAuthHash =
-            ByteString.fromArray(
-              PegInDepositorAuthContract.makeContract(authParams).script.scriptHash.bytes
-            )
-        // BTC outpoint: 32-byte internal (LE) txid ++ 4-byte little-endian vout
+        // BTC outpoint: 32-byte internal (LE) txid ++ 4-byte little-endian vout.
         val vout = bundle.pegInVout
         val voutLE = Array[Byte](
           (vout & 0xff).toByte,
@@ -137,34 +120,19 @@ case class PegInRequestCommand(
         val pegInUtxoId =
             ByteString.fromArray(btcTxId.hexToBytes.reverse) ++ ByteString.fromArray(voutLE)
 
-        // `source_chain_treasury_utxo_id` is the outpoint the sweeping TM consumes as its FIRST
-        // input — exactly what `legit_TM_verifier` checks at completion (`firstInputOutpoint(TM) ==
-        // treasury_utxo_id`). The mint path doesn't read it, but the completion path requires the
-        // datum to carry it, so derive it here from the (already confirmed) TM when `--tm` is given.
-        // Without it the PIR can be minted but can never be completed (left empty, with a warning).
-        val treasuryUtxoId: ByteString = tmTxId match {
-            case Some(tm) =>
-                val tmRaw =
-                    try rpc.getRawTransaction(tm).await(timeout)
-                    catch {
-                        case e: Exception =>
-                            Console.error(s"Fetching TM tx $tm: ${e.getMessage}"); break(1)
-                    }
-                BitcoinHelpers.firstInputOutpoint(ByteString.fromHex(tmRaw.hex))
-            case None =>
-                Console.warn(
-                  "No --tm given: source_chain_treasury_utxo_id left empty — this PIR cannot be " +
-                      "completed (legit_TM_verifier needs the TM's input-0 outpoint)."
-                )
-                ByteString.empty
-        }
-
+        // owner_auth is now vestigial: completion authorizes the depositor via an embedded BIP340
+        // Schnorr in peg_in.ak (keyed by user_source_chain_pub_key, bound to the deposit at mint),
+        // and the peg-in CLOSE path (Cancel) delegates to the config[12] close verifier — neither
+        // uses owner_auth. The field is kept for datum-shape stability; set to an inert,
+        // never-satisfiable signature credential so it can never be (mis)used as an auth path.
+        // source_chain_treasury_utxo_id is likewise no longer read on-chain (the legit_TM_verifier
+        // was retired); left empty. `--tm` is accepted but unused.
         val datum = PegInDatum(
-          ownerAuth = AuthorizationMethod.CardanoWithdrawScript(ownerAuthHash),
+          ownerAuth = AuthorizationMethod.CardanoSignature(ByteString.empty),
           sourceChainPegInRawTx = bundle.rawTxHex,
           sourceChainPegInRawTxIndex = BigInt(bundle.txIndex),
           pegInUtxoId = pegInUtxoId,
-          sourceChainTreasuryUtxoId = treasuryUtxoId,
+          sourceChainTreasuryUtxoId = ByteString.empty,
           pegInAmount = BigInt(bundle.pegInAmountSat),
           userSourceChainPubKey = bundle.userSourceChainPubKey
         )

@@ -8,13 +8,13 @@ import pureconfig.*
   * mint path does not read the config-NFT UTxO (only Cancel / CompletePegIn do), so the defaults
   * are placeholders sufficient for minting a PegInRequest.
   *
-  * `bridgedTokenPolicyId` / `bridgedTokenAssetName` identify the fBTC (bridged_token) asset. They
-  * parameterize [[PegInDepositorAuthValidator]] so it can require that the completion tx actually
-  * pays `peg_in_amount` fBTC to the recipient the depositor signed for — the recipient-binding from
-  * technical_documentation.md §"Complete peg-in". Placeholders here keep the same provisional shape
-  * as the config NFT; both are finalized once the bridge config NFT is deployed (F3), which fixes
-  * the real bridged_token policy and forces a re-mint of the PegInRequests under the matching
-  * hashes.
+  * `bridgedTokenPolicyId` / `bridgedTokenAssetName` identify the fBTC (bridged_token) asset. The
+  * completion tx mints this asset and binds it to the recipient the depositor signed for — the
+  * recipient-binding from technical_documentation.md §"Complete peg-in", now enforced inside
+  * `peg_in.ak` itself (B1; the standalone depositor-auth withdraw was removed). Placeholders here
+  * keep the same provisional shape as the config NFT; both are finalized once the bridge config NFT
+  * is deployed (F3), which fixes the real bridged_token policy and forces a re-mint of the
+  * PegInRequests under the matching hashes.
   *
   * Loaded by PureConfig from reference.conf / application.conf / env vars.
   */

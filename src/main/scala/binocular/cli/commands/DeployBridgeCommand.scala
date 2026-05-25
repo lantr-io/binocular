@@ -156,9 +156,12 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
           completedPegOutsMerkleTreeAssetName = ByteString.empty,
           pegInWithdrawScriptHash = pegInWithdrawHash,
           pegOutWithdrawScriptHash = Dummy28,
-          // config[12] legit_TM_verifier — retired in B1 (the TM proof moved to confirm-tmtx and
-          // peg_in.ak no longer delegates to a verifier withdraw); kept as a dummy for layout.
-          legitTmAndPegInSpentVerifierScriptHash = Dummy28,
+          // config[12] = peg-in CLOSE verifier (the slot the retired legit_TM_verifier vacated).
+          // peg_in.ak's Cancel delegates the F4/F5 close checks to a withdrawal from this script.
+          // Dummy28 until the F1–F6 failure-mode close verifier is built + deployed; a Dummy28 hash
+          // has no reward account, so Cancel is cleanly unsatisfiable in the meantime. Wiring the
+          // real verifier later is a config update only — no peg_in recompile / PIR re-mint.
+          pegInCloseVerifierScriptHash = Dummy28,
           legitTmAndPegOutProducedVerifierScriptHash = Dummy28,
           legitTmAndPegOutNotProducedVerifierScriptHash = Dummy28,
           treasuryNftPolicyId = Dummy28,

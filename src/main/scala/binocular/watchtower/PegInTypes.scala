@@ -30,35 +30,14 @@ case class PegInDatum(
 ) derives FromData,
       ToData
 
-// Parameters for PegInDepositorAuthValidator.
-//   - `pegInScriptHash`: the peg_in_validator script hash. The validator selects the
-//     peg-in input as the UNIQUE input whose payment credential is this script hash
-//     (matching peg-in.ak's `payment_credential == credential` + `expect [peg_in_input]`;
-//     the staking credential is ignored, as upstream), NOT by a caller-supplied index —
-//     otherwise an attacker could point at a decoy input bearing a fake PegInDatum with
-//     their own xonly and bypass the depositor's signature.
-//   - `bridgedToken{PolicyId,AssetName}`: the fBTC asset, so the validator can require
-//     the minted fBTC is paid to the recipient the depositor signed for (recipient-binding).
-case class PegInDepositorAuthParams(
-    pegInScriptHash: ByteString,
-    bridgedTokenPolicyId: ByteString,
-    bridgedTokenAssetName: ByteString
-) derives FromData,
-      ToData
-
-// Redeemer for PegInDepositorAuthValidator. `recipient` is the depositor's chosen
-// Cardano address (as Data) — both the signed message and the fBTC output are bound to
-// it. `treasuryMovementBtcTxid` is the confirmed TM txid the mint references. Together
-// these implement the per-mint signing message of technical_documentation.md
-// §"Complete peg-in": sig over "BFR-mint-v1" ‖ btc_txid ‖ peg_in_utxo_id ‖ recipient.
-// The peg-in input is found by script address (see params), not passed here.
-case class PegInDepositorAuthRedeemer(
-    fbtcOutputIndex: BigInt,
-    recipient: Data,
-    treasuryMovementBtcTxid: ByteString,
-    signature: ByteString
-) derives FromData,
-      ToData
+// Domain-separation tag for the depositor BIP340 Schnorr message that `peg_in.ak` verifies on-chain
+// at completion (the depositor auth is embedded in peg_in.ak since B1 — there is no separate
+// withdraw validator). MUST equal the `mint_tag` constant in peg-in.ak:
+//   completion: sha2_256(mintTag ‖ btc_txid ‖ peg_in_utxo_id ‖ recipient)
+object BifrostMessages {
+    // "BFR-mint-v1"
+    val mintTag: ByteString = ByteString.fromHex("4246522d6d696e742d7631")
+}
 
 // Aiken `bifrost/types/peg-in.{PegInRequest, PegInMintRedeemer}`. Field order
 // is positional in the Plutus Constr — keep it identical to the .ak file.

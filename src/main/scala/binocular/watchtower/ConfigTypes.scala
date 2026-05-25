@@ -10,9 +10,12 @@ import scalus.cardano.onchain.plutus.v3.TxOutRef
 //
 // The fields read on the peg-in completion path are: 0 bridged_token_policy_id,
 // 1 bridged_token_asset_name, 6 completed_peg_ins_merkle_tree_policy_id,
-// 7 completed_peg_ins_merkle_tree_asset_name, 10 peg_in_withdraw_script_hash,
-// 12 legit_treasury_movement_and_peg_in_spent_verifier_script_hash (+ 11 read by bridged_token but
-// needn't match). The rest are dummies for the peg-in-only demo.
+// 7 completed_peg_ins_merkle_tree_asset_name, 10 peg_in_withdraw_script_hash (+ 11 read by
+// bridged_token but needn't match). Index 12 — formerly the (retired) legit_TM_verifier — is now
+// the peg-in CLOSE verifier hash: peg_in.ak's Cancel branch delegates the F4/F5 close checks to a
+// withdrawal from this script. It's a runtime config field, so the close verifier can be deployed +
+// wired via a config update with no peg_in recompile / PIR re-mint. Dummy (Cancel disabled) until
+// the F1–F6 failure-mode milestone ships. The rest are dummies for the peg-in-only demo.
 case class ConfigDatum(
     bridgedTokenPolicyId: ByteString,
     bridgedTokenAssetName: ByteString,
@@ -26,7 +29,7 @@ case class ConfigDatum(
     completedPegOutsMerkleTreeAssetName: ByteString,
     pegInWithdrawScriptHash: ByteString,
     pegOutWithdrawScriptHash: ByteString,
-    legitTmAndPegInSpentVerifierScriptHash: ByteString,
+    pegInCloseVerifierScriptHash: ByteString,
     legitTmAndPegOutProducedVerifierScriptHash: ByteString,
     legitTmAndPegOutNotProducedVerifierScriptHash: ByteString,
     treasuryNftPolicyId: ByteString,

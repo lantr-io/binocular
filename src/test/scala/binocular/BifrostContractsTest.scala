@@ -80,7 +80,7 @@ class BifrostContractsTest extends AnyFunSuite {
     // script hash). A fixed 28-byte placeholder here — B1 has not been deployed, so this test is a
     // regression lock over the (4-param) CIP-57 encoding, not an on-chain-validated value.
     private val tmNftPolicy =
-        ByteString.fromHex("1111111111111111111111111111111111111111111111111111111111")
+        ByteString.fromHex("11111111111111111111111111111111111111111111111111111111")
 
     test("peg_in policy (= withdraw hash) is stable for the B1 4-param encoding") {
         // B1 rewrite (reference Confirmed TM UTxO + embed depositor auth) + the new tm_nft_policy_id
@@ -88,7 +88,7 @@ class BifrostContractsTest extends AnyFunSuite {
         // the old policy are orphaned and must be re-minted under this one.
         val pegIn =
             PegInContract(blueprint, oraclePolicy, configPolicy, configAssetName, tmNftPolicy)
-        assert(hex(pegIn.policyId) == "dd5b422e0612e5eba5b4d5d164196e44ea9bf154f72d0e75343e9a5f")
+        assert(hex(pegIn.policyId) == "34a223e1b217dfc03f405f085dbf6174263e03fd45969f706fbf0c51")
     }
 
     // --- determinism + parameter-sensitivity ---
