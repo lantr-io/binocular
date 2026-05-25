@@ -65,7 +65,9 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
         // the oracle script hash) — the same place confirm-tmtx spends it from.
         val oracleParams = config.oracle
             .toBitcoinValidatorParams(config.bitcoinNode.bitcoinNetwork)
-            .valueOr { err => Console.error(s"Oracle params: $err"); break(1) }
+            .valueOr { err =>
+                Console.error(s"Oracle params: $err"); break(1)
+            }
         val oracleScriptHashBS =
             ByteString.fromArray(BitcoinContract.makeContract(oracleParams).script.scriptHash.bytes)
         val tmScript = TreasuryMovementContract.contract(oracleScriptHashBS)

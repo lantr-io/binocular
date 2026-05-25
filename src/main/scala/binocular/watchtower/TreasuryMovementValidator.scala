@@ -14,7 +14,7 @@ import scalus.compiler.{Compile, Options}
 import scalus.uplc.PlutusV3
 import scalus.uplc.builtin.*
 import scalus.uplc.builtin.Builtins.*
-import scalus.uplc.builtin.Data.{FromData, ToData, toData}
+import scalus.uplc.builtin.Data.{toData, FromData, ToData}
 
 /** A single fulfilled peg-out parsed from a Treasury Movement output: the raw Bitcoin
   * `scriptPubKey` the TM pays to, and the satoshi `amount`. Mirrors the doc's `fulfilled_peg_outs`
@@ -74,9 +74,9 @@ object TmConfirmRedeemer
 
 /** Treasury-movement validator: enforces the `Unconfirmed -> Confirmed` transition on-chain.
   *
-  * This replaces the always-ok scaffold (`TmtxScript`). The only legal spend of an [[TmDatum.Unconfirmed]]
-  * UTxO recreates it as [[TmDatum.Confirmed]], and only if the spender *proves* the TM is confirmed
-  * on Bitcoin against the Binocular oracle:
+  * This replaces the always-ok scaffold (`TmtxScript`). The only legal spend of an
+  * [[TmDatum.Unconfirmed]] UTxO recreates it as [[TmDatum.Confirmed]], and only if the spender
+  * *proves* the TM is confirmed on Bitcoin against the Binocular oracle:
   *
   *   1. `txid = sha256d(strip_witness(signedBtcTx))` — recomputed on-chain, never trusted.
   *   2. the block header is in the oracle's `confirmedBlocksRoot` (MPF membership; oracle UTxO is a
@@ -85,10 +85,11 @@ object TmConfirmRedeemer
   *   4. `txid` is merkle-included in the header's tx-merkle-root at `txIndex`.
   *   5. the continuing output sits at the same TM script address, preserves the UTxO value (so the
   *      TM identity token rides along), and carries a `Confirmed` datum whose `btcTxid` /
-  *      `sweptPegInUtxoIds` / `fulfilledPegOuts` are exactly what the contract parsed out of the raw
-  *      TM transaction.
+  *      `sweptPegInUtxoIds` / `fulfilledPegOuts` are exactly what the contract parsed out of the
+  *      raw TM transaction.
   *
-  * Parameterized by the Binocular oracle script hash (applied via [[TreasuryMovementContract.contract]]).
+  * Parameterized by the Binocular oracle script hash (applied via
+  * [[TreasuryMovementContract.contract]]).
   */
 @Compile
 object TreasuryMovementValidator {
@@ -148,7 +149,10 @@ object TreasuryMovementValidator {
                     resolved.address.credential match
                         case Credential.ScriptCredential(hash) =>
                             if hash == oracleScriptHash
-                                && resolved.value.quantityOf(oracleScriptHash, ByteString.empty) == BigInt(1)
+                                && resolved.value.quantityOf(
+                                  oracleScriptHash,
+                                  ByteString.empty
+                                ) == BigInt(1)
                             then resolved
                             else search(tail)
                         case _ => search(tail)
@@ -212,7 +216,11 @@ object TreasuryMovementValidator {
             case OutputDatum.OutputDatum(d) => d.to[ChainState]
             case _                          => fail("Oracle must have an inline datum")
         val blockHash = BitcoinHelpers.blockHeaderHash(proof.blockHeader)
-        MPF(oracleState.confirmedBlocksRoot).verifyMembership(blockHash, blockHash, proof.blockMpfProof)
+        MPF(oracleState.confirmedBlocksRoot).verifyMembership(
+          blockHash,
+          blockHash,
+          proof.blockMpfProof
+        )
 
         // 3+4. The header hashes to that block hash and commits to txid at txIndex.
         val computedRoot = BitcoinHelpers.merkleRootFromInclusionProof(
@@ -260,8 +268,8 @@ object TreasuryMovementValidator {
 object TreasuryMovementContract {
     given opts: Options = Options.release
 
-    /** Curried form: `oracleScriptHash -> (scriptContext -> ())`. Applied via `.apply`, exactly like
-      * the always-ok scaffold bakes in its salt.
+    /** Curried form: `oracleScriptHash -> (scriptContext -> ())`. Applied via `.apply`, exactly
+      * like the always-ok scaffold bakes in its salt.
       */
     lazy val parameterized: PlutusV3[ByteString => (Data => Unit)] =
         PlutusV3.compile((oracleScriptHash: ByteString) =>

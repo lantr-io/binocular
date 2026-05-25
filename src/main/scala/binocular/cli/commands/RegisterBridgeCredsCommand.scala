@@ -151,7 +151,7 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
             .await(timeout)
         status match {
             case TransactionStatus.Confirmed =>
-            case other => Console.error(s"Not confirmed: $other"); break(1)
+            case other                       => Console.error(s"Not confirmed: $other"); break(1)
         }
 
         println()

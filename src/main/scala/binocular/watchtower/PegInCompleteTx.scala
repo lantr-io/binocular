@@ -20,14 +20,15 @@ import scala.concurrent.{ExecutionContext, Future}
   *   - Spend: the PegInRequest UTxO (peg_in script — its `spend` handler only requires a withdrawal
   *     from the same script hash; redeemer ignored) and the completed-peg-ins MPF UTxO (its `spend`
   *     handler checks the peg_in withdraw redeemer is a CompletePegIn).
-  *   - References: the oracle UTxO (`confirmed_blocks_root`) and the config-NFT UTxO (`ConfigDatum`).
+  *   - References: the oracle UTxO (`confirmed_blocks_root`) and the config-NFT UTxO
+  *     (`ConfigDatum`).
   *   - Mint: `+peg_in_amount` fBTC (`bridged_token` policy). The PegInRequest NFT is NOT burned —
   *     `CompletePegIn` does not check it (only `Cancel` burns); it rides out in the change.
   *   - Withdrawals (all 0 ADA, the stake-validator delegation pattern):
-  *       - `peg_in` → [[PegInWithdrawRedeemer]] `CompletePegIn`,
-  *       - `owner_auth` ([[PegInDepositorAuthValidator]]) → [[PegInDepositorAuthRedeemer]] (the
-  *         depositor's recipient-bound Schnorr signature),
-  *       - `legit_TM_verifier` ([[PegInVerifierValidator]]) → the TM-verification Data list.
+  *     - `peg_in` → [[PegInWithdrawRedeemer]] `CompletePegIn`,
+  *     - `owner_auth` ([[PegInDepositorAuthValidator]]) → [[PegInDepositorAuthRedeemer]] (the
+  *       depositor's recipient-bound Schnorr signature),
+  *     - `legit_TM_verifier` ([[PegInVerifierValidator]]) → the TM-verification Data list.
   *   - Outputs: fBTC → recipient; the updated completed-peg-ins UTxO (same value+address, new MPF
   *     root); change → sponsor (carrying the PegInRequest NFT).
   *
@@ -35,9 +36,10 @@ import scala.concurrent.{ExecutionContext, Future}
   * Several redeemer fields are indices into the *assembled* tx and are filled by delayed
   * `Transaction => Data` builders. The on-chain `self.redeemers` list is ordered by Scalus's
   * `(RedeemerTag ordinal, index)` — all Spend(0), then Mint(1), then Reward(3) — so a reward
-  * redeemer's position is `#scriptSpends + #mintPolicies + withdrawalIndex`, where `withdrawalIndex`
-  * follows the 28-byte credential-hash ordering the ledger uses. Inputs/reference-inputs are ordered
-  * by `(txid, index)`; outputs keep insertion order. See [[binocular.watchtower]] notes / f4-blockers.
+  * redeemer's position is `#scriptSpends + #mintPolicies + withdrawalIndex`, where
+  * `withdrawalIndex` follows the 28-byte credential-hash ordering the ledger uses.
+  * Inputs/reference-inputs are ordered by `(txid, index)`; outputs keep insertion order. See
+  * [[binocular.watchtower]] notes / f4-blockers.
   */
 object PegInCompleteTx {
 
@@ -108,7 +110,9 @@ object PegInCompleteTx {
         def outputIndexWithAsset(tx: Transaction, pol: ScriptHash, an: AssetName): BigInt =
             BigInt(outputs(tx).indexWhere(_.value.value.hasAsset(pol, an)))
         def fbtcOutputIndex(tx: Transaction): BigInt =
-            BigInt(outputs(tx).indexWhere(_.value.value.hasAsset(bridgedTokenPolicy, bridgedTokenAsset)))
+            BigInt(
+              outputs(tx).indexWhere(_.value.value.hasAsset(bridgedTokenPolicy, bridgedTokenAsset))
+            )
 
         // Reward redeemer's position in the on-chain `self.redeemers` list.
         def withdrawalIndex(tx: Transaction, target: ScriptHash): BigInt = {
@@ -133,7 +137,8 @@ object PegInCompleteTx {
         val pegInWithdrawRedeemer: Transaction => Data = tx => {
             val info = InputCompletePegIn(
               blockHeader = tmProof.blockHeader,
-              blockHeaderInSourceChainInclusionProof = tmProof.blockHeaderInSourceChainInclusionProof,
+              blockHeaderInSourceChainInclusionProof =
+                  tmProof.blockHeaderInSourceChainInclusionProof,
               treasuryMovementRawTx = tmProof.rawTmTxFull,
               treasuryMovementTxIndex = tmProof.txIndex,
               treasuryMovementTxInclusionProof = tmProof.txInBlockMerklePath,
@@ -184,7 +189,11 @@ object PegInCompleteTx {
 
         // --- values / outputs ---
         val fbtcValue =
-            Value.lovelace(fbtcMinAda) + Value.asset(bridgedTokenPolicy, bridgedTokenAsset, pegInAmount)
+            Value.lovelace(fbtcMinAda) + Value.asset(
+              bridgedTokenPolicy,
+              bridgedTokenAsset,
+              pegInAmount
+            )
         // Preserve the completed-peg-ins UTxO value (NFT + ADA) and address exactly; only the datum
         // (MPF root) changes — peg-in.ak checks without_lovelace value + address are unchanged.
         val newCpiDatum = CompletedPegInsMerkleTreeDatum(completedPegInsNewRoot)
@@ -217,7 +226,11 @@ object PegInCompleteTx {
               attached(scripts.verifier, verifierRedeemer)
             )
             .payTo(recipientAddress, fbtcValue)
-            .payTo(inputs.completedPegIns.output.address, inputs.completedPegIns.output.value, newCpiDatum.toData)
+            .payTo(
+              inputs.completedPegIns.output.address,
+              inputs.completedPegIns.output.value,
+              newCpiDatum.toData
+            )
             .complete(provider, sponsorAddress)
             .map(_.sign(signer).transaction)
     }

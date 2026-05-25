@@ -225,7 +225,8 @@ object CliApp {
               "Complete a peg-in: mint fBTC to --recipient and record it in the completed-peg-ins MPF"
             ) {
                 val pirOpt = Opts.option[String]("pir", "PegInRequest UTxO (TX_HASH#INDEX)")
-                val tmOpt = Opts.option[String]("tm", "Confirmed Treasury Movement BTC txid (64 hex)")
+                val tmOpt =
+                    Opts.option[String]("tm", "Confirmed Treasury Movement BTC txid (64 hex)")
                 val recipientOpt =
                     Opts.option[String]("recipient", "fBTC recipient Cardano address (bech32)")
                 val signatureOpt = Opts
@@ -252,9 +253,15 @@ object CliApp {
               "BIP340-sign the pegin-complete digest with a depositor WIF (prints the --signature)"
             ) {
                 val keyOpt = Opts
-                    .option[String]("key", "Path to depositor WIF file (e.g. heimdall/.keys/alice.wif)")
+                    .option[String](
+                      "key",
+                      "Path to depositor WIF file (e.g. heimdall/.keys/alice.wif)"
+                    )
                 val msgOpt = Opts
-                    .option[String]("message", "32-byte sha2_256 digest hex from pegin-complete --dry-run")
+                    .option[String](
+                      "message",
+                      "32-byte sha2_256 digest hex from pegin-complete --dry-run"
+                    )
                 (keyOpt, msgOpt).mapN(Cmd.SignPeginMsg.apply)
             }
 
@@ -352,7 +359,14 @@ object CliApp {
                             RegisterBridgeCredsCommand(dryRun)
                         case Cmd.SignPeginMsg(keyPath, message) =>
                             SignPeginMsgCommand(keyPath, message)
-                        case Cmd.PegInComplete(pir, tm, recipient, signature, priorPegins, dryRun) =>
+                        case Cmd.PegInComplete(
+                              pir,
+                              tm,
+                              recipient,
+                              signature,
+                              priorPegins,
+                              dryRun
+                            ) =>
                             PegInCompleteCommand(pir, tm, recipient, signature, priorPegins, dryRun)
                         case Cmd.Version | Cmd.Blueprint =>
                             return 0 // unreachable: handled above

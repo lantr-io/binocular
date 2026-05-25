@@ -30,14 +30,17 @@ case class SignPeginMsgCommand(keyPath: String, message: String) extends Command
         val msgHex = message.trim.toLowerCase
         val isHex = msgHex.length % 2 == 0 && msgHex.forall(c => "0123456789abcdef".contains(c))
         if !isHex || msgHex.length != 64 then {
-            Console.error(s"Invalid --message: expected 64 hex chars (32-byte digest), got '$message'")
+            Console.error(
+              s"Invalid --message: expected 64 hex chars (32-byte digest), got '$message'"
+            )
             break(1)
         }
 
         val wif =
             try Files.readString(Paths.get(keyPath)).trim
             catch {
-                case e: Exception => Console.error(s"Reading WIF $keyPath: ${e.getMessage}"); break(1)
+                case e: Exception =>
+                    Console.error(s"Reading WIF $keyPath: ${e.getMessage}"); break(1)
             }
 
         val priv =

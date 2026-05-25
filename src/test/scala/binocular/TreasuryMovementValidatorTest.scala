@@ -185,7 +185,8 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
             PegOutEntry(ByteString.fromHex("0014" + ("22" * 20)), BigInt(2000))
           )
         )
-        val sc = scriptContext(tmValue, confirmedDatum(fulfilled = wrongFulfilled), redeemer(mpfProof))
+        val sc =
+            scriptContext(tmValue, confirmedDatum(fulfilled = wrongFulfilled), redeemer(mpfProof))
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
 

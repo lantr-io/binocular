@@ -57,7 +57,11 @@ object TreasuryMovementTx {
 
             Console.log(s"  Submitted: $txHash — waiting for Cardano confirmation...")
             provider
-                .pollForConfirmation(TransactionHash.fromHex(txHash), maxAttempts = 60, delayMs = 2000)
+                .pollForConfirmation(
+                  TransactionHash.fromHex(txHash),
+                  maxAttempts = 60,
+                  delayMs = 2000
+                )
                 .await(timeout) match {
                 case TransactionStatus.Confirmed => Right(txHash)
                 case other                       => Left(s"Transaction status: $other")

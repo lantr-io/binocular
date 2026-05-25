@@ -7,15 +7,7 @@ import binocular.watchtower.*
 import binocular.cli.{Command, CommandHelpers, Console}
 
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{
-    AssetName,
-    Credential,
-    LedgerToPlutusTranslation,
-    ScriptHash,
-    TransactionHash,
-    TransactionInput,
-    Utxo
-}
+import scalus.cardano.ledger.{AssetName, Credential, LedgerToPlutusTranslation, ScriptHash, TransactionHash, TransactionInput, Utxo}
 import scalus.cardano.node.TransactionStatus
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
@@ -35,13 +27,14 @@ import cats.syntax.either.*
   * on-chain requirements (`peg_in.ak::withdraw(CompletePegIn)` + the 3 rewarding scripts).
   *
   * Permissionless except for the depositor's BIP340 Schnorr signature, which is produced externally
-  * (e.g. with `heimdall/.keys/alice.wif`) and passed via `--signature`. The command prints the exact
-  * 32-byte message digest to sign so the off-chain signer binds to the same recipient + TM + peg-in.
+  * (e.g. with `heimdall/.keys/alice.wif`) and passed via `--signature`. The command prints the
+  * exact 32-byte message digest to sign so the off-chain signer binds to the same recipient + TM +
+  * peg-in.
   *
-  * Preconditions (one-time setup): the 3 withdraw reward creds are registered (`register-bridge-creds`),
-  * and the PegInRequest's `source_chain_treasury_utxo_id` is the TM's input-0 outpoint (else the
-  * `legit_TM_verifier` fails). `--prior-pegin` must be supplied for every earlier completion so the
-  * completed-peg-ins MPF reconstructs to the on-chain root.
+  * Preconditions (one-time setup): the 3 withdraw reward creds are registered
+  * (`register-bridge-creds`), and the PegInRequest's `source_chain_treasury_utxo_id` is the TM's
+  * input-0 outpoint (else the `legit_TM_verifier` fails). `--prior-pegin` must be supplied for
+  * every earlier completion so the completed-peg-ins MPF reconstructs to the on-chain root.
   */
 case class PegInCompleteCommand(
     pirRef: String,
@@ -95,32 +88,47 @@ case class PegInCompleteCommand(
                     break(1)
             }
 
-        val setup = CommandHelpers.setupOracle(config).valueOr { err => Console.error(err); break(1) }
+        val setup = CommandHelpers.setupOracle(config).valueOr { err =>
+            Console.error(err); break(1)
+        }
         val provider = setup.provider
         val network = setup.network
         val oraclePolicyId = setup.script.scriptHash
 
         val blueprint =
             try BifrostBlueprint.fromFile(config.bridge.plutusJson)
-            catch { case e: Exception => Console.error(s"Loading bridge blueprint: ${e.getMessage}"); break(1) }
+            catch {
+                case e: Exception =>
+                    Console.error(s"Loading bridge blueprint: ${e.getMessage}"); break(1)
+            }
 
         // --- bridge config / scripts ---
-        val configNftPolicy = hexBytes("bridge.config-nft-policy-id", config.bridge.configNftPolicyId, Some(56))
-        val configNftAsset = hexBytes("bridge.config-nft-asset-name", config.bridge.configNftAssetName, None)
+        val configNftPolicy =
+            hexBytes("bridge.config-nft-policy-id", config.bridge.configNftPolicyId, Some(56))
+        val configNftAsset =
+            hexBytes("bridge.config-nft-asset-name", config.bridge.configNftAssetName, None)
         val bridgedTokenPolicyBS =
             hexBytes("bridge.bridged-token-policy-id", config.bridge.bridgedTokenPolicyId, Some(56))
         val bridgedTokenAsset =
-            AssetName(hexBytes("bridge.bridged-token-asset-name", config.bridge.bridgedTokenAssetName, None))
+            AssetName(
+              hexBytes("bridge.bridged-token-asset-name", config.bridge.bridgedTokenAssetName, None)
+            )
         if config.bridge.completedPegInsOneShotRef.isEmpty then {
-            Console.error("Set binocular.bridge.completed-peg-ins-one-shot-ref (the cpi one-shot from deploy-bridge)")
+            Console.error(
+              "Set binocular.bridge.completed-peg-ins-one-shot-ref (the cpi one-shot from deploy-bridge)"
+            )
             break(1)
         }
-        val cpiRefInput = parseRef("bridge.completed-peg-ins-one-shot-ref", config.bridge.completedPegInsOneShotRef)
+        val cpiRefInput = parseRef(
+          "bridge.completed-peg-ins-one-shot-ref",
+          config.bridge.completedPegInsOneShotRef
+        )
         val cpiRef = TxOutRef(TxId(cpiRefInput.transactionId), cpiRefInput.index)
 
         val oraclePolicyBS = ByteString.fromArray(oraclePolicyId.bytes)
         val pegIn = PegInContract(blueprint, oraclePolicyBS, configNftPolicy, configNftAsset)
-        val cpiContract = CompletedPegInsContract(blueprint, configNftPolicy, configNftAsset, cpiRef)
+        val cpiContract =
+            CompletedPegInsContract(blueprint, configNftPolicy, configNftAsset, cpiRef)
         val cpiPolicy = cpiContract.policyId
         val cpiAsset = AssetName(CompletedPegInsContract.assetName(cpiRef))
         val bridgedToken = BridgedTokenContract(blueprint, configNftPolicy, configNftAsset)
@@ -144,17 +152,24 @@ case class PegInCompleteCommand(
         def findWithAsset(addr: Address, pol: ScriptHash, an: AssetName): Option[Utxo] =
             provider.findUtxos(addr).await(timeout) match {
                 case Right(us) =>
-                    us.toList.collectFirst { case (i, o) if o.value.hasAsset(pol, an) => Utxo(i, o) }
+                    us.toList.collectFirst {
+                        case (i, o) if o.value.hasAsset(pol, an) => Utxo(i, o)
+                    }
                 case Left(_) => None
             }
 
         Console.step(1, "Locating UTxOs (PIR, completed-peg-ins, config, oracle)")
         val pirUtxo = provider.findUtxos(pegIn.address(network)).await(timeout) match {
-            case Right(us) => us.toList.collectFirst { case (i, o) if i == pirInput => Utxo(i, o) }
-                    .getOrElse { Console.error(s"PIR $pirRef not found at peg-in address"); break(1) }
+            case Right(us) =>
+                us.toList
+                    .collectFirst { case (i, o) if i == pirInput => Utxo(i, o) }
+                    .getOrElse {
+                        Console.error(s"PIR $pirRef not found at peg-in address"); break(1)
+                    }
             case Left(err) => Console.error(s"Fetching peg-in UTxOs: $err"); break(1)
         }
-        val datum = pirUtxo.output.inlineDatum.map(fromData[PegInDatum])
+        val datum = pirUtxo.output.inlineDatum
+            .map(fromData[PegInDatum])
             .getOrElse { Console.error("PIR has no inline PegInDatum"); break(1) }
         if datum.sourceChainTreasuryUtxoId.length != 36 then {
             val msg =
@@ -168,21 +183,32 @@ case class PegInCompleteCommand(
 
         val cpiUtxo = findWithAsset(cpiContract.address(network), cpiPolicy, cpiAsset)
             .getOrElse { Console.error("Completed-peg-ins MPF UTxO not found"); break(1) }
-        val configAddr = Address(network, Credential.ScriptHash(ScriptHash.fromHex(config.bridge.configNftPolicyId)))
-        val configUtxo = findWithAsset(configAddr, ScriptHash.fromHex(config.bridge.configNftPolicyId), AssetName(configNftAsset))
+        val configAddr = Address(
+          network,
+          Credential.ScriptHash(ScriptHash.fromHex(config.bridge.configNftPolicyId))
+        )
+        val configUtxo = findWithAsset(
+          configAddr,
+          ScriptHash.fromHex(config.bridge.configNftPolicyId),
+          AssetName(configNftAsset)
+        )
             .getOrElse { Console.error("Config NFT UTxO not found"); break(1) }
         val oracleUtxo =
             try CommandHelpers.findOracleUtxo(provider, oraclePolicyId).await(timeout)
             catch { case e: Exception => Console.error(e.getMessage); break(1) }
-        val chainState = CommandHelpers.parseChainState(oracleUtxo)
+        val chainState = CommandHelpers
+            .parseChainState(oracleUtxo)
             .getOrElse { Console.error("Oracle UTxO has no valid ChainState"); break(1) }
         println()
 
         // --- TM inclusion proof (reuse the oracle confirmed-blocks MPF) ---
         Console.step(2, s"Building TM inclusion proof for $tmTxId")
         val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
-        val obMpf = CommandHelpers.reconstructMpf(rpc, chainState, config.oracle.startHeight)
-            .valueOr { err => Console.error(s"Rebuilding confirmed-blocks MPF: $err"); break(1) }
+        val obMpf = CommandHelpers
+            .reconstructMpf(rpc, chainState, config.oracle.startHeight)
+            .valueOr { err =>
+                Console.error(s"Rebuilding confirmed-blocks MPF: $err"); break(1)
+            }
         val tm = TmProofBundle.produce(rpc, obMpf, tmTxId).await(timeout) match {
             case Right(b)  => b
             case Left(err) => Console.error(s"TM proof: $err"); break(1)
@@ -192,7 +218,8 @@ case class PegInCompleteCommand(
 
         // --- completed-peg-ins MPF: reconstruct, verify root, produce proofs ---
         Console.step(3, "Reconstructing completed-peg-ins MPF + proofs")
-        val cpiDatum = cpiUtxo.output.inlineDatum.map(fromData[CompletedPegInsMerkleTreeDatum])
+        val cpiDatum = cpiUtxo.output.inlineDatum
+            .map(fromData[CompletedPegInsMerkleTreeDatum])
             .getOrElse { Console.error("Completed-peg-ins UTxO has no datum"); break(1) }
         var tree = OffChainMPF.empty
         priorPegins.foreach { k =>
@@ -253,7 +280,13 @@ case class PegInCompleteCommand(
                     .build(
                       provider = provider,
                       sponsor = setup.hdAccount,
-                      scripts = PegInCompleteTx.Scripts(pegIn.script, cpiContract.script, bridgedToken.script, ownerAuth, verifier),
+                      scripts = PegInCompleteTx.Scripts(
+                        pegIn.script,
+                        cpiContract.script,
+                        bridgedToken.script,
+                        ownerAuth,
+                        verifier
+                      ),
                       inputs = PegInCompleteTx.Inputs(pirUtxo, cpiUtxo, oracleUtxo, configUtxo),
                       datum = datum,
                       recipientAddress = recipientLedger,

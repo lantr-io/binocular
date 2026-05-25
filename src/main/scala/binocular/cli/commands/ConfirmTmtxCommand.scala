@@ -24,10 +24,11 @@ import cats.syntax.either.*
   *
   * Polls the TM validator address for `Unconfirmed` UTxOs (datum `Constr(0, [signed_btc_tx])`, as
   * posted by heimdall's `publish.rs` or `create-tmtx`). For each, once the TM is confirmed on
-  * Bitcoin and the block is in the Binocular oracle's confirmed-blocks root, it builds the inclusion
-  * proof and submits the Confirm tx: spend the `Unconfirmed` UTxO, reference the oracle, and recreate
-  * it with the `Confirmed` datum `{ btc_txid, swept_peg_in_utxo_ids, fulfilled_peg_outs }` that the
-  * validator re-parses and verifies on-chain.
+  * Bitcoin and the block is in the Binocular oracle's confirmed-blocks root, it builds the
+  * inclusion proof and submits the Confirm tx: spend the `Unconfirmed` UTxO, reference the oracle,
+  * and recreate it with the `Confirmed` datum
+  * `{ btc_txid, swept_peg_in_utxo_ids, fulfilled_peg_outs }` that the validator re-parses and
+  * verifies on-chain.
   *
   * Unlike the old always-ok scaffold, the datum flip is now only accepted if the Bitcoin
   * confirmation is *proven* against the oracle.
@@ -47,7 +48,9 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
         val retryInterval = config.relay.retryInterval
         val timeout = config.oracle.transactionTimeout.seconds
 
-        val setup = CommandHelpers.setupOracle(config).valueOr { err => Console.error(err); break(1) }
+        val setup = CommandHelpers.setupOracle(config).valueOr { err =>
+            Console.error(err); break(1)
+        }
         val provider: BlockchainProvider = setup.provider
         val network = setup.network
         val hdAccount = setup.hdAccount
@@ -78,26 +81,39 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
         while true do {
             try {
                 // Re-read the oracle each cycle: its confirmed-blocks root advances as Bitcoin does.
-                val oracleUtxo = CommandHelpers.findOracleUtxo(provider, oraclePolicyId).await(timeout)
-                val chainState = CommandHelpers.parseChainState(oracleUtxo)
-                    .getOrElse { Console.logWarn("Oracle UTxO has no valid ChainState"); throw new RuntimeException("no chainstate") }
-                val obMpf = CommandHelpers.reconstructMpf(rpc, chainState, config.oracle.startHeight)
-                    .valueOr { err => Console.logWarn(s"Rebuilding confirmed-blocks MPF: $err"); throw new RuntimeException(err) }
+                val oracleUtxo =
+                    CommandHelpers.findOracleUtxo(provider, oraclePolicyId).await(timeout)
+                val chainState = CommandHelpers
+                    .parseChainState(oracleUtxo)
+                    .getOrElse {
+                        Console.logWarn("Oracle UTxO has no valid ChainState");
+                        throw new RuntimeException("no chainstate")
+                    }
+                val obMpf = CommandHelpers
+                    .reconstructMpf(rpc, chainState, config.oracle.startHeight)
+                    .valueOr { err =>
+                        Console.logWarn(s"Rebuilding confirmed-blocks MPF: $err");
+                        throw new RuntimeException(err)
+                    }
 
                 provider.findUtxos(tmAddress).await(timeout) match {
                     case Left(err) => Console.logWarn(s"UTxO query: $err")
                     case Right(utxos) =>
-                        val unconfirmed = utxos.toList.collect {
-                            case (in, out) =>
+                        val unconfirmed = utxos.toList
+                            .collect { case (in, out) =>
                                 out.inlineDatum match
                                     case Some(Data.Constr(0, args)) if args.nonEmpty =>
                                         args.head match
                                             case Data.B(tx) => Some((Utxo(in, out), tx))
                                             case _          => None
                                     case _ => None
-                        }.flatten.filterNot { case (u, _) =>
-                            processed.contains(s"${u.input.transactionId.toHex}#${u.input.index}")
-                        }
+                            }
+                            .flatten
+                            .filterNot { case (u, _) =>
+                                processed.contains(
+                                  s"${u.input.transactionId.toHex}#${u.input.index}"
+                                )
+                            }
 
                         if unconfirmed.isEmpty then
                             Console.logInPlace(
@@ -106,7 +122,19 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
                         else
                             Console.log(s"Found ${unconfirmed.size} Unconfirmed TM UTxO(s)")
                             for (utxo, signedBtcTx) <- unconfirmed do
-                                confirmOne(provider, hdAccount, tmScript, tmAddress, oracleUtxo, obMpf, rpc, utxo, signedBtcTx, timeout, processed)
+                                confirmOne(
+                                  provider,
+                                  hdAccount,
+                                  tmScript,
+                                  tmAddress,
+                                  oracleUtxo,
+                                  obMpf,
+                                  rpc,
+                                  utxo,
+                                  signedBtcTx,
+                                  timeout,
+                                  processed
+                                )
                 }
 
                 if dryRun then break(0)
@@ -142,16 +170,19 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
         // crashes the watchtower nor is retried forever. RPC errors stay outside this guard (the
         // outer loop retries those).
         val parsed: Option[(ByteString, ScalusList[ByteString], ScalusList[PegOutEntry])] =
-            try Some(
-              (
-                BitcoinHelpers.getTxHash(signedBtcTx), // internal (LE) — the Confirmed btc_txid
-                TreasuryMovementValidator.allInputOutpoints(signedBtcTx),
-                TreasuryMovementValidator.allOutputs(signedBtcTx)
-              )
-            )
+            try
+                Some(
+                  (
+                    BitcoinHelpers.getTxHash(signedBtcTx), // internal (LE) — the Confirmed btc_txid
+                    TreasuryMovementValidator.allInputOutpoints(signedBtcTx),
+                    TreasuryMovementValidator.allOutputs(signedBtcTx)
+                  )
+                )
             catch {
                 case t: Throwable =>
-                    Console.logError(s"  $utxoRef: malformed/poison TM bytes — skipping (${t.getClass.getSimpleName})")
+                    Console.logError(
+                      s"  $utxoRef: malformed/poison TM bytes — skipping (${t.getClass.getSimpleName})"
+                    )
                     processed(utxoRef) = "skip:malformed"
                     None
             }
@@ -174,11 +205,21 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
                         (TmDatum.Confirmed(txid, swept, fulfilled): TmDatum).toData
 
                     if dryRun then {
-                        Console.logSuccess(s"    [dry-run] would Confirm $utxoRef (TM in block at index ${tm.txIndex})")
+                        Console.logSuccess(
+                          s"    [dry-run] would Confirm $utxoRef (TM in block at index ${tm.txIndex})"
+                        )
                         processed(utxoRef) = "dry-run"
                     } else
                         TreasuryMovementTx.buildAndSubmitConfirm(
-                          provider, hdAccount, tmScript, tmAddress, utxo, oracleUtxo, redeemer, confirmed, timeout
+                          provider,
+                          hdAccount,
+                          tmScript,
+                          tmAddress,
+                          utxo,
+                          oracleUtxo,
+                          redeemer,
+                          confirmed,
+                          timeout
                         ) match {
                             case Right(hash) =>
                                 Console.logSuccess(s"    Confirmed: Cardano tx=$hash")

@@ -21,8 +21,8 @@ import cats.syntax.either.*
   *
   * Polls the [[TreasuryMovementValidator]] address for **Unconfirmed** TM UTxOs (datum
   * `Constr(0, [signed_btc_tx])`, as posted by heimdall's `publish.rs`), extracts the signed Bitcoin
-  * transaction, and broadcasts it to the Bitcoin node. This is the Cardano→Bitcoin transport step of
-  * the protocol (technical_documentation.md: "Watchtowers monitor `treasury_movement.ak` … and
+  * transaction, and broadcasts it to the Bitcoin node. This is the Cardano→Bitcoin transport step
+  * of the protocol (technical_documentation.md: "Watchtowers monitor `treasury_movement.ak` … and
   * broadcast it to the source blockchain network").
   *
   * Broadcast-only: it does **not** touch the Cardano datum. The validated `Unconfirmed → Confirmed`
@@ -60,7 +60,9 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
         val retryInterval = config.relay.retryInterval
         val timeout = config.oracle.transactionTimeout.seconds
 
-        val setup = CommandHelpers.setupOracle(config).valueOr { err => Console.error(err); break(1) }
+        val setup = CommandHelpers.setupOracle(config).valueOr { err =>
+            Console.error(err); break(1)
+        }
         val provider: BlockchainProvider = setup.provider
         val network = setup.network
         val oracleScriptHashBS = ByteString.fromArray(setup.script.scriptHash.bytes)
@@ -92,7 +94,9 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                             processed.contains(s"${in.transactionId.toHex}#${in.index}")
                         }
                         if newUtxos.isEmpty then
-                            val relayed = processed.values.count { case RelayResult.Relayed(_) => true; case _ => false }
+                            val relayed = processed.values.count {
+                                case RelayResult.Relayed(_) => true; case _ => false
+                            }
                             Console.logInPlace(
                               s"Polling... ${utxos.size} UTxO(s) at TM address, $relayed relayed"
                             )
@@ -102,17 +106,25 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                                 out.inlineDatum match {
                                     case Some(Data.Constr(0, args)) if args.nonEmpty =>
                                         args.head match {
-                                            case Data.B(txBytes) => relayOne(rpc, utxoRef, txBytes, processed)
+                                            case Data.B(txBytes) =>
+                                                relayOne(rpc, utxoRef, txBytes, processed)
                                             case other =>
-                                                Console.logWarn(s"  $utxoRef datum arg not ByteString: $other")
-                                                processed(utxoRef) = RelayResult.Rejected("datum arg not ByteString")
+                                                Console.logWarn(
+                                                  s"  $utxoRef datum arg not ByteString: $other"
+                                                )
+                                                processed(utxoRef) =
+                                                    RelayResult.Rejected("datum arg not ByteString")
                                         }
                                     case Some(Data.Constr(1, _)) =>
-                                        Console.log(s"  $utxoRef already Confirmed (Constr 1) — skipping")
-                                        processed(utxoRef) = RelayResult.Relayed("already-confirmed")
+                                        Console.log(
+                                          s"  $utxoRef already Confirmed (Constr 1) — skipping"
+                                        )
+                                        processed(utxoRef) =
+                                            RelayResult.Relayed("already-confirmed")
                                     case other =>
                                         Console.logWarn(s"  $utxoRef unexpected datum: $other")
-                                        processed(utxoRef) = RelayResult.Rejected("unexpected datum")
+                                        processed(utxoRef) =
+                                            RelayResult.Rejected("unexpected datum")
                                 }
                 }
 
@@ -141,7 +153,9 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
             try BitcoinHelpers.getTxHash(txBytes).reverse.toHex
             catch {
                 case t: Throwable =>
-                    Console.logWarn(s"  $utxoRef: malformed TM bytes — skipping (${t.getClass.getSimpleName})")
+                    Console.logWarn(
+                      s"  $utxoRef: malformed TM bytes — skipping (${t.getClass.getSimpleName})"
+                    )
                     processed(utxoRef) = RelayResult.Rejected("malformed")
                     return
             }
