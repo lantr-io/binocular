@@ -72,6 +72,17 @@ case class TmConfirmRedeemer(
 @Compile
 object TmConfirmRedeemer
 
+/** Datum of the TM-control state UTxO — holds the key authorized to mint TM NFTs. Lives in a UTxO
+  * authenticated by a one-shot control NFT (see [[TreasuryMovementValidator.findControlInput]]);
+  * the NFT, not this datum's location, is the trust anchor (a forged UTxO can carry any datum but
+  * not the one-shot NFT). `authorizedMinter` is a 28-byte pubkey-hash; level C will generalize this
+  * to a roster + leader-election rule, with no change to the TM script hash / address.
+  */
+case class TmControlDatum(authorizedMinter: ByteString) derives FromData, ToData
+
+@Compile
+object TmControlDatum
+
 /** Treasury-movement validator: enforces the `Unconfirmed -> Confirmed` transition on-chain.
   *
   * This replaces the always-ok scaffold (`TmtxScript`). The only legal spend of an
@@ -156,6 +167,27 @@ object TreasuryMovementValidator {
                             then resolved
                             else search(tail)
                         case _ => search(tail)
+        search(refInputs)
+    }
+
+    /** Find the TM-control state UTxO among reference inputs by its one-shot control NFT
+      * `(controlNftPolicy, controlNftName)`. The NFT — not the UTxO's address — is the trust
+      * anchor: it is minted exactly once, so a forged UTxO with an attacker-chosen
+      * [[TmControlDatum]] cannot carry it and is never read.
+      */
+    def findControlInput(
+        refInputs: ScalusList[TxInInfo],
+        controlNftPolicy: ByteString,
+        controlNftName: ByteString
+    ): TxOut = {
+        def search(remaining: ScalusList[TxInInfo]): TxOut =
+            remaining match
+                case ScalusList.Nil => fail("TM-control reference input (NFT) not found")
+                case ScalusList.Cons(input, tail) =>
+                    val resolved = input.resolved
+                    if resolved.value.quantityOf(controlNftPolicy, controlNftName) == BigInt(1) then
+                        resolved
+                    else search(tail)
         search(refInputs)
     }
 
@@ -257,13 +289,25 @@ object TreasuryMovementValidator {
       * leader-election (technical_documentation.md §"Post signed TM"). Only the authority key can
       * create a legitimate TM NFT, so a Confirmed TM UTxO bearing this policy's token is authentic.
       */
-    def mint(authorityPkh: ByteString, ownPolicyId: ByteString, tx: TxInfo): Unit = {
+    def mint(
+        controlNftPolicy: ByteString,
+        controlNftName: ByteString,
+        ownPolicyId: ByteString,
+        tx: TxInfo
+    ): Unit = {
         val minted = tx.mint.quantityOf(ownPolicyId, ByteString.empty)
         if minted > BigInt(0) then {
             require(minted == BigInt(1), "TM mint: must mint exactly one TM NFT")
+            // Read the authorized minter from the NFT-authenticated control UTxO (reference input),
+            // then require that key to have signed. The NFT proves WHICH datum is authoritative; the
+            // signature proves the authorized key acted. Neither alone suffices.
+            val authorizedMinter =
+                findControlInput(tx.referenceInputs, controlNftPolicy, controlNftName).datum match
+                    case OutputDatum.OutputDatum(d) => d.to[TmControlDatum].authorizedMinter
+                    case _                          => fail("TM-control UTxO needs an inline datum")
             require(
-              signedByAuthority(tx.signatories, authorityPkh),
-              "TM mint: not signed by the authority"
+              signedByAuthority(tx.signatories, authorizedMinter),
+              "TM mint: not signed by the authorized minter"
             )
         } else
             // minted < 0 => burning a TM NFT (drain). Permissionless cleanup. minted == 0 (only other
@@ -283,7 +327,12 @@ object TreasuryMovementValidator {
     /** Entry point: dispatch on script purpose — minting (the TM NFT) or spending (the Confirm
       * transition).
       */
-    def validate(oracleScriptHash: ByteString, authorityPkh: ByteString, scData: Data): Unit = {
+    def validate(
+        oracleScriptHash: ByteString,
+        controlNftPolicy: ByteString,
+        controlNftName: ByteString,
+        scData: Data
+    ): Unit = {
         val sc = unConstrData(scData).snd
         val txInfo = sc.head.to[TxInfo]
         val redeemer = sc.tail.head
@@ -292,7 +341,7 @@ object TreasuryMovementValidator {
         if tag == BigInt(0) then
             // MintingScript(policyId): policyId is this script's own hash.
             val ownPolicyId = unBData(scriptInfo.snd.head)
-            mint(authorityPkh, ownPolicyId, txInfo)
+            mint(controlNftPolicy, controlNftName, ownPolicyId, txInfo)
         else if tag == BigInt(1) then
             // SpendingScript(txOutRef, datum)
             val ownRef = scriptInfo.snd.head.to[TxOutRef]
@@ -302,24 +351,37 @@ object TreasuryMovementValidator {
     }
 }
 
-/** The TM validator parameterized with the Binocular oracle script hash and the TM-NFT mint
-  * authority pubkey-hash. The compiled script's hash is BOTH the TM UTxO address (spend) and the TM
-  * NFT policy id (mint). `Unconfirmed` UTxOs are locked here and spent into `Confirmed` ones; the
-  * TM NFT can only be minted by the authority.
+/** The TM validator parameterized with the Binocular oracle script hash and the TM-control NFT
+  * `(policy, name)`. The compiled script's hash is BOTH the TM UTxO address (spend) and the TM NFT
+  * policy id (mint). All three parameters are STABLE — the address does NOT depend on any
+  * participant key, so it never moves when the authorized minter / roster rotates (that lives in
+  * the NFT-authenticated [[TmControlDatum]], read at runtime). `Unconfirmed` UTxOs are locked here
+  * and spent into `Confirmed` ones; the TM NFT can only be minted by the key the control datum
+  * names.
   */
 object TreasuryMovementContract {
     given opts: Options = Options.release
 
-    /** Curried form: `oracleScriptHash -> authorityPkh -> (scriptContext -> ())`. Applied via
-      * `.apply`, exactly like the always-ok scaffold bakes in its salt.
+    /** Curried form: `oracleScriptHash -> controlNftPolicy -> controlNftName -> (scriptContext ->
+      * ())`. Applied via `.apply`, like the always-ok scaffold bakes in its salt.
       */
-    lazy val parameterized: PlutusV3[ByteString => (ByteString => (Data => Unit))] =
+    lazy val parameterized: PlutusV3[ByteString => (ByteString => (ByteString => (Data => Unit)))] =
         PlutusV3.compile((oracleScriptHash: ByteString) =>
-            (authorityPkh: ByteString) =>
-                (scData: Data) =>
-                    TreasuryMovementValidator.validate(oracleScriptHash, authorityPkh, scData)
+            (controlNftPolicy: ByteString) =>
+                (controlNftName: ByteString) =>
+                    (scData: Data) =>
+                        TreasuryMovementValidator.validate(
+                          oracleScriptHash,
+                          controlNftPolicy,
+                          controlNftName,
+                          scData
+                        )
         )
 
-    def contract(oracleScriptHash: ByteString, authorityPkh: ByteString): PlutusV3[Data => Unit] =
-        parameterized.apply(oracleScriptHash).apply(authorityPkh)
+    def contract(
+        oracleScriptHash: ByteString,
+        controlNftPolicy: ByteString,
+        controlNftName: ByteString
+    ): PlutusV3[Data => Unit] =
+        parameterized.apply(oracleScriptHash).apply(controlNftPolicy).apply(controlNftName)
 }

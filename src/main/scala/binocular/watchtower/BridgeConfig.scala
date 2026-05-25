@@ -30,9 +30,11 @@ case class BridgeConfig(
     // reconstruct the script in order to SPEND the MPF UTxO. The config NFT, by contrast, is only a
     // reference input, so it is located by its NFT and needs no script. Empty until F3 is deployed.
     completedPegInsOneShotRef: String = "",
-    // Pubkey-hash (28-byte hex) of the authority allowed to mint the TM NFT (the SPO/poster key that
-    // signs the Post-TM tx — on the devnet, heimdall's Cardano wallet key). Parameterizes
-    // TreasuryMovementValidator, so it also affects the TM script hash / address. Must match the key
-    // heimdall signs Post-TM with. Empty = placeholder (mint cannot be authorized).
-    tmAuthorityPkh: String = ""
+    // The TM-control NFT (one-shot) that authenticates the control UTxO whose TmControlDatum names
+    // the key authorized to mint the TM NFT. These parameterize TreasuryMovementValidator (so they
+    // fix the TM script hash / address) and are STABLE — the address does NOT depend on the
+    // authorized key, which lives in the control datum and can rotate freely. policy = 28-byte hex;
+    // name = hex asset name. Empty = placeholder (until the control UTxO is deployed).
+    tmControlNftPolicy: String = "",
+    tmControlNftName: String = ""
 ) derives ConfigReader
