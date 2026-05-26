@@ -268,16 +268,20 @@ object TreasuryMovementValidator {
         )
         require(computedRoot == proof.blockHeader.merkleRoot, "TM tx not in block merkle root")
 
-        // 5. The continuing output preserves value (TM token carried) and carries the parsed
-        //    Confirmed datum.
+        // 5. The continuing output carries the TM NFT and the parsed Confirmed datum.
         val ownOut = ownResolved(tx.inputs, ownRef)
         val contOut = continuingOutput(tx.outputs, ownOut.address)
-        // check NFT, don't check ADA amount. 
-        // It should decrease because new Datum is smaller hence new minUTXO is smaller.
-        // The difference goes to the watchtower as a reward.
+        // Preserve the TM NFT (the minted part), NOT the exact Value. The lovelace need not match:
+        // the Confirmed datum is a different size (so a different min-UTxO), and any lovelace
+        // difference (tx fees / a watchtower reward) is allowed. The TM NFT (policy = this script's
+        // own hash, since spend + mint share the script; empty asset name) is what authenticates the
+        // Confirmed UTxO downstream, so it MUST ride along.
+        val tmNftPolicy = ownOut.address.credential match
+            case Credential.ScriptCredential(h) => h
+            case _                              => fail("TM input is not at a script address")
         require(
-          equalsData(contOut.value.toData, ownOut.value.toData),
-          "TM value/token not preserved"
+          contOut.value.quantityOf(tmNftPolicy, ByteString.empty) == BigInt(1),
+          "TM NFT not preserved on the continuing output"
         )
 
         // 6. Ensure it's the real TM transaction by checking the presence of the TM input and output using address from Treasury State UTxO (reference input by NFT)

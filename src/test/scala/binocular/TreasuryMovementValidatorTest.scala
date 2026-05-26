@@ -36,7 +36,17 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     private val authorityPkh = filled(0x7a, 28) // the key the control datum authorizes to mint
     private val controlNftPolicy = filled(0xc0, 28)
     private val controlNftName = ByteString.fromHex("544d43") // "TMC"
-    private val tmValue = Value.lovelace(2_000_000)
+    // The TM UTxO carries the TM NFT (policy = the TM script's own hash — here the stand-in
+    // `tmScriptHash` the input/output sit at — empty asset name, qty 1) plus some ADA. The spend
+    // validator derives the NFT policy from the UTxO's own address and requires it on the continuing
+    // output; the ADA need not be preserved.
+    private val tmValue: Value =
+        Value.unsafeFromList(
+          PList(
+            (ByteString.empty, PList((ByteString.empty, BigInt(2_000_000)))),
+            (tmScriptHash, PList((ByteString.empty, BigInt(1))))
+          )
+        )
 
     private def filled(v: Int, n: Int): ByteString =
         ByteString.fromArray(Array.fill[Byte](n)(v.toByte))
@@ -267,9 +277,26 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
 
-    test("value not preserved (TM token dropped) fails") {
+    test("TM NFT dropped from the continuing output fails") {
+        // Continuing output keeps only ADA, no TM NFT — must be rejected (the NFT authenticates the
+        // Confirmed UTxO downstream).
         val sc = scriptContext(Value.lovelace(1_000_000), confirmedDatum(), redeemer(mpfProof))
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("lovelace reduced but TM NFT preserved succeeds") {
+        // The exact Value need NOT be preserved — only the TM NFT. A smaller Confirmed datum means a
+        // smaller min-UTxO; the lovelace difference (fees / watchtower reward) is allowed.
+        val reduced =
+            Value.unsafeFromList(
+              PList(
+                (ByteString.empty, PList((ByteString.empty, BigInt(1_000_000)))),
+                (tmScriptHash, PList((ByteString.empty, BigInt(1))))
+              )
+            )
+        val sc = scriptContext(reduced, confirmedDatum(), redeemer(mpfProof))
+        val result = program.applyArg(sc.toData).evaluateDebug
+        assert(result.isSuccess, s"Expected success, got: $result")
     }
 
     test("oracle reference input without the oracle NFT fails") {
