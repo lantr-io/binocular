@@ -88,7 +88,7 @@ class BifrostContractsTest extends AnyFunSuite {
         // the old policy are orphaned and must be re-minted under this one.
         val pegIn =
             PegInContract(blueprint, oraclePolicy, configPolicy, configAssetName, tmNftPolicy)
-        assert(hex(pegIn.policyId) == "34a223e1b217dfc03f405f085dbf6174263e03fd45969f706fbf0c51")
+        assert(hex(pegIn.policyId) == "274bc78ba9339522165868f09bbb1caad0a9a3431d71249b0ad03cf3")
     }
 
     // --- determinism + parameter-sensitivity ---
