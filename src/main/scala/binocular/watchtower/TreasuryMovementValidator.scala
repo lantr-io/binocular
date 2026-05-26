@@ -238,9 +238,9 @@ object TreasuryMovementValidator {
         // Only the Unconfirmed -> Confirmed transition is a legal spend.
         val signedBtcTx = datum match
             case TmDatum.Unconfirmed(rawTx) => rawTx
-            case TmDatum.Confirmed(_)        => 
-                // TODO: implement burning the TM NFT to clean up Confirmed UTxOs after some time 
-                // (or via a separate cleanup command) so we don't need to keep them around forever. 
+            case TmDatum.Confirmed(_, _, _) =>
+                // TODO: implement burning the TM NFT to clean up Confirmed UTxOs after some time
+                // (or via a separate cleanup command) so we don't need to keep them around forever.
                 // For now, just fail if anyone tries to spend a Confirmed UTxO.
                 fail("TM UTxO is not Unconfirmed")
 
@@ -286,7 +286,10 @@ object TreasuryMovementValidator {
         val swept = allInputOutpoints(signedBtcTx)
         val fulfilled = allOutputs(signedBtcTx)
         val exp = OutputDatum.OutputDatum(TmDatum.Confirmed(txid, swept, fulfilled).toData)
-        require(exp == contOut.datum, "Continuing output datum does not match parsed TM Confirmed")
+        require(
+          equalsData(exp.toData, contOut.datum.toData),
+          "Continuing output datum does not match parsed TM Confirmed"
+        )
     }
 
     /** Minting policy for the TM NFT — the policy id IS this script's hash, so the NFT and the
