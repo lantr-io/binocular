@@ -98,6 +98,8 @@ object TmControlDatum
   *      TM identity token rides along), and carries a `Confirmed` datum whose `btcTxid` /
   *      `sweptPegInUtxoIds` / `fulfilledPegOuts` are exactly what the contract parsed out of the
   *      raw TM transaction.
+  *   6. Make sure the `signedBtcTx` is the Treasury Movement transaction: check the presence of the TM input and output using address from Treasury State UTxO (reference input by NFT)
+  *        
   *
   * Parameterized by the Binocular oracle script hash (applied via
   * [[TreasuryMovementContract.contract]]).
@@ -236,7 +238,11 @@ object TreasuryMovementValidator {
         // Only the Unconfirmed -> Confirmed transition is a legal spend.
         val signedBtcTx = datum match
             case TmDatum.Unconfirmed(rawTx) => rawTx
-            case _                          => fail("TM UTxO is not Unconfirmed")
+            case TmDatum.Confirmed(_)        => 
+                // TODO: implement burning the TM NFT to clean up Confirmed UTxOs after some time 
+                // (or via a separate cleanup command) so we don't need to keep them around forever. 
+                // For now, just fail if anyone tries to spend a Confirmed UTxO.
+                fail("TM UTxO is not Unconfirmed")
 
         val proof = redeemer.to[TmConfirmRedeemer]
 
@@ -266,18 +272,21 @@ object TreasuryMovementValidator {
         //    Confirmed datum.
         val ownOut = ownResolved(tx.inputs, ownRef)
         val contOut = continuingOutput(tx.outputs, ownOut.address)
+        // check NFT, don't check ADA amount. 
+        // It should decrease because new Datum is smaller hence new minUTXO is smaller.
+        // The difference goes to the watchtower as a reward.
         require(
           equalsData(contOut.value.toData, ownOut.value.toData),
           "TM value/token not preserved"
         )
 
+        // 6. Ensure it's the real TM transaction by checking the presence of the TM input and output using address from Treasury State UTxO (reference input by NFT)
+        // TODO:
+
         val swept = allInputOutpoints(signedBtcTx)
         val fulfilled = allOutputs(signedBtcTx)
-        val expected: Data = (TmDatum.Confirmed(txid, swept, fulfilled): TmDatum).toData
-        val actual = contOut.datum match
-            case OutputDatum.OutputDatum(d) => d
-            case _                          => fail("Confirmed TM output needs an inline datum")
-        require(equalsData(actual, expected), "Confirmed datum does not match parsed TM")
+        val exp = OutputDatum.OutputDatum(TmDatum.Confirmed(txid, swept, fulfilled).toData)
+        require(exp == contOut.datum, "Continuing output datum does not match parsed TM Confirmed")
     }
 
     /** Minting policy for the TM NFT — the policy id IS this script's hash, so the NFT and the
@@ -312,6 +321,8 @@ object TreasuryMovementValidator {
         } else
             // minted < 0 => burning a TM NFT (drain). Permissionless cleanup. minted == 0 (only other
             // asset names under this policy) is rejected.
+            // TODO: allow burning when spending a Confirmed TM UTxO, so cleanup can be done in one step. 
+            // For now, just fail if anyone tries to burn without minting in the same tx.
             require(minted < BigInt(0), "TM mint: nothing minted/burned under the TM policy")
     }
 
