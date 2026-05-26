@@ -344,6 +344,11 @@ object TreasuryMovementValidator {
 
     /** Entry point: dispatch on script purpose — minting (the TM NFT) or spending (the Confirm
       * transition).
+      *
+      * Decodes the script context with the typed [[ScriptContext]] / [[ScriptInfo]] and pattern
+      * matches on the purpose. (This used to hand-decode via `unConstrData`/`unBData` — a workaround
+      * from before Scalus V3 lowering made `to`/`toData` no-ops on the structural script-context
+      * types; the straightforward form now compiles to the same field projections.)
       */
     def validate(
         oracleScriptHash: ByteString,
@@ -351,21 +356,14 @@ object TreasuryMovementValidator {
         controlNftName: ByteString,
         scData: Data
     ): Unit = {
-        val sc = unConstrData(scData).snd
-        val txInfo = sc.head.to[TxInfo]
-        val redeemer = sc.tail.head
-        val scriptInfo = unConstrData(sc.tail.tail.head)
-        val tag = scriptInfo.fst
-        if tag == BigInt(0) then
+        val ctx = scData.to[ScriptContext]
+        ctx.scriptInfo match
             // MintingScript(policyId): policyId is this script's own hash.
-            val ownPolicyId = unBData(scriptInfo.snd.head)
-            mint(controlNftPolicy, controlNftName, ownPolicyId, txInfo)
-        else if tag == BigInt(1) then
-            // SpendingScript(txOutRef, datum)
-            val ownRef = scriptInfo.snd.head.to[TxOutRef]
-            val datumOpt = scriptInfo.snd.tail.head.to[Option[Datum]]
-            spend(oracleScriptHash, datumOpt, txInfo, ownRef, redeemer)
-        else fail("TM validator: unsupported script purpose")
+            case ScriptInfo.MintingScript(ownPolicyId) =>
+                mint(controlNftPolicy, controlNftName, ownPolicyId, ctx.txInfo)
+            case ScriptInfo.SpendingScript(ownRef, datumOpt) =>
+                spend(oracleScriptHash, datumOpt, ctx.txInfo, ownRef, ctx.redeemer)
+            case _ => fail("TM validator: unsupported script purpose")
     }
 }
 
