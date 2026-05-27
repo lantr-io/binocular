@@ -494,28 +494,30 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
                             }
 
                         case Left(err) =>
-                            Console.logError(s"Tx failed: $err")
-                            // "All inputs are spent" / "BadInputsUTxO" mean a previous tx of
-                            // ours was actually included. Wait for the new oracle UTxO before
-                            // doing anything else, otherwise we will keep rebuilding against
-                            // the now-spent cached input.
+                            // "All inputs are spent" / "BadInputsUTxO" mean another submitter
+                            // (typically another watchtower instance) spent the oracle input
+                            // before our tx landed. This is expected in multi-instance
+                            // deployments — adopt the new oracle UTxO and continue.
                             val inputsSpent =
                                 err.contains("All inputs are spent") ||
                                     err.contains("BadInputsUTxO")
                             if inputsSpent then {
-                                Console.logWarn(
-                                  "Inputs already spent — waiting for new oracle UTxO..."
+                                Console.log(
+                                  "Another submitter advanced the oracle first — adopting their UTxO and continuing"
                                 )
                                 waitForOracleUtxoChange(currentOracleUtxo.input) match {
                                     case Some(newUtxo) =>
-                                        adoptOracleUtxo(newUtxo, "post-spent recovery")
+                                        adoptOracleUtxo(newUtxo, "lost submission race")
                                     case None =>
                                         Console.logWarn(
                                           "No new oracle UTxO observed; falling back to refresh"
                                         )
                                         refreshOracleState()
                                 }
-                            } else refreshOracleState()
+                            } else {
+                                Console.logError(s"Tx failed: $err")
+                                refreshOracleState()
+                            }
                     }
                 }
             } catch {
