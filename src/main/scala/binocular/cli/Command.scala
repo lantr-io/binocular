@@ -182,6 +182,21 @@ object CommandHelpers {
         }
     }
 
+    /** Derive the TM-NFT policy id = the binocular [[TreasuryMovementValidator]] script hash,
+      * parameterized by the oracle script hash + the TM-control NFT `(policy, name)` from config.
+      * This is the policy `peg_in.ak` requires on the referenced Confirmed TM UTxO (its 4th param,
+      * `tm_nft_policy_id`), so the peg_in script hash now depends on it — every site that builds
+      * [[PegInContract]] must apply the same value.
+      */
+    def tmNftPolicy(config: BinocularConfig, oracleScriptHash: ScriptHash): ByteString = {
+        val tmScript = TreasuryMovementContract.contract(
+          ByteString.fromArray(oracleScriptHash.bytes),
+          ByteString.fromHex(config.bridge.tmControlNftPolicy),
+          ByteString.fromHex(config.bridge.tmControlNftName)
+        )
+        ByteString.fromArray(tmScript.script.scriptHash.bytes)
+    }
+
     /** Set up all the common oracle infrastructure (params, wallet, provider, compiled contract).
       *
       * Returns Left(error) on any setup failure.

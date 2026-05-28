@@ -376,17 +376,18 @@ Before considering work complete:
 
 ### Pre-submission Checklist
 
-1. **Code compiles cleanly**: `sbt compile`
-2. **Tests pass**: `sbt test`
-3. **Code follows patterns**: Check similar existing code
-4. **Type aliases used**: No raw `ByteString` where type aliases exist
-5. **Documentation updated**:
+1. **Code formatted**: `sbt scalafmtAll` — run scalafmt before every commit
+2. **Code compiles cleanly**: `sbt compile`
+3. **Tests pass**: `sbt test`
+4. **Code follows patterns**: Check similar existing code
+5. **Type aliases used**: No raw `ByteString` where type aliases exist
+6. **Documentation updated**:
     - [ ] Whitepaper.md updated
     - [ ] Litepaper.md updated (if major change)
     - [ ] Implementation references accurate
     - [ ] Line numbers in references updated
-6. **Bitcoin Core references preserved**: All algorithm comments intact
-7. **Testing completed**: Integration tests run if applicable
+7. **Bitcoin Core references preserved**: All algorithm comments intact
+8. **Testing completed**: Integration tests run if applicable
 
 ### Commit Messages
 

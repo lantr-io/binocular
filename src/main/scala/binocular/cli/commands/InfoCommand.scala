@@ -5,6 +5,9 @@ import binocular.bitcoin.*
 import binocular.oracle.*
 import binocular.watchtower.*
 import binocular.cli.Command
+import scalus.cardano.address.Address
+import scalus.cardano.ledger.Credential
+import scalus.uplc.builtin.ByteString
 
 /** Display oracle configuration and information */
 case class InfoCommand() extends Command {
@@ -58,6 +61,25 @@ case class InfoCommand() extends Command {
         println(s"  Poll Interval: ${oracle.pollInterval}s")
         println(s"  Retry Interval: ${oracle.retryInterval}s")
         println(s"  Transaction Timeout: ${oracle.transactionTimeout}s")
+
+        println()
+        println("[Treasury Movement]")
+        oracle.toBitcoinValidatorParams(config.bitcoinNode.bitcoinNetwork) match {
+            case Right(params) =>
+                val oracleHash = BitcoinContract.makeContract(params).script.scriptHash
+                val tmScript = TreasuryMovementContract.contract(
+                  ByteString.fromArray(oracleHash.bytes),
+                  ByteString.fromHex(config.bridge.tmControlNftPolicy),
+                  ByteString.fromHex(config.bridge.tmControlNftName)
+                )
+                val tmHash = tmScript.script.scriptHash
+                val tmAddr = Address(cardano.scalusNetwork, Credential.ScriptHash(tmHash)).encode
+                println(s"  Validator Script Hash: ${tmHash.toHex}")
+                println(s"  Validator Address: ${tmAddr.getOrElse("(error)")}")
+                println("  (set heimdall cardano.treasury_address to this)")
+            case Left(_) =>
+                println("  Validator Address: (oracle not configured)")
+        }
 
         println()
         println("[Wallet]")

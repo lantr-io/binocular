@@ -17,6 +17,7 @@ import scala.concurrent.duration.*
 import scala.util.boundary
 import boundary.break
 import scalus.utils.await
+import cats.syntax.either.*
 
 /** Create a TMTx UTxO on Cardano for testing the relay command.
   *
@@ -55,20 +56,35 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
         val signer = hdAccount.signerForUtxos
         val sponsorAddress = hdAccount.baseAddress(network)
 
-        // Use the project-unique alwaysOk script (salt baked in for distinct policy ID)
+        // Marker token: the project-unique alwaysOk policy (salt baked in for a distinct policy ID).
         val mintingScript = TmtxScript.mintingScript
         val policyId = mintingScript.script.scriptHash
         val assetName = AssetName.fromString(config.relay.tmtxAssetName)
-        val scriptAddress = Address(network, Credential.ScriptHash(policyId))
+
+        // The Unconfirmed TM UTxO lives at the TreasuryMovementValidator address (parameterized by
+        // the oracle script hash) — the same place confirm-tmtx spends it from.
+        val oracleParams = config.oracle
+            .toBitcoinValidatorParams(config.bitcoinNode.bitcoinNetwork)
+            .valueOr { err =>
+                Console.error(s"Oracle params: $err"); break(1)
+            }
+        val oracleScriptHashBS =
+            ByteString.fromArray(BitcoinContract.makeContract(oracleParams).script.scriptHash.bytes)
+        val tmScript = TreasuryMovementContract.contract(
+          oracleScriptHashBS,
+          ByteString.fromHex(config.bridge.tmControlNftPolicy),
+          ByteString.fromHex(config.bridge.tmControlNftName)
+        )
+        val scriptAddress = Address(network, Credential.ScriptHash(tmScript.script.scriptHash))
 
         Console.info("Cardano", config.cardano.network)
         Console.info(
           "Wallet",
           sponsorAddress.encode.getOrElse("?")
         )
-        Console.info("TMTx policy", policyId.toHex)
-        Console.info("TMTx asset", config.relay.tmtxAssetName)
-        Console.info("Script address", scriptAddress.encode.getOrElse("?"))
+        Console.info("Marker token policy", policyId.toHex)
+        Console.info("Marker token asset", config.relay.tmtxAssetName)
+        Console.info("TM validator address", scriptAddress.encode.getOrElse("?"))
         Console.info("BTC tx hex", s"${btcTxHex.take(40)}... (${btcTxHex.length / 2} bytes)")
 
         // Check if the policy ID matches the config
@@ -81,10 +97,11 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
         Console.separator()
         println()
 
-        // Build the datum: Constr 1 [ByteString]
+        // Build the Unconfirmed datum: Constr 0 [signed_btc_tx] — matches heimdall publish.rs and
+        // what TreasuryMovementValidator expects to spend.
         val btcTxBytes = ByteString.fromHex(btcTxHex)
         import scalus.cardano.onchain.plutus.prelude.List as ScalusList
-        val datum = Data.Constr(1, ScalusList(Data.B(btcTxBytes)))
+        val datum = Data.Constr(0, ScalusList(Data.B(btcTxBytes)))
 
         // Mint TMTx token and send to script address with datum
         val mintAssets = Map(assetName -> 1L)

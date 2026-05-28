@@ -24,7 +24,10 @@ import cats.syntax.either.*
   * depositor input. The BTC tx must already be in a block that the oracle's `confirmed_blocks_root`
   * commits to.
   */
-case class PegInRequestCommand(btcTxId: String, dryRun: Boolean = false) extends Command {
+case class PegInRequestCommand(
+    btcTxId: String,
+    dryRun: Boolean = false
+) extends Command {
 
     override def execute(config: BinocularConfig): Int = boundary {
         Console.header("Binocular Peg-In Request")
@@ -68,7 +71,8 @@ case class PegInRequestCommand(btcTxId: String, dryRun: Boolean = false) extends
           blueprint,
           ByteString.fromArray(oraclePolicyId.bytes),
           hexBytes("bridge.config-nft-policy-id", config.bridge.configNftPolicyId, Some(56)),
-          hexBytes("bridge.config-nft-asset-name", config.bridge.configNftAssetName, None)
+          hexBytes("bridge.config-nft-asset-name", config.bridge.configNftAssetName, None),
+          CommandHelpers.tmNftPolicy(config, oraclePolicyId)
         )
         Console.info("Oracle policy", oraclePolicyId.toHex)
         Console.info("Peg-in policy", pegIn.policyId.toHex)
@@ -104,24 +108,7 @@ case class PegInRequestCommand(btcTxId: String, dryRun: Boolean = false) extends
         Console.info("Depositor xonly", bundle.userSourceChainPubKey.toHex)
         println()
 
-        // owner_auth = the depositor-auth withdraw script, parameterized by the fBTC asset so it
-        // can bind the completion's fBTC output to the depositor's chosen recipient. Placeholder
-        // bridged-token params for now (finalized with the config NFT at deploy time / F3).
-        val authParams = PegInDepositorAuthParams(
-          pegInScriptHash = ByteString.fromArray(pegIn.policyId.bytes),
-          bridgedTokenPolicyId = hexBytes(
-            "bridge.bridged-token-policy-id",
-            config.bridge.bridgedTokenPolicyId,
-            Some(56)
-          ),
-          bridgedTokenAssetName =
-              hexBytes("bridge.bridged-token-asset-name", config.bridge.bridgedTokenAssetName, None)
-        )
-        val ownerAuthHash =
-            ByteString.fromArray(
-              PegInDepositorAuthContract.makeContract(authParams).script.scriptHash.bytes
-            )
-        // BTC outpoint: 32-byte internal (LE) txid ++ 4-byte little-endian vout
+        // BTC outpoint: 32-byte internal (LE) txid ++ 4-byte little-endian vout.
         val vout = bundle.pegInVout
         val voutLE = Array[Byte](
           (vout & 0xff).toByte,
@@ -132,12 +119,20 @@ case class PegInRequestCommand(btcTxId: String, dryRun: Boolean = false) extends
         val pegInUtxoId =
             ByteString.fromArray(btcTxId.hexToBytes.reverse) ++ ByteString.fromArray(voutLE)
 
+        // owner_auth is now vestigial: completion authorizes the depositor via an embedded BIP340
+        // Schnorr in peg_in.ak (keyed by user_source_chain_pub_key, bound to the deposit at mint),
+        // and the peg-in CLOSE path (Cancel) delegates to the config[12] close verifier — neither
+        // uses owner_auth. The field is kept for datum-shape stability; set to an inert,
+        // never-satisfiable signature credential so it can never be (mis)used as an auth path.
+        // source_chain_treasury_utxo_id is likewise no longer read on-chain (the legit_TM_verifier
+        // was retired); left empty. The `--tm` flag this command used to take was removed when
+        // the field became dead.
         val datum = PegInDatum(
-          ownerAuth = AuthorizationMethod.CardanoWithdrawScript(ownerAuthHash),
+          ownerAuth = AuthorizationMethod.CardanoSignature(ByteString.empty),
           sourceChainPegInRawTx = bundle.rawTxHex,
           sourceChainPegInRawTxIndex = BigInt(bundle.txIndex),
           pegInUtxoId = pegInUtxoId,
-          sourceChainTreasuryUtxoId = ByteString.empty, // placeholder; mint path does not check it
+          sourceChainTreasuryUtxoId = ByteString.empty,
           pegInAmount = BigInt(bundle.pegInAmountSat),
           userSourceChainPubKey = bundle.userSourceChainPubKey
         )
