@@ -98,8 +98,14 @@ object TmControlDatum
   *      TM identity token rides along), and carries a `Confirmed` datum whose `btcTxid` /
   *      `sweptPegInUtxoIds` / `fulfilledPegOuts` are exactly what the contract parsed out of the
   *      raw TM transaction.
-  *   6. Make sure the `signedBtcTx` is the Treasury Movement transaction: check the presence of the
-  *      TM input and output using address from Treasury State UTxO (reference input by NFT)
+  *   6. **NOT YET ENFORCED** (open TODO at the spend handler): check that `signedBtcTx` is in fact
+  *      the protocol's Treasury Movement transaction by matching its input/output script-pubkey
+  *      against the address recorded in a referenced Treasury-State UTxO (NFT-authenticated). The
+  *      current implementation validates only the TM NFT identity + the parsed-vs-datum agreement
+  *      below, so on-chain does NOT yet rule out an attacker producing a syntactically valid but
+  *      semantically-unrelated raw Bitcoin tx whose merkle inclusion proof happens to validate
+  *      against the same block header. Wiring this is gated on the Treasury-State UTxO shape being
+  *      finalised; until then operators must rely on heimdall posting only legitimate TM bytes.
   *
   * Parameterized by the Binocular oracle script hash (applied via
   * [[TreasuryMovementContract.contract]]).

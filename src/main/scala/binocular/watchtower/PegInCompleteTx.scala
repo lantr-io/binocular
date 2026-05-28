@@ -115,6 +115,10 @@ object PegInCompleteTx {
             )
 
         // The lone peg_in reward redeemer's position in the on-chain `self.redeemers` list.
+        // `MultiAsset.assets: SortedMap[PolicyId, SortedMap[AssetName, Long]]` keys at the outer
+        // level by policy, so `.assets.size` counts distinct policies — matching the on-chain
+        // Mint-tag flat-list cardinality (one redeemer per policy id, irrespective of how many
+        // asset names that policy mints in the same tx).
         def pegInWithdrawRedeemerIndex(tx: Transaction): BigInt = {
             val scriptSpends =
                 Seq(inputs.pir.input, inputs.completedPegIns.input).count(inputsSorted(tx).contains)
@@ -136,12 +140,7 @@ object PegInCompleteTx {
               addedPegInToCompletedPegInsInclusionProof = completedPegInsProof,
               pegInInCompletedPegInsExclusionProof = completedPegInsProof
             )
-            val d = PegInWithdrawRedeemer(configRefIndex(tx), action).toData
-            System.err.println(s"[DEBUG] pegInWithdrawRedeemer = $d")
-            System.err.println(
-              s"[DEBUG] fbtcOutputIndex=${fbtcOutputIndex(tx)} cpiInIdx=${inputIndex(tx, inputs.completedPegIns)} configRefIdx=${configRefIndex(tx)} withdrawRedeemerIdx=${pegInWithdrawRedeemerIndex(tx)}"
-            )
-            d
+            PegInWithdrawRedeemer(configRefIndex(tx), action).toData
         }
 
         val completedPegInsSpendRedeemer: Transaction => Data = tx =>

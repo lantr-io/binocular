@@ -26,7 +26,6 @@ import cats.syntax.either.*
   */
 case class PegInRequestCommand(
     btcTxId: String,
-    tmTxId: Option[String] = None,
     dryRun: Boolean = false
 ) extends Command {
 
@@ -126,7 +125,8 @@ case class PegInRequestCommand(
         // uses owner_auth. The field is kept for datum-shape stability; set to an inert,
         // never-satisfiable signature credential so it can never be (mis)used as an auth path.
         // source_chain_treasury_utxo_id is likewise no longer read on-chain (the legit_TM_verifier
-        // was retired); left empty. `--tm` is accepted but unused.
+        // was retired); left empty. The `--tm` flag this command used to take was removed when
+        // the field became dead.
         val datum = PegInDatum(
           ownerAuth = AuthorizationMethod.CardanoSignature(ByteString.empty),
           sourceChainPegInRawTx = bundle.rawTxHex,

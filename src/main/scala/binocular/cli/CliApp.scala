@@ -38,7 +38,7 @@ object CliApp {
         case SpendTmtx
         case ConfirmTmtx(dryRun: Boolean)
         case TmScript
-        case PegInRequest(btcTxId: String, tmTxId: Option[String], dryRun: Boolean)
+        case PegInRequest(btcTxId: String, dryRun: Boolean)
         case DeployBridge(authorizedMinter: Option[String], dryRun: Boolean)
         case DeployScriptRefs(dryRun: Boolean)
         case RegisterBridgeCreds(dryRun: Boolean)
@@ -203,14 +203,11 @@ object CliApp {
               "pegin-request",
               "Mint a PegInRequest on Cardano for a confirmed BTC peg-in tx"
             ) {
-                val tmOpt = Opts
-                    .option[String](
-                      "tm",
-                      "Sweeping Treasury Movement BTC txid — derives source_chain_treasury_utxo_id " +
-                          "(its input-0 outpoint), required for the PIR to be completable"
-                    )
-                    .orNone
-                (btcTxIdArg, tmOpt, dryRunFlag).mapN(Cmd.PegInRequest.apply)
+                // The retired legit_TM_verifier path used to read source_chain_treasury_utxo_id
+                // from the PIR datum, so we accepted a `--tm` flag to derive it. The verifier was
+                // removed (B1 references the Confirmed TM UTxO directly), the datum field is now
+                // left empty, and `--tm` no longer affects anything — so the flag is gone too.
+                (btcTxIdArg, dryRunFlag).mapN(Cmd.PegInRequest.apply)
             }
 
         val deployBridgeCommand =
@@ -380,8 +377,8 @@ object CliApp {
                             ConfirmTmtxCommand(dryRun)
                         case Cmd.TmScript =>
                             TmScriptCommand()
-                        case Cmd.PegInRequest(btcTxId, tmTxId, dryRun) =>
-                            PegInRequestCommand(btcTxId, tmTxId, dryRun)
+                        case Cmd.PegInRequest(btcTxId, dryRun) =>
+                            PegInRequestCommand(btcTxId, dryRun)
                         case Cmd.DeployBridge(authorizedMinter, dryRun) =>
                             DeployBridgeCommand(authorizedMinter, dryRun)
                         case Cmd.DeployScriptRefs(dryRun) =>
