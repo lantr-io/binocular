@@ -61,10 +61,22 @@ object PegInCompleteTx {
         confirmedTm: Utxo
     )
 
+    /** The three CIP-33 reference-script UTxOs that supply the heavy Plutus scripts. Each must
+      * be an existing UTxO whose `scriptRef` field carries the matching script. Without these
+      * the witness set inlines ~28 KB and the tx exceeds Cardano's 16 KB max. Set to `None` to
+      * fall back to inlining the script in the witness set (only viable for tiny txs).
+      */
+    final case class ScriptRefs(
+        pegIn: Option[Utxo],
+        completedPegIns: Option[Utxo],
+        bridgedToken: Option[Utxo]
+    )
+
     def build(
         provider: BlockchainProvider,
         sponsor: HdAccount,
         scripts: Scripts,
+        scriptRefs: ScriptRefs,
         inputs: Inputs,
         datum: PegInDatum,
         recipientAddress: Address,
@@ -122,7 +134,12 @@ object PegInCompleteTx {
               addedPegInToCompletedPegInsInclusionProof = completedPegInsProof,
               pegInInCompletedPegInsExclusionProof = completedPegInsProof
             )
-            PegInWithdrawRedeemer(configRefIndex(tx), action).toData
+            val d = PegInWithdrawRedeemer(configRefIndex(tx), action).toData
+            System.err.println(s"[DEBUG] pegInWithdrawRedeemer = $d")
+            System.err.println(
+              s"[DEBUG] fbtcOutputIndex=${fbtcOutputIndex(tx)} cpiInIdx=${inputIndex(tx, inputs.completedPegIns)} configRefIdx=${configRefIndex(tx)} withdrawRedeemerIdx=${pegInWithdrawRedeemerIndex(tx)}"
+            )
+            d
         }
 
         val completedPegInsSpendRedeemer: Transaction => Data = tx =>
@@ -150,21 +167,74 @@ object PegInCompleteTx {
 
         def stake(h: ScriptHash): StakeAddress = StakeAddress(network, StakePayload.Script(h))
         import TwoArgumentPlutusScriptWitness.attached
+        import scalus.cardano.txbuilder.{
+            ScriptSource,
+            ThreeArgumentPlutusScriptWitness,
+            TwoArgumentPlutusScriptWitness => TwoArg
+        }
 
-        TxBuilder(provider.cardanoInfo)
-            .spend(inputs.pir, Data.unit, scripts.pegIn)
-            .spend(inputs.completedPegIns, completedPegInsSpendRedeemer, scripts.completedPegIns)
-            .references(inputs.config, inputs.confirmedTm)
-            .mint(
-              scripts.bridgedToken,
-              Map(bridgedTokenAsset -> pegInAmount),
-              bridgedTokenMintRedeemer
-            )
-            .withdrawRewards(
-              stake(scripts.pegIn.scriptHash),
-              Coin.zero,
-              attached(scripts.pegIn, pegInWithdrawRedeemer)
-            )
+        // Reference-script wiring (CIP-33). When the bridge's ref UTxOs are configured, attach the
+        // scripts via reference inputs (PlutusScriptAttached) — drops ~28 KB of inlined script
+        // bytes from the witness set and keeps the tx under Cardano's 16 KB max. When a ref is
+        // missing the script falls back to inlining (PlutusScriptValue) — only works for tiny txs.
+        val extraRefs: Seq[Utxo] =
+            Seq(scriptRefs.pegIn, scriptRefs.completedPegIns, scriptRefs.bridgedToken).flatten
+
+        def spendSource(useRef: Boolean, script: PlutusScript): ScriptSource[PlutusScript] =
+            if useRef then ScriptSource.PlutusScriptAttached
+            else ScriptSource.PlutusScriptValue(script)
+
+        // Both spent UTxOs (PIR + CPI) carry inline datums on-chain, so `DatumInlined` is correct
+        // (matches what scalus's high-level `.spend(utxo, redeemer)` derives via buildDatumWitness).
+        val pegInSpendWitness = ThreeArgumentPlutusScriptWitness(
+          scriptSource = spendSource(scriptRefs.pegIn.isDefined, scripts.pegIn),
+          redeemer = Data.unit,
+          datum = scalus.cardano.txbuilder.Datum.DatumInlined
+        )
+        val cpiSpendWitness = ThreeArgumentPlutusScriptWitness(
+          scriptSource = spendSource(scriptRefs.completedPegIns.isDefined, scripts.completedPegIns),
+          redeemerBuilder = completedPegInsSpendRedeemer,
+          datum = scalus.cardano.txbuilder.Datum.DatumInlined
+        )
+        val withdrawWitness: TwoArg = TwoArg(
+          scriptSource = spendSource(scriptRefs.pegIn.isDefined, scripts.pegIn),
+          redeemerBuilder = pegInWithdrawRedeemer
+        )
+
+        // Mint: the policyId-based overload uses PlutusScriptAttached; the script-based overload
+        // inlines. Branch accordingly.
+        val baseBuilder = (
+          Seq(inputs.config, inputs.confirmedTm) ++ extraRefs
+        ) match {
+            case head +: tail =>
+                // `.references(...)` MUST come before any `.spend(..., PlutusScriptAttached)` /
+                // `.mint(policyId, ..., redeemer)` — TxBuilder verifies during build that every
+                // AttachedScript witness has a corresponding ref UTxO already attached. Same
+                // ordering rule applies to `withdrawRewards` below (we call it after extras).
+                TxBuilder(provider.cardanoInfo)
+                    .references(head, tail*)
+                    .spend(inputs.pir, pegInSpendWitness)
+                    .spend(inputs.completedPegIns, cpiSpendWitness)
+            case Seq() =>
+                throw new IllegalStateException("at least the config + Confirmed TM refs must be present")
+        }
+
+        val withMint =
+            if scriptRefs.bridgedToken.isDefined then
+                baseBuilder.mint(
+                  bridgedTokenPolicy,
+                  Map(bridgedTokenAsset -> pegInAmount),
+                  bridgedTokenMintRedeemer
+                )
+            else
+                baseBuilder.mint(
+                  scripts.bridgedToken,
+                  Map(bridgedTokenAsset -> pegInAmount),
+                  bridgedTokenMintRedeemer
+                )
+
+        withMint
+            .withdrawRewards(stake(scripts.pegIn.scriptHash), Coin.zero, withdrawWitness)
             .payTo(recipientAddress, fbtcValue)
             .payTo(
               inputs.completedPegIns.output.address,

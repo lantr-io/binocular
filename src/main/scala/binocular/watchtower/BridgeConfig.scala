@@ -40,5 +40,13 @@ case class BridgeConfig(
     // The 28-byte pubkey-hash written into the TM-control datum at deploy = the key authorized to
     // mint TM NFTs (the SPO/poster key — on the devnet, heimdall's Cardano signing key; get it from
     // `heimdall wallet-address`). Default for deploy-bridge's --authorized-minter.
-    tmAuthorizedMinter: String = ""
+    tmAuthorizedMinter: String = "",
+    // Reference-script UTxOs for the 3 heavy Plutus scripts pegin-complete needs. Without these,
+    // the witness set inlines ~28 KB of script bytes and the tx exceeds Cardano's 16 KB max.
+    // Set by deploy-script-refs (run after deploy-bridge) and consumed by pegin-complete to
+    // attach the scripts via reference inputs (CIP-33). TX_HASH#INDEX form; empty = falls back
+    // to inlining the scripts in the witness set (only works for small txs).
+    pegInScriptRef: String = "",
+    bridgedTokenScriptRef: String = "",
+    completedPegInsScriptRef: String = ""
 ) derives ConfigReader

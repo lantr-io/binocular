@@ -40,6 +40,7 @@ object CliApp {
         case TmScript
         case PegInRequest(btcTxId: String, tmTxId: Option[String], dryRun: Boolean)
         case DeployBridge(authorizedMinter: Option[String], dryRun: Boolean)
+        case DeployScriptRefs(dryRun: Boolean)
         case RegisterBridgeCreds(dryRun: Boolean)
         case SignPeginMsg(keyPath: String, message: String)
         case PegInComplete(
@@ -235,6 +236,14 @@ object CliApp {
                 dryRunFlag.map(Cmd.RegisterBridgeCreds.apply)
             }
 
+        val deployScriptRefsCommand =
+            Opts.subcommand(
+              "deploy-script-refs",
+              "Publish peg_in / bridged_token / completed_peg_ins as CIP-33 reference scripts (shrinks pegin-complete tx)"
+            ) {
+                dryRunFlag.map(Cmd.DeployScriptRefs.apply)
+            }
+
         val pegInCompleteCommand =
             Opts.subcommand(
               "pegin-complete",
@@ -300,6 +309,7 @@ object CliApp {
                 tmScriptCommand `orElse`
                 pegInRequestCommand `orElse`
                 deployBridgeCommand `orElse`
+                deployScriptRefsCommand `orElse`
                 registerBridgeCredsCommand `orElse`
                 pegInCompleteCommand `orElse`
                 signPeginMsgCommand
@@ -374,6 +384,8 @@ object CliApp {
                             PegInRequestCommand(btcTxId, tmTxId, dryRun)
                         case Cmd.DeployBridge(authorizedMinter, dryRun) =>
                             DeployBridgeCommand(authorizedMinter, dryRun)
+                        case Cmd.DeployScriptRefs(dryRun) =>
+                            DeployScriptRefsCommand(dryRun)
                         case Cmd.RegisterBridgeCreds(dryRun) =>
                             RegisterBridgeCredsCommand(dryRun)
                         case Cmd.SignPeginMsg(keyPath, message) =>

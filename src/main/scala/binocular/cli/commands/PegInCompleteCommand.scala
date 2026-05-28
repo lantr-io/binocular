@@ -286,6 +286,53 @@ case class PegInCompleteCommand(
         }
 
         Console.step(3, "Building + submitting completion tx")
+        // Look up any configured CIP-33 reference-script UTxOs and enrich them with the actual
+        // script bytes (BlockfrostProvider's findUtxo returns scriptRef=None even when the
+        // on-chain output carries one — its parseUtxoOutput skips the second /scripts/<h>/cbor
+        // round-trip). We have the scripts locally already (we derive them every time from the
+        // same blueprint + params the original deploy used), so we attach them directly. Each
+        // empty config entry skips that ref → its script falls back to the witness set.
+        def lookupRefUtxo(
+            label: String,
+            refStr: String,
+            script: scalus.cardano.ledger.Script.PlutusV3
+        ): Option[Utxo] =
+            if refStr.isEmpty then None
+            else {
+                val ref = parseRef(s"bridge.$label", refStr)
+                provider.findUtxo(ref).await(timeout) match {
+                    case Right(u) =>
+                        val enrichedOutput = u.output match {
+                            case b: scalus.cardano.ledger.TransactionOutput.Babbage =>
+                                b.copy(scriptRef = Some(scalus.cardano.ledger.ScriptRef(script)))
+                            case s: scalus.cardano.ledger.TransactionOutput.Shelley =>
+                                scalus.cardano.ledger.TransactionOutput.Babbage(
+                                  s.address,
+                                  s.value,
+                                  datumOption = None,
+                                  scriptRef = Some(scalus.cardano.ledger.ScriptRef(script))
+                                )
+                        }
+                        Some(Utxo(u.input, enrichedOutput))
+                    case Left(err) =>
+                        Console.error(s"Looking up $label ($refStr): $err")
+                        break(1)
+                }
+            }
+        val scriptRefs = PegInCompleteTx.ScriptRefs(
+          pegIn = lookupRefUtxo("peg-in-script-ref", config.bridge.pegInScriptRef, pegIn.script),
+          completedPegIns = lookupRefUtxo(
+            "completed-peg-ins-script-ref",
+            config.bridge.completedPegInsScriptRef,
+            cpiContract.script
+          ),
+          bridgedToken = lookupRefUtxo(
+            "bridged-token-script-ref",
+            config.bridge.bridgedTokenScriptRef,
+            bridgedToken.script
+          )
+        )
+
         val tx =
             try
                 PegInCompleteTx
@@ -297,6 +344,7 @@ case class PegInCompleteCommand(
                         cpiContract.script,
                         bridgedToken.script
                       ),
+                      scriptRefs = scriptRefs,
                       inputs =
                           PegInCompleteTx.Inputs(pirUtxo, cpiUtxo, configUtxo, confirmedTmUtxo),
                       datum = datum,
