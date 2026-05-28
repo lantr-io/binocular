@@ -61,10 +61,10 @@ object PegInCompleteTx {
         confirmedTm: Utxo
     )
 
-    /** The three CIP-33 reference-script UTxOs that supply the heavy Plutus scripts. Each must
-      * be an existing UTxO whose `scriptRef` field carries the matching script. Without these
-      * the witness set inlines ~28 KB and the tx exceeds Cardano's 16 KB max. Set to `None` to
-      * fall back to inlining the script in the witness set (only viable for tiny txs).
+    /** The three CIP-33 reference-script UTxOs that supply the heavy Plutus scripts. Each must be
+      * an existing UTxO whose `scriptRef` field carries the matching script. Without these the
+      * witness set inlines ~28 KB and the tx exceeds Cardano's 16 KB max. Set to `None` to fall
+      * back to inlining the script in the witness set (only viable for tiny txs).
       */
     final case class ScriptRefs(
         pegIn: Option[Utxo],
@@ -119,7 +119,9 @@ object PegInCompleteTx {
             val scriptSpends =
                 Seq(inputs.pir.input, inputs.completedPegIns.input).count(inputsSorted(tx).contains)
             val mintPolicies = tx.body.value.mint.map(_.assets.size).getOrElse(0)
-            BigInt(scriptSpends + mintPolicies) // + withdrawalIndex 0 (peg_in is the only withdrawal)
+            BigInt(
+              scriptSpends + mintPolicies
+            ) // + withdrawalIndex 0 (peg_in is the only withdrawal)
         }
 
         // --- redeemers ---
@@ -167,11 +169,7 @@ object PegInCompleteTx {
 
         def stake(h: ScriptHash): StakeAddress = StakeAddress(network, StakePayload.Script(h))
         import TwoArgumentPlutusScriptWitness.attached
-        import scalus.cardano.txbuilder.{
-            ScriptSource,
-            ThreeArgumentPlutusScriptWitness,
-            TwoArgumentPlutusScriptWitness => TwoArg
-        }
+        import scalus.cardano.txbuilder.{ScriptSource, ThreeArgumentPlutusScriptWitness, TwoArgumentPlutusScriptWitness as TwoArg}
 
         // Reference-script wiring (CIP-33). When the bridge's ref UTxOs are configured, attach the
         // scripts via reference inputs (PlutusScriptAttached) — drops ~28 KB of inlined script
@@ -216,7 +214,9 @@ object PegInCompleteTx {
                     .spend(inputs.pir, pegInSpendWitness)
                     .spend(inputs.completedPegIns, cpiSpendWitness)
             case Seq() =>
-                throw new IllegalStateException("at least the config + Confirmed TM refs must be present")
+                throw new IllegalStateException(
+                  "at least the config + Confirmed TM refs must be present"
+                )
         }
 
         val withMint =

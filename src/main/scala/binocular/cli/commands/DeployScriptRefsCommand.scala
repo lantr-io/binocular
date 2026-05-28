@@ -21,13 +21,13 @@ import cats.syntax.either.*
 /** Publishes the 3 heavy Plutus scripts the pegin-complete path uses as reference UTxOs.
   *
   * Each script gets pinned to a Babbage-era output at the sponsor's wallet address with
-  * `script_ref` set. Once these three outputs land on chain, pegin-complete passes their outRefs
-  * as reference inputs and drops the ~28 KB of inlined script bytes from its witness set —
-  * bringing the tx well under Cardano's 16 KB max-tx-size limit (we hit 21 KB without this).
+  * `script_ref` set. Once these three outputs land on chain, pegin-complete passes their outRefs as
+  * reference inputs and drops the ~28 KB of inlined script bytes from its witness set — bringing
+  * the tx well under Cardano's 16 KB max-tx-size limit (we hit 21 KB without this).
   *
   * The outputs live at the wallet's own address so they remain spendable if the bridge is ever
-  * decommissioned; a reference input only requires the UTxO to still exist, not for it to be at
-  * a script address. Prints the three resulting outpoints so they can go into the bridge config.
+  * decommissioned; a reference input only requires the UTxO to still exist, not for it to be at a
+  * script address. Prints the three resulting outpoints so they can go into the bridge config.
   */
 case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
 
@@ -66,7 +66,9 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
 
         val cfg = config.bridge
         if cfg.completedPegInsOneShotRef.isEmpty then {
-            Console.error("bridge.completed-peg-ins-one-shot-ref is empty — run deploy-bridge first")
+            Console.error(
+              "bridge.completed-peg-ins-one-shot-ref is empty — run deploy-bridge first"
+            )
             break(1)
         }
         val configNftPolicy = ByteString.fromHex(cfg.configNftPolicyId)
@@ -188,8 +190,7 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
 
         println()
         Console.success("Bridge script references deployed. Set these in binocular.bridge:")
-        for (label, (hash, idx)) <- results do
-            Console.info(s"$label-script-ref", s"$hash#$idx")
+        for (label, (hash, idx)) <- results do Console.info(s"$label-script-ref", s"$hash#$idx")
         0
     }
 }

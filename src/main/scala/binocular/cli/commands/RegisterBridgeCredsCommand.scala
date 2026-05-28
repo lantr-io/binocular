@@ -31,7 +31,8 @@ import cats.syntax.either.*
   *
   * Registration uses the deposit-less Shelley `RegCert` (`registerStake(stakeAddress)`), which does
   * NOT execute the stake script — important because the peg_in script `fail`s on any non-Rewarding
-  * purpose. (Same approach as ft-bifrost-bridge's offchain spo-demo `registerBanWithdrawCredential`.)
+  * purpose. (Same approach as ft-bifrost-bridge's offchain spo-demo
+  * `registerBanWithdrawCredential`.)
   *
   * This is a one-shot setup step: registering an already-registered credential makes the tx fail,
   * so run it once after the bridge config + the (re-minted) peg_in policy are fixed. It does NOT

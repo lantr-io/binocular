@@ -226,7 +226,10 @@ case class PegInCompleteCommand(
             )
             break(1)
         }
-        Console.info("Confirmed TM UTxO", s"${confirmedTmUtxo.input.transactionId.toHex}#${confirmedTmUtxo.input.index}")
+        Console.info(
+          "Confirmed TM UTxO",
+          s"${confirmedTmUtxo.input.transactionId.toHex}#${confirmedTmUtxo.input.index}"
+        )
         println()
 
         // --- completed-peg-ins MPF: reconstruct, verify root, produce proofs ---

@@ -98,8 +98,8 @@ object TmControlDatum
   *      TM identity token rides along), and carries a `Confirmed` datum whose `btcTxid` /
   *      `sweptPegInUtxoIds` / `fulfilledPegOuts` are exactly what the contract parsed out of the
   *      raw TM transaction.
-  *   6. Make sure the `signedBtcTx` is the Treasury Movement transaction: check the presence of the TM input and output using address from Treasury State UTxO (reference input by NFT)
-  *        
+  *   6. Make sure the `signedBtcTx` is the Treasury Movement transaction: check the presence of the
+  *      TM input and output using address from Treasury State UTxO (reference input by NFT)
   *
   * Parameterized by the Binocular oracle script hash (applied via
   * [[TreasuryMovementContract.contract]]).
@@ -328,7 +328,7 @@ object TreasuryMovementValidator {
         } else
             // minted < 0 => burning a TM NFT (drain). Permissionless cleanup. minted == 0 (only other
             // asset names under this policy) is rejected.
-            // TODO: allow burning when spending a Confirmed TM UTxO, so cleanup can be done in one step. 
+            // TODO: allow burning when spending a Confirmed TM UTxO, so cleanup can be done in one step.
             // For now, just fail if anyone tries to burn without minting in the same tx.
             require(minted < BigInt(0), "TM mint: nothing minted/burned under the TM policy")
     }
@@ -346,9 +346,9 @@ object TreasuryMovementValidator {
       * transition).
       *
       * Decodes the script context with the typed [[ScriptContext]] / [[ScriptInfo]] and pattern
-      * matches on the purpose. (This used to hand-decode via `unConstrData`/`unBData` — a workaround
-      * from before Scalus V3 lowering made `to`/`toData` no-ops on the structural script-context
-      * types; the straightforward form now compiles to the same field projections.)
+      * matches on the purpose. (This used to hand-decode via `unConstrData`/`unBData` — a
+      * workaround from before Scalus V3 lowering made `to`/`toData` no-ops on the structural
+      * script-context types; the straightforward form now compiles to the same field projections.)
       */
     def validate(
         oracleScriptHash: ByteString,
