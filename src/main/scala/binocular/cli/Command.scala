@@ -195,13 +195,11 @@ object CommandHelpers {
       * (no bridge deployed) are skipped.
       */
     def bridgeRefOutpoints(config: BinocularConfig): Set[scalus.cardano.ledger.TransactionInput] = {
-        Set(
+        (Set(
           config.bridge.pegInScriptRef,
           config.bridge.bridgedTokenScriptRef,
-          config.bridge.completedPegInsScriptRef,
-          config.bridge.pegOutScriptRef,
-          config.bridge.completedPegOutsScriptRef
-        ).iterator
+          config.bridge.completedPegInsScriptRef
+        ) ++ config.bridge.pegOutScriptRef ++ config.bridge.completedPegOutsScriptRef).iterator
             .map(_.trim)
             .filter(_.nonEmpty)
             .flatMap { s =>

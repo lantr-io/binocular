@@ -91,7 +91,7 @@ case class PegOutCompleteCommand(
             AssetName(
               hexBytes("bridge.bridged-token-asset-name", config.bridge.bridgedTokenAssetName, None)
             )
-        if config.bridge.completedPegOutsOneShotRef.isEmpty then {
+        if config.bridge.completedPegOutsOneShotRef.forall(_.trim.isEmpty) then {
             Console.error(
               "Set binocular.bridge.completed-peg-outs-one-shot-ref (the cpo one-shot from deploy-bridge)"
             )
@@ -100,7 +100,7 @@ case class PegOutCompleteCommand(
         val cpoRefInput =
             parseRef(
               "bridge.completed-peg-outs-one-shot-ref",
-              config.bridge.completedPegOutsOneShotRef
+              config.bridge.completedPegOutsOneShotRef.get
             )
         val cpoOneShot = TxOutRef(TxId(cpoRefInput.transactionId), cpoRefInput.index)
 
@@ -299,10 +299,14 @@ case class PegOutCompleteCommand(
             }
         val scriptRefs = PegOutCompleteTx.ScriptRefs(
           pegOut =
-              lookupRefUtxo("peg-out-script-ref", config.bridge.pegOutScriptRef, pegOut.script),
+              lookupRefUtxo(
+                "peg-out-script-ref",
+                config.bridge.pegOutScriptRef.getOrElse(""),
+                pegOut.script
+              ),
           completedPegOuts = lookupRefUtxo(
             "completed-peg-outs-script-ref",
-            config.bridge.completedPegOutsScriptRef,
+            config.bridge.completedPegOutsScriptRef.getOrElse(""),
             cpoContract.script
           ),
           bridgedToken = lookupRefUtxo(

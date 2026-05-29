@@ -78,14 +78,14 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
         val tmControlAsset = ByteString.fromHex(cfg.tmControlNftName)
         val cpiRefInput = parseRef("completed-peg-ins-one-shot-ref", cfg.completedPegInsOneShotRef)
         val cpiOneShotRef = TxOutRef(TxId(cpiRefInput.transactionId), cpiRefInput.index)
-        if cfg.completedPegOutsOneShotRef.isEmpty then {
+        if cfg.completedPegOutsOneShotRef.forall(_.trim.isEmpty) then {
             Console.error(
-              "bridge.completed-peg-outs-one-shot-ref is empty — run deploy-bridge first"
+              "bridge.completed-peg-outs-one-shot-ref is not set — run deploy-bridge first"
             )
             break(1)
         }
         val cpoRefInput =
-            parseRef("completed-peg-outs-one-shot-ref", cfg.completedPegOutsOneShotRef)
+            parseRef("completed-peg-outs-one-shot-ref", cfg.completedPegOutsOneShotRef.get)
         val cpoOneShotRef = TxOutRef(TxId(cpoRefInput.transactionId), cpoRefInput.index)
 
         // Re-derive the 5 scripts the completion paths need (peg-in: peg_in, bridged_token,
@@ -198,8 +198,8 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
           ("peg_in", cfg.pegInScriptRef, pegIn.script),
           ("bridged_token", cfg.bridgedTokenScriptRef, bridgedToken.script),
           ("completed_peg_ins", cfg.completedPegInsScriptRef, cpi.script),
-          ("peg_out", cfg.pegOutScriptRef, pegOut.script),
-          ("completed_peg_outs", cfg.completedPegOutsScriptRef, cpo.script)
+          ("peg_out", cfg.pegOutScriptRef.getOrElse(""), pegOut.script),
+          ("completed_peg_outs", cfg.completedPegOutsScriptRef.getOrElse(""), cpo.script)
         )
         val (already, toPublish) = candidates.partition(_._2.trim.nonEmpty)
         already.foreach { case (label, ref, _) =>
