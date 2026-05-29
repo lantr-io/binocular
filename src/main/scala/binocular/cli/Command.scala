@@ -188,6 +188,92 @@ object CommandHelpers {
       * `tm_nft_policy_id`), so the peg_in script hash now depends on it — every site that builds
       * [[PegInContract]] must apply the same value.
       */
+    /** The bridge's deployed reference-script (CIP-33) UTxO outpoints, from config. These must be
+      * kept OUT of oracle/update fee selection: BlockfrostProvider drops their `scriptRef`, so the
+      * tx builder under-estimates the fee by the Conway reference-script surcharge →
+      * FeeTooSmallUTxO. Pass to `buildOptimalUpdateTransaction(excludeInputs = …)`. Empty entries
+      * (no bridge deployed) are skipped.
+      */
+    def bridgeRefOutpoints(config: BinocularConfig): Set[scalus.cardano.ledger.TransactionInput] = {
+        Set(
+          config.bridge.pegInScriptRef,
+          config.bridge.bridgedTokenScriptRef,
+          config.bridge.completedPegInsScriptRef,
+          config.bridge.pegOutScriptRef,
+          config.bridge.completedPegOutsScriptRef
+        ).iterator
+            .map(_.trim)
+            .filter(_.nonEmpty)
+            .flatMap { s =>
+                s.split("#") match {
+                    case Array(h, i) if i.toIntOption.isDefined =>
+                        Some(
+                          scalus.cardano.ledger.TransactionInput(
+                            scalus.cardano.ledger.TransactionHash.fromHex(h),
+                            i.toInt
+                          )
+                        )
+                    case _ => None
+                }
+            }
+            .toSet
+    }
+
+    /** Query blockfrost for EVERY reference-script (CIP-33) UTxO at `addressBech32` and return their
+      * outpoints. More complete than [[bridgeRefOutpoints]]: it catches duplicate/leftover ref-script
+      * UTxOs from earlier deploy-script-refs runs that aren't recorded in config (the config-known set
+      * alone left the daemon still hitting FeeTooSmallUTxO on an un-recorded ref UTxO). Needed because
+      * BlockfrostProvider drops `scriptRef`, so the only way to spot a ref-script UTxO is the
+      * `reference_script_hash` field of the raw address-utxos JSON. Best-effort: returns empty on a
+      * non-blockfrost backend or any query failure.
+      */
+    def refScriptOutpoints(
+        config: BinocularConfig,
+        addressBech32: String
+    ): Set[scalus.cardano.ledger.TransactionInput] = {
+        if config.cardano.backend.toLowerCase != "blockfrost"
+            || config.cardano.blockfrostProjectId.isEmpty
+            || addressBech32.isEmpty
+        then Set.empty
+        else {
+            val base = config.cardano.network.toLowerCase match {
+                case "mainnet" => "https://cardano-mainnet.blockfrost.io/api/v0"
+                case "preview" => "https://cardano-preview.blockfrost.io/api/v0"
+                case _         => "https://cardano-preprod.blockfrost.io/api/v0"
+            }
+            try {
+                val client = java.net.http.HttpClient.newHttpClient()
+                def page(p: Int): Seq[ujson.Value] = {
+                    val req = java.net.http.HttpRequest
+                        .newBuilder()
+                        .uri(java.net.URI.create(s"$base/addresses/$addressBech32/utxos?count=100&page=$p"))
+                        .header("project_id", config.cardano.blockfrostProjectId)
+                        .GET()
+                        .build()
+                    val resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString())
+                    if resp.statusCode() != 200 then Seq.empty else ujson.read(resp.body()).arr.toSeq
+                }
+                def collect(p: Int, acc: Vector[ujson.Value]): Vector[ujson.Value] = {
+                    val items = page(p)
+                    val next = acc ++ items
+                    if items.size < 100 then next else collect(p + 1, next)
+                }
+                collect(1, Vector.empty).iterator.flatMap { o =>
+                    o.obj.get("reference_script_hash") match {
+                        case Some(ujson.Str(_)) =>
+                            Some(
+                              scalus.cardano.ledger.TransactionInput(
+                                scalus.cardano.ledger.TransactionHash.fromHex(o("tx_hash").str),
+                                o("output_index").num.toInt
+                              )
+                            )
+                        case _ => None
+                    }
+                }.toSet
+            } catch { case _: Exception => Set.empty }
+        }
+    }
+
     def tmNftPolicy(config: BinocularConfig, oracleScriptHash: ScriptHash): ByteString = {
         val tmScript = TreasuryMovementContract.contract(
           ByteString.fromArray(oracleScriptHash.bytes),
@@ -291,6 +377,50 @@ object CommandHelpers {
             else Right(rebuilt)
         } catch {
             case e: Exception => Left(s"Error rebuilding MPF: ${e.getMessage}")
+        }
+    }
+
+    /** Reconstruct the off-chain MPF by walking the oracle's committed chain *by hash* from its
+      * confirmed tip backwards via `previousblockhash`, inserting `count` block hashes.
+      *
+      * Unlike [[rebuildMpf]] (which walks canonical headers by height), this reproduces the exact
+      * set the oracle committed even when a shallow reorg has orphaned one or more committed blocks
+      * near the tip — bitcoind still serves orphaned blocks by hash. The result is verified against
+      * `expectedRoot`, so a mismatch (committed blocks genuinely unavailable, i.e. an unrecoverable
+      * deep reorg) is reported as `Left` rather than silently producing a wrong proof.
+      */
+    def rebuildMpfFromTip(
+        rpc: SimpleBitcoinRpc,
+        tipHashLE: ByteString,
+        count: Long,
+        expectedRoot: ByteString
+    )(using ExecutionContext): Either[String, OffChainMPF] = {
+        // bitcoind identifies blocks by big-endian display hash; the oracle stores little-endian.
+        def displayHex(le: ByteString): String = le.toHex.grouped(2).toList.reverse.mkString
+        def loop(curDisplayHex: String, remaining: Long, mpf: OffChainMPF): Future[OffChainMPF] =
+            if remaining <= 0 then Future.successful(mpf)
+            else
+                for {
+                    hdr <- rpc.getBlockHeader(curDisplayHex)
+                    blockHashLE = ByteString.fromArray(curDisplayHex.hexToBytes.reverse)
+                    updated = mpf.insert(blockHashLE, blockHashLE)
+                    result <- hdr.previousblockhash match {
+                        case Some(prev) => loop(prev, remaining - 1, updated)
+                        case scala.None => Future.successful(updated)
+                    }
+                } yield result
+        try {
+            val rebuilt = loop(displayHex(tipHashLE), count, OffChainMPF.empty).await(120.seconds)
+            if rebuilt.rootHash != expectedRoot then
+                Left(
+                  s"By-hash MPF reconstruction from the oracle tip does not match the on-chain " +
+                      s"confirmedBlocksRoot (expected ${expectedRoot.toHex}, got " +
+                      s"${rebuilt.rootHash.toHex}). One or more committed blocks are no longer " +
+                      s"retrievable from this bitcoind — manual recovery required."
+                )
+            else Right(rebuilt)
+        } catch {
+            case e: Exception => Left(s"Error rebuilding MPF from tip: ${e.getMessage}")
         }
     }
 
@@ -509,31 +639,49 @@ object CommandHelpers {
             rpc.getBlockHash(confirmedHeight.toInt).await(30.seconds)
         val confirmedCanonical =
             ByteString.fromArray(confirmedCanonicalHex.hexToBytes.reverse)
-        if chainState.ctx.lastBlockHash != confirmedCanonical then
-            throw new DeepReorgException(
-              confirmedHeight = confirmedHeight,
-              oracleHash = chainState.ctx.lastBlockHash,
-              canonicalHash = confirmedCanonical,
-              deepestConfirmedAncestor = scala.None,
-              searchedDepth = scala.None
-            )
+        val tip = chainState.ctx.lastBlockHash
+        val tipIsCanonical = tip == confirmedCanonical
 
-        val initialMpf =
-            OffChainMPF.empty.insert(chainState.ctx.lastBlockHash, chainState.ctx.lastBlockHash)
+        val initialMpf = OffChainMPF.empty.insert(tip, tip)
         if initialMpf.rootHash == chainState.confirmedBlocksRoot then Right(initialMpf)
         else
             startHeight match {
                 case scala.None =>
-                    Left(
-                      "Previous promotions detected but ORACLE_START_HEIGHT not configured"
-                    )
+                    if tipIsCanonical then
+                        Left("Previous promotions detected but ORACLE_START_HEIGHT not configured")
+                    else
+                        throw new DeepReorgException(
+                          confirmedHeight = confirmedHeight,
+                          oracleHash = tip,
+                          canonicalHash = confirmedCanonical,
+                          deepestConfirmedAncestor = scala.None,
+                          searchedDepth = scala.None
+                        )
+                case Some(h) if tipIsCanonical =>
+                    // Tip is canonical-by-height: fast rebuild from canonical headers.
+                    rebuildMpf(rpc, h, confirmedHeight, chainState.confirmedBlocksRoot)
                 case Some(h) =>
-                    rebuildMpf(
+                    // Tip is NOT canonical-by-height: a reorg orphaned one or more committed
+                    // blocks. The oracle's committed chain is still walkable by hash (bitcoind
+                    // retains orphans for a shallow reorg). Reconstruct from the tip and verify
+                    // against the on-chain root; only a genuine deep reorg (committed blocks
+                    // unavailable / root mismatch) is fatal.
+                    rebuildMpfFromTip(
                       rpc,
-                      h,
-                      confirmedHeight,
+                      tip,
+                      confirmedHeight - h + 1,
                       chainState.confirmedBlocksRoot
-                    )
+                    ) match {
+                        case Right(m) => Right(m)
+                        case Left(_) =>
+                            throw new DeepReorgException(
+                              confirmedHeight = confirmedHeight,
+                              oracleHash = tip,
+                              canonicalHash = confirmedCanonical,
+                              deepestConfirmedAncestor = scala.None,
+                              searchedDepth = scala.None
+                            )
+                    }
             }
     }
 }

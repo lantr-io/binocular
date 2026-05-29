@@ -24,16 +24,22 @@ import cats.syntax.either.*
   * Mints, in two sequential txs, the two one-shot NFTs the peg-in completion path reads:
   *   1. the **config NFT** (`config.ak`) carrying the [[ConfigDatum]] — the spine that records
   *      every cross-referenced script hash;
-  *   2. the **completed-peg-ins MPF NFT** (`completed-peg-ins-merkle-tree.ak`) with an empty root.
+  *   2. the **completed-peg-ins MPF NFT** (`completed-peg-ins-merkle-tree.ak`) with an empty root;
+  *   3. the **completed-peg-outs MPF NFT** (`completed-peg-outs-merkle-tree.ak`) with an empty
+  *      root.
   *
   * The fBTC (`bridged_token`) policy has no state UTxO — it's a mint policy whose hash is recorded
-  * in the config datum (index 0). All hashes are computed deterministically from the two chosen
+  * in the config datum (index 0). All hashes are computed deterministically from the chosen
   * one-shot wallet UTxOs + the live oracle policy (see [[BifrostContracts]]). After deploy, set
   * `binocular.bridge.{config-nft-*, bridged-token-*}` to the printed values and re-mint the
   * PegInRequests so the peg_in policy + owner_auth match.
   *
-  * Demo scope: peg-out / treasury / source-chain / block-header config entries are dummies (the
-  * peg-in completion path doesn't read them).
+  * Peg-out wiring (this iteration): config indices 8/9 (completed-peg-outs MPF), 11 (peg_out
+  * withdraw), 13 (real BTC-tx-parsing produced verifier, [[PegOutProducedVerifier]]) and 14
+  * (not-produced placeholder, [[PegOutNotProducedVerifier]] — `Cancel`/refund is out of scope) are
+  * now REAL. Because `config.ak` is immutable (`spend = False`), these must be set at mint time;
+  * minting a new config NFT changes the fBTC policy, so re-mint fBTC under this config. Treasury /
+  * source-chain / block-header entries remain dummies (no path reads them yet).
   */
 case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: Boolean = false)
     extends Command {
@@ -90,25 +96,149 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
                     break(1)
             }
 
-        // --- pick two distinct pure-ADA one-shot UTxOs (config + completed-peg-ins) ---
+        def refOf(u: Utxo): TxOutRef =
+            TxOutRef(TxId(u.input.transactionId), u.input.index)
+        def utxoKey(u: Utxo): String = { val r = refOf(u); s"${r.id.hash.toHex}#${r.idx}" }
+
+        // --- pick 4 distinct pure-ADA one-shot UTxOs (config + completed-peg-ins + completed-peg-outs
+        //     + TM-control) ---
         val walletUtxos = provider.findUtxos(sponsorAddress).await(timeout) match {
             case Right(utxos) => utxos.toList.map { case (i, o) => Utxo(i, o) }
             case Left(err)    => Console.error(s"Fetching wallet UTxOs: $err"); break(1)
         }
-        val pureAda = walletUtxos
-            .filter(u => u.output.value.assets.isEmpty && u.output.value.coin.value >= 5_000_000L)
-            .sortBy(-_.output.value.coin.value)
-        val (configOneShot, cpiOneShot, tmControlOneShot) = pureAda match {
-            case a :: b :: c :: _ => (a, b, c)
-            case _ =>
-                Console.error("Need >=3 pure-ADA wallet UTxOs (>=5 ADA each) for the one-shots");
-                break(1)
+        // A reference-script UTxO (CIP-33) is pure-lovelace with no native assets, so it looks
+        // identical to a plain change UTxO to the filter below — but spending one DESTROYS a deployed
+        // reference script, and (because BlockfrostProvider drops `scriptRef` on findUtxos) the tx
+        // builder under-estimates the fee by the Conway reference-script surcharge → the mint tx is
+        // rejected with FeeTooSmallUTxO. We must exclude every ref-script UTxO. The config-recorded
+        // refs are not enough (a sponsor wallet accumulates duplicate CIP-33 outputs across runs), so
+        // also query blockfrost's address-utxos endpoint directly for `reference_script_hash` — the
+        // one piece of state the provider discards. Best-effort: on any query failure we still exclude
+        // the config-known refs.
+        val configKnownRefs: Set[String] = Set(
+          config.bridge.pegInScriptRef,
+          config.bridge.bridgedTokenScriptRef,
+          config.bridge.completedPegInsScriptRef,
+          config.bridge.completedPegInsOneShotRef
+        ).iterator.map(_.trim.toLowerCase).filter(_.nonEmpty).toSet
+
+        def queriedRefScriptOutrefs(): Set[String] = {
+            val backendOk = config.cardano.backend.toLowerCase == "blockfrost" &&
+                config.cardano.blockfrostProjectId.nonEmpty
+            val addr = sponsorAddress.encode.getOrElse("")
+            if !backendOk || addr.isEmpty then Set.empty
+            else
+                val base = config.cardano.network.toLowerCase match {
+                    case "mainnet" => "https://cardano-mainnet.blockfrost.io/api/v0"
+                    case "preview" => "https://cardano-preview.blockfrost.io/api/v0"
+                    case _         => "https://cardano-preprod.blockfrost.io/api/v0"
+                }
+                try {
+                    val client = java.net.http.HttpClient.newHttpClient()
+                    def page(p: Int): Seq[ujson.Value] = {
+                        val req = java.net.http.HttpRequest
+                            .newBuilder()
+                            .uri(
+                              java.net.URI.create(s"$base/addresses/$addr/utxos?count=100&page=$p")
+                            )
+                            .header("project_id", config.cardano.blockfrostProjectId)
+                            .GET()
+                            .build()
+                        val resp =
+                            client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString())
+                        if resp.statusCode() != 200 then Seq.empty
+                        else ujson.read(resp.body()).arr.toSeq
+                    }
+                    def collect(p: Int, acc: Vector[ujson.Value]): Vector[ujson.Value] = {
+                        val items = page(p)
+                        val next = acc ++ items
+                        if items.size < 100 then next else collect(p + 1, next)
+                    }
+                    collect(1, Vector.empty).iterator.flatMap { o =>
+                        o.obj.get("reference_script_hash") match {
+                            case Some(ujson.Str(_)) =>
+                                Some(
+                                  s"${o("tx_hash").str.toLowerCase}#${o("output_index").num.toInt}"
+                                )
+                            case _ => None
+                        }
+                    }.toSet
+                } catch { case _: Exception => Set.empty }
         }
 
-        def refOf(u: Utxo): TxOutRef =
-            TxOutRef(TxId(u.input.transactionId), u.input.index)
+        val excludedRefs: Set[String] = configKnownRefs ++ queriedRefScriptOutrefs()
+        def cleanCandidates(utxos: List[Utxo]): List[Utxo] =
+            utxos
+                .filter(u =>
+                    u.output.value.assets.isEmpty && u.output.value.coin.value >= 5_000_000L
+                )
+                .filterNot(u => excludedRefs.contains(utxoKey(u)))
+                .sortBy(-_.output.value.coin.value)
+
+        val signer = setup.hdAccount.signerForUtxos
+
+        // A cluttered sponsor wallet often locks its ADA in multi-asset / reference-script UTxOs,
+        // leaving fewer than the 4 clean pure-ADA outputs the one-shots need. If short, split the
+        // largest clean UTxO into fresh self-outputs first (skipped in dry-run). Spending one clean
+        // UTxO yields `deficit` explicit outputs + a clean change output, so this always closes the
+        // gap when at least one large clean UTxO exists.
+        val MinOneShots = 4
+        val initialCandidates = cleanCandidates(walletUtxos)
+        val candidates =
+            if initialCandidates.size >= MinOneShots || dryRun then initialCandidates
+            else {
+                val deficit = MinOneShots - initialCandidates.size
+                Console.step(0, s"Preparing wallet: creating $deficit clean one-shot UTxO(s)")
+                val funder = initialCandidates.headOption.getOrElse {
+                    Console.error(
+                      "No clean pure-ADA UTxO (>=5 ADA) available to split for the one-shots"
+                    )
+                    break(1)
+                }
+                val splitOut = Value.lovelace(10_000_000L)
+                val splitTx =
+                    try
+                        (1 to deficit)
+                            .foldLeft(TxBuilder(provider.cardanoInfo).spend(funder))((b, _) =>
+                                b.payTo(sponsorAddress, splitOut)
+                            )
+                            .complete(provider, sponsorAddress)
+                            .await(timeout)
+                            .sign(signer)
+                            .transaction
+                    catch {
+                        case e: Exception =>
+                            Console.error(s"Building wallet-split tx: ${e.getMessage}"); break(1)
+                    }
+                val splitHash = submitAndConfirm(provider, splitTx, timeout)
+                Console.success(s"Wallet split tx: $splitHash")
+                OracleTransactions.waitForUtxoAtAddress(
+                  provider,
+                  sponsorAddress,
+                  TransactionHash.fromHex(splitHash),
+                  timeout
+                ) match {
+                    case Left(err) => Console.error(err); break(1)
+                    case _         =>
+                }
+                val refreshed = provider.findUtxos(sponsorAddress).await(timeout) match {
+                    case Right(utxos) => utxos.toList.map { case (i, o) => Utxo(i, o) }
+                    case Left(err)    => Console.error(s"Re-fetching wallet UTxOs: $err"); break(1)
+                }
+                cleanCandidates(refreshed)
+            }
+        val (configOneShot, cpiOneShot, cpoOneShot, tmControlOneShot) = candidates match {
+            case a :: b :: c :: d :: _ => (a, b, c, d)
+            case _ =>
+                Console.error(
+                  "Need >=4 pure-ADA wallet UTxOs (>=5 ADA each, excluding reference-script UTxOs) " +
+                      "for the one-shots; wallet-split could not produce enough"
+                )
+                break(1)
+        }
         val configRef = refOf(configOneShot)
         val cpiRef = refOf(cpiOneShot)
+        val cpoRef = refOf(cpoOneShot)
         val tmControlRef = refOf(tmControlOneShot)
 
         // TM-control one-shot NFT — authenticates the control UTxO (TmControlDatum).
@@ -143,6 +273,21 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
             PegInContract(blueprint, oraclePolicyId, configPolicy, ConfigAssetName, tmNftPolicy)
         val pegInWithdrawHash = ByteString.fromArray(pegIn.policyId.bytes)
 
+        // --- peg-out side (config indices 8/9 = completed-peg-outs MPF, 11 = peg_out withdraw,
+        //     13 = produced verifier, 14 = not-produced verifier placeholder) ---
+        val pegOut = PegOutContract(blueprint, oraclePolicyId, configPolicy, ConfigAssetName)
+        val pegOutWithdrawHash = ByteString.fromArray(pegOut.policyId.bytes)
+
+        val cpoContract =
+            CompletedPegOutsContract(blueprint, configPolicy, ConfigAssetName, cpoRef)
+        val cpoPolicy = ByteString.fromArray(cpoContract.policyId.bytes)
+        val cpoAssetName = CompletedPegOutsContract.assetName(cpoRef)
+
+        val pegOutProducedVerifierHash =
+            ByteString.fromArray(PegOutProducedVerifierContract.compiled.script.scriptHash.bytes)
+        val pegOutNotProducedVerifierHash =
+            ByteString.fromArray(PegOutNotProducedVerifierContract.compiled.script.scriptHash.bytes)
+
         val configDatum = ConfigDatum(
           bridgedTokenPolicyId = bridgedTokenPolicy,
           bridgedTokenAssetName = BridgedTokenAssetName,
@@ -152,18 +297,18 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
           blockHeaderMerkleTreeAssetName = ByteString.empty,
           completedPegInsMerkleTreePolicyId = cpiPolicy,
           completedPegInsMerkleTreeAssetName = cpiAssetName,
-          completedPegOutsMerkleTreePolicyId = Dummy28,
-          completedPegOutsMerkleTreeAssetName = ByteString.empty,
+          completedPegOutsMerkleTreePolicyId = cpoPolicy,
+          completedPegOutsMerkleTreeAssetName = cpoAssetName,
           pegInWithdrawScriptHash = pegInWithdrawHash,
-          pegOutWithdrawScriptHash = Dummy28,
+          pegOutWithdrawScriptHash = pegOutWithdrawHash,
           // config[12] = peg-in CLOSE verifier (the slot the retired legit_TM_verifier vacated).
           // peg_in.ak's Cancel delegates the F4/F5 close checks to a withdrawal from this script.
           // Dummy28 until the F1–F6 failure-mode close verifier is built + deployed; a Dummy28 hash
           // has no reward account, so Cancel is cleanly unsatisfiable in the meantime. Wiring the
           // real verifier later is a config update only — no peg_in recompile / PIR re-mint.
           pegInCloseVerifierScriptHash = Dummy28,
-          legitTmAndPegOutProducedVerifierScriptHash = Dummy28,
-          legitTmAndPegOutNotProducedVerifierScriptHash = Dummy28,
+          legitTmAndPegOutProducedVerifierScriptHash = pegOutProducedVerifierHash,
+          legitTmAndPegOutNotProducedVerifierScriptHash = pegOutNotProducedVerifierHash,
           treasuryNftPolicyId = Dummy28,
           treasuryNftAssetName = ByteString.empty,
           minStake = BigInt(0)
@@ -179,7 +324,13 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         Console.info("bridged_token (fBTC) asset", BridgedTokenAssetName.toHex)
         Console.info("completed-peg-ins policy", cpiPolicy.toHex)
         Console.info("completed-peg-ins asset", cpiAssetName.toHex)
+        Console.info("cpo one-shot", s"${cpoRef.id.hash.toHex}#${cpoRef.idx}")
+        Console.info("completed-peg-outs policy", cpoPolicy.toHex)
+        Console.info("completed-peg-outs asset", cpoAssetName.toHex)
         Console.info("peg_in withdraw hash", pegInWithdrawHash.toHex)
+        Console.info("peg_out withdraw hash", pegOutWithdrawHash.toHex)
+        Console.info("peg_out produced verifier", pegOutProducedVerifierHash.toHex)
+        Console.info("peg_out not-produced verifier", pegOutNotProducedVerifierHash.toHex)
         Console.info("TM-NFT policy (peg_in param)", tmNftPolicy.toHex)
         Console.info("TM-control one-shot", s"${tmControlRef.id.hash.toHex}#${tmControlRef.idx}")
         Console.info("TM-control NFT policy", tmControlPolicy.toHex)
@@ -193,8 +344,6 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
             )
             break(0)
         }
-
-        val signer = setup.hdAccount.signerForUtxos
 
         // --- Tx 1: mint the config NFT, carrying the ConfigDatum, to the config script address ---
         Console.step(1, "Minting config NFT")
@@ -270,10 +419,49 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
             case _         =>
         }
 
+        // --- Tx 2b: mint the completed-peg-outs NFT (empty MPF root) to its script address ---
+        Console.step(3, "Minting completed-peg-outs MPF NFT")
+        val cpoAsset = AssetName(cpoAssetName)
+        val cpoValue = Value.lovelace(2_000_000L) + Value.asset(cpoContract.policyId, cpoAsset, 1L)
+        val cpoDatum = CompletedPegOutsMerkleTreeDatum(EmptyRoot)
+        // The mint handler does not read config; configRefInputIndex is an inert positional field.
+        val cpoRedeemer = CompletedPegOutsMintRedeemer(cpoRef, BigInt(0))
+        val cpoTx =
+            try
+                TxBuilder(provider.cardanoInfo)
+                    .spend(cpoOneShot)
+                    .mint(cpoContract.script, Map(cpoAsset -> 1L), cpoRedeemer.toData)
+                    .payTo(cpoContract.address(network), cpoValue, cpoDatum.toData)
+                    .complete(provider, sponsorAddress)
+                    .await(timeout)
+                    .sign(signer)
+                    .transaction
+            catch {
+                case e: Exception =>
+                    Console.error(s"Building completed-peg-outs tx: ${e.getMessage}"); break(1)
+            }
+        val cpoTxHash = submitAndConfirm(provider, cpoTx, timeout)
+        Console.success(s"Completed-peg-outs NFT minted: $cpoTxHash")
+        Console.info(
+          "completed-peg-outs address",
+          cpoContract.address(network).encode.getOrElse("?")
+        )
+        println()
+
+        OracleTransactions.waitForUtxoAtAddress(
+          provider,
+          sponsorAddress,
+          TransactionHash.fromHex(cpoTxHash),
+          timeout
+        ) match {
+            case Left(err) => Console.error(err); break(1)
+            case _         =>
+        }
+
         // --- Tx 3: mint the TM-control NFT to the (immutable, spend=False) config address, carrying
         //     the TmControlDatum that names the authorized TM-NFT minter. The one-shot policy makes
         //     the NFT unforgeable; config.ak's spend=False makes the control UTxO immutable. ---
-        Console.step(3, "Minting TM-control NFT")
+        Console.step(4, "Minting TM-control NFT")
         val tmControlAsset = AssetName(TmControlAssetName)
         val tmControlValue =
             Value.lovelace(2_000_000L) + Value.asset(
@@ -308,6 +496,10 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         Console.info("config-nft-asset-name", ConfigAssetName.toHex)
         Console.info("bridged-token-policy-id", bridgedTokenPolicy.toHex)
         Console.info("bridged-token-asset-name", BridgedTokenAssetName.toHex)
+        Console.info("completed-peg-outs-policy-id", cpoPolicy.toHex)
+        Console.info("completed-peg-outs-asset-name", cpoAssetName.toHex)
+        Console.info("peg-out-withdraw-hash", pegOutWithdrawHash.toHex)
+        Console.info("peg-out-produced-verifier-hash", pegOutProducedVerifierHash.toHex)
         Console.info("tm-control-nft-policy", tmControlPolicy.toHex)
         Console.info("tm-control-nft-name", TmControlAssetName.toHex)
         Console.separator()
@@ -324,11 +516,30 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
             case Left(err) => Console.error(s"Submit: $err"); break(1)
         }
         val status = provider
-            .pollForConfirmation(TransactionHash.fromHex(txHash), maxAttempts = 60, delayMs = 2000)
-            .await(timeout)
+            .pollForConfirmation(
+              TransactionHash.fromHex(txHash),
+              maxAttempts = DeployBridgeCommand.ConfirmPollAttempts,
+              delayMs = DeployBridgeCommand.ConfirmPollDelayMs
+            )
+            .await(DeployBridgeCommand.confirmAwait)
         status match {
             case TransactionStatus.Confirmed => txHash
             case other                       => Console.error(s"Not confirmed: $other"); break(1)
         }
     }
+}
+
+object DeployBridgeCommand {
+    // Confirmation polling budget. The `.await` window MUST exceed the poll's own budget
+    // (`attempts * delayMs`); otherwise the await preempts the poll and throws a TimeoutException at
+    // the same instant the poll would have observed confirmation — a spurious failure on a tx that
+    // actually confirmed (observed on preprod with the old 60×2s poll under a 120s await). Generous
+    // attempts also tolerate slow preprod block production.
+    val ConfirmPollAttempts: Int = 90
+    val ConfirmPollDelayMs: Int = 2000
+    val confirmAwait: scala.concurrent.duration.FiniteDuration =
+        scala.concurrent.duration.Duration(
+          ConfirmPollAttempts.toLong * ConfirmPollDelayMs + 30_000,
+          scala.concurrent.duration.MILLISECONDS
+        )
 }

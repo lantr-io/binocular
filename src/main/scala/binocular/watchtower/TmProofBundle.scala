@@ -26,6 +26,12 @@ import scala.concurrent.{ExecutionContext, Future}
   */
 case class TmProofBundle(
     rawTxFull: ByteString,
+    // Witness-stripped (legacy) serialization. `peg_out.ak` computes `bitcoin_hash(raw_tx)` with no
+    // on-chain stripping, so the bytes must hash to the *txid* the block Merkle root commits to — a
+    // witness-included serialization hashes to the wtxid and fails the inclusion proof. The peg-out
+    // produced verifier (`scanTm`) reads only inputs/outputs (the legacy region) and detects the
+    // witness marker itself, so the stripped form is correct for the entire peg-out path.
+    rawTxStripped: ByteString,
     blockHeader: ByteString,
     txIndex: Int,
     txInBlockMerklePath: Seq[ByteString],
@@ -91,8 +97,10 @@ object TmProofBundle {
 
         Right(
           TmProofBundle(
-            // FULL serialization (with witness) — peg-in.ak strips on-chain for the txid.
+            // FULL serialization (with witness) — for consumers that inspect input witnesses.
             rawTxFull = ByteString.fromHex(ourTx.hex),
+            // Witness-stripped — hashes to the txid (the Merkle leaf). Used by the peg-out path.
+            rawTxStripped = BitcoinHelpers.stripWitnessData(ByteString.fromHex(ourTx.hex)),
             blockHeader = ByteString.fromHex(headerHex),
             txIndex = txIndex,
             txInBlockMerklePath = merklePath.toIndexedSeq,

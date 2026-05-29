@@ -6,8 +6,8 @@ import binocular.watchtower.*
 import binocular.cli.{Command, CommandHelpers, Console}
 
 import scalus.cardano.address.{StakeAddress, StakePayload}
-import scalus.cardano.ledger.{ScriptHash, Transaction, TransactionHash}
-import scalus.cardano.node.{BlockchainProvider, TransactionStatus}
+import scalus.cardano.ledger.{ScriptHash, TransactionHash}
+import scalus.cardano.node.TransactionStatus
 import scalus.cardano.txbuilder.TxBuilder
 import scalus.uplc.builtin.ByteString
 
@@ -18,25 +18,35 @@ import boundary.break
 import scalus.utils.await
 import cats.syntax.either.*
 
-/** Register the reward (stake) credential of the `peg_in` withdraw script the peg-in completion tx
-  * uses, so Conway will accept its 0-ADA withdrawal.
+/** Register the reward (stake) credentials of the bridge withdraw scripts the completion txs use,
+  * so Conway will accept their 0-ADA withdrawals.
   *
-  * Since B1 (Confirmed-TM reference) the `withdraw(CompletePegIn)` path runs only ONE rewarding
-  * script — `peg_in` itself (the stake-validator delegation pattern: the PIR + completed-peg-ins
-  * spends and the fBTC mint all require a withdrawal from the peg_in script). The former
-  * `owner_auth` and `legit_TM_verifier` withdrawals are gone (depositor auth is embedded in
-  * `peg_in.ak`, and the TM proof moved to `confirm-tmtx`). Conway rejects a withdrawal whose reward
-  * account is not registered, and certificates validate against the *pre-transaction* ledger state,
-  * so registration must happen in an earlier tx — it cannot be folded into the completion tx.
+  * Peg-in: `withdraw(CompletePegIn)` runs only ONE rewarding script — `peg_in` itself (the
+  * stake-validator delegation pattern: the PIR + completed-peg-ins spends and the fBTC mint all
+  * require a withdrawal from the peg_in script).
+  *
+  * Peg-out: `withdraw(CompletePegOut)` runs TWO rewarding scripts — the `peg_out` validator itself
+  * (the completed-peg-outs spend + fBTC burn delegate to it) and the real
+  * `peg_out_produced_verifier` (config[13]), which `peg_out.ak` invokes via `validate_withdraw`.
+  * Both reward accounts are registered here. The not-produced verifier (config[14]) is only
+  * withdrawn from on the Cancel path (out of scope), so it is intentionally left unregistered.
+  *
+  * Conway rejects a withdrawal whose reward account is not registered, and certificates validate
+  * against the *pre-transaction* ledger state, so registration must happen in an earlier tx — it
+  * cannot be folded into the completion tx.
   *
   * Registration uses the deposit-less Shelley `RegCert` (`registerStake(stakeAddress)`), which does
   * NOT execute the stake script — important because the peg_in script `fail`s on any non-Rewarding
   * purpose. (Same approach as ft-bifrost-bridge's offchain spo-demo
   * `registerBanWithdrawCredential`.)
   *
-  * This is a one-shot setup step: registering an already-registered credential makes the tx fail,
-  * so run it once after the bridge config + the (re-minted) peg_in policy are fixed. It does NOT
-  * touch the config / completed-peg-ins / fBTC NFTs.
+  * Run after the bridge config + the (re-minted) peg_in policy are fixed. Each credential is
+  * registered in its OWN tx and an already-registered one is skipped (not fatal): the
+  * config-derived peg_in/peg_out hashes are fresh per deploy, but the produced verifier is a
+  * parameterless script whose hash is constant across deploys, so on a redeploy it is already
+  * registered while the others are not — per-cred txs let the fresh ones through regardless. The
+  * command is therefore safe to re-run. It does NOT touch the config / completed-peg-ins /
+  * completed-peg-outs / fBTC NFTs.
   */
 case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
 
@@ -92,7 +102,20 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
         )
         val pegInHash = pegIn.policyId
 
-        val creds: List[(String, ScriptHash)] = List("peg_in" -> pegInHash)
+        // Peg-out completion (`peg_out.ak::CompletePegOut`) withdraws from TWO scripts that need
+        // registered reward accounts: the peg_out withdraw validator itself (config[11]) and the
+        // real produced verifier (config[13]). The not-produced verifier (config[14]) is only
+        // withdrawn from on the Cancel path (out of scope), so it is NOT registered here.
+        val pegOut = PegOutContract(blueprint, oraclePolicyId, configNftPolicy, configNftAsset)
+        val pegOutHash = pegOut.policyId
+        val pegOutProducedVerifierHash =
+            PegOutProducedVerifierContract.compiled.script.scriptHash
+
+        val creds: List[(String, ScriptHash)] = List(
+          "peg_in" -> pegInHash,
+          "peg_out" -> pegOutHash,
+          "peg_out_produced_verifier" -> pegOutProducedVerifierHash
+        )
 
         Console.info("Oracle policy", oraclePolicyId.toHex)
         creds.foreach { case (name, h) =>
@@ -106,43 +129,75 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
             break(0)
         }
 
-        Console.step(1, "Registering the peg_in withdraw reward credential")
+        // Register each credential in its OWN tx, tolerating an already-registered one. The peg_in
+        // and peg_out hashes are config-derived (fresh per deploy), but the produced verifier is a
+        // parameterless script whose hash is CONSTANT across every deploy — so on any redeploy it is
+        // already registered. A single atomic multi-RegCert tx would then be rejected wholesale,
+        // leaving the fresh peg_in/peg_out creds unregistered. Per-cred txs let each one that is not
+        // yet registered succeed independently. Registering an already-registered credential fails
+        // at build or submit; we treat that as "already done" and continue.
         val signer = setup.hdAccount.signerForUtxos
-        val tx =
-            try {
-                val builder = creds.foldLeft(TxBuilder(provider.cardanoInfo)) { (b, c) =>
-                    b.registerStake(StakeAddress(network, StakePayload.Script(c._2)))
-                }
-                builder
-                    .complete(provider, sponsorAddress)
-                    .await(timeout)
-                    .sign(signer)
-                    .transaction
-            } catch {
-                case e: Exception =>
-                    Console.error(s"Building registration tx: ${e.getMessage}")
-                    Console.error(
-                      "If a credential is already registered the tx fails — this step is one-shot."
-                    )
-                    break(1)
-            }
+        val registered = scala.collection.mutable.ListBuffer.empty[String]
+        val skipped = scala.collection.mutable.ListBuffer.empty[String]
 
-        val txHash = OracleTransactions.submitTx(provider, tx, timeout) match {
-            case Right(h)  => h
-            case Left(err) => Console.error(s"Submit: $err"); break(1)
-        }
-        val status = provider
-            .pollForConfirmation(TransactionHash.fromHex(txHash), maxAttempts = 60, delayMs = 2000)
-            .await(timeout)
-        status match {
-            case TransactionStatus.Confirmed =>
-            case other                       => Console.error(s"Not confirmed: $other"); break(1)
+        creds.zipWithIndex.foreach { case ((name, h), i) =>
+            Console.step(i + 1, s"Registering reward credential: $name")
+            val txOpt =
+                try
+                    Some(
+                      TxBuilder(provider.cardanoInfo)
+                          .registerStake(StakeAddress(network, StakePayload.Script(h)))
+                          .complete(provider, sponsorAddress)
+                          .await(timeout)
+                          .sign(signer)
+                          .transaction
+                    )
+                catch {
+                    case e: Exception =>
+                        Console.warn(
+                          s"$name: build failed (likely already registered) — skipping: ${e.getMessage}"
+                        )
+                        skipped += name
+                        None
+                }
+
+            txOpt.foreach { tx =>
+                OracleTransactions.submitTx(provider, tx, timeout) match {
+                    case Left(err) =>
+                        Console.warn(
+                          s"$name: submit failed (likely already registered) — skipping: $err"
+                        )
+                        skipped += name
+                    case Right(txHash) =>
+                        // await window MUST exceed the poll budget (attempts*delayMs); otherwise it
+                        // preempts the poll and throws even when the tx confirms (seen on preprod —
+                        // the verifier reg tx confirmed just after a 120s await gave up). See
+                        // DeployBridgeCommand.confirmAwait.
+                        val status = provider
+                            .pollForConfirmation(
+                              TransactionHash.fromHex(txHash),
+                              maxAttempts = DeployBridgeCommand.ConfirmPollAttempts,
+                              delayMs = DeployBridgeCommand.ConfirmPollDelayMs
+                            )
+                            .await(DeployBridgeCommand.confirmAwait)
+                        status match {
+                            case TransactionStatus.Confirmed =>
+                                Console.tx(s"$name registration TX", txHash)
+                                registered += name
+                            case other =>
+                                Console.error(s"$name: not confirmed: $other"); break(1)
+                        }
+                }
+            }
         }
 
         println()
         Console.separator()
-        Console.tx("Registration TX", txHash)
-        Console.success("peg_in withdraw reward credential registered.")
+        if registered.nonEmpty then Console.success(s"Registered: ${registered.mkString(", ")}.")
+        if skipped.nonEmpty then
+            Console.warn(s"Skipped (already registered or unbuildable): ${skipped.mkString(", ")}.")
+        if registered.isEmpty && skipped.nonEmpty then
+            Console.warn("Nothing newly registered — all creds were already registered.")
         Console.separator()
         0
     }

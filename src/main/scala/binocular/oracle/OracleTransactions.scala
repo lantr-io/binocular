@@ -6,7 +6,7 @@ import binocular.watchtower.*
 
 import binocular.oracle.SlotConfigHelper
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{AssetName, CardanoInfo, PlutusScript, ScriptHash, ScriptRef, Transaction, TransactionHash, TransactionOutput, Utxo, Utxos, Value}
+import scalus.cardano.ledger.{AssetName, CardanoInfo, PlutusScript, ScriptHash, ScriptRef, Transaction, TransactionHash, TransactionInput, TransactionOutput, Utxo, Utxos, Value}
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.txbuilder.TxBuilder
 import scalus.uplc.builtin.Data
@@ -446,7 +446,13 @@ object OracleTransactions {
         referenceScriptUtxo: Utxo,
         offChainMpf: OffChainMPF,
         params: BitcoinValidatorParams,
-        timeout: Duration
+        timeout: Duration,
+        // Sponsor UTxOs to keep OUT of fee/input selection. Reference-script (CIP-33) UTxOs belong
+        // here: BlockfrostProvider drops their `scriptRef`, so the tx builder under-estimates the fee
+        // by the Conway reference-script surcharge → FeeTooSmallUTxO. Spending them would also destroy
+        // a deployed ref script. Callers pass the bridge's *-script-ref outpoints. Default empty
+        // (pure-oracle use is unaffected).
+        excludeInputs: Set[TransactionInput] = Set.empty
     )(using ExecutionContext): Either[String, (TxResult, ChainState, OffChainMPF, Int)] = {
         Try {
             val cardanoInfo = provider.cardanoInfo
@@ -456,10 +462,15 @@ object OracleTransactions {
             val sponsorAddress = sponsor.baseAddress(network)
             val scriptAddress = compiled.address(network)
 
-            // Pre-fetch sponsor UTxOs once
-            val sponsorUtxos = provider.findUtxos(sponsorAddress).await(timeout).valueOr { err =>
-                throw new RuntimeException(s"Failed to fetch sponsor UTxOs: $err")
-            }
+            // Pre-fetch sponsor UTxOs once, dropping any caller-excluded inputs (reference-script
+            // UTxOs — see `excludeInputs`) so coin selection can't pick one and under-estimate the fee.
+            val sponsorUtxos = provider
+                .findUtxos(sponsorAddress)
+                .await(timeout)
+                .valueOr { err =>
+                    throw new RuntimeException(s"Failed to fetch sponsor UTxOs: $err")
+                }
+                .filterNot { case (input, _) => excludeInputs.contains(input) }
 
             val totalHeaders = blockHeaders.length.toInt
             val maxTxSize = protocolParams.maxTxSize

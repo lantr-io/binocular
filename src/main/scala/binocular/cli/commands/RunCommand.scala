@@ -387,7 +387,17 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
                       referenceScriptUtxo,
                       currentMpf,
                       setup.params,
-                      timeout
+                      timeout,
+                      // Exclude EVERY reference-script UTxO at the sponsor address from fee selection —
+                      // BlockfrostProvider drops their scriptRef, so the builder under-estimates the
+                      // fee by the Conway ref-script surcharge (→ FeeTooSmallUTxO, which stalled the
+                      // daemon at h135997). Query catches duplicate/leftover refs not in config; union
+                      // with the config-known set as a fallback if the query fails.
+                      excludeInputs = binocular.cli.CommandHelpers.bridgeRefOutpoints(config) ++
+                          binocular.cli.CommandHelpers.refScriptOutpoints(
+                            config,
+                            setup.sponsorAddress.encode.getOrElse("")
+                          )
                     )
 
                     result match {
