@@ -1,9 +1,6 @@
 package binocular.cli
 
 import binocular.*
-import binocular.bitcoin.*
-import binocular.oracle.*
-import binocular.watchtower.*
 import binocular.cli.commands.*
 import com.monovore.decline.*
 import cats.implicits.*
@@ -49,6 +46,19 @@ object CliApp {
             recipient: String,
             signature: Option[String],
             priorPegins: List[String],
+            dryRun: Boolean
+        )
+        case PegOutRequest(
+            btcAddress: String,
+            amountSat: Long,
+            treasuryOutpoint: String,
+            ownerPkh: Option[String],
+            dryRun: Boolean
+        )
+        case PegOutComplete(
+            pegOut: String,
+            tm: String,
+            priorPegouts: List[String],
             dryRun: Boolean
         )
 
@@ -287,6 +297,55 @@ object CliApp {
                 (keyOpt, msgOpt).mapN(Cmd.SignPeginMsg.apply)
             }
 
+        val pegOutRequestCommand =
+            Opts.subcommand(
+              "peg-out-request",
+              "Create a peg-out: lock fBTC + MIN_ADA at peg_out.ak with a Bitcoin destination"
+            ) {
+                val btcAddrOpt = Opts
+                    .option[String](
+                      "btc-address",
+                      "Bitcoin destination address (BTC paid here by the TM)"
+                    )
+                val amountOpt = Opts
+                    .option[Long]("amount", "fBTC amount to peg out, in satoshis")
+                val treasuryOpt = Opts
+                    .option[String](
+                      "treasury-outpoint",
+                      "Treasury UTxO the peg-out TM will spend (BTC TXID:VOUT, display form)"
+                    )
+                val ownerOpt = Opts
+                    .option[String](
+                      "owner-pkh",
+                      "owner_auth payment key hash (56 hex) for reclaim; default = sponsor pkh"
+                    )
+                    .orNone
+                (btcAddrOpt, amountOpt, treasuryOpt, ownerOpt, dryRunFlag).mapN(
+                  Cmd.PegOutRequest.apply
+                )
+            }
+
+        val pegOutCompleteCommand =
+            Opts.subcommand(
+              "peg-out-complete",
+              "Complete a peg-out: burn the locked fBTC and record it in the completed-peg-outs MPF"
+            ) {
+                val pegOutOpt = Opts.option[String]("pegout", "PegOut UTxO (TX_HASH#INDEX)")
+                val tmOpt =
+                    Opts.option[String](
+                      "tm",
+                      "Treasury Movement BTC txid that paid the peg-out (64 hex)"
+                    )
+                val priorOpt = Opts
+                    .options[String](
+                      "prior-pegout",
+                      "peg_out_utxo_id of an earlier completion (repeatable, insertion order)"
+                    )
+                    .map(_.toList)
+                    .withDefault(Nil)
+                (pegOutOpt, tmOpt, priorOpt, dryRunFlag).mapN(Cmd.PegOutComplete.apply)
+            }
+
         val subcommands =
             versionFlag `orElse`
                 blueprintCommand `orElse`
@@ -309,7 +368,9 @@ object CliApp {
                 deployScriptRefsCommand `orElse`
                 registerBridgeCredsCommand `orElse`
                 pegInCompleteCommand `orElse`
-                signPeginMsgCommand
+                signPeginMsgCommand `orElse`
+                pegOutRequestCommand `orElse`
+                pegOutCompleteCommand
 
         com.monovore.decline.Command(
           name = "binocular",
@@ -396,6 +457,22 @@ object CliApp {
                               dryRun
                             ) =>
                             PegInCompleteCommand(pir, tm, recipient, signature, priorPegins, dryRun)
+                        case Cmd.PegOutRequest(
+                              btcAddress,
+                              amountSat,
+                              treasuryOutpoint,
+                              ownerPkh,
+                              dryRun
+                            ) =>
+                            PegOutRequestCommand(
+                              btcAddress,
+                              amountSat,
+                              treasuryOutpoint,
+                              ownerPkh,
+                              dryRun = dryRun
+                            )
+                        case Cmd.PegOutComplete(pegOut, tm, priorPegouts, dryRun) =>
+                            PegOutCompleteCommand(pegOut, tm, priorPegouts, dryRun)
                         case Cmd.Version | Cmd.Blueprint =>
                             return 0 // unreachable: handled above
                     }

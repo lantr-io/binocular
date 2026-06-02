@@ -34,3 +34,6 @@ docs/forktree-spec-v2.md
 application-*.conf
 mermaid-filter.err
 docs/superpowers/
+
+# diagnostic-only: verbose-trace peg_out blueprint (regenerate via aiken build --trace-level verbose)
+peg-out-debug-blueprint.json

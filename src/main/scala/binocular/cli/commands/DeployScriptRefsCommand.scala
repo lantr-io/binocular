@@ -1,12 +1,11 @@
 package binocular.cli.commands
 
 import binocular.*
-import binocular.oracle.*
 import binocular.watchtower.*
 import binocular.cli.{Command, Console}
 
-import scalus.cardano.ledger.{Coin, Script, ScriptRef, Transaction, TransactionHash, TransactionInput, TransactionOutput, Utxo, Value}
-import scalus.cardano.node.{BlockchainProvider, TransactionStatus}
+import scalus.cardano.ledger.{Coin, Script, ScriptRef, Transaction, TransactionHash, TransactionInput, TransactionOutput, Value}
+import scalus.cardano.node.TransactionStatus
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import scalus.cardano.txbuilder.{TransactionBuilderStep, TxBuilder}
 import scalus.uplc.builtin.ByteString
@@ -18,16 +17,18 @@ import boundary.break
 import scalus.utils.await
 import cats.syntax.either.*
 
-/** Publishes the 3 heavy Plutus scripts the pegin-complete path uses as reference UTxOs.
+/** Publishes the heavy Plutus scripts the completion paths use as reference UTxOs: peg-in side
+  * (`peg_in`, `bridged_token`, `completed_peg_ins`) and peg-out side (`peg_out`,
+  * `completed_peg_outs`) — 5 in total (`bridged_token` is shared by both burns/mints).
   *
   * Each script gets pinned to a Babbage-era output at the sponsor's wallet address with
-  * `script_ref` set. Once these three outputs land on chain, pegin-complete passes their outRefs as
-  * reference inputs and drops the ~28 KB of inlined script bytes from its witness set — bringing
-  * the tx well under Cardano's 16 KB max-tx-size limit (we hit 21 KB without this).
+  * `script_ref` set. Once these outputs land on chain, pegin-/pegout-complete pass their outRefs as
+  * reference inputs and drop the inlined script bytes from their witness sets — bringing each tx
+  * well under Cardano's 16 KB max-tx-size limit (we hit 21 KB without this).
   *
   * The outputs live at the wallet's own address so they remain spendable if the bridge is ever
   * decommissioned; a reference input only requires the UTxO to still exist, not for it to be at a
-  * script address. Prints the three resulting outpoints so they can go into the bridge config.
+  * script address. Prints the resulting outpoints so they can go into the bridge config.
   */
 case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
 
@@ -77,9 +78,19 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
         val tmControlAsset = ByteString.fromHex(cfg.tmControlNftName)
         val cpiRefInput = parseRef("completed-peg-ins-one-shot-ref", cfg.completedPegInsOneShotRef)
         val cpiOneShotRef = TxOutRef(TxId(cpiRefInput.transactionId), cpiRefInput.index)
+        if cfg.completedPegOutsOneShotRef.forall(_.trim.isEmpty) then {
+            Console.error(
+              "bridge.completed-peg-outs-one-shot-ref is not set — run deploy-bridge first"
+            )
+            break(1)
+        }
+        val cpoRefInput =
+            parseRef("completed-peg-outs-one-shot-ref", cfg.completedPegOutsOneShotRef.get)
+        val cpoOneShotRef = TxOutRef(TxId(cpoRefInput.transactionId), cpoRefInput.index)
 
-        // Re-derive the 3 scripts the pegin-complete path needs — single source of truth is the
-        // same constructor invocations DeployBridgeCommand uses, so the hashes line up exactly.
+        // Re-derive the 5 scripts the completion paths need (peg-in: peg_in, bridged_token,
+        // completed_peg_ins; peg-out: peg_out, completed_peg_outs) — same constructor invocations
+        // DeployBridgeCommand uses, so the hashes line up exactly. (bridged_token is shared.)
         val tmNftPolicy = ByteString.fromArray(
           TreasuryMovementContract
               .contract(oraclePolicyId, tmControlPolicy, tmControlAsset)
@@ -92,10 +103,15 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
         val bridgedToken = BridgedTokenContract(blueprint, configNftPolicy, configNftAsset)
         val cpi =
             CompletedPegInsContract(blueprint, configNftPolicy, configNftAsset, cpiOneShotRef)
+        val pegOut = PegOutContract(blueprint, oraclePolicyId, configNftPolicy, configNftAsset)
+        val cpo =
+            CompletedPegOutsContract(blueprint, configNftPolicy, configNftAsset, cpoOneShotRef)
 
         Console.info("peg_in script hash", pegIn.policyId.toHex)
         Console.info("bridged_token script hash", bridgedToken.policyId.toHex)
         Console.info("completed_peg_ins script hash", cpi.policyId.toHex)
+        Console.info("peg_out script hash", pegOut.policyId.toHex)
+        Console.info("completed_peg_outs script hash", cpo.policyId.toHex)
         println()
 
         if dryRun then {
@@ -138,13 +154,15 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
                     Console.error(s"$label submit: $err")
                     None
                 case Right(txHash) =>
+                    // await window MUST exceed the poll budget (attempts*delayMs) or it preempts the
+                    // poll and throws even when the tx confirms. See DeployBridgeCommand.confirmAwait.
                     val status = provider
                         .pollForConfirmation(
                           TransactionHash.fromHex(txHash),
-                          maxAttempts = 60,
-                          delayMs = 2000
+                          maxAttempts = DeployBridgeCommand.ConfirmPollAttempts,
+                          delayMs = DeployBridgeCommand.ConfirmPollDelayMs
                         )
-                        .await(timeout)
+                        .await(DeployBridgeCommand.confirmAwait)
                     status match {
                         case TransactionStatus.Confirmed =>
                             // Wait for the address-based UTxO index to reflect this tx before
@@ -173,18 +191,29 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
             }
         }
 
+        // Each entry: (label, existing config ref, script). Skip any whose ref is already set so
+        // re-running (e.g. to add the peg-out side after the peg-in side) doesn't re-publish — and
+        // waste ~50 ADA on — refs that already exist.
+        val candidates = List(
+          ("peg_in", cfg.pegInScriptRef, pegIn.script),
+          ("bridged_token", cfg.bridgedTokenScriptRef, bridgedToken.script),
+          ("completed_peg_ins", cfg.completedPegInsScriptRef, cpi.script),
+          ("peg_out", cfg.pegOutScriptRef.getOrElse(""), pegOut.script),
+          ("completed_peg_outs", cfg.completedPegOutsScriptRef.getOrElse(""), cpo.script)
+        )
+        val (already, toPublish) = candidates.partition(_._2.trim.nonEmpty)
+        already.foreach { case (label, ref, _) =>
+            Console.info(s"$label-script-ref already set, skipping", ref)
+        }
+
         // Submit serially so each tx selects fresh wallet UTxOs.
         val results: List[(String, (String, Int))] =
-            List(
-              "peg_in" -> refOutput(pegIn.script),
-              "bridged_token" -> refOutput(bridgedToken.script),
-              "completed_peg_ins" -> refOutput(cpi.script)
-            ).flatMap { case (label, out) =>
-                submitOne(label, out).map(r => label -> r)
+            toPublish.flatMap { case (label, _, script) =>
+                submitOne(label, refOutput(script)).map(r => label -> r)
             }
 
-        if results.size != 3 then {
-            Console.error(s"Only ${results.size}/3 reference scripts published")
+        if results.size != toPublish.size then {
+            Console.error(s"Only ${results.size}/${toPublish.size} reference scripts published")
             break(1)
         }
 

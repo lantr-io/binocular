@@ -48,5 +48,15 @@ case class BridgeConfig(
     // to inlining the scripts in the witness set (only works for small txs).
     pegInScriptRef: String = "",
     bridgedTokenScriptRef: String = "",
-    completedPegInsScriptRef: String = ""
+    completedPegInsScriptRef: String = "",
+    // Peg-out side (P3–P5). The completed-peg-outs one-shot fixes that validator's params (hence its
+    // policyId + NFT asset name); peg-out-complete needs it to reconstruct the script to SPEND the
+    // MPF UTxO. The two script-refs are the CIP-33 reference UTxOs for the peg_out + completed-peg-outs
+    // scripts (set by deploy-script-refs) so peg-out-complete stays under the 16 KB tx limit.
+    // `Option` (not `""`): a peg-in-only bridge (e.g. the synced config) simply omits these keys —
+    // pureconfig maps a missing key to `None`, so no placeholder values are needed. The peg-out
+    // commands fail fast with a clear message when a required ref is absent.
+    completedPegOutsOneShotRef: Option[String] = None,
+    pegOutScriptRef: Option[String] = None,
+    completedPegOutsScriptRef: Option[String] = None
 ) derives ConfigReader

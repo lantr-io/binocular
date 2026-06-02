@@ -162,3 +162,68 @@ object CompletedPegInsContract {
     def assetName(oneShotInputRef: TxOutRef): ByteString =
         Builtins.sha2_256(Builtins.serialiseData(oneShotInputRef.toData))
 }
+
+/** The `peg_out_validator` parameterized with `(oracle_policy_id, config_nft_policy_id,
+  * config_nft_asset_name)`. The script hash is the peg-out withdraw script hash = ConfigDatum index
+  * 11, and the address that `PegOut` UTxOs are locked at. The completion path is a `withdraw`
+  * (`CompletePegOut`); creation is a plain pay-to-this-address output.
+  */
+final case class PegOutContract(script: Script.PlutusV3) {
+    def policyId: ScriptHash = script.scriptHash
+    def address(network: Network): Address =
+        Address(network, Credential.ScriptHash(script.scriptHash))
+}
+
+object PegOutContract {
+    // All handlers share one compiledCode; any title for the validator works.
+    val ValidatorTitle = "bitcoin/peg_out.peg_out_validator.withdraw"
+
+    def apply(
+        blueprint: BifrostBlueprint,
+        oraclePolicyId: ByteString,
+        configNftPolicyId: ByteString,
+        configNftAssetName: ByteString
+    ): PegOutContract = {
+        val applied = Program
+            .fromCborHex(blueprint.compiledCode(ValidatorTitle))
+            .$(Data.B(oraclePolicyId))
+            .$(Data.B(configNftPolicyId))
+            .$(Data.B(configNftAssetName))
+        PegOutContract(Script.PlutusV3(applied.cborByteString))
+    }
+}
+
+/** The `completed_peg_outs_merkle_tree` one-shot NFT policy + state validator: params
+  * `(configNFTPolicyId, configNFTAssetName, one_shot_input_ref)`. policyId = ConfigDatum index 8;
+  * asset name = `hash_output_ref(one_shot)` = index 9. The MPF state UTxO (datum = root, empty
+  * `0x00*32` at mint) lives at this script's address and is spent+recreated on each peg-out
+  * completion. Mirrors [[CompletedPegInsContract]].
+  */
+final case class CompletedPegOutsContract(script: Script.PlutusV3) {
+    def policyId: ScriptHash = script.scriptHash
+    def address(network: Network): Address =
+        Address(network, Credential.ScriptHash(script.scriptHash))
+}
+
+object CompletedPegOutsContract {
+    val ValidatorTitle =
+        "bitcoin/completed_peg_outs_merkle_tree.completed_peg_outs_merkle_tree_validator.mint"
+
+    def apply(
+        blueprint: BifrostBlueprint,
+        configNftPolicyId: ByteString,
+        configNftAssetName: ByteString,
+        oneShotInputRef: TxOutRef
+    ): CompletedPegOutsContract = {
+        val applied = Program
+            .fromCborHex(blueprint.compiledCode(ValidatorTitle))
+            .$(Data.B(configNftPolicyId))
+            .$(Data.B(configNftAssetName))
+            .$(oneShotInputRef.toData)
+        CompletedPegOutsContract(Script.PlutusV3(applied.cborByteString))
+    }
+
+    /** NFT asset name per `completed-peg-outs-merkle-tree.ak`: `hash_output_ref(one_shot)`. */
+    def assetName(oneShotInputRef: TxOutRef): ByteString =
+        Builtins.sha2_256(Builtins.serialiseData(oneShotInputRef.toData))
+}
