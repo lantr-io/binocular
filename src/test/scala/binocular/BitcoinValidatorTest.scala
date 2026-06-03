@@ -406,12 +406,16 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
                 summon[PlutusVM]
                     .evaluateScriptProfile(testProgram.applyArg(ctxData))
                     .profile
-                    .foreach { p =>
+                    .foreach { rawProfile =>
+                    // Attach prices so the report derives a per-entry on-chain fee (lovelace).
+                    val p = rawProfile.withPrices(pp.executionUnitPrices)
                     info(ProfileFormatter.summary(p))
                     ProfileFormatter.writeHtml(
                       p,
                       "target/binocular-profile.html",
-                      include = f => f.contains("binocular")
+                      include = f => f.contains("binocular"),
+                      title =
+                          s"BitcoinValidator — Block header throughput ($profileCount real blocks)"
                     )
                     info(
                       s"Wrote interactive CEK profile of a $profileCount-block real-chain " +
