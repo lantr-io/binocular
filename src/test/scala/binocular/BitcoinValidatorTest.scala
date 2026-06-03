@@ -305,6 +305,15 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         var count = 0
         var withinLimits = true
         var lastFittingLine = ""
+        // Capture the heaviest within-limits chain so we can emit an interactive CEK profile of a
+        // real multi-block validation run (see ProfileFormatter.writeHtml after the loop).
+        // Off by default so the suite stays fast and side-effect-free; enable with
+        // `-Dbinocular.profile=true` (or env `BINOCULAR_PROFILE=1`) to write target/binocular-profile.html.
+        val profilingEnabled =
+            sys.props.get("binocular.profile").contains("true") ||
+                sys.env.get("BINOCULAR_PROFILE").contains("1")
+        var profileCtxData: Option[scalus.uplc.builtin.Data] = None
+        var profileCount = 0
         while withinLimits && count < maxAvailableHeaders do {
             count += 1
             val headers =
@@ -371,7 +380,11 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
                     val status = if withinLimits then "OK" else "OVER"
                     val line =
                         f"$count%8d | ${r.budget.steps}%15d | ${r.budget.memory}%12d | $cpuPct%6.1f%% | $memPct%6.1f%% | $exFeeAda%12.6f | $txFeeAda%12.6f | $txSize%8d | $sizePct%6.1f%% | $status%6s"
-                    if withinLimits then lastFittingLine = line
+                    if withinLimits then {
+                        lastFittingLine = line
+                        profileCtxData = Some(scriptContext.toData)
+                        profileCount = count
+                    }
                 case r: Result.Failure =>
                     withinLimits = false
         }
@@ -384,6 +397,28 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
               f"${"Headers"}%8s | ${"CPU Steps"}%15s | ${"Memory"}%12s | ${"CPU %"}%7s | ${"Mem %"}%7s | ${"Ex Fee"}%12s | ${"Tx Fee"}%12s | ${"Tx Size"}%8s | ${"Size %"}%7s | ${"Status"}%6s"
             )
             info(lastFittingLine)
+
+        // Emit an interactive HTML profile of the heaviest real-block chain that still fit within
+        // mainnet tx limits. The annotated-source view reads binocular's own sources from disk;
+        // inlined scalus framework code is filtered out by the `include` predicate.
+        if profilingEnabled then
+            profileCtxData.foreach { ctxData =>
+                summon[PlutusVM]
+                    .evaluateScriptProfile(testProgram.applyArg(ctxData))
+                    .profile
+                    .foreach { p =>
+                    info(ProfileFormatter.summary(p))
+                    ProfileFormatter.writeHtml(
+                      p,
+                      "target/binocular-profile.html",
+                      include = f => f.contains("binocular")
+                    )
+                    info(
+                      s"Wrote interactive CEK profile of a $profileCount-block real-chain " +
+                          "validation to target/binocular-profile.html"
+                    )
+                }
+            }
 
         assert(
           maxHeadersPerTx > 0,
