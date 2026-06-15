@@ -227,9 +227,7 @@ object PegOutCompleteTx {
               inputs.completedPegOuts.output.value,
               newCpoDatum.toData
             )
-            .pipe(b =>
-                debugPegOut.fold(b)(ds => b.withDebugScript(pegOutHash, DebugScript(ds)))
-            )
+            .pipe(b => debugPegOut.fold(b)(ds => b.withDebugScript(pegOutHash, DebugScript(ds))))
             .complete(provider, sponsorAddress)
             .map(_.sign(signer).transaction)
     }

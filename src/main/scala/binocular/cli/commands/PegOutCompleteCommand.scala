@@ -298,12 +298,11 @@ case class PegOutCompleteCommand(
                 }
             }
         val scriptRefs = PegOutCompleteTx.ScriptRefs(
-          pegOut =
-              lookupRefUtxo(
-                "peg-out-script-ref",
-                config.bridge.pegOutScriptRef.getOrElse(""),
-                pegOut.script
-              ),
+          pegOut = lookupRefUtxo(
+            "peg-out-script-ref",
+            config.bridge.pegOutScriptRef.getOrElse(""),
+            pegOut.script
+          ),
           completedPegOuts = lookupRefUtxo(
             "completed-peg-outs-script-ref",
             config.bridge.completedPegOutsScriptRef.getOrElse(""),
