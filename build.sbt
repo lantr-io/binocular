@@ -49,6 +49,7 @@ lazy val binocular = (project in file("."))
           case _                                   => MergeStrategy.first
       },
       assembly / mainClass := Some("binocular.main"),
+      assembly / assemblyJarName := "binocular.jar",
       // BuildInfo
       buildInfoKeys := Seq[BuildInfoKey](name, version),
       buildInfoPackage := "binocular"

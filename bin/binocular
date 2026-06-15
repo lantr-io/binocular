@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Launch the Binocular fat jar (oracle `run` daemon, Bifrost `relay` watchtower, and all
+# other CLI commands) without sbt.
+#
+#   ./bin/binocular --config application-preprod.conf run
+#   ./bin/binocular --config application-preprod.conf relay
+#   ./bin/binocular --version
+#
+# Build the jar first with: sbt assembly
+#
+# Env overrides:
+#   BINOCULAR_JAR  Path to the jar (default: target/out/jvm/scala-3.3.7/binocular/binocular.jar)
+#   JAVA           Java launcher (default: java, or $JAVA_HOME/bin/java if set)
+#   JAVA_OPTS      Extra JVM options, prepended to the java command
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+
+JAR="${BINOCULAR_JAR:-$ROOT/target/out/jvm/scala-3.3.7/binocular/binocular.jar}"
+JAVA="${JAVA:-${JAVA_HOME:+$JAVA_HOME/bin/}java}"
+
+if [[ ! -f "$JAR" ]]; then
+    echo "binocular: jar not found at $JAR" >&2
+    echo "binocular: build it first with 'sbt assembly' (or set BINOCULAR_JAR)" >&2
+    exit 1
+fi
+
+# Scalus' on-chain interpreter uses sun.misc.Unsafe. JDK 23+ denies that by default and prints a
+# warning (and will fail outright on a future release); the flag re-enables it. The flag itself
+# does not exist before JDK 23, so only add it there.
+opts=()
+major="$("$JAVA" -version 2>&1 | sed -n 's/.*version "\([0-9]*\).*/\1/p' | head -1)"
+if [[ -n "$major" && "$major" -ge 23 ]]; then
+    opts+=(--sun-misc-unsafe-memory-access=allow)
+fi
+
+exec "$JAVA" ${JAVA_OPTS:-} "${opts[@]}" -jar "$JAR" "$@"

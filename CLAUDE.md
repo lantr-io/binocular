@@ -477,7 +477,8 @@ Ensure you have:
 
 - Scala 3.3.7+
 - SBT 1.x
-- JDK 21 (for compatibility with bitcoin-s library)
+- JDK 25 (JDK 23+ required: the build passes `--sun-misc-unsafe-memory-access=allow`, a flag that
+  only exists on JDK 23+, for Scalus' `sun.misc.Unsafe` use)
 
 ### Bitcoin Core RPC (Optional)
 

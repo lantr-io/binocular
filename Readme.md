@@ -20,6 +20,37 @@ Then build with sbt:
     sbt compile
     sbt test
 
+## Running as a standalone JAR
+
+Build a self-contained fat jar that bundles all dependencies, so you can run the oracle `run`
+daemon, the Bifrost `relay` watchtower, and every other CLI command with plain `java` — no sbt
+required:
+
+    sbt assembly
+
+This produces `target/out/jvm/scala-3.3.7/binocular/binocular.jar`.
+
+The convenience launcher `./bin/binocular` finds the jar, picks up `$JAVA_HOME`, and forwards all
+arguments:
+
+    ./bin/binocular --config application-preprod.conf run     # oracle syncer daemon
+    ./bin/binocular --config application-preprod.conf relay    # Bifrost watchtower
+    ./bin/binocular --version
+
+Or invoke `java` directly:
+
+    java --sun-misc-unsafe-memory-access=allow \
+      -jar target/out/jvm/scala-3.3.7/binocular/binocular.jar \
+      --config application-preprod.conf run
+
+The `--sun-misc-unsafe-memory-access=allow` flag is required on JDK 23+ because Scalus' on-chain
+interpreter uses `sun.misc.Unsafe`, which newer JDKs deny by default. The `bin/binocular` launcher
+adds it automatically when the JDK is new enough. Configuration is loaded exactly as for `sbt run`
+(env vars > `--config` file > `application.conf` > `reference.conf`).
+
+Launcher env overrides: `BINOCULAR_JAR` (jar path), `JAVA` (java launcher), `JAVA_OPTS` (extra JVM
+options, e.g. `JAVA_OPTS=-Xmx4g`).
+
 ## Configuration
 
 Binocular uses [HOCON](https://github.com/lightbend/config) configuration with PureConfig.
