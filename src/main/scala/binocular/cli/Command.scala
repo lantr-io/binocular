@@ -217,13 +217,13 @@ object CommandHelpers {
             .toSet
     }
 
-    /** Query blockfrost for EVERY reference-script (CIP-33) UTxO at `addressBech32` and return their
-      * outpoints. More complete than [[bridgeRefOutpoints]]: it catches duplicate/leftover ref-script
-      * UTxOs from earlier deploy-script-refs runs that aren't recorded in config (the config-known set
-      * alone left the daemon still hitting FeeTooSmallUTxO on an un-recorded ref UTxO). Needed because
-      * BlockfrostProvider drops `scriptRef`, so the only way to spot a ref-script UTxO is the
-      * `reference_script_hash` field of the raw address-utxos JSON. Best-effort: returns empty on a
-      * non-blockfrost backend or any query failure.
+    /** Query blockfrost for EVERY reference-script (CIP-33) UTxO at `addressBech32` and return
+      * their outpoints. More complete than [[bridgeRefOutpoints]]: it catches duplicate/leftover
+      * ref-script UTxOs from earlier deploy-script-refs runs that aren't recorded in config (the
+      * config-known set alone left the daemon still hitting FeeTooSmallUTxO on an un-recorded ref
+      * UTxO). Needed because BlockfrostProvider drops `scriptRef`, so the only way to spot a
+      * ref-script UTxO is the `reference_script_hash` field of the raw address-utxos JSON.
+      * Best-effort: returns empty on a non-blockfrost backend or any query failure.
       */
     def refScriptOutpoints(
         config: BinocularConfig,
@@ -244,12 +244,17 @@ object CommandHelpers {
                 def page(p: Int): Seq[ujson.Value] = {
                     val req = java.net.http.HttpRequest
                         .newBuilder()
-                        .uri(java.net.URI.create(s"$base/addresses/$addressBech32/utxos?count=100&page=$p"))
+                        .uri(
+                          java.net.URI.create(
+                            s"$base/addresses/$addressBech32/utxos?count=100&page=$p"
+                          )
+                        )
                         .header("project_id", config.cardano.blockfrostProjectId)
                         .GET()
                         .build()
                     val resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString())
-                    if resp.statusCode() != 200 then Seq.empty else ujson.read(resp.body()).arr.toSeq
+                    if resp.statusCode() != 200 then Seq.empty
+                    else ujson.read(resp.body()).arr.toSeq
                 }
                 def collect(p: Int, acc: Vector[ujson.Value]): Vector[ujson.Value] = {
                     val items = page(p)
@@ -503,6 +508,108 @@ object CommandHelpers {
         found
     }
 
+    /** Format chainwork compactly in scientific notation, e.g. `1.28e11`. */
+    private def fmtWork(cw: BigInt): String =
+        if cw <= 0 then cw.toString
+        else {
+            val s = cw.toString
+            val exp = s.length - 1
+            if exp <= 3 then s else s"${s.head}.${s.slice(1, 3)}e$exp"
+        }
+
+    /** Gather and log enriched reorg diagnostics (depth, timing, winning pool(s), chainwork,
+      * `getchaintips` cross-check). Entirely best-effort and failure-isolated: any RPC/parse error
+      * is swallowed with a one-line note so observability never aborts reorg recovery. Does not
+      * affect the computed `(parentPath, startHeight)`.
+      */
+    private def emitReorgDiagnostics(
+        rpc: BitcoinRpc,
+        forkTree: ForkTree,
+        oracleTipHash: ByteString,
+        highestKnown: Long,
+        ancestorHeight: Long,
+        ancestorHash: ByteString
+    )(using ExecutionContext): Unit =
+        Try {
+            val orphanedTipTime =
+                forkTree.toBlockList.find(_.hash == oracleTipHash).map(_.timestamp.toLong)
+            val nowEpoch = System.currentTimeMillis() / 1000
+            val report = ReorgDiagnostics.gather(
+              rpc,
+              ancestorHeight = ancestorHeight,
+              ancestorHashLe = ancestorHash.toHex,
+              tipHeight = highestKnown,
+              orphanedTipHashLe = oracleTipHash.toHex,
+              orphanedTipTime = orphanedTipTime,
+              nowEpoch = nowEpoch
+            )
+            renderReorgReport(report)
+        }.recover { case e =>
+            Console.logWarn(s"(reorg diagnostics unavailable: ${e.getMessage})")
+        }
+
+    private[cli] def renderReorgReport(r: ReorgDiagnostics.ReorgReport): Unit = {
+        def abbr(h: String): String =
+            if h.length > 18 then s"${h.take(10)}…${h.takeRight(6)}" else h
+        def winnerLine(w: ReorgDiagnostics.WinnerBlock): String = {
+            val md = if w.minDifficulty then " · min-difficulty block" else ""
+            s"#${w.height} ${abbr(w.hashLe)}  ${TimeFmt.utc(w.time)} UTC · ${w.pool.display}$md"
+        }
+
+        Console.logWarn(
+          s"Reorg depth: ${r.depth} block(s) — fork tip ${r.tipHeight} → common ancestor ${r.ancestorHeight}"
+        )
+
+        val orphanedTime = r.orphanedTipTime.map(t => s"  ${TimeFmt.utc(t)} UTC").getOrElse("")
+        Console.info("orphaned tip", s"${abbr(r.orphanedTipHashLe)}$orphanedTime")
+
+        if r.winners.nonEmpty then {
+            if r.winners.size <= 6 then
+                r.winners.sortBy(_.height).foreach(w => Console.info("canonical", winnerLine(w)))
+            else {
+                Console.info("canonical first", winnerLine(r.winners.minBy(_.height)))
+                Console.info("canonical tip", winnerLine(r.winners.maxBy(_.height)))
+            }
+            val countDesc =
+                if r.winnersCapped then s"${r.winners.size} of ${r.depth} blocks fetched"
+                else s"${r.depth} block(s)"
+            Console.info(
+              "winners",
+              s"$countDesc · pools: ${r.winnerPools.mkString(", ")}"
+            )
+            val tip = r.winners.maxBy(_.height)
+            Console.info(
+              "reorg seen",
+              s"~${TimeFmt.humanDuration(r.nowEpoch - tip.time)} after the winning block"
+            )
+        }
+
+        r.workAdvantageOverOrphan.foreach { w =>
+            Console.info("work advantage", s"+${fmtWork(w)} over orphaned tip")
+        }
+        r.canonicalWorkGain.foreach { w =>
+            Console.info("canonical work", s"+${fmtWork(w)} since ancestor")
+        }
+
+        r.activeTip.foreach { t =>
+            Console.info("bitcoind tip", s"height ${t.height} ${abbr(t.hash)}")
+        }
+        r.competingForkTips.take(3).foreach { t =>
+            Console.info(
+              "bitcoind fork",
+              s"height ${t.height} branchlen ${t.branchlen} (${t.status})"
+            )
+        }
+
+        // Greppable single-line summary for log scraping.
+        val winnerPool = r.winners.maxByOption(_.height).map(_.pool.display).getOrElse("?")
+        val minDiff = r.winners.exists(_.minDifficulty)
+        Console.log(
+          s"""REORG depth=${r.depth} ancestor=${r.ancestorHeight} tip=${r.tipHeight} """ +
+              s"""winner_pool="$winnerPool" min_diff=$minDiff"""
+        )
+    }
+
     /** Detect a Bitcoin reorg and compute the correct parentPath and block range.
       *
       * Compares the oracle's fork tree tip against Bitcoin's canonical chain. If they diverge,
@@ -594,6 +701,22 @@ object CommandHelpers {
                                   confirmedHeight,
                                   deepReorgLookback
                                 )
+                                deepest match {
+                                    case Some((h, _)) =>
+                                        Console.logWarn(
+                                          s"Reorg depth: ~${highestKnown - h} block(s), " +
+                                              s"${confirmedHeight - h} reaching into CONFIRMED " +
+                                              s"history (deepest canonical ancestor $h) — " +
+                                              s"auto-recovery impossible, manual re-init required"
+                                        )
+                                    case None =>
+                                        Console.logWarn(
+                                          s"Reorg depth: ≥ ${highestKnown - confirmedHeight} fork " +
+                                              s"block(s) plus an unknown number into CONFIRMED " +
+                                              s"history (no canonical ancestor within last " +
+                                              s"$deepReorgLookback heights) — manual re-init required"
+                                        )
+                                }
                                 throw new DeepReorgException(
                                   confirmedHeight = confirmedHeight,
                                   oracleHash = chainState.ctx.lastBlockHash,
@@ -616,6 +739,15 @@ object CommandHelpers {
                                 )
                             }
                         }
+
+                        emitReorgDiagnostics(
+                          rpc,
+                          forkTree,
+                          oracleTipHash,
+                          highestKnown,
+                          ancestorHeight,
+                          ancestorHash
+                        )
 
                         (parentPath, ancestorHeight + 1)
     }

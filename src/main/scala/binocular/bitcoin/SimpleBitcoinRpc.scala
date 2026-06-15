@@ -21,6 +21,11 @@ trait BitcoinRpc {
     def getBlockchainInfo(): Future[BlockchainInfo]
     def getRawTransaction(txid: String): Future[RawTransactionInfo]
     def sendRawTransaction(hexString: String): Future[String]
+
+    /** All known chain tips incl. stale forks. Defaults to empty so non-node implementations
+      * (mocks, light clients) need not provide it; the reorg cross-check degrades gracefully.
+      */
+    def getChainTips(): Future[Seq[ChainTip]] = Future.successful(Seq.empty)
 }
 
 /** Lightweight Bitcoin RPC client using Java 11+ HTTP client
@@ -206,10 +211,16 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) ex
                       valueBtc = vout("value").num
                     )
                 }.toSeq
+                val coinbase = tx.obj
+                    .get("vin")
+                    .flatMap(_.arr.headOption)
+                    .flatMap(_.obj.get("coinbase"))
+                    .map(_.str)
                 TransactionInfo(
                   txid = tx("txid").str,
                   hex = tx("hex").str,
-                  vouts = vouts
+                  vouts = vouts,
+                  coinbase = coinbase
                 )
             }.toSeq
 
@@ -246,7 +257,7 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) ex
     }
 
     /** Get all known chain tips including stale forks */
-    def getChainTips(): Future[Seq[ChainTip]] = {
+    override def getChainTips(): Future[Seq[ChainTip]] = {
         call("getchaintips").map { result =>
             result.arr.map { tip =>
                 ChainTip(
@@ -321,7 +332,10 @@ case class VoutInfo(
 case class TransactionInfo(
     txid: String,
     hex: String,
-    vouts: Seq[VoutInfo] = Seq.empty
+    vouts: Seq[VoutInfo] = Seq.empty,
+    // Populated only for the coinbase transaction: the raw coinbase scriptSig hex
+    // (BIP34 height push + extranonce + miner/pool tag). None for normal txs.
+    coinbase: Option[String] = None
 )
 
 /** Full block with transactions */

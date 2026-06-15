@@ -6,9 +6,6 @@ import binocular.watchtower.*
 
 import binocular.oracle.ForkTree.*
 
-import java.time.{Instant, ZoneId}
-import java.time.format.DateTimeFormatter
-
 /** Pretty-print a [[ForkTree]] as an ASCII tree with optional ANSI colors.
   *
   * Usage:
@@ -31,10 +28,7 @@ object ForkTreePretty {
     private val Magenta = "\u001b[35m"
     private val White = "\u001b[37m"
 
-    private val dateFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
-
-    private def formatTime(epochSeconds: BigInt): String =
-        Instant.ofEpochSecond(epochSeconds.toLong).atZone(ZoneId.of("UTC")).format(dateFmt)
+    private def formatTime(epochSeconds: BigInt): String = TimeFmt.utc(epochSeconds)
 
     /** Format chainwork in compact scientific notation. */
     private def formatChainwork(cw: BigInt): String = {
