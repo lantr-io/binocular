@@ -64,6 +64,9 @@ class HonestPlanner(batchSize: Int)(using ExecutionContext) extends UpdatePlanne
                                 rest <- fetchHeaders(tail, header :: acc)
                             } yield rest
                     }
+                Console.log(
+                  s"Fetching blocks $startHeight..$endHeight (${endHeight - startHeight + 1} headers)"
+                )
                 fetchHeaders((startHeight to endHeight).toList, scala.Nil).await(60.seconds)
             } else scala.Nil
 
