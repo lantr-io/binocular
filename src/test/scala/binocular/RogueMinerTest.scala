@@ -4,7 +4,7 @@ import binocular.attack.RogueMiner
 import binocular.bitcoin.BitcoinHelpers.*
 import binocular.oracle.*
 import org.scalatest.funsuite.AnyFunSuite
-import scalus.cardano.onchain.plutus.prelude.List as ScalusList
+import scalus.cardano.onchain.plutus.prelude.List as PList
 import scalus.cardano.onchain.plutus.v1.PubKeyHash
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import scalus.uplc.builtin.ByteString
@@ -27,7 +27,7 @@ class RogueMinerTest extends AnyFunSuite {
     private def parentCtx(params: BitcoinValidatorParams): TraversalCtx = {
         val ts: BigInt = 1_700_000_000
         TraversalCtx(
-          timestamps = ScalusList.from((0 until 11).map(_ => ts).toList),
+          timestamps = PList.from((0 until 11).map(_ => ts).toList),
           height = BigInt(500),
           currentBits = targetToCompactByteString(params.powLimit),
           prevDiffAdjTimestamp = ts,

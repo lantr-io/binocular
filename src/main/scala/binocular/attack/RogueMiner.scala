@@ -6,7 +6,7 @@ import binocular.oracle.*
 import scalus.uplc.builtin.Builtins.sha2_256
 import scalus.uplc.builtin.ByteString
 import java.security.MessageDigest
-import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
 
 /** Produces valid-proof-of-work block headers that commit to fabricated transactions. Each block is
   * mined to extend a parent [[TraversalCtx]].
@@ -37,7 +37,7 @@ object RogueMiner {
     private def medianTimePast(ctx: TraversalCtx): BigInt =
         BitcoinValidator
             .insertionSort(ctx.timestamps.take(BitcoinHelpers.MedianTimeSpan))
-            .at(5)
+            .at(5) // index 5 = median of 11 timestamps
 
     /** Build a real Merkle root over fabricated transactions, so the block genuinely commits to a
       * fake payment. The "transactions" are deterministic placeholder bytes keyed by height
@@ -97,7 +97,7 @@ object RogueMiner {
       * `byteStringToInteger(false, hash) <= target`.
       */
     private def hashLeTarget(h: Array[Byte], tLE: Array[Byte]): Boolean = {
-        var i = 31
+        var i = 31 // scan MSB-first: index 31 is most significant in the LE representation
         while i >= 0 do {
             val hi = h(i) & 0xff
             val ti = tLE(i) & 0xff
@@ -113,7 +113,9 @@ object RogueMiner {
       * exhausted (caller then bumps timestamp).
       */
     private def searchNonce(template: Array[Byte], tLE: Array[Byte], threads: Int): Long = {
+        require(threads > 0, "threads must be positive")
         val found = new AtomicLong(-1L)
+        val failure = new AtomicReference[Throwable](null)
         val ts = (0 until threads).map { tid =>
             val th = new Thread(() => {
                 val md = MessageDigest.getInstance("SHA-256")
@@ -132,10 +134,12 @@ object RogueMiner {
                 }
             })
             th.setDaemon(true)
+            th.setUncaughtExceptionHandler((_, ex) => failure.compareAndSet(null, ex))
             th.start()
             th
         }
         ts.foreach(_.join())
+        Option(failure.get()).foreach(ex => throw new RuntimeException("nonce search failed", ex))
         found.get()
     }
 
