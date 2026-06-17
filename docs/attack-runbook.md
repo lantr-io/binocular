@@ -8,6 +8,9 @@ transactions; Alice relays the real chain; Alice's chainwork wins.
 - A running oracle on the target network (`binocular init` already done).
 - Two wallets with funds: Alice's mnemonic in her config, Eve's *different*
   mnemonic in hers (so they pay their own fees and race the same oracle UTxO).
+- Eve also needs a synced Bitcoin node for the SAME network as the oracle,
+  configured in her config. The daemon checks the oracle's confirmed tip against
+  this node at startup and exits (DeepReorgException) if they disagree.
 
 ## Regtest (fast, deterministic)
 Regtest `powLimit` (0x7fff…) makes mining instant, so the race resolves in

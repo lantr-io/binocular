@@ -164,6 +164,8 @@ object RogueMiner {
     ): MinedBlock = {
         val parentTs = parentCtx.timestamps.head
         val mtp = medianTimePast(parentCtx)
+        // To get the testnet4 min-difficulty (powLimit) target, this must be STRICTLY >
+        // parentTs + 2*TargetBlockTime (1200s); callers pass blockSpacing > 1200 (CLI default 1201).
         // Must exceed both (parent + spacing) and MTP; capped at now + 2h.
         var timestamp: BigInt = (parentTs + blockSpacing).max(mtp + 1)
         val ceiling = now + BitcoinHelpers.MaxFutureBlockTime

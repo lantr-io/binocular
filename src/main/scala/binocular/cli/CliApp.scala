@@ -160,8 +160,12 @@ object CliApp {
                     .option[Int]("rogue-sprint", help = "Rogue blocks to front-load on the first cycle")
                     .withDefault(6)
                 val spacingOpt = Opts
-                    .option[Long]("block-spacing", help = "Timestamp gap between rogue blocks in seconds (>1200 for min-difficulty)")
-                    .withDefault(1200L)
+                    .option[Long](
+                      "block-spacing",
+                      help =
+                          "Timestamp gap between rogue blocks in seconds (must be > 1200 for testnet4 min-difficulty)"
+                    )
+                    .withDefault(1201L)
                 (parentOpt, sprintOpt, spacingOpt, dryRunFlag).mapN(Cmd.Attack.apply)
             }
 
