@@ -39,6 +39,7 @@ class RoguePlanner(
         var stop = false
         while i < count && !stop do {
             val ceiling = now + BitcoinHelpers.MaxFutureBlockTime
+            // Safe slot pre-check: RogueMiner picks (parentTs + blockSpacing).max(mtp+1); since mtp <= parentTs (median of last 11 <= newest), that never exceeds parentTs + blockSpacing, so this bound matches.
             val nextTs = (ctx.timestamps.head + blockSpacing).max(0)
             if nextTs > ceiling then stop = true // out of timestamp slots for now
             else {
@@ -68,7 +69,7 @@ class RoguePlanner(
         // from the resolved --parent anchor.
         val (parentPath, startCtx) =
             eveTipHash.flatMap(h => chainState.forkTree.findPathToHash(h).map(p => (h, p))) match {
-                case scala.Some((tipHash, tipPath)) =>
+                case scala.Some((_, tipPath)) =>
                     // Extend our own tip. Prefer the cached ctx; fall back to a tree walk.
                     val ctx = eveTipCtx.getOrElse(
                       ForkPoint.ctxAtPath(

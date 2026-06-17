@@ -20,6 +20,7 @@ object ForkPoint {
     /** Parse the `--parent` value into either an integer depth or a 32-byte hash. */
     private def parseSelector(parent: String): Either[BigInt, ByteString] =
         parent.trim match
+            // A 64-char all-digit string would parse as a (huge) depth and harmlessly fall through to the confirmed-tip fallback; hashes are non-decimal in practice.
             case s if s.nonEmpty && s.forall(_.isDigit) => Left(BigInt(s))
             case s if s.length == 64 =>
                 Right(ByteString.fromArray(scalus.utils.Hex.hexToBytes(s)))
@@ -83,7 +84,7 @@ object ForkPoint {
                                 else loop(count + 1, t, ctx2)
                     loop(0, blocks, rootCtx)
                 case Fork(left, right) =>
-                    if h == BigInt(0) then ctxAtPath(left, tail, rootCtx, powLimit)
+                    if h == BitcoinValidator.LeftFork then ctxAtPath(left, tail, rootCtx, powLimit)
                     else ctxAtPath(right, tail, rootCtx, powLimit)
                 case End => rootCtx
 }
