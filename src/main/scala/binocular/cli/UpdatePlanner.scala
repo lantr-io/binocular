@@ -5,8 +5,8 @@ import binocular.oracle.{BitcoinValidatorParams, BlockHeader, ChainState}
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 
-/** The headers to submit this cycle, where they attach, and a human-readable
-  * status/idle line for the daemon to print.
+/** The headers to submit this cycle, where they attach, and a human-readable status/idle line for
+  * the daemon to print.
   */
 case class UpdatePlan(
     headers: ScalusList[BlockHeader],
@@ -16,8 +16,8 @@ case class UpdatePlan(
 
 /** Strategy that decides what the oracle daemon submits each cycle.
   *
-  * `HonestPlanner` fetches the real Bitcoin chain; `RoguePlanner` (Eve) mines
-  * rogue blocks. The daemon owns everything else (submit/poll/confirm/adopt).
+  * `HonestPlanner` fetches the real Bitcoin chain; `RoguePlanner` (Eve) mines rogue blocks. The
+  * daemon owns everything else (submit/poll/confirm/adopt).
   */
 trait UpdatePlanner {
     def planUpdate(

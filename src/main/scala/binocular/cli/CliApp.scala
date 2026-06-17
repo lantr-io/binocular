@@ -152,12 +152,21 @@ object CliApp {
             }
 
         val attackCommand =
-            Opts.subcommand("attack", "ADVERSARIAL: mine rogue blocks with fake txs into the fork tree (Eve)") {
+            Opts.subcommand(
+              "attack",
+              "ADVERSARIAL: mine rogue blocks with fake txs into the fork tree (Eve)"
+            ) {
                 val parentOpt = Opts
-                    .option[String]("parent", help = "Fork anchor: 0=tip, 1-100=depth back from tip, or a 64-hex block hash")
+                    .option[String](
+                      "parent",
+                      help = "Fork anchor: 0=tip, 1-100=depth back from tip, or a 64-hex block hash"
+                    )
                     .withDefault("0")
                 val sprintOpt = Opts
-                    .option[Int]("rogue-sprint", help = "Rogue blocks to front-load on the first cycle")
+                    .option[Int](
+                      "rogue-sprint",
+                      help = "Rogue blocks to front-load on the first cycle"
+                    )
                     .withDefault(6)
                 val spacingOpt = Opts
                     .option[Long](
