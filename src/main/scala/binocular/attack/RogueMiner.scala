@@ -7,6 +7,14 @@ import scalus.uplc.builtin.ByteString
 import java.security.MessageDigest
 import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
 
+/** Signals that no valid block timestamp remains within the `+2h` consensus ceiling above the
+  * parent — i.e. the min-difficulty mining window is exhausted this cycle (either no slot to start
+  * from, or every slot's nonce sweep missed). Callers (RoguePlanner.mineChain) treat this as "no
+  * more room right now": stop and submit what was already mined; the window widens as wall-clock
+  * advances. Distinct from a programming error so it can be caught precisely.
+  */
+final class MiningWindowExhausted(message: String) extends RuntimeException(message)
+
 /** Produces valid-proof-of-work block headers that commit to fabricated transactions. Each block is
   * mined to extend a parent [[TraversalCtx]].
   *
@@ -169,10 +177,10 @@ object RogueMiner {
         // Must exceed both (parent + spacing) and MTP; capped at now + 2h.
         var timestamp: BigInt = (parentTs + blockSpacing).max(mtp + 1)
         val ceiling = now + BitcoinHelpers.MaxFutureBlockTime
-        require(
-          timestamp <= ceiling,
-          s"No valid timestamp slot: need >$mtp / >${parentTs + blockSpacing} but ceiling is $ceiling"
-        )
+        if timestamp > ceiling then
+            throw new MiningWindowExhausted(
+              s"No valid timestamp slot: need >$mtp / >${parentTs + blockSpacing} but ceiling is $ceiling"
+            )
 
         val version = 0x20000000L // version bits, comfortably >= 4
         // Build the fabricated peg-in commitment once and mine to its real Merkle root.
@@ -215,7 +223,10 @@ object RogueMiner {
             hashesTried += (if winning < 0L then 0x100000000L else winning + 1L)
             if winning < 0L then {
                 timestamp = timestamp + 1
-                require(timestamp <= ceiling, "Exhausted nonce + timestamp window while mining")
+                if timestamp > ceiling then
+                    throw new MiningWindowExhausted(
+                      "Exhausted nonce + timestamp window while mining"
+                    )
                 bits = bitsFor(timestamp)
                 tLE = targetLE(compactBitsToTarget(bits))
             }
