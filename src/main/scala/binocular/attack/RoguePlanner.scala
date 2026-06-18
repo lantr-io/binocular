@@ -31,10 +31,9 @@ class RoguePlanner(
         count: Int,
         now: BigInt,
         params: BitcoinValidatorParams
-    ): (scala.List[BlockHeader], TraversalCtx, BigInt) = {
-        val headers = scala.collection.mutable.ListBuffer.empty[BlockHeader]
+    ): scala.List[RogueMiner.MinedBlock] = {
+        val mined = scala.collection.mutable.ListBuffer.empty[RogueMiner.MinedBlock]
         var ctx = startCtx
-        var work = BigInt(0)
         var i = 0
         var stop = false
         while i < count && !stop do {
@@ -43,16 +42,13 @@ class RoguePlanner(
             val nextTs = (ctx.timestamps.head + blockSpacing).max(0)
             if nextTs > ceiling then stop = true // out of timestamp slots for now
             else {
-                val mined = RogueMiner.mineBlock(ctx, now, blockSpacing, params)
-                headers += mined.header
-                work += BitcoinHelpers.calculateBlockProof(
-                  BitcoinHelpers.compactBitsToTarget(mined.header.bits)
-                )
-                ctx = mined.ctxAfter
+                val mb = RogueMiner.mineBlock(ctx, now, blockSpacing, params)
+                mined += mb
+                ctx = mb.ctxAfter
                 i += 1
             }
         }
-        (headers.toList, ctx, work)
+        mined.toList
     }
 
     override def planUpdate(
@@ -90,9 +86,9 @@ class RoguePlanner(
 
         // First batch mines the sprint; later cycles add one block per slot.
         val count = if eveTipHash.isEmpty then rogueSprint else 1
-        val (headers, endCtx, work) = mineChain(startCtx, count, now, params)
+        val minedBlocks = mineChain(startCtx, count, now, params)
 
-        if headers.isEmpty then {
+        if minedBlocks.isEmpty then {
             UpdatePlan(
               PList.Nil,
               parentPath,
@@ -100,11 +96,28 @@ class RoguePlanner(
                   s"chainwork=$eveChainwork) — waiting for +2h window to slide"
             )
         } else {
+            val headers = minedBlocks.map(_.header)
+            val endCtx = minedBlocks.last.ctxAfter
+            val work = minedBlocks.map(_.blockProof).sum
+
+            // Honest best-chain chainwork + display tip, for the per-block report context.
+            val oracleBestChainwork =
+                BitcoinValidator.bestChainPath(chainState.forkTree, chainState.ctx.height, 0)._1
+            val bestTip =
+                chainState.forkTree.bestChainTipHash
+                    .map(h => ByteString.fromArray(h.bytes.reverse).toHex.take(16))
+                    .getOrElse("<confirmed>")
+
+            // Print a detailed report for every mined block.
+            minedBlocks.foreach(mb =>
+                println(
+                  RogueBlockReport.render(mb, now, params.powLimit, oracleBestChainwork, bestTip)
+                )
+            )
+
             eveTipHash = scala.Some(BitcoinHelpers.blockHeaderHash(headers.last))
             eveTipCtx = scala.Some(endCtx)
             eveChainwork += work
-            val bestTip =
-                chainState.forkTree.bestChainTipHash.map(_.toHex.take(12)).getOrElse("<confirmed>")
             UpdatePlan(
               PList.from(headers),
               parentPath,
