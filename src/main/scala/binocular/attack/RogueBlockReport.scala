@@ -49,7 +49,14 @@ object RogueBlockReport {
         sb.append(s"    note        : extends a competing branch off the honest chain\n")
 
         // Proof-of-work
-        val diffFlag = if b.target == powLimit then "min-difficulty (powLimit)" else "difficulty>1"
+        // Min-difficulty blocks carry exactly the compact encoding of powLimit (what
+        // getNextWorkRequired emits for the testnet 20-min rule). Comparing decoded
+        // targets wouldn't work: compact bits keep only 3 mantissa bytes, so the
+        // decoded target is always slightly below the raw powLimit.
+        val diffFlag =
+            if b.bits == binocular.bitcoin.BitcoinHelpers.targetToCompactByteString(powLimit) then
+                "min-difficulty (powLimit)"
+            else "difficulty>1"
         val zeroBytes = leadingZeroBytes(blockDisplayHash)
         sb.append(s"  Proof-of-work:\n")
         sb.append(s"    bits=${b.bits.toHex}  target=0x${b.target.toString(16)}  $diffFlag\n")
