@@ -21,6 +21,7 @@ object CliApp {
         case Init(startBlock: Option[Long], dryRun: Boolean)
         case UpdateOracle(fromBlock: Option[Long], toBlock: Option[Long])
         case Run(dryRun: Boolean)
+        case Attack(parent: String, rogueSprint: Int, blockSpacing: Long, dryRun: Boolean)
         case Close
         case DeployScript
         case ProveTransaction(
@@ -148,6 +149,33 @@ object CliApp {
         val runCommand =
             Opts.subcommand("run", "Continuous daemon: submit oracle updates in a loop") {
                 dryRunFlag.map(Cmd.Run.apply)
+            }
+
+        val attackCommand =
+            Opts.subcommand(
+              "attack",
+              "ADVERSARIAL: mine rogue blocks with fake txs into the fork tree (Eve)"
+            ) {
+                val parentOpt = Opts
+                    .option[String](
+                      "parent",
+                      help = "Fork anchor: 0=tip, 1-100=depth back from tip, or a 64-hex block hash"
+                    )
+                    .withDefault("0")
+                val sprintOpt = Opts
+                    .option[Int](
+                      "rogue-sprint",
+                      help = "Rogue blocks to front-load on the first cycle"
+                    )
+                    .withDefault(6)
+                val spacingOpt = Opts
+                    .option[Long](
+                      "block-spacing",
+                      help =
+                          "Timestamp gap between rogue blocks in seconds (must be > 1200 for testnet4 min-difficulty)"
+                    )
+                    .withDefault(1201L)
+                (parentOpt, sprintOpt, spacingOpt, dryRunFlag).mapN(Cmd.Attack.apply)
             }
 
         val closeCommand = Opts.subcommand("close", "Close oracle, burn NFT") {
@@ -355,6 +383,7 @@ object CliApp {
                 initCommand `orElse`
                 updateCommand `orElse`
                 runCommand `orElse`
+                attackCommand `orElse`
                 closeCommand `orElse`
                 deployScriptCommand `orElse`
                 proveCommand `orElse`
@@ -410,6 +439,8 @@ object CliApp {
                             UpdateOracleCommand(from, to)
                         case Cmd.Run(dryRun) =>
                             RunCommand(dryRun)
+                        case Cmd.Attack(parent, rogueSprint, blockSpacing, dryRun) =>
+                            AttackCommand(parent, rogueSprint, blockSpacing, dryRun)
                         case Cmd.Close =>
                             CloseCommand()
                         case Cmd.DeployScript =>
