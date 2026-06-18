@@ -48,13 +48,12 @@ class RoguePlanner(
                     ctx = mb.ctxAfter
                     i += 1
                 } catch {
-                    // RogueMiner.mineBlock `require`s a timestamp within the +2h ceiling. When the
-                    // window above this parent is only a slot or two wide (forking near a tip whose
-                    // timestamp runs far ahead of real time), a single difficulty-1 nonce sweep can
-                    // miss and exhaust it. Treat that as "no more room this cycle": stop and submit
-                    // whatever we already mined instead of erroring the whole daemon cycle. The
-                    // window widens as wall-clock advances, so the next cycle makes progress.
-                    case _: IllegalArgumentException =>
+                    // The window above this parent is only a slot or two wide (forking near a tip
+                    // whose timestamp runs far ahead of real time) and a difficulty-1 nonce sweep
+                    // missed it. Treat that as "no more room this cycle": stop and submit whatever
+                    // we already mined instead of erroring the whole daemon cycle. The window widens
+                    // as wall-clock advances, so the next cycle makes progress.
+                    case _: MiningWindowExhausted =>
                         stop = true
                 }
         }
