@@ -3,7 +3,6 @@ package binocular.attack
 import binocular.bitcoin.BitcoinHelpers
 import binocular.bitcoin.BitcoinHelpers.*
 import binocular.oracle.*
-import scalus.uplc.builtin.Builtins.sha2_256
 import scalus.uplc.builtin.ByteString
 import java.security.MessageDigest
 import java.util.concurrent.atomic.{AtomicLong, AtomicReference}
@@ -24,11 +23,22 @@ object RogueMiner {
 
     private val cores = Runtime.getRuntime.availableProcessors()
 
-    /** A mined rogue block plus the traversal context after applying it. */
+    /** A mined rogue block plus the traversal context after applying it, mining cost detail, and
+      * the fabricated peg-in commitment it carries.
+      */
     case class MinedBlock(
         header: BlockHeader,
         summary: BlockSummary,
-        ctxAfter: TraversalCtx
+        ctxAfter: TraversalCtx,
+        height: BigInt,
+        nonce: Long,
+        bits: ByteString,
+        target: BigInt,
+        blockProof: BigInt,
+        parentHash: ByteString,
+        miningMillis: Long,
+        hashesTried: Long,
+        commitment: RogueCommitment
     )
 
     /** Median-time-past of the parent context — mirrors `validateBlock`: sort the newest-11
@@ -38,16 +48,6 @@ object RogueMiner {
         BitcoinValidator
             .insertionSort(ctx.timestamps.take(BitcoinHelpers.MedianTimeSpan))
             .at(5) // index 5 = median of 11 timestamps
-
-    /** Build a real Merkle root over fabricated transactions, so the block genuinely commits to a
-      * fake payment. The "transactions" are deterministic placeholder bytes keyed by height
-      * (coinbase + one bogus payment).
-      */
-    private def fakeMerkleRoot(height: BigInt): ByteString = {
-        val coinbase = sha2_256(ByteString.fromString(s"rogue-coinbase-$height"))
-        val payment = sha2_256(ByteString.fromString(s"rogue-payment-$height"))
-        binocular.oracle.MerkleTree.fromHashes(Seq(coinbase, payment)).getMerkleRoot
-    }
 
     /** Write `value` as `len` little-endian bytes into `buf` at `offset`. */
     private def putLE(buf: Array[Byte], offset: Int, len: Int, value: Long): Unit = {
@@ -175,7 +175,9 @@ object RogueMiner {
         )
 
         val version = 0x20000000L // version bits, comfortably >= 4
-        val merkleRoot = fakeMerkleRoot(parentCtx.height + 1)
+        // Build the fabricated peg-in commitment once and mine to its real Merkle root.
+        val commit = FakePegIn.commitment(parentCtx.height + 1)
+        val merkleRoot = commit.merkleRoot
 
         // Required difficulty the validator way — handles retarget boundaries
         // (calculateNextWorkRequired) and the min-difficulty exception.
@@ -196,6 +198,8 @@ object RogueMiner {
         // Search the full nonce space in parallel; if exhausted (possible since one
         // success per 2^32 is only ~63% likely per sweep), bump the timestamp (still
         // within the window), recompute bits/target, and rescan.
+        val startNanos = System.nanoTime()
+        var hashesTried = 0L
         var winning = -1L
         while winning < 0L do {
             val template =
@@ -208,6 +212,7 @@ object RogueMiner {
                   0L
                 ).bytes
             winning = searchNonce(template, tLE, threads)
+            hashesTried += (if winning < 0L then 0x100000000L else winning + 1L)
             if winning < 0L then {
                 timestamp = timestamp + 1
                 require(timestamp <= ceiling, "Exhausted nonce + timestamp window while mining")
@@ -215,6 +220,7 @@ object RogueMiner {
                 tLE = targetLE(compactBitsToTarget(bits))
             }
         }
+        val miningMillis = (System.nanoTime() - startNanos) / 1_000_000L
 
         val header = BlockHeader(
           buildHeaderBytes(
@@ -231,6 +237,19 @@ object RogueMiner {
         val summary =
             BlockSummary(hash = hash, timestamp = timestamp, addedTimeDelta = now - timestamp)
         val ctxAfter = BitcoinValidator.accumulateBlock(parentCtx, summary, params.powLimit)
-        MinedBlock(header, summary, ctxAfter)
+        MinedBlock(
+          header = header,
+          summary = summary,
+          ctxAfter = ctxAfter,
+          height = parentCtx.height + 1,
+          nonce = winning,
+          bits = bits,
+          target = compactBitsToTarget(bits),
+          blockProof = BitcoinHelpers.calculateBlockProof(compactBitsToTarget(bits)),
+          parentHash = parentCtx.lastBlockHash,
+          miningMillis = miningMillis,
+          hashesTried = hashesTried,
+          commitment = commit
+        )
     }
 }
