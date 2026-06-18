@@ -463,6 +463,12 @@ class OracleDaemon(planner: UpdatePlanner, dryRun: Boolean) {
                     }
                 }
             } catch {
+                // `break` (e.g. the dry-run break(0) above) is implemented as a control
+                // exception; let it propagate to the `boundary` instead of being swallowed
+                // by the generic `case e: Exception` below (which would log "Error: null"
+                // and loop forever).
+                case b: boundary.Break[?] =>
+                    throw b
                 case e: CommandHelpers.DeepReorgException =>
                     Console.logError(e.getMessage)
                     break(1)
