@@ -56,4 +56,31 @@ class RoguePlannerTest extends AnyFunSuite {
         }
         assert(ctx.height == BigInt(103))
     }
+
+    test("planUpdate stops gracefully (no error) when the mining window is exhausted") {
+        val ts: BigInt = 1_700_000_000
+        // Head timestamp is small (passes mineChain's head-based pre-check) but the median of the
+        // last 11 is far in the future, so RogueMiner.mineBlock's chosen timestamp
+        // (max(parent+spacing, mtp+1)) exceeds the +2h ceiling and it `require`-fails. mineChain
+        // must catch that and stop, yielding an idle plan rather than throwing the cycle.
+        val skewed = ChainState(
+          confirmedBlocksRoot = ByteString.fromHex("00" * 32),
+          ctx = TraversalCtx(
+            timestamps = PList.from(ts :: List.fill(10)(ts + 100000)),
+            height = BigInt(100),
+            currentBits = targetToCompactByteString(params.powLimit),
+            prevDiffAdjTimestamp = ts,
+            lastBlockHash = ByteString.fromHex("ab" * 32)
+          ),
+          forkTree = ForkTree.End
+        )
+        val planner = new RoguePlanner(
+          parent = "0",
+          rogueSprint = 3,
+          blockSpacing = 1200,
+          nowProvider = () => ts
+        )
+        val plan = planner.planUpdate(noRpc, skewed, OffChainMPF.empty, validityTime = ts, params)
+        assert(plan.headers == PList.Nil) // nothing mined this cycle, but no exception thrown
+    }
 }
