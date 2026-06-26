@@ -264,7 +264,7 @@ object CliApp {
                 val signatureOpt = Opts
                     .option[String](
                       "signature",
-                      "Depositor BIP340 Schnorr signature (64-byte hex); omit with --dry-run to print the digest to sign"
+                      "Depositor BIP-322 signature (64-byte hex from a bip322-simple wallet sig); omit with --dry-run to print the text to sign"
                     )
                     .orNone
                 val priorOpt = Opts
@@ -282,7 +282,7 @@ object CliApp {
         val signPeginMsgCommand =
             Opts.subcommand(
               "sign-pegin-msg",
-              "BIP340-sign the pegin-complete digest with a depositor WIF (prints the --signature)"
+              "BIP-322-sign the pegin-complete message with a depositor WIF (prints the --signature)"
             ) {
                 val keyOpt = Opts
                     .option[String](

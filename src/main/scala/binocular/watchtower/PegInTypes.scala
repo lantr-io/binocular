@@ -37,6 +37,10 @@ case class PegInDatum(
 object BifrostMessages {
     // "BFR-mint-v1"
     val mintTag: ByteString = ByteString.fromHex("4246522d6d696e742d7631")
+    // The depositor signs this ASCII text via BIP-322 (`signMessage(text, "bip322-simple")`).
+    // peg_in.ak rebuilds it as  mint_tag ++ ":" ++ hex(binding_digest)  and verifies the BIP-322
+    // signature against the depositor wallet's Taproot output key (`user_source_chain_pub_key`).
+    val mintTextPrefix: String = "BFR-mint-v1:"
 }
 
 // Aiken `bifrost/types/peg-in.{PegInRequest, PegInMintRedeemer}`. Field order
