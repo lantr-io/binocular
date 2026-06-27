@@ -59,15 +59,15 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
 
         // The TM UTxO lives at the validator address (parameterized by the oracle script hash + the
         // TM-control NFT that authenticates the authorized-minter datum).
-        val tmScript = TreasuryMovementContract.contract(
+        val tmScript = TreasuryMovementContract.script(
           oracleScriptHashBS,
           ByteString.fromHex(config.bridge.tmControlNftPolicy),
           ByteString.fromHex(config.bridge.tmControlNftName)
         )
-        val tmAddress = Address(network, Credential.ScriptHash(tmScript.script.scriptHash))
+        val tmAddress = Address(network, Credential.ScriptHash(tmScript.scriptHash))
         // The TM NFT: policy = the validator's own script hash, empty asset name (minted by the
         // validator's mint branch). Only UTxOs carrying it are genuine TM UTxOs.
-        val tmNftPolicy = tmScript.script.scriptHash
+        val tmNftPolicy = tmScript.scriptHash
         val tmNftAsset = AssetName.empty
 
         // Operator-declared dead TMs (relay.skip-btc-txids): match on the display (big-endian) btc
@@ -85,7 +85,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
         }
         Console.info("Cardano", config.cardano.network)
         Console.info("Oracle policy", oraclePolicyId.toHex)
-        Console.info("TM validator", tmScript.script.scriptHash.toHex)
+        Console.info("TM validator", tmScript.scriptHash.toHex)
         Console.info("TM address", tmAddress.encode.getOrElse("?"))
         Console.separator()
         println()
@@ -179,7 +179,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
     private def confirmOne(
         provider: BlockchainProvider,
         hdAccount: scalus.cardano.wallet.hd.HdAccount,
-        tmScript: scalus.uplc.PlutusV3[Data => Unit],
+        tmScript: scalus.cardano.ledger.Script.PlutusV3,
         tmAddress: Address,
         oracleUtxo: Utxo,
         obMpf: scalus.crypto.trie.MerklePatriciaForestry,

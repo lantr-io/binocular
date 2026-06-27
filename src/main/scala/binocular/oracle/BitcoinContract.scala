@@ -2,11 +2,12 @@ package binocular.oracle
 
 import binocular.*
 import binocular.bitcoin.*
+import binocular.blueprint.PinnedBlueprint
 import binocular.watchtower.*
 
 import scalus.*
 import scalus.cardano.blueprint.{Blueprint, HasTypeDescription, Preamble, Validator}
-import scalus.cardano.ledger.MajorProtocolVersion
+import scalus.cardano.ledger.{MajorProtocolVersion, Script}
 import scalus.compiler.Options
 import scalus.uplc.PlutusV3
 import scalus.uplc.builtin.Data
@@ -22,8 +23,20 @@ object BitcoinContract {
     lazy val contract: PlutusV3[Data => Data => Unit] =
         PlutusV3.compile(BitcoinValidator.validate)
 
+    /** Compile the oracle from source and apply `params` (the deployed-hash-determining path before
+      * pinning). Used by the blueprint generator, by new-deployment init, and by tests/eval that
+      * need `PlutusV3`-level APIs. Production hashing/addressing/tx-building should use [[script]].
+      */
     def makeContract(params: BitcoinValidatorParams): PlutusV3[Data => Unit] =
         contract(params.toData)
+
+    /** The oracle script for `params`, loaded verbatim from the frozen blueprint when present
+      * (preserving deployed hashes across compiler upgrades) and compiled fresh otherwise.
+      */
+    def script(params: BitcoinValidatorParams): Script.PlutusV3 =
+        PinnedBlueprint.pinned(PinnedBlueprint.Titles.Oracle, PinnedBlueprint.paramsKey(params.toData)) {
+            makeContract(params).script
+        }
 
     // Maximum blocks allowed in the fork tree. 256 = 2^8, the capacity of a balanced
     // binary tree at depth 8 — the most space-efficient tree shape (15,248 bytes), which

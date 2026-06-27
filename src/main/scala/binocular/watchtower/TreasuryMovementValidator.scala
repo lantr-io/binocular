@@ -406,4 +406,23 @@ object TreasuryMovementContract {
         controlNftName: ByteString
     ): PlutusV3[Data => Unit] =
         parameterized.apply(oracleScriptHash).apply(controlNftPolicy).apply(controlNftName)
+
+    /** Treasury-movement script for the given params, loaded verbatim from the frozen blueprint when
+      * present (preserving deployed hashes across compiler upgrades) and compiled fresh otherwise.
+      */
+    def script(
+        oracleScriptHash: ByteString,
+        controlNftPolicy: ByteString,
+        controlNftName: ByteString
+    ): scalus.cardano.ledger.Script.PlutusV3 =
+        binocular.blueprint.PinnedBlueprint.pinned(
+          binocular.blueprint.PinnedBlueprint.Titles.TreasuryMovement,
+          binocular.blueprint.PinnedBlueprint.paramsKeyOf(
+            oracleScriptHash,
+            controlNftPolicy,
+            controlNftName
+          )
+        ) {
+            contract(oracleScriptHash, controlNftPolicy, controlNftName).script
+        }
 }

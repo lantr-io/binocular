@@ -43,6 +43,16 @@ object TmtxScript {
             )
             .apply(salt)
 
+    /** Pinned (frozen-blueprint-backed) script; falls back to a fresh compile when not pinned. Used
+      * for tx-building and policy-id derivation so the deployed tmtx policy survives compiler
+      * upgrades.
+      */
+    lazy val pinnedScript: scalus.cardano.ledger.Script.PlutusV3 =
+        binocular.blueprint.PinnedBlueprint.pinned(
+          binocular.blueprint.PinnedBlueprint.Titles.Tmtx,
+          binocular.blueprint.PinnedBlueprint.NoParams
+        )(mintingScript.script)
+
     /** Spend the existing TMTx UTxO and recreate it with datum Constr(1, [txBytes]).
       *
       * Used by both the relay command (after BTC confirmation) and the confirm-tmtx command.
@@ -66,7 +76,7 @@ object TmtxScript {
             Console.log("  Building Cardano datum update transaction...")
 
             val tx = TxBuilder(provider.cardanoInfo)
-                .spend(utxo, Data.unit, mintingScript)
+                .spend(utxo, Data.unit, pinnedScript)
                 .payTo(scriptAddress, utxo.output.value, newDatum)
                 .complete(provider, sponsorAddress)
                 .await(timeout)

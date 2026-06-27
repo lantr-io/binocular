@@ -72,7 +72,7 @@ case class OracleConfig(
         bitcoinNetwork: BitcoinNetwork = BitcoinNetwork.Mainnet
     ): Either[String, String] = {
         toBitcoinValidatorParams(bitcoinNetwork).map { params =>
-            val scriptHash = BitcoinContract.makeContract(params).script.scriptHash
+            val scriptHash = BitcoinContract.script(params).scriptHash
             val scalusNetwork = network match {
                 case CardanoNetwork.Mainnet => Network.Mainnet
                 case CardanoNetwork.Preprod => Network.Testnet

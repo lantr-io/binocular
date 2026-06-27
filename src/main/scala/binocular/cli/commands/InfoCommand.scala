@@ -66,13 +66,13 @@ case class InfoCommand() extends Command {
         println("[Treasury Movement]")
         oracle.toBitcoinValidatorParams(config.bitcoinNode.bitcoinNetwork) match {
             case Right(params) =>
-                val oracleHash = BitcoinContract.makeContract(params).script.scriptHash
-                val tmScript = TreasuryMovementContract.contract(
+                val oracleHash = BitcoinContract.script(params).scriptHash
+                val tmScript = TreasuryMovementContract.script(
                   ByteString.fromArray(oracleHash.bytes),
                   ByteString.fromHex(config.bridge.tmControlNftPolicy),
                   ByteString.fromHex(config.bridge.tmControlNftName)
                 )
-                val tmHash = tmScript.script.scriptHash
+                val tmHash = tmScript.scriptHash
                 val tmAddr = Address(cardano.scalusNetwork, Credential.ScriptHash(tmHash)).encode
                 println(s"  Validator Script Hash: ${tmHash.toHex}")
                 println(s"  Validator Address: ${tmAddr.getOrElse("(error)")}")

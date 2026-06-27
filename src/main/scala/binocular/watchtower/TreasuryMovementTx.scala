@@ -28,7 +28,7 @@ object TreasuryMovementTx {
     def buildAndSubmitConfirm(
         provider: BlockchainProvider,
         hdAccount: HdAccount,
-        tmScript: PlutusV3[Data => Unit],
+        tmScript: scalus.cardano.ledger.Script.PlutusV3,
         tmAddress: Address,
         unconfirmed: Utxo,
         oracle: Utxo,

@@ -419,8 +419,8 @@ object CliApp {
                 println(s"binocular ${BuildInfo.version}")
                 0
 
-            case Right((_, Cmd.Blueprint)) =>
-                BlueprintCommand().execute(null)
+            case Right((configPath, Cmd.Blueprint)) =>
+                BlueprintCommand().execute(BinocularConfig.load(configPath))
 
             case Right((configPath, cmd)) =>
                 try {

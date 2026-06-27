@@ -66,14 +66,14 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
         val provider: BlockchainProvider = setup.provider
         val network = setup.network
         val oracleScriptHashBS = ByteString.fromArray(setup.script.scriptHash.bytes)
-        val tmScript = TreasuryMovementContract.contract(
+        val tmScript = TreasuryMovementContract.script(
           oracleScriptHashBS,
           ByteString.fromHex(config.bridge.tmControlNftPolicy),
           ByteString.fromHex(config.bridge.tmControlNftName)
         )
-        val tmAddress = Address(network, Credential.ScriptHash(tmScript.script.scriptHash))
+        val tmAddress = Address(network, Credential.ScriptHash(tmScript.scriptHash))
         // The TM NFT (policy = validator's own hash, empty asset name) marks genuine TM UTxOs.
-        val tmNftPolicy = tmScript.script.scriptHash
+        val tmNftPolicy = tmScript.scriptHash
         val tmNftAsset = AssetName.empty
 
         val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
@@ -84,7 +84,7 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
             case e: Exception => Console.error(s"Bitcoin RPC: ${e.getMessage}"); break(1)
         }
         Console.info("Cardano", config.cardano.network)
-        Console.info("TM validator", tmScript.script.scriptHash.toHex)
+        Console.info("TM validator", tmScript.scriptHash.toHex)
         Console.info("TM address", tmAddress.encode.getOrElse("?"))
         Console.separator()
         println()

@@ -51,7 +51,12 @@ lazy val binocular = (project in file("."))
       assembly / mainClass := Some("binocular.main"),
       assembly / assemblyJarName := "binocular.jar",
       // BuildInfo
-      buildInfoKeys := Seq[BuildInfoKey](name, version),
+      buildInfoKeys := Seq[BuildInfoKey](
+        name,
+        version,
+        scalaVersion,
+        "scalusVersion" -> scalusVersion
+      ),
       buildInfoPackage := "binocular"
     )
 

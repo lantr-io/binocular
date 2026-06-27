@@ -284,9 +284,9 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         val cpoAssetName = CompletedPegOutsContract.assetName(cpoRef)
 
         val pegOutProducedVerifierHash =
-            ByteString.fromArray(PegOutProducedVerifierContract.compiled.script.scriptHash.bytes)
+            ByteString.fromArray(PegOutProducedVerifierContract.pinnedScript.scriptHash.bytes)
         val pegOutNotProducedVerifierHash =
-            ByteString.fromArray(PegOutNotProducedVerifierContract.compiled.script.scriptHash.bytes)
+            ByteString.fromArray(PegOutNotProducedVerifierContract.pinnedScript.scriptHash.bytes)
 
         val configDatum = ConfigDatum(
           bridgedTokenPolicyId = bridgedTokenPolicy,

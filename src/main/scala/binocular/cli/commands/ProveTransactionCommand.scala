@@ -84,7 +84,7 @@ case class ProveTransactionCommand(
             case Right(value) => value
         }
 
-        val script = BitcoinContract.makeContract(params).script
+        val script = BitcoinContract.script(params)
 
         val provider = cardanoConf.createBlockchainProvider() match {
             case Left(err) =>

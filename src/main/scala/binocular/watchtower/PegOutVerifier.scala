@@ -130,6 +130,13 @@ object PegOutProducedVerifierContract {
 
     lazy val compiled: PlutusV3[Data => Unit] =
         PlutusV3.compile((scData: Data) => PegOutProducedVerifier.validate(scData))
+
+    /** Pinned (frozen-blueprint-backed) script; falls back to a fresh compile when not pinned. */
+    lazy val pinnedScript: scalus.cardano.ledger.Script.PlutusV3 =
+        binocular.blueprint.PinnedBlueprint.pinned(
+          binocular.blueprint.PinnedBlueprint.Titles.PegOutProduced,
+          binocular.blueprint.PinnedBlueprint.NoParams
+        )(compiled.script)
 }
 
 /** The `legit_treasury_movement_and_peg_out_not_produced_verifier` — config[14]. Only invoked by
@@ -149,4 +156,11 @@ object PegOutNotProducedVerifierContract {
 
     lazy val compiled: PlutusV3[Data => Unit] =
         PlutusV3.compile((scData: Data) => PegOutNotProducedVerifier.validate(scData))
+
+    /** Pinned (frozen-blueprint-backed) script; falls back to a fresh compile when not pinned. */
+    lazy val pinnedScript: scalus.cardano.ledger.Script.PlutusV3 =
+        binocular.blueprint.PinnedBlueprint.pinned(
+          binocular.blueprint.PinnedBlueprint.Titles.PegOutNotProduced,
+          binocular.blueprint.PinnedBlueprint.NoParams
+        )(compiled.script)
 }

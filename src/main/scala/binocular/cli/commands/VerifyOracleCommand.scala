@@ -35,7 +35,7 @@ case class VerifyOracleCommand() extends Command {
             case Right(value) => value
         }
 
-        val script = BitcoinContract.makeContract(params).script
+        val script = BitcoinContract.script(params)
 
         given ec: ExecutionContext = ExecutionContext.global
 

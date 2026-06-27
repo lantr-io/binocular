@@ -180,4 +180,11 @@ object TransactionVerifierContract {
     }
 
     lazy val validator: Program = compileVerifierProgram()
+
+    /** Pinned (frozen-blueprint-backed) script; falls back to a fresh compile when not pinned. */
+    lazy val pinnedScript: scalus.cardano.ledger.Script.PlutusV3 =
+        binocular.blueprint.PinnedBlueprint.pinned(
+          binocular.blueprint.PinnedBlueprint.Titles.TxVerifier,
+          binocular.blueprint.PinnedBlueprint.NoParams
+        )(scalus.cardano.ledger.Script.PlutusV3(validator.cborByteString))
 }

@@ -110,7 +110,7 @@ case class PegOutCompleteCommand(
             CompletedPegOutsContract(blueprint, configNftPolicy, configNftAsset, cpoOneShot)
         val cpoPolicy = cpoContract.policyId
         val cpoAsset = AssetName(CompletedPegOutsContract.assetName(cpoOneShot))
-        val producedVerifier = PegOutProducedVerifierContract.compiled.script
+        val producedVerifier = PegOutProducedVerifierContract.pinnedScript
         val producedVerifierHash = producedVerifier.scriptHash
 
         Console.info("peg_out withdraw hash", pegOut.policyId.toHex)

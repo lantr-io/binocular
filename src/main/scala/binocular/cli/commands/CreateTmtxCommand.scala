@@ -57,8 +57,8 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
         val sponsorAddress = hdAccount.baseAddress(network)
 
         // Marker token: the project-unique alwaysOk policy (salt baked in for a distinct policy ID).
-        val mintingScript = TmtxScript.mintingScript
-        val policyId = mintingScript.script.scriptHash
+        val mintingScript = TmtxScript.pinnedScript
+        val policyId = mintingScript.scriptHash
         val assetName = AssetName.fromString(config.relay.tmtxAssetName)
 
         // The Unconfirmed TM UTxO lives at the TreasuryMovementValidator address (parameterized by
@@ -69,13 +69,13 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
                 Console.error(s"Oracle params: $err"); break(1)
             }
         val oracleScriptHashBS =
-            ByteString.fromArray(BitcoinContract.makeContract(oracleParams).script.scriptHash.bytes)
-        val tmScript = TreasuryMovementContract.contract(
+            ByteString.fromArray(BitcoinContract.script(oracleParams).scriptHash.bytes)
+        val tmScript = TreasuryMovementContract.script(
           oracleScriptHashBS,
           ByteString.fromHex(config.bridge.tmControlNftPolicy),
           ByteString.fromHex(config.bridge.tmControlNftName)
         )
-        val scriptAddress = Address(network, Credential.ScriptHash(tmScript.script.scriptHash))
+        val scriptAddress = Address(network, Credential.ScriptHash(tmScript.scriptHash))
 
         Console.info("Cardano", config.cardano.network)
         Console.info(

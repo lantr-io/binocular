@@ -35,20 +35,20 @@ case class TmScriptCommand() extends Command {
                     )
                 val oracleHash =
                     ByteString.fromArray(
-                      BitcoinContract.makeContract(params).script.scriptHash.bytes
+                      BitcoinContract.script(params).scriptHash.bytes
                     )
-                val contract = TreasuryMovementContract.contract(
+                val contract = TreasuryMovementContract.script(
                   oracleHash,
                   ByteString.fromHex(controlPolicy),
                   ByteString.fromHex(controlName)
                 )
-                val policyId = contract.script.scriptHash
+                val policyId = contract.scriptHash
                 val address =
                     Address(config.cardano.scalusNetwork, Credential.ScriptHash(policyId)).encode
                         .getOrElse("?")
                 println(s"policy_id: ${policyId.toHex}")
                 println(s"address:   $address")
-                println(s"cbor:      ${contract.script.script.toHex}")
+                println(s"cbor:      ${contract.script.toHex}")
                 0
         }
     }

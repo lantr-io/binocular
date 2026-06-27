@@ -53,7 +53,7 @@ case class SpendTmtxCommand() extends Command {
         val signer = hdAccount.signerForUtxos
         val sponsorAddress = hdAccount.baseAddress(network)
 
-        val mintingScript = TmtxScript.mintingScript
+        val mintingScript = TmtxScript.pinnedScript
         val policyId = ScriptHash.fromHex(config.relay.tmtxPolicyId)
         val assetName = AssetName.fromString(config.relay.tmtxAssetName)
         val scriptAddress = Address(network, Credential.ScriptHash(policyId))

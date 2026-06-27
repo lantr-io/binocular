@@ -109,7 +109,7 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
         val pegOut = PegOutContract(blueprint, oraclePolicyId, configNftPolicy, configNftAsset)
         val pegOutHash = pegOut.policyId
         val pegOutProducedVerifierHash =
-            PegOutProducedVerifierContract.compiled.script.scriptHash
+            PegOutProducedVerifierContract.pinnedScript.scriptHash
 
         val creds: List[(String, ScriptHash)] = List(
           "peg_in" -> pegInHash,
