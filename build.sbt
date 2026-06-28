@@ -1,7 +1,7 @@
-val scalusVersion = "0.18.1"
+val scalusVersion = "0.18.2"
 
 // Common settings for all projects
-ThisBuild / scalaVersion := "3.3.7"
+ThisBuild / scalaVersion := "3.3.8"
 ThisBuild / scalacOptions ++= Seq(
   "-deprecation",
   "-feature",
@@ -35,7 +35,7 @@ lazy val binocular = (project in file("."))
       Test / testOptions += Tests
           .Argument(TestFrameworks.ScalaTest, "-l", "binocular.ManualTest"),
       Test / javaOptions ++= Seq("-Xmx2g", "--sun-misc-unsafe-memory-access=allow"),
-      addCompilerPlugin("org.scalus" % "scalus-plugin_3.3.7" % scalusVersion),
+      addCompilerPlugin("org.scalus" % "scalus-plugin_3.3.8" % scalusVersion),
       libraryDependencies ++= coreDependencies ++ testDependencies,
       // Assembly configuration
       assembly / assemblyMergeStrategy := {
@@ -70,7 +70,7 @@ lazy val it = (project in file("it"))
       Test / baseDirectory := (binocular / baseDirectory).value,
       Test / javaOptions ++= Seq("-Xmx2g", "--sun-misc-unsafe-memory-access=allow"),
       Test / envVars += ("TESTCONTAINERS_RYUK_DISABLED" -> "true"),
-      addCompilerPlugin("org.scalus" % "scalus-plugin_3.3.7" % scalusVersion),
+      addCompilerPlugin("org.scalus" % "scalus-plugin_3.3.8" % scalusVersion),
       libraryDependencies ++= integrationTestDependencies,
       // Use test resources from root project
       Test / resourceDirectory := (binocular / Test / resourceDirectory).value
@@ -81,7 +81,7 @@ lazy val example = (project in file("example"))
     .dependsOn(binocular)
     .settings(
       name := "binocular-example",
-      addCompilerPlugin("org.scalus" % "scalus-plugin_3.3.7" % scalusVersion),
+      addCompilerPlugin("org.scalus" % "scalus-plugin_3.3.8" % scalusVersion),
       Compile / mainClass := Some("binocular.example.bitcoinDependentLock")
     )
 
