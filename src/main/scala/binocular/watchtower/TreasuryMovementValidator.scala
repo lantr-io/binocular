@@ -407,8 +407,9 @@ object TreasuryMovementContract {
     ): PlutusV3[Data => Unit] =
         parameterized.apply(oracleScriptHash).apply(controlNftPolicy).apply(controlNftName)
 
-    /** Treasury-movement script for the given params, loaded verbatim from the frozen blueprint when
-      * present (preserving deployed hashes across compiler upgrades) and compiled fresh otherwise.
+    /** Treasury-movement script for the given params, loaded verbatim from the frozen blueprint
+      * when present (preserving deployed hashes across compiler upgrades) and compiled fresh
+      * otherwise.
       */
     def script(
         oracleScriptHash: ByteString,

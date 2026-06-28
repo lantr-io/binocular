@@ -6,11 +6,11 @@ import scalus.uplc.builtin.{Builtins, ByteString, Data}
 /** Frozen, fully-applied script blueprint (Strategy A).
   *
   * `PlutusV3` applies parameters at the SIR level and re-lowers/re-optimizes, so a Scalus script
-  * hash cannot be reconstructed from un-applied UPLC by applying params at load time (unlike Aiken's
-  * `compiledCode`, which [[binocular.watchtower.BifrostBlueprint]] applies via `Program.$`).
-  * Therefore we freeze each validator's *fully-applied* bytes and load them verbatim — no compile,
-  * no optimize, no param application at load — which is trivially correct and immune to compiler
-  * upgrades.
+  * hash cannot be reconstructed from un-applied UPLC by applying params at load time (unlike
+  * Aiken's `compiledCode`, which [[binocular.watchtower.BifrostBlueprint]] applies via
+  * `Program.$`). Therefore we freeze each validator's *fully-applied* bytes and load them verbatim
+  * — no compile, no optimize, no param application at load — which is trivially correct and immune
+  * to compiler upgrades.
   *
   * Parameterized validators have multiple live deployments (e.g. preprod vs testnet4 oracle params
   * differ), so applied entries are keyed by [[PinnedBlueprint.paramsKey]] — a version-independent
@@ -56,7 +56,8 @@ object PinnedBlueprint {
     val ActiveResource: String =
         "/blueprints/binocular-blueprint-scalus-0.18.1-scala-3.3.7.json"
 
-    /** Loaded once from the classpath; `None` if the resource is absent (e.g. before first capture).
+    /** Loaded once from the classpath; `None` if the resource is absent (e.g. before first
+      * capture).
       */
     lazy val active: Option[PinnedBlueprint] =
         Option(getClass.getResourceAsStream(ActiveResource)).map { is =>

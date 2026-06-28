@@ -20,7 +20,9 @@ class PinnedBlueprintTest extends AnyFunSuite {
         ujson.read(Source.fromResource(name).mkString)
 
     private val frozen =
-        BlueprintGenerator.parse(resourceJson("blueprints/binocular-blueprint-scalus-0.18.1-scala-3.3.7.json"))
+        BlueprintGenerator.parse(
+          resourceJson("blueprints/binocular-blueprint-scalus-0.18.1-scala-3.3.7.json")
+        )
 
     private def hashOf(title: String, paramsKey: String): String =
         frozen
@@ -30,9 +32,15 @@ class PinnedBlueprintTest extends AnyFunSuite {
 
     test("frozen-guard: deployed hashes are pinned and never silently move") {
         // Deployed policies recorded in application-preprod.conf.
-        assert(frozen.exists(_.hash == "758e8e7d3ffa043f3c89bf7c38b69c2508a7d5610ebcf03aaafb944d")) // oracle
-        assert(frozen.exists(_.hash == "eafdc4d9733275d3e06cfe5fe54a13fff3ba5baa8d65636260537907")) // tmtx
-        assert(frozen.exists(_.hash == "412491a7be58276e165265e7e5c43e20cdb7091f6bd10d364f16b54f")) // TM
+        assert(
+          frozen.exists(_.hash == "758e8e7d3ffa043f3c89bf7c38b69c2508a7d5610ebcf03aaafb944d")
+        ) // oracle
+        assert(
+          frozen.exists(_.hash == "eafdc4d9733275d3e06cfe5fe54a13fff3ba5baa8d65636260537907")
+        ) // tmtx
+        assert(
+          frozen.exists(_.hash == "412491a7be58276e165265e7e5c43e20cdb7091f6bd10d364f16b54f")
+        ) // TM
     }
 
     test("round-trip: stored bytes hash to the stored hash") {
@@ -44,7 +52,8 @@ class PinnedBlueprintTest extends AnyFunSuite {
 
     test("loader: PinnedBlueprint.pinned returns the frozen bytes verbatim") {
         frozen.foreach { e =>
-            val script = PinnedBlueprint.pinned(e.title, e.paramsKey)(fail("should not compile fresh"))
+            val script =
+                PinnedBlueprint.pinned(e.title, e.paramsKey)(fail("should not compile fresh"))
             assert(script.scriptHash.toHex == e.hash)
         }
     }
@@ -55,10 +64,16 @@ class PinnedBlueprintTest extends AnyFunSuite {
             .toBitcoinValidatorParams(preprod.bitcoinNode.bitcoinNetwork)
             .getOrElse(fail("preprod oracle not configured"))
         // Pinned load (from the frozen blueprint) must reproduce the source-compiled hash exactly.
-        assert(BitcoinContract.script(params).scriptHash.toHex ==
-            BitcoinContract.makeContract(params).script.scriptHash.toHex)
+        assert(
+          BitcoinContract.script(params).scriptHash.toHex ==
+              BitcoinContract.makeContract(params).script.scriptHash.toHex
+        )
         // And it is one of the pinned oracle entries (not a fresh-compile fallback).
-        assert(frozen.exists(e => e.title == "oracle" && e.hash == BitcoinContract.script(params).scriptHash.toHex))
+        assert(
+          frozen.exists(e =>
+              e.title == "oracle" && e.hash == BitcoinContract.script(params).scriptHash.toHex
+          )
+        )
     }
 
     test("drift: fresh compilation matches the current-deps blueprint (fails on drift)") {

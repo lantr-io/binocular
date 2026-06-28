@@ -34,7 +34,10 @@ object BitcoinContract {
       * (preserving deployed hashes across compiler upgrades) and compiled fresh otherwise.
       */
     def script(params: BitcoinValidatorParams): Script.PlutusV3 =
-        PinnedBlueprint.pinned(PinnedBlueprint.Titles.Oracle, PinnedBlueprint.paramsKey(params.toData)) {
+        PinnedBlueprint.pinned(
+          PinnedBlueprint.Titles.Oracle,
+          PinnedBlueprint.paramsKey(params.toData)
+        ) {
             makeContract(params).script
         }
 

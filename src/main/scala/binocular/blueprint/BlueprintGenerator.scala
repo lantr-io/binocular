@@ -55,7 +55,8 @@ object BlueprintGenerator {
                 val oracleHash = ByteString.fromArray(oracleScript.scriptHash.bytes)
                 val tmPolicy = ByteString.fromHex(config.bridge.tmControlNftPolicy)
                 val tmName = ByteString.fromHex(config.bridge.tmControlNftName)
-                val tmScript = TreasuryMovementContract.contract(oracleHash, tmPolicy, tmName).script
+                val tmScript =
+                    TreasuryMovementContract.contract(oracleHash, tmPolicy, tmName).script
                 Seq(
                   entry(
                     PinnedBlueprint.Titles.Oracle,
@@ -133,7 +134,10 @@ object BlueprintGenerator {
             if Files.exists(path) then parse(ujson.read(Files.readString(path))) else Seq.empty
         val merged = merge(existing, entriesFor(config))
         Files.createDirectories(dir)
-        Files.writeString(path, ujson.write(toJson(merged, scalusVersion, scalaVersion), indent = 2))
+        Files.writeString(
+          path,
+          ujson.write(toJson(merged, scalusVersion, scalaVersion), indent = 2)
+        )
         path
     }
 }
