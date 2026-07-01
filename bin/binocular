@@ -17,7 +17,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 
-JAR="${BINOCULAR_JAR:-$ROOT/target/out/jvm/scala-3.3.7/binocular/binocular.jar}"
+JAR="${BINOCULAR_JAR:-$ROOT/target/out/jvm/scala-3.3.8/binocular/binocular.jar}"
 JAVA="${JAVA:-${JAVA_HOME:+$JAVA_HOME/bin/}java}"
 
 if [[ ! -f "$JAR" ]]; then

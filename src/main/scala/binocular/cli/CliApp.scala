@@ -35,6 +35,7 @@ object CliApp {
         case CreateTmtx(btcTxHex: String)
         case SpendTmtx
         case ConfirmTmtx(dryRun: Boolean)
+        case Watchtower(dryRun: Boolean)
         case TmScript
         case PegInRequest(btcTxId: String, dryRun: Boolean)
         case DeployBridge(authorizedMinter: Option[String], dryRun: Boolean)
@@ -228,6 +229,14 @@ object CliApp {
                 dryRunFlag.map(Cmd.ConfirmTmtx.apply)
             }
 
+        val watchtowerCommand =
+            Opts.subcommand(
+              "watchtower",
+              "Run the oracle sync, TM relay, and TM confirm daemons together in one process"
+            ) {
+                dryRunFlag.map(Cmd.Watchtower.apply)
+            }
+
         val tmScriptCommand =
             Opts.subcommand(
               "tm-script",
@@ -391,6 +400,7 @@ object CliApp {
                 createTmtxCommand `orElse`
                 spendTmtxCommand `orElse`
                 confirmTmtxCommand `orElse`
+                watchtowerCommand `orElse`
                 tmScriptCommand `orElse`
                 pegInRequestCommand `orElse`
                 deployBridgeCommand `orElse`
@@ -467,6 +477,8 @@ object CliApp {
                             SpendTmtxCommand()
                         case Cmd.ConfirmTmtx(dryRun) =>
                             ConfirmTmtxCommand(dryRun)
+                        case Cmd.Watchtower(dryRun) =>
+                            WatchtowerCommand(dryRun)
                         case Cmd.TmScript =>
                             TmScriptCommand()
                         case Cmd.PegInRequest(btcTxId, dryRun) =>

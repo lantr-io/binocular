@@ -1,25 +1,62 @@
 package binocular.cli
 
+import binocular.cli.LogFormat.InPlace
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 
-/** Minimal ANSI color helper for CLI output. */
+/** Minimal ANSI color helper for CLI output.
+  *
+  * Auto-detects a non-interactive stdout (systemd/journald, pipes) and switches to `plain` mode: no
+  * ANSI color codes, and `logInPlace` emits normal newline-terminated lines (deduped) instead of
+  * carriage-return overwrites that journald cannot segment. See [[LogFormat]] for the pure decision
+  * logic.
+  */
 object Console {
-    private val Reset = "\u001b[0m"
-    private val Bold = "\u001b[1m"
-    private val Dim = "\u001b[2m"
-    private val Red = "\u001b[31m"
-    private val Green = "\u001b[32m"
-    private val Yellow = "\u001b[33m"
-    private val Cyan = "\u001b[36m"
-    private val Magenta = "\u001b[35m"
+
+    /** True when stdout is not an interactive terminal, or colors are opted out of. Decided once at
+      * startup: `System.console()` is null under systemd, when piped, and when redirected.
+      */
+    private val plain: Boolean =
+        System.console() == null ||
+            sys.env.contains("NO_COLOR") ||
+            sys.env.get("BINOCULAR_LOG_PLAIN").exists(_ != "0")
+
+    private def c(code: String): String = if plain then "" else code
+
+    private val Reset = c("\u001b[0m")
+    private val Bold = c("\u001b[1m")
+    private val Dim = c("\u001b[2m")
+    private val Red = c("\u001b[31m")
+    private val Green = c("\u001b[32m")
+    private val Yellow = c("\u001b[33m")
+    private val Cyan = c("\u001b[36m")
+    private val Magenta = c("\u001b[35m")
     private val EraseLine = "\u001b[2K"
 
     private val timeFmt = DateTimeFormatter.ofPattern("HH:mm:ss")
     private def now(): String = LocalTime.now().format(timeFmt)
 
-    // Track whether the cursor is on an in-place line
+    // Per-thread component label (e.g. "oracle" / "relay" / "confirm") for the watchtower; each of
+    // its loops sets its own, so interleaved lines in one journal stay attributable.
+    private val threadLabel = new ThreadLocal[Option[String]] {
+        override def initialValue(): Option[String] = None
+    }
+
+    /** Tag every subsequent line from the current thread with `[label] ` (None clears it). */
+    def setLabel(label: Option[String]): Unit = threadLabel.set(label)
+
+    /** The current thread's component label, if any. */
+    def currentLabel(): Option[String] = threadLabel.get
+
+    private def labeled(msg: String): String = LogFormat.labelPrefix(threadLabel.get) + msg
+
+    // Track whether the cursor is on an in-place line (TTY only)
     @volatile private var _inPlace = false
+    // Last in-place heartbeat text, for plain-mode dedup. Per-thread so the watchtower's three
+    // loops (each on its own thread) don't suppress each other's status lines.
+    private val _lastInPlace = new ThreadLocal[Option[String]] {
+        override def initialValue(): Option[String] = None
+    }
 
     /** Print a line, clearing any in-place content first. */
     private def out(msg: String): Unit = {
@@ -27,7 +64,7 @@ object Console {
             print(s"\r$EraseLine")
             _inPlace = false
         }
-        println(msg)
+        println(labeled(msg))
     }
 
     /** Print a line to stderr, clearing any in-place content first. */
@@ -36,7 +73,7 @@ object Console {
             print(s"\r$EraseLine")
             _inPlace = false
         }
-        System.err.println(msg)
+        System.err.println(labeled(msg))
     }
 
     def header(msg: String): Unit =
@@ -81,10 +118,21 @@ object Console {
     def logError(msg: String): Unit =
         err(s"$Dim${now()}$Reset $Red✗$Reset $msg")
 
-    /** Overwrite the current line in-place (no newline). */
+    /** Repeatedly-updated status line.
+      *
+      * On a TTY: overwrite the current line in place (no newline). Under journald (`plain`): emit a
+      * normal line, but only when the text changes, so an unchanged heartbeat doesn't spam the log.
+      */
     def logInPlace(msg: String): Unit = {
-        print(s"\r$EraseLine$Dim${now()}$Reset ▸ $msg")
-        System.out.flush()
-        _inPlace = true
+        LogFormat.inPlaceAction(plain, _lastInPlace.get, msg) match {
+            case InPlace.Overwrite(m) =>
+                print(s"\r$EraseLine${labeled("")}$Dim${now()}$Reset ▸ $m")
+                System.out.flush()
+                _inPlace = true
+            case InPlace.Emit(m) =>
+                out(s"$Dim${now()}$Reset ▸ $m")
+            case InPlace.Suppress => ()
+        }
+        _lastInPlace.set(Some(msg))
     }
 }
