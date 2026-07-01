@@ -534,6 +534,13 @@ case class RunCommand(dryRun: Boolean = false) extends Command {
                 case e: CommandHelpers.DeepReorgException =>
                     Console.logError(e.getMessage)
                     break(1)
+                case e: boundary.Break[?] =>
+                    // Control-flow escape (e.g. the dry-run `break(0)` below), not an operational
+                    // error: `boundary.break` throws a `Break` that extends RuntimeException, so
+                    // the generic handler would otherwise swallow it and the loop would spin
+                    // forever (logging "Error: null — retrying"). Re-throw so the enclosing
+                    // `boundary` unwinds and `run --dry-run` exits after one computed update.
+                    throw e
                 case e: Exception =>
                     Console.logError(
                       s"Error: ${e.getMessage} — retrying in ${retryInterval}s"
