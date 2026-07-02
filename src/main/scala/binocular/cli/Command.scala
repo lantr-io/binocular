@@ -64,6 +64,14 @@ case class ValidOracleUtxo(
 /** Helper utilities for commands */
 object CommandHelpers {
 
+    /** Signature of the last equal-work fork reported by [[detectReorgAndComputePath]], so a
+      * transient tie (two blocks at the same height with equal chainwork) is logged once per
+      * distinct fork instead of on every poll. Cleared when the oracle tip matches Bitcoin's
+      * canonical chain again. See the equal-work-sibling branch in `detectReorgAndComputePath`.
+      */
+    private val lastEqualWorkFork =
+        new java.util.concurrent.atomic.AtomicReference[String]("")
+
     /** Print BitcoinValidatorParams as an aligned summary via Console.info, suitable for use in
       * command startup banners. Field order matches BitcoinValidatorParams declaration so the
       * on-chain parameter set is easy to scan at a glance.
@@ -654,19 +662,42 @@ object CommandHelpers {
 
                     if oracleTipHash == canonicalHash then
                         // No reorg — oracle tip matches Bitcoin canonical chain
+                        lastEqualWorkFork.set("")
                         (forkTree.findTipPath, highestKnown + 1)
+                    else if forkTree.existsHash(canonicalHash) then
+                        // Equal-work sibling: bitcoind's canonical tip at `highestKnown` is already
+                        // in our fork tree, just not selected as best. Our deterministic tie-break
+                        // (equal chainwork → left branch wins, see ForkTree.bestChainTipHash) simply
+                        // differs from bitcoind's first-seen choice. This is a transient natural
+                        // fork, NOT an actionable reorg: there is nothing above `highestKnown` to
+                        // submit until Bitcoin extends one branch, at which point the heavier branch
+                        // is fetched and selected normally. Return the path to the canonical sibling
+                        // so any higher block builds on it. Log once per distinct fork (not every
+                        // poll) — a persistent tie would otherwise spam the full reorg report.
+                        val forkSig =
+                            s"$highestKnown:${canonicalHash.toHex}:${oracleTipHash.toHex}"
+                        if lastEqualWorkFork.getAndSet(forkSig) != forkSig then
+                            Console.logWarn(
+                              s"Equal-work fork at height $highestKnown: oracle best chose " +
+                                  s"${oracleTipHash.toHex}, bitcoind canonical is " +
+                                  s"${canonicalHash.toHex}. Both are in the fork tree with equal " +
+                                  s"chainwork — waiting for Bitcoin to extend one branch. No action needed."
+                            )
+                        val siblingPath =
+                            forkTree.findPathToHash(canonicalHash).getOrElse(forkTree.findTipPath)
+                        (siblingPath, highestKnown + 1)
                     else
-                        // Reorg detected! Walk backwards to find common ancestor
+                        // Genuine reorg — canonical tip is not in our tree. Walk back to the ancestor.
+                        lastEqualWorkFork.set("")
                         Console.logWarn(
                           s"Reorg detected at height $highestKnown: " +
                               s"oracle=${oracleTipHash.toHex}, canonical=${canonicalHash.toHex}"
                         )
 
-                        // Start at highestKnown, not highestKnown - 1: the canonical block at
-                        // highestKnown differs from the oracle's *best* tip there, but may
-                        // already be present in the tree on a non-best branch (equal-chainwork
-                        // fork). Missing that case caused us to re-fetch and re-submit a block
-                        // that's already in the tree.
+                        // The equal-work-sibling case (canonical block already in the tree) is
+                        // handled by the branch above, so here the canonical tip is genuinely
+                        // absent. Start the walk at highestKnown anyway; the first iteration simply
+                        // confirms the canonical tip is missing before stepping back.
                         var searchHeight = highestKnown
                         var ancestorFound = false
                         var ancestorHeight = confirmedHeight
