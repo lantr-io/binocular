@@ -54,8 +54,12 @@ polling heartbeat only when it changes. `-o cat` strips journald's own metadata 
 
 ## Notes
 
-- **bitcoind txindex.** `txindex=1` is required — `confirm-tmtx` looks up arbitrary (non-wallet) TM
-  txids via `getrawtransaction`. The testnet4 chain is small (a few GB).
+- **bitcoind is pruned (10 GB), no txindex** — matching the operator's local testnet4 node, and
+  bound to `127.0.0.1` for both RPC (48332) and P2P (48333). Because prune and txindex are mutually
+  exclusive, there is no txindex; `confirm-tmtx`'s `getrawtransaction(txid)` needs txindex, so on a
+  pruned node the confirm loop cannot fetch raw TM txs and will fail/retry. The oracle sync and
+  relay loops are unaffected (block headers survive pruning; relay only broadcasts). If you need the
+  confirm loop, set `txindex=1` and drop `prune` in the module (a full, unpruned node).
 - **testnet4 module support.** Verify your `nixpkgs` `services.bitcoind` accepts the `testnet4`
   chain; the module passes it through `extraConfig`. Confirm the bundled Bitcoin Core version
   supports testnet4.

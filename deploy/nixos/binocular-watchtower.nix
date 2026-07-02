@@ -62,20 +62,30 @@ in
     users.groups.${cfg.user} = { };
 
     # Local Bitcoin node the config points at (bitcoin-node.url = http://127.0.0.1:48332).
-    # txindex=1 is REQUIRED: confirm-tmtx calls getrawtransaction on non-wallet TM txids.
+    # testnet4's default RPC port IS 48332, so no rpcport override is needed. rpcauth sits at the
+    # top of the generated bitcoin.conf (testnet=false), so it applies to the testnet4 chain.
+    #
+    # Pruned to 10 GB, matching the operator's local testnet4 node. NOTE: prune and txindex are
+    # mutually exclusive, so there is NO txindex here — and confirm-tmtx's getrawtransaction(txid)
+    # needs txindex, so the confirm loop cannot fetch raw TM txs on a pruned node. relay + oracle
+    # are unaffected (they use sendrawtransaction / block headers, which pruning keeps).
     services.bitcoind.watchtower = lib.mkIf cfg.manageBitcoind {
       enable = true;
+      prune = 10000;
+      extraCmdlineOptions = [ "-chain=testnet4" ];
+      # Bind RPC + P2P to localhost only (defense in depth on top of the host firewall, and matching
+      # the operator's local [testnet4] section). rpcbind requires rpcallowip to be set alongside.
       extraConfig = ''
-        chain=testnet4
-        txindex=1
         [testnet4]
         rpcbind=127.0.0.1
-        rpcport=48332
         rpcallowip=127.0.0.1
+        bind=127.0.0.1
+        listen=1
       '';
-      # RPC credentials must match application-preprod.conf (bitcoin-node.username/password).
-      # For a local-only testnet4 node these are low-stakes; move to rpcpasswordfile if desired.
-      rpc.users.bitcoin.passwordHMACFromFile = false;
+      # rpcauth for user "bitcoin", password "bitcoin" (matches application-preprod.conf). This is
+      # an HMAC, not the password; safe to keep in the Nix store for a local-only testnet4 node.
+      rpc.users.bitcoin.passwordHMAC =
+        "a081bd28466131059c6c08124d7cc7be$16f2770f2984c0a5a8de5b653e7a979786c80bec6ea4e6859939f093cd8f0bee";
     };
 
     systemd.services.binocular-watchtower = {
