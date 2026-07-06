@@ -4,7 +4,7 @@
 # The jar, config, and secrets live OUT of the Nix store (they are deployed with deploy.sh):
 #   /var/lib/binocular/binocular.jar               (fat jar; built on your Mac)
 #   /var/lib/binocular/application-preprod.conf    (non-secret HOCON config)
-#   /var/lib/binocular/secrets.env                 (MNEMONIC + BLOCKFROST_PROJECT_ID; mode 600)
+#   /var/lib/binocular/secrets.env                 (WALLET_MNEMONIC + BLOCKFROST_PROJECT_ID; mode 600)
 #
 # Nothing secret is placed in the Nix store.
 { config, lib, pkgs, ... }:
@@ -37,7 +37,7 @@ in
     secretsFile = lib.mkOption {
       type = lib.types.str;
       default = "/var/lib/binocular/secrets.env";
-      description = "EnvironmentFile with MNEMONIC and BLOCKFROST_PROJECT_ID (mode 600).";
+      description = "EnvironmentFile with WALLET_MNEMONIC and BLOCKFROST_PROJECT_ID (mode 600).";
     };
 
     user = lib.mkOption {
@@ -65,17 +65,15 @@ in
     # testnet4's default RPC port IS 48332, so no rpcport override is needed. rpcauth sits at the
     # top of the generated bitcoin.conf (testnet=false), so it applies to the testnet4 chain.
     #
-    # Pruned to 10 GB, matching the operator's local testnet4 node. NOTE: prune and txindex are
-    # mutually exclusive, so there is NO txindex here — and confirm-tmtx's getrawtransaction(txid)
-    # needs txindex, so the confirm loop cannot fetch raw TM txs on a pruned node. relay + oracle
-    # are unaffected (they use sendrawtransaction / block headers, which pruning keeps).
+    # txindex=1: confirm-tmtx's getrawtransaction(txid) needs it, so a full (non-pruned) node is
+    # required — prune and txindex are mutually exclusive.
     services.bitcoind.watchtower = lib.mkIf cfg.manageBitcoind {
       enable = true;
-      prune = 10000;
       extraCmdlineOptions = [ "-chain=testnet4" ];
-      # Bind RPC + P2P to localhost only (defense in depth on top of the host firewall, and matching
-      # the operator's local [testnet4] section). rpcbind requires rpcallowip to be set alongside.
+      # txindex is global (top-level); the [testnet4] section binds RPC + P2P to localhost only
+      # (defense in depth on top of the host firewall). rpcbind requires rpcallowip alongside.
       extraConfig = ''
+        txindex=1
         [testnet4]
         rpcbind=127.0.0.1
         rpcallowip=127.0.0.1

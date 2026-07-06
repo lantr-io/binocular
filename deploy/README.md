@@ -22,7 +22,7 @@ declarative.
 2. Install the secrets file (never enters git or the Nix store):
 
    ```bash
-   cp deploy/secrets.env.example secrets.env   # edit MNEMONIC + BLOCKFROST_PROJECT_ID
+   cp deploy/secrets.env.example secrets.env   # edit WALLET_MNEMONIC + BLOCKFROST_PROJECT_ID
    scp secrets.env user@host:/tmp/secrets.env
    ssh user@host 'sudo install -o binocular -g binocular -m 600 /tmp/secrets.env /var/lib/binocular/secrets.env && rm /tmp/secrets.env'
    ```
@@ -54,12 +54,10 @@ polling heartbeat only when it changes. `-o cat` strips journald's own metadata 
 
 ## Notes
 
-- **bitcoind is pruned (10 GB), no txindex** — matching the operator's local testnet4 node, and
-  bound to `127.0.0.1` for both RPC (48332) and P2P (48333). Because prune and txindex are mutually
-  exclusive, there is no txindex; `confirm-tmtx`'s `getrawtransaction(txid)` needs txindex, so on a
-  pruned node the confirm loop cannot fetch raw TM txs and will fail/retry. The oracle sync and
-  relay loops are unaffected (block headers survive pruning; relay only broadcasts). If you need the
-  confirm loop, set `txindex=1` and drop `prune` in the module (a full, unpruned node).
+- **bitcoind runs with `txindex=1`** (a full, non-pruned node) — required by `confirm-tmtx`'s
+  `getrawtransaction(txid)`. RPC (48332) and P2P (48333) are bound to `127.0.0.1` only (defense in
+  depth on top of the host firewall). `txindex` and `prune` are mutually exclusive; switching a
+  previously pruned datadir to `txindex` needs a full reindex/re-sync (wipe the chain dir).
 - **testnet4 module support.** Verify your `nixpkgs` `services.bitcoind` accepts the `testnet4`
   chain; the module passes it through `extraConfig`. Confirm the bundled Bitcoin Core version
   supports testnet4.
