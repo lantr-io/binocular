@@ -134,12 +134,27 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
 
         def submitOne(label: String, output: TransactionOutput): Option[(String, Int)] = {
             Console.step(0, s"Publishing $label reference script")
+            // BlockfrostProvider drops `scriptRef` from returned UTxOs, so coin selection can pick a
+            // reference-script UTxO (e.g. a leftover deploy from a prior run) and under-estimate the
+            // Conway reference-script fee → FeeTooSmallUTxO; spending it would also destroy a deployed
+            // ref script. Exclude every ref-script UTxO at the sponsor address from selection and pass
+            // the filtered set to the sync `complete`. Recomputed per tx so refs published earlier in
+            // THIS run are excluded too (their UTxOs are indexed before the next submit). Same fix as
+            // OracleTransactions.buildOptimalUpdateTransaction's `excludeInputs`.
+            val excludeInputs =
+                binocular.cli.CommandHelpers.refScriptOutpoints(config, sponsorAddress.encode.get)
+            val sponsorUtxos =
+                provider.findUtxos(sponsorAddress).await(timeout) match {
+                    case Right(u) =>
+                        u.filterNot { case (input, _) => excludeInputs.contains(input) }
+                    case Left(err) =>
+                        Console.error(s"$label fetch sponsor UTxOs: $err"); return None
+                }
             val tx: Transaction =
                 try
                     TxBuilder(provider.cardanoInfo)
                         .addSteps(TransactionBuilderStep.Send(output))
-                        .complete(provider, sponsorAddress)
-                        .await(timeout)
+                        .complete(sponsorUtxos, sponsorAddress)
                         .sign(signer)
                         .transaction
                 catch {

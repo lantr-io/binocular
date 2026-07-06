@@ -32,6 +32,8 @@ application.conf
 /out/
 docs/forktree-spec-v2.md
 application-*.conf
+# local, per-environment bridge/oracle configs (reference .env secrets) — never commit
+preprod-*.conf
 mermaid-filter.err
 docs/superpowers/
 

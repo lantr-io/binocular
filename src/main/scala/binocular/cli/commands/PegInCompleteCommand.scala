@@ -271,8 +271,12 @@ case class PegInCompleteCommand(
           )
         )
         val msgDigest = Builtins.sha2_256(msgPreimage)
-        Console.info("Depositor signs (sha2_256 digest)", msgDigest.toHex)
-        Console.info("  preimage", msgPreimage.toHex)
+        // BIP-322: the depositor signs the ASCII text below from their Taproot wallet
+        // (signMessage(text, "bip322-simple")); peg_in.ak verifies it against the beacon output key.
+        val signText = BifrostMessages.mintTextPrefix + msgDigest.toHex
+        Console.info("Depositor signs (BIP-322 text)", signText)
+        Console.info("  → in a wallet: signMessage(text, \"bip322-simple\")", "")
+        Console.info("  digest (for sign-pegin-msg --message)", msgDigest.toHex)
         println()
 
         if dryRun then {

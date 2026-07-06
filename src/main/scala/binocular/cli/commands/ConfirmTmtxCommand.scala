@@ -70,6 +70,12 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
         val tmNftPolicy = tmScript.script.scriptHash
         val tmNftAsset = AssetName.empty
 
+        // Operator-declared dead TMs (relay.skip-btc-txids): match on the display (big-endian) btc
+        // txid, lower-cased so config casing doesn't matter.
+        val skipBtcTxids: Set[String] = config.relay.skipBtcTxids.map(_.toLowerCase).toSet
+        if skipBtcTxids.nonEmpty then
+            Console.info("Skip btc txids", skipBtcTxids.mkString(", "))
+
         val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
         try {
             val info = rpc.getBlockchainInfo().await(30.seconds)
@@ -146,6 +152,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
                                   utxo,
                                   signedBtcTx,
                                   timeout,
+                                  skipBtcTxids,
                                   processed
                                 )
                 }
@@ -153,6 +160,12 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
                 if dryRun then break(0)
                 Thread.sleep(pollInterval * 1000L)
             } catch {
+                case e: boundary.Break[?] =>
+                    // Control-flow escape (the dry-run `break(0)` above), not an operational error:
+                    // `boundary.break` throws a `Break` that extends RuntimeException, so without
+                    // this guard the generic handler swallows it, logs a spurious "Error: null",
+                    // and exits via `break(1)`. Re-throw so `--dry-run` unwinds cleanly.
+                    throw e
                 case e: Exception =>
                     Console.logError(s"Error: ${e.getMessage} — retrying in ${retryInterval}s")
                     if dryRun then break(1)
@@ -174,6 +187,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
         utxo: Utxo,
         signedBtcTx: ByteString,
         timeout: Duration,
+        skipBtcTxids: Set[String],
         processed: scala.collection.mutable.Map[String, String]
     )(using ExecutionContext): Unit = {
         val utxoRef = s"${utxo.input.transactionId.toHex}#${utxo.input.index}"
@@ -204,7 +218,25 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
             val displayTxid = txid.reverse.toHex
             Console.log(s"  $utxoRef: TM btc txid=$displayTxid")
 
-            TmProofBundle.produce(rpc, obMpf, displayTxid).await(timeout) match {
+            if skipBtcTxids.contains(displayTxid.toLowerCase) then
+                Console.logWarn(s"    $utxoRef: skipped (relay.skip-btc-txids)")
+                processed(utxoRef) = "skip:config"
+            else {
+
+            // Proof construction fetches the TM's signed BTC tx from the node. If that tx is not
+            // fetchable — e.g. a superseded handoff whose input was already spent by a competing
+            // TM, so it can never be mined — the RPC throws ("No such mempool or blockchain
+            // transaction"). Catch it per-UTxO and skip THIS TM rather than letting the exception
+            // abort the whole confirm batch: other Unconfirmed TMs (real, on-chain deposits) must
+            // still be processed. Mark it skipped so a permanently-dead TM isn't retried forever.
+            val proofResult =
+                try TmProofBundle.produce(rpc, obMpf, displayTxid).await(timeout)
+                catch {
+                    case t: Throwable =>
+                        processed(utxoRef) = "skip:btc-tx-unavailable"
+                        Left(s"BTC tx $displayTxid not on this node (${t.getMessage}) — skipping")
+                }
+            proofResult match {
                 case Left(err) =>
                     Console.log(s"    not ready: $err")
                 case Right(tm) =>
@@ -240,6 +272,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
                             case Left(err) =>
                                 Console.logError(s"    Confirm failed: $err — will retry")
                         }
+            }
             }
         }
     }

@@ -140,6 +140,12 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                 if dryRun then break(0)
                 Thread.sleep(pollInterval * 1000L)
             } catch {
+                case e: boundary.Break[?] =>
+                    // Control-flow escape (the dry-run `break(0)` above), not an operational error:
+                    // `boundary.break` throws a `Break` that extends RuntimeException, so without
+                    // this guard the generic handler swallows it, logs a spurious "Error: null",
+                    // and exits via `break(1)`. Re-throw so `--dry-run` unwinds cleanly.
+                    throw e
                 case e: Exception =>
                     Console.logError(s"Error: ${e.getMessage} — retrying in ${retryInterval}s")
                     if dryRun then break(1)

@@ -1,7 +1,9 @@
 package binocular.cli.commands
 
 import binocular.*
+import binocular.bitcoin.Bip322
 import binocular.cli.{Command, Console}
+import binocular.watchtower.BifrostMessages
 
 import org.bitcoins.core.crypto.ECPrivateKeyUtil
 import scodec.bits.ByteVector
@@ -47,12 +49,15 @@ case class SignPeginMsgCommand(keyPath: String, message: String) extends Command
             try ECPrivateKeyUtil.fromWIFToPrivateKey(wif).toPrivateKey
             catch { case e: Exception => Console.error(s"Parsing WIF: ${e.getMessage}"); break(1) }
 
-        val msg = ByteVector.fromValidHex(msgHex)
-        val sig = priv.schnorrSign(msg).bytes
-        val xonly = priv.schnorrPublicKey.bytes
+        // BIP-322 (taproot key-path): the depositor signs the ASCII text "BFR-mint-v1:" ++ <digest>,
+        // exactly what peg_in.ak reconstructs and verifies. Equivalent to a wallet's
+        // signMessage(text, "bip322-simple"); done here from the WIF so the demo needs no browser.
+        val text = BifrostMessages.mintTextPrefix + msgHex
+        val (outputKey, sig) = Bip322.signKeypath(priv, ByteVector(text.getBytes("US-ASCII")))
 
-        Console.info("x-only pubkey", xonly.toHex)
-        Console.info("  (must equal the PIR datum user_source_chain_pub_key)", "")
+        Console.info("signed text (BIP-322)", text)
+        Console.info("taproot output key", outputKey.toHex)
+        Console.info("  (must equal the PIR datum user_source_chain_pub_key / BFR beacon)", "")
         println()
         Console.info("signature (pass to --signature)", sig.toHex)
         0
