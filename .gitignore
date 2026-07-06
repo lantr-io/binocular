@@ -1,6 +1,5 @@
 target
 files
-adastream
 .history
 /.bsp
 .bloop/
@@ -17,15 +16,11 @@ scala-cli.json
 .vscode
 .direnv
 metals.sbt
-/plutus-conformance
-mnemonic.txt
 cardano-cli
 cardano-address
-blockfrost_api_key.txt
 .env
 .contract-debug/
 application.conf
-/application-preprod.conf
 /.bitcoin-regtest
 
 # mill
