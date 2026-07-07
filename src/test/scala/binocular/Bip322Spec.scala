@@ -6,10 +6,10 @@ import org.bitcoins.crypto.{ECPrivateKey, SchnorrDigitalSignature, SchnorrPublic
 import org.scalatest.funsuite.AnyFunSuite
 import scodec.bits.ByteVector
 
-/** BIP-322 simple (Taproot key-path) — cross-checked against the validated pure-Python reference and
-  * the Aiken `bifrost/bip322` module (tag `"BIP0322-signed-message"`). The Aiken side additionally
-  * verifies a real UniSat signature on-chain (`bip322_unisat_vector`), so a matching sighash here
-  * means signatures produced by `signKeypath` verify in `peg_in.ak`.
+/** BIP-322 simple (Taproot key-path) — cross-checked against the validated pure-Python reference
+  * and the Aiken `bifrost/bip322` module (tag `"BIP0322-signed-message"`). The Aiken side
+  * additionally verifies a real UniSat signature on-chain (`bip322_unisat_vector`), so a matching
+  * sighash here means signatures produced by `signKeypath` verify in `peg_in.ak`.
   */
 class Bip322Spec extends AnyFunSuite {
 

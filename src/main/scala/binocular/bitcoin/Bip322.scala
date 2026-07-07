@@ -6,8 +6,8 @@ import scodec.bits.ByteVector
 /** BIP-322 "simple" message signing — Taproot (P2TR) key-path.
   *
   * Mirrors the on-chain reconstruction in `ft-bifrost-bridge` `lib/bifrost/bip322.ak`: a wallet's
-  * `signMessage(msg, "bip322-simple")` for a Taproot address is a BIP-340 Schnorr signature over the
-  * BIP-341 key-path sighash of a virtual `to_sign` tx that commits
+  * `signMessage(msg, "bip322-simple")` for a Taproot address is a BIP-340 Schnorr signature over
+  * the BIP-341 key-path sighash of a virtual `to_sign` tx that commits
   * `tagged_hash("BIP0322-signed-message", msg)`. The depositor authorization in `peg_in.ak`
   * verifies exactly this; `signKeypath` lets the toolchain produce such a signature from a WIF (so
   * the demo flow needs no browser wallet), and any wallet's bip322-simple signature works too.

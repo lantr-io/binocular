@@ -73,8 +73,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
         // Operator-declared dead TMs (relay.skip-btc-txids): match on the display (big-endian) btc
         // txid, lower-cased so config casing doesn't matter.
         val skipBtcTxids: Set[String] = config.relay.skipBtcTxids.map(_.toLowerCase).toSet
-        if skipBtcTxids.nonEmpty then
-            Console.info("Skip btc txids", skipBtcTxids.mkString(", "))
+        if skipBtcTxids.nonEmpty then Console.info("Skip btc txids", skipBtcTxids.mkString(", "))
 
         val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
         try {
@@ -223,56 +222,58 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
                 processed(utxoRef) = "skip:config"
             else {
 
-            // Proof construction fetches the TM's signed BTC tx from the node. If that tx is not
-            // fetchable — e.g. a superseded handoff whose input was already spent by a competing
-            // TM, so it can never be mined — the RPC throws ("No such mempool or blockchain
-            // transaction"). Catch it per-UTxO and skip THIS TM rather than letting the exception
-            // abort the whole confirm batch: other Unconfirmed TMs (real, on-chain deposits) must
-            // still be processed. Mark it skipped so a permanently-dead TM isn't retried forever.
-            val proofResult =
-                try TmProofBundle.produce(rpc, obMpf, displayTxid).await(timeout)
-                catch {
-                    case t: Throwable =>
-                        processed(utxoRef) = "skip:btc-tx-unavailable"
-                        Left(s"BTC tx $displayTxid not on this node (${t.getMessage}) — skipping")
-                }
-            proofResult match {
-                case Left(err) =>
-                    Console.log(s"    not ready: $err")
-                case Right(tm) =>
-                    val redeemer: Data = TmConfirmRedeemer(
-                      txIndex = BigInt(tm.txIndex),
-                      txMerkleProof = ScalusList.from(tm.txInBlockMerklePath.toList),
-                      blockMpfProof = tm.mpfHeaderInclusionProof,
-                      blockHeader = binocular.oracle.BlockHeader(tm.blockHeader)
-                    ).toData
-                    val confirmed: Data =
-                        (TmDatum.Confirmed(txid, swept, fulfilled): TmDatum).toData
+                // Proof construction fetches the TM's signed BTC tx from the node. If that tx is not
+                // fetchable — e.g. a superseded handoff whose input was already spent by a competing
+                // TM, so it can never be mined — the RPC throws ("No such mempool or blockchain
+                // transaction"). Catch it per-UTxO and skip THIS TM rather than letting the exception
+                // abort the whole confirm batch: other Unconfirmed TMs (real, on-chain deposits) must
+                // still be processed. Mark it skipped so a permanently-dead TM isn't retried forever.
+                val proofResult =
+                    try TmProofBundle.produce(rpc, obMpf, displayTxid).await(timeout)
+                    catch {
+                        case t: Throwable =>
+                            processed(utxoRef) = "skip:btc-tx-unavailable"
+                            Left(
+                              s"BTC tx $displayTxid not on this node (${t.getMessage}) — skipping"
+                            )
+                    }
+                proofResult match {
+                    case Left(err) =>
+                        Console.log(s"    not ready: $err")
+                    case Right(tm) =>
+                        val redeemer: Data = TmConfirmRedeemer(
+                          txIndex = BigInt(tm.txIndex),
+                          txMerkleProof = ScalusList.from(tm.txInBlockMerklePath.toList),
+                          blockMpfProof = tm.mpfHeaderInclusionProof,
+                          blockHeader = binocular.oracle.BlockHeader(tm.blockHeader)
+                        ).toData
+                        val confirmed: Data =
+                            (TmDatum.Confirmed(txid, swept, fulfilled): TmDatum).toData
 
-                    if dryRun then {
-                        Console.logSuccess(
-                          s"    [dry-run] would Confirm $utxoRef (TM in block at index ${tm.txIndex})"
-                        )
-                        processed(utxoRef) = "dry-run"
-                    } else
-                        TreasuryMovementTx.buildAndSubmitConfirm(
-                          provider,
-                          hdAccount,
-                          tmScript,
-                          tmAddress,
-                          utxo,
-                          oracleUtxo,
-                          redeemer,
-                          confirmed,
-                          timeout
-                        ) match {
-                            case Right(hash) =>
-                                Console.logSuccess(s"    Confirmed: Cardano tx=$hash")
-                                processed(utxoRef) = hash
-                            case Left(err) =>
-                                Console.logError(s"    Confirm failed: $err — will retry")
-                        }
-            }
+                        if dryRun then {
+                            Console.logSuccess(
+                              s"    [dry-run] would Confirm $utxoRef (TM in block at index ${tm.txIndex})"
+                            )
+                            processed(utxoRef) = "dry-run"
+                        } else
+                            TreasuryMovementTx.buildAndSubmitConfirm(
+                              provider,
+                              hdAccount,
+                              tmScript,
+                              tmAddress,
+                              utxo,
+                              oracleUtxo,
+                              redeemer,
+                              confirmed,
+                              timeout
+                            ) match {
+                                case Right(hash) =>
+                                    Console.logSuccess(s"    Confirmed: Cardano tx=$hash")
+                                    processed(utxoRef) = hash
+                                case Left(err) =>
+                                    Console.logError(s"    Confirm failed: $err — will retry")
+                            }
+                }
             }
         }
     }
