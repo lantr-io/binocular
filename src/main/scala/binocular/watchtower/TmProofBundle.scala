@@ -33,6 +33,10 @@ case class TmProofBundle(
     // witness marker itself, so the stripped form is correct for the entire peg-out path.
     rawTxStripped: ByteString,
     blockHeader: ByteString,
+    // The Bitcoin block holding the TM: height + display (big-endian) hash. Not needed for the
+    // on-chain proof (the header + MPF prove inclusion), but surfaced for human/greppable logging.
+    blockHeight: Int,
+    blockHash: String,
     txIndex: Int,
     txInBlockMerklePath: Seq[ByteString],
     mpfHeaderInclusionProof: ScalusList[ProofStep]
@@ -102,6 +106,8 @@ object TmProofBundle {
             // Witness-stripped — hashes to the txid (the Merkle leaf). Used by the peg-out path.
             rawTxStripped = BitcoinHelpers.stripWitnessData(ByteString.fromHex(ourTx.hex)),
             blockHeader = ByteString.fromHex(headerHex),
+            blockHeight = block.height,
+            blockHash = block.hash,
             txIndex = txIndex,
             txInBlockMerklePath = merklePath.toIndexedSeq,
             mpfHeaderInclusionProof = mpfProof

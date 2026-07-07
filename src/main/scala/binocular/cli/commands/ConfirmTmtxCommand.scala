@@ -251,9 +251,9 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
                             (TmDatum.Confirmed(txid, swept, fulfilled): TmDatum).toData
 
                         if dryRun then {
-                            Console.logSuccess(
-                              s"    [dry-run] would Confirm $utxoRef (TM in block at index ${tm.txIndex})"
-                            )
+                            Console.logSuccess(s"    [dry-run] would confirm  spent=$utxoRef")
+                            confirmSummaryLines(displayTxid, tm, swept, fulfilled, cardanoTx = None)
+                                .foreach(l => Console.log(s"    $l"))
                             processed(utxoRef) = "dry-run"
                         } else
                             TreasuryMovementTx.buildAndSubmitConfirm(
@@ -268,7 +268,14 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
                               timeout
                             ) match {
                                 case Right(hash) =>
-                                    Console.logSuccess(s"    Confirmed: Cardano tx=$hash")
+                                    Console.logSuccess(s"    TM confirmed  spent=$utxoRef")
+                                    confirmSummaryLines(
+                                      displayTxid,
+                                      tm,
+                                      swept,
+                                      fulfilled,
+                                      cardanoTx = Some(hash)
+                                    ).foreach(l => Console.log(s"    $l"))
                                     processed(utxoRef) = hash
                                 case Left(err) =>
                                     Console.logError(s"    Confirm failed: $err — will retry")
@@ -276,5 +283,56 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
                 }
             }
         }
+    }
+
+    /** Max per-entry `pegin=`/`pegout=` lines to emit; a bigger sweep gets a `*_omitted=N` line
+      * instead (never a silent cap).
+      */
+    private val MaxEntryLines = 20
+
+    /** Render a Bitcoin outpoint (36 bytes = 32-byte txid in internal/LE order + 4-byte LE vout) as
+      * the human `displaytxid:vout` form.
+      */
+    private def outpointDisplay(op: ByteString): String = {
+        val hex = op.toHex // 72 hex chars
+        val txid = hex.substring(0, 64).grouped(2).toList.reverse.mkString // LE -> display (BE)
+        val vout = BigInt(hex.substring(64, 72).grouped(2).toList.reverse.mkString, 16)
+        s"$txid:$vout"
+    }
+
+    /** Grep-able detail lines for a confirmed (or would-confirm) TM: every line carries the
+      * `confirm-tm` anchor and `key=value` fields, so `journalctl | grep confirm-tm` yields the
+      * whole event and individual facts are machine-extractable. Peg-ins are listed before
+      * peg-outs. `cardanoTx` is `None` for the dry-run preview (no submitted tx yet).
+      *
+      * The recreated Confirmed-TM UTxO is the Confirm tx's first output (`payTo(tmAddress, …)` in
+      * [[TreasuryMovementTx.buildAndSubmitConfirm]]), hence `new_state=<hash>#0`.
+      */
+    private def confirmSummaryLines(
+        displayTxid: String,
+        tm: TmProofBundle,
+        swept: ScalusList[ByteString],
+        fulfilled: ScalusList[PegOutEntry],
+        cardanoTx: Option[String]
+    ): Seq[String] = {
+        val pegins = swept.asScala.toIndexedSeq
+        val pegouts = fulfilled.asScala.toIndexedSeq
+        val satTotal = pegouts.map(_.amount).sum
+        val lines = scala.collection.mutable.ListBuffer.empty[String]
+        cardanoTx.foreach(h => lines += s"confirm-tm cardano_tx=$h  new_state=$h#0")
+        lines += s"confirm-tm btc_tx=$displayTxid  block=${tm.blockHeight}  index=${tm.txIndex}"
+        lines += s"confirm-tm pegins=${pegins.size}"
+        pegins.take(MaxEntryLines).zipWithIndex.foreach { case (op, i) =>
+            lines += s"confirm-tm pegin=$i  outpoint=${outpointDisplay(op)}"
+        }
+        if pegins.size > MaxEntryLines then
+            lines += s"confirm-tm pegins_omitted=${pegins.size - MaxEntryLines}"
+        lines += s"confirm-tm pegouts=${pegouts.size}  sat_total=$satTotal"
+        pegouts.take(MaxEntryLines).zipWithIndex.foreach { case (e, j) =>
+            lines += s"confirm-tm pegout=$j  sat=${e.amount}  spk=${e.scriptPubKey.toHex}"
+        }
+        if pegouts.size > MaxEntryLines then
+            lines += s"confirm-tm pegouts_omitted=${pegouts.size - MaxEntryLines}"
+        lines.toList
     }
 }
