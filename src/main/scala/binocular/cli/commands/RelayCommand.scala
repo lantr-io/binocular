@@ -89,6 +89,12 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
         Console.info("Cardano", config.cardano.network)
         Console.info("TM validator", tmScript.scriptHash.toHex)
         Console.info("TM address", tmAddress.encode.getOrElse("?"))
+        // Operator-declared dead TMs (relay.skip-btc-txids): match on the display (big-endian) btc
+        // txid, lower-cased. A superseded/never-mineable TM lingers Unconfirmed at the TM address;
+        // skip it before the broadcast RPC instead of re-attempting (and getting rejected by the
+        // node) each run.
+        val skipBtcTxids: Set[String] = config.relay.skipBtcTxids.map(_.toLowerCase).toSet
+        if skipBtcTxids.nonEmpty then Console.info("Skip btc txids", skipBtcTxids.mkString(", "))
         Console.separator()
         println()
 
@@ -119,7 +125,13 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                                     case Some(Data.Constr(0, args)) if args.nonEmpty =>
                                         args.head match {
                                             case Data.B(txBytes) =>
-                                                relayOne(rpc, utxoRef, txBytes, processed)
+                                                relayOne(
+                                                  rpc,
+                                                  skipBtcTxids,
+                                                  utxoRef,
+                                                  txBytes,
+                                                  processed
+                                                )
                                             case other =>
                                                 Console.logWarn(
                                                   s"  $utxoRef datum arg not ByteString: $other"
@@ -163,6 +175,7 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
     /** Broadcast one Unconfirmed TM's signed Bitcoin tx (broadcast-only — no Cardano write). */
     private def relayOne(
         rpc: SimpleBitcoinRpc,
+        skipBtcTxids: Set[String],
         utxoRef: String,
         txBytes: ByteString,
         processed: scala.collection.mutable.Map[String, RelayResult]
@@ -179,6 +192,10 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                     processed(utxoRef) = RelayResult.Rejected("malformed")
                     return
             }
+        if skipBtcTxids.contains(btcTxId.toLowerCase) then
+            Console.logWarn(s"  $utxoRef: skipped (relay.skip-btc-txids) btc=$btcTxId")
+            processed(utxoRef) = RelayResult.Skipped("config")
+            return
         Console.log(s"  $utxoRef: TM btc txid=$btcTxId (${txBytes.size} bytes)")
         if dryRun then
             Console.logSuccess(s"    [dry-run] would broadcast ${txBytes.size} bytes")
