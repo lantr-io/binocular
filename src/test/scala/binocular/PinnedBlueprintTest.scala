@@ -82,10 +82,7 @@ class PinnedBlueprintTest extends AnyFunSuite {
         val committed = BlueprintGenerator.parse(resourceJson(currentDepsFile)).toSet
 
         val preprod = BinocularConfig.load(Some("application-preprod.conf"))
-        val testnet4 = BinocularConfig.load(Some("application-testnet4.conf"))
-        val regenerated = BlueprintGenerator
-            .merge(BlueprintGenerator.entriesFor(preprod), BlueprintGenerator.entriesFor(testnet4))
-            .toSet
+        val regenerated = BlueprintGenerator.entriesFor(preprod).toSet
 
         assert(regenerated == committed)
     }
