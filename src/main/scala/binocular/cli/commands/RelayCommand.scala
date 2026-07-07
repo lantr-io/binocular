@@ -34,6 +34,9 @@ import cats.syntax.either.*
 enum RelayResult:
     case Relayed(btcTxId: String)
     case Rejected(error: String)
+    // Ignored without action (e.g. an already-Confirmed TM the relay has no work for). Marked
+    // processed so it isn't re-examined every poll, but not logged and not counted as relayed.
+    case Skipped(reason: String)
 
 /** Transient errors that warrant retrying — everything else is a permanent rejection. */
 private def isTransientError(msg: String): Boolean =
@@ -125,11 +128,13 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                                                     RelayResult.Rejected("datum arg not ByteString")
                                         }
                                     case Some(Data.Constr(1, _)) =>
-                                        Console.log(
-                                          s"  $utxoRef already Confirmed (Constr 1) — skipping"
-                                        )
+                                        // Already Confirmed (Constr 1): the relay's only job is to
+                                        // broadcast an Unconfirmed TM's signed BTC tx, which is done
+                                        // for this one. Ignore it silently — mark processed so it
+                                        // isn't re-examined, but don't log (only Unconfirmed TMs are
+                                        // worth a line).
                                         processed(utxoRef) =
-                                            RelayResult.Relayed("already-confirmed")
+                                            RelayResult.Skipped("already-confirmed")
                                     case other =>
                                         Console.logWarn(s"  $utxoRef unexpected datum: $other")
                                         processed(utxoRef) =
