@@ -45,4 +45,17 @@ class WatchtowerTest extends AnyFunSuite {
         assert(seen.contains("oracle"))
         assert(seen.contains("relay"))
     }
+
+    test("a fatal error escaping a worker triggers a full-process restart via onWorkerExit") {
+        val exited = new java.util.concurrent.atomic.AtomicReference[String]("")
+        // OutOfMemoryError is a VirtualMachineError → NOT NonFatal, so it escapes the Supervisor's
+        // `catch NonFatal` (the exact case that silently killed a loop in production). runSupervised
+        // must funnel that into onWorkerExit rather than leaving the process half-dead.
+        Watchtower.runSupervised(
+          workers = List(Worker("relay", () => throw new OutOfMemoryError("boom"))),
+          retryDelayMs = 0,
+          onWorkerExit = label => exited.set(label)
+        )
+        assert(exited.get() == "relay")
+    }
 }

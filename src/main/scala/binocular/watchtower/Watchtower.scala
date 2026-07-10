@@ -21,20 +21,50 @@ object Watchtower {
 
     /** Production mode: one supervised, restart-on-crash thread per worker; block until all end
       * (which, for daemon loops, is never — the call runs for the life of the process).
+      *
+      * The [[Supervisor]] restarts a loop that returns or throws a `NonFatal` error. But a *fatal*
+      * throwable — an `Error` such as `OutOfMemoryError`/`StackOverflowError` — escapes both the
+      * loop's own `catch Exception` and the Supervisor's `catch NonFatal`, ending that thread while
+      * the others keep running. That leaves the process half-dead yet still "active", so systemd
+      * never restarts it. So: if any worker's supervised loop EVER ends (returns, or a fatal
+      * throwable escapes), invoke `onWorkerExit` — by default log and exit the process, so
+      * systemd's `Restart=always` brings every loop back on a fresh JVM. `onWorkerExit` is
+      * injectable for tests (a fresh JVM is the only reliable recovery from OOM/stack overflow
+      * anyway).
       */
-    def runSupervised(workers: List[Worker], retryDelayMs: Long): Unit = {
+    def runSupervised(
+        workers: List[Worker],
+        retryDelayMs: Long,
+        onWorkerExit: String => Unit = Watchtower.exitProcess
+    ): Unit = {
         val threads = workers.map { w =>
             val t = thread(
               w,
               () => {
                   Console.setLabel(Some(w.label))
-                  new Supervisor(w.label, retryDelayMs).supervise(w.run)
+                  try new Supervisor(w.label, retryDelayMs).supervise(w.run)
+                  catch {
+                      case t: Throwable =>
+                          Console.logError(s"${w.label} loop crashed fatally: $t")
+                  }
+                  // Reaching here means the supervised loop is gone (a daemon loop must never end).
+                  onWorkerExit(w.label)
               }
             )
             t.start()
             t
         }
         threads.foreach(_.join())
+    }
+
+    /** Default `onWorkerExit`: log which loop died and exit non-zero so the service manager
+      * restarts the whole process (all loops) on a fresh JVM.
+      */
+    def exitProcess(label: String): Unit = {
+        Console.logError(
+          s"watchtower loop '$label' terminated — exiting so systemd restarts all loops"
+        )
+        System.exit(1)
     }
 
     /** Dry-run mode: run each worker once, concurrently, and return once they finish or `timeoutMs`

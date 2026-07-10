@@ -36,7 +36,7 @@ private def assetFingerprint(policyId: ByteString, assetName: ByteString): Strin
 class OracleDaemon(planner: UpdatePlanner, dryRun: Boolean) {
 
     def run(config: BinocularConfig): Int = boundary {
-        given ec: ExecutionContext = ExecutionContext.global
+        given ec: ExecutionContext = binocular.cli.DaemonExecution.ec
         val timeout = config.oracle.transactionTimeout.seconds
         val pollInterval = config.oracle.pollInterval
         val retryInterval = config.oracle.retryInterval

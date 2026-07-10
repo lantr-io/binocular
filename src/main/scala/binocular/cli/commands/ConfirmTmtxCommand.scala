@@ -43,7 +43,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
     }
 
     private def runConfirm(config: BinocularConfig): Int = boundary {
-        given ec: ExecutionContext = ExecutionContext.global
+        given ec: ExecutionContext = binocular.cli.DaemonExecution.ec
         val pollInterval = config.relay.pollInterval
         val retryInterval = config.relay.retryInterval
         val timeout = config.oracle.transactionTimeout.seconds
