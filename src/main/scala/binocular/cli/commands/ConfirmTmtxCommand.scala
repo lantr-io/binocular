@@ -222,19 +222,32 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
                 processed(utxoRef) = "skip:config"
             else {
 
-                // Proof construction fetches the TM's signed BTC tx from the node. If that tx is not
-                // fetchable — e.g. a superseded handoff whose input was already spent by a competing
-                // TM, so it can never be mined — the RPC throws ("No such mempool or blockchain
-                // transaction"). Catch it per-UTxO and skip THIS TM rather than letting the exception
-                // abort the whole confirm batch: other Unconfirmed TMs (real, on-chain deposits) must
-                // still be processed. Mark it skipped so a permanently-dead TM isn't retried forever.
+                // Proof construction fetches the TM's signed BTC tx from the node. If the node
+                // doesn't know the txid (bitcoind -5), the TM is in neither the mempool nor the
+                // chain (txindex=1): either the relay hasn't broadcast it yet (a confirm/relay
+                // race — MUST retry, the tx will mine shortly), or an input was already spent by
+                // a competing confirmed tx so it can never mine (permanently dead — skip, or it
+                // would be retried forever). Only on-chain evidence of a spent input marks it
+                // dead; transport errors and failed liveness checks always stay retryable.
+                // Catch per-UTxO so one bad TM never aborts the whole confirm batch.
                 val proofResult =
                     try TmProofBundle.produce(rpc, obMpf, displayTxid).await(timeout)
                     catch {
+                        case t: Throwable if TmLiveness.isTxUnknown(t) =>
+                            TmLiveness.firstDeadInput(rpc, swept.asScala.toSeq, timeout) match {
+                                case Some(outpoint) =>
+                                    processed(utxoRef) = "skip:input-spent"
+                                    Left(
+                                      s"BTC tx $displayTxid can never be mined (input $outpoint already spent) — skipping permanently"
+                                    )
+                                case None =>
+                                    Left(
+                                      s"BTC tx $displayTxid not on this node yet (awaiting relay broadcast/mining) — will retry"
+                                    )
+                            }
                         case t: Throwable =>
-                            processed(utxoRef) = "skip:btc-tx-unavailable"
                             Left(
-                              s"BTC tx $displayTxid not on this node (${t.getMessage}) — skipping"
+                              s"BTC tx $displayTxid lookup failed (${t.getMessage}) — will retry"
                             )
                     }
                 proofResult match {
@@ -294,9 +307,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
       * the human `displaytxid:vout` form.
       */
     private def outpointDisplay(op: ByteString): String = {
-        val hex = op.toHex // 72 hex chars
-        val txid = hex.substring(0, 64).grouped(2).toList.reverse.mkString // LE -> display (BE)
-        val vout = BigInt(hex.substring(64, 72).grouped(2).toList.reverse.mkString, 16)
+        val (txid, vout) = TmLiveness.parseOutpoint(op)
         s"$txid:$vout"
     }
 

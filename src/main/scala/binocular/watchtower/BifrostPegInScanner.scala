@@ -76,7 +76,10 @@ object BifrostPegInScanner {
                         val valueOuts = tx.vouts.filter(!_.scriptPubKey.startsWith("6a"))
                         Future
                             .sequence(valueOuts.map { vout =>
-                                rpc.isTxOutUnspent(tx.txid, vout.index).map(OutputStatus(vout, _))
+                                // includeMempool = true matches gettxout's default (the prior
+                                // 2-arg form): a mempool spend already marks the deposit taken.
+                                rpc.isTxOutUnspent(tx.txid, vout.index, includeMempool = true)
+                                    .map(OutputStatus(vout, _))
                             })
                             .map { statuses =>
                                 PegIn(height, block.time, tx.txid, depositorData, statuses)

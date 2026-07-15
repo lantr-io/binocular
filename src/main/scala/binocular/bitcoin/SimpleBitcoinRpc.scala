@@ -26,6 +26,14 @@ trait BitcoinRpc {
       * (mocks, light clients) need not provide it; the reorg cross-check degrades gracefully.
       */
     def getChainTips(): Future[Seq[ChainTip]] = Future.successful(Seq.empty)
+
+    /** `gettxout`: true iff the outpoint is an unspent output in the node's view (`includeMempool =
+      * true` also counts mempool creations/spends). False for spent AND for never-existed outpoints
+      * (bitcoind returns null for both). The default fails so callers on non-node implementations
+      * treat the answer as unknown rather than as "spent".
+      */
+    def isTxOutUnspent(txid: String, vout: Int, includeMempool: Boolean): Future[Boolean] =
+        Future.failed(new UnsupportedOperationException("isTxOutUnspent not implemented"))
 }
 
 /** Lightweight Bitcoin RPC client using Java 11+ HTTP client
@@ -285,8 +293,9 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) ex
     }
 
     /** Check if a transaction output is still unspent (true = unspent, false = spent/missing) */
-    def isTxOutUnspent(txid: String, vout: Int): Future[Boolean] =
-        call("gettxout", ujson.Arr(txid, vout)).map(result => result != ujson.Null)
+    override def isTxOutUnspent(txid: String, vout: Int, includeMempool: Boolean): Future[Boolean] =
+        call("gettxout", ujson.Arr(txid, vout, includeMempool))
+            .map(result => result != ujson.Null)
 
     /** Broadcast a raw transaction to the Bitcoin network */
     def sendRawTransaction(hexString: String): Future[String] = {
