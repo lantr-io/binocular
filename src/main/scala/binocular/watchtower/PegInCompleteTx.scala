@@ -32,7 +32,7 @@ import scala.concurrent.{ExecutionContext, Future}
   *   - Mint: `+peg_in_amount` fBTC (`bridged_token` policy). The PegInRequest NFT is NOT burned —
   *     `CompletePegIn` does not check it (only `Cancel` burns); it rides out in the change.
   *   - Withdrawals (0 ADA): `peg_in` → [[PegInWithdrawRedeemer]] `CompletePegIn`; the fBTC mint
-  *     checker (config[19]) → [[FbtcMintCheckerRedeemer]] pointing at the peg_in withdrawal — the
+  *     checker (config[19]) → [[FbtcMintCheckerRedeemer]] pointing at the peg_in withdrawal – the
   *     `bridged_token` policy only requires the checker to run; the checker enforces the mint
   *     rules.
   *   - Outputs: fBTC → recipient; the updated completed-peg-ins UTxO (same value+address, new MPF
@@ -41,7 +41,7 @@ import scala.concurrent.{ExecutionContext, Future}
   * ==Index redeemers==
   * Several redeemer fields are indices into the *assembled* tx and are filled by delayed
   * `Transaction => Data` builders. The on-chain `self.redeemers` list is ordered by Scalus's
-  * `(RedeemerTag ordinal, index)` — all Spend(0), then Mint(1), then Reward(3) — so a reward
+  * `(RedeemerTag ordinal, index)` – all Spend(0), then Mint(1), then Reward(3) – so a reward
   * redeemer's flat position is `#scriptSpends + #mintPolicies + (its position in the sorted
   * withdrawals)`. Inputs/reference-inputs are ordered by `(txid, index)`; outputs keep insertion
   * order.
@@ -120,9 +120,9 @@ object PegInCompleteTx {
             )
 
         // Reward redeemer flat index = #scriptSpends + #mintPolicies + position in the sorted
-        // withdrawals (there are now TWO 0-ADA withdrawals — `peg_in` and the fBTC mint checker —
+        // withdrawals (there are now TWO 0-ADA withdrawals – `peg_in` and the fBTC mint checker –
         // ordered by reward account). `MultiAsset.assets: SortedMap[PolicyId, SortedMap[AssetName,
-        // Long]]` keys at the outer level by policy, so `.assets.size` counts distinct policies —
+        // Long]]` keys at the outer level by policy, so `.assets.size` counts distinct policies –
         // matching the on-chain Mint-tag flat-list cardinality (one redeemer per policy id,
         // irrespective of how many asset names that policy mints in the same tx).
         def stake(h: ScriptHash): StakeAddress = StakeAddress(network, StakePayload.Script(h))
@@ -211,7 +211,7 @@ object PegInCompleteTx {
           scriptSource = spendSource(scriptRefs.pegIn.isDefined, scripts.pegIn),
           redeemerBuilder = pegInWithdrawRedeemer
         )
-        // The fBTC mint checker is small — always inlined (no CIP-33 ref), like the peg-out
+        // The fBTC mint checker is small – always inlined (no CIP-33 ref), like the peg-out
         // produced verifier.
         val checkerWithdrawWitness: TwoArg = TwoArg(
           scriptSource = ScriptSource.PlutusScriptValue(scripts.fbtcMintChecker),

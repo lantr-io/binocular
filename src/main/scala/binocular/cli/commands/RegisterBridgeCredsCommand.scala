@@ -21,12 +21,12 @@ import cats.syntax.either.*
 /** Register the reward (stake) credentials of the bridge withdraw scripts the completion txs use,
   * so Conway will accept their 0-ADA withdrawals.
   *
-  * Peg-in: `withdraw(CompletePegIn)` runs TWO rewarding scripts — `peg_in` itself (the
+  * Peg-in: `withdraw(CompletePegIn)` runs TWO rewarding scripts – `peg_in` itself (the
   * stake-validator delegation pattern: the PIR + completed-peg-ins spends require a withdrawal from
   * the peg_in script) and the fBTC mint checker (config[19]), which the `bridged_token` policy
   * delegates all mint rules to.
   *
-  * Peg-out: `withdraw(CompletePegOut)` runs THREE rewarding scripts — the `peg_out` validator
+  * Peg-out: `withdraw(CompletePegOut)` runs THREE rewarding scripts – the `peg_out` validator
   * itself (the completed-peg-outs spend delegates to it), the real `peg_out_produced_verifier`
   * (config[13]), which `peg_out.ak` invokes via `validate_withdraw`, and the fBTC mint checker
   * again (the burn side). All reward accounts are registered here. The not-produced verifier
@@ -113,7 +113,7 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
         val pegOutProducedVerifierHash =
             PegOutProducedVerifierContract.pinnedScript.scriptHash
 
-        // The fBTC mint checker (config[19]) — every completion tx (mint AND burn) withdraws from
+        // The fBTC mint checker (config[19]) – every completion tx (mint AND burn) withdraws from
         // it, since bridged_token delegates all mint rules to it. Config-derived, fresh per deploy.
         val fbtcMintChecker = FbtcMintCheckerContract(blueprint, configNftPolicy, configNftAsset)
 

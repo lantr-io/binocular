@@ -37,7 +37,7 @@ import cats.syntax.either.*
   * Peg-out wiring (this iteration): config indices 8/9 (completed-peg-outs MPF), 11 (peg_out
   * withdraw), 13 (real BTC-tx-parsing produced verifier, [[PegOutProducedVerifier]]) and 14
   * (not-produced placeholder, [[PegOutNotProducedVerifier]] — `Cancel`/refund is out of scope) are
-  * now REAL, as are index 18 (`update_auth` — the sponsor's payment key, which may Update/Retire
+  * now REAL, as are index 18 (`update_auth` – the sponsor's payment key, which may Update/Retire
   * the config per config.ak's spend handler) and index 19 (the swappable fBTC mint checker).
   * Minting a new config NFT changes the fBTC policy, so re-mint fBTC under this config. Treasury /
   * source-chain / block-header entries remain dummies (no path reads them yet).

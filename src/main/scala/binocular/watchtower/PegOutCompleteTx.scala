@@ -26,12 +26,13 @@ import scala.util.chaining.scalaUtilChainingOps
   *   - Spend: the PegOut UTxO (peg_out script — its `spend` handler only requires a withdrawal from
   *     the same script hash; redeemer ignored) and the completed-peg-outs MPF UTxO.
   *   - References: config-NFT UTxO + Binocular oracle UTxO.
-  *   - Mint: `-peg_out_amount` fBTC (burn). `bridged_token.ak`'s negative-mint branch requires a
-  *     `MintRedeemer` pointing at the peg_out `CompletePegOut` withdrawal + that withdrawal present.
+  *   - Mint: `-peg_out_amount` fBTC (burn). `bridged_token.ak` is a pure delegator: it only
+  *     requires the fBTC mint checker (config[19]) withdrawal present; the checker's negative-mint
+  *     branch is what points at the peg_out `CompletePegOut` withdrawal and enforces the burn rules.
   *   - Withdrawals (0 ADA): `peg_out` → [[PegOutWithdrawRedeemer]] `CompletePegOut`; the
   *     produced-verifier ([[PegOutProducedVerifier]]) → the bare `List<Data>` redeemer it + peg_out.ak
   *     both read; the fBTC mint checker (config[19]) → [[FbtcMintCheckerRedeemer]] pointing at the
-  *     peg_out withdrawal — `bridged_token` only requires the checker to run; the checker enforces
+  *     peg_out withdrawal – `bridged_token` only requires the checker to run; the checker enforces
   *     the burn rules.
   *   - Outputs: the updated completed-peg-outs UTxO (same value+address, new MPF root); change →
   *     sponsor (carrying the burned PegOut UTxO's freed MIN_ADA).
@@ -191,7 +192,7 @@ object PegOutCompleteTx {
           scriptSource = PlutusScriptValue(scripts.producedVerifier),
           redeemer = verifierRedeemer
         )
-        // The fBTC mint checker is likewise small — always inlined.
+        // The fBTC mint checker is likewise small – always inlined.
         val checkerWithdrawWitness: TwoArg = TwoArg(
           scriptSource = PlutusScriptValue(scripts.fbtcMintChecker),
           redeemerBuilder = fbtcMintCheckerRedeemer

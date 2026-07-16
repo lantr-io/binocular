@@ -129,7 +129,7 @@ object BridgedTokenContract {
 }
 
 /** The `fbtc_mint_checker` withdraw validator: params `(configNFTPolicyId, configNFTAssetName)`.
-  * Its script hash is ConfigDatum index 19 — the swappable script carrying all fBTC mint/burn
+  * Its script hash is ConfigDatum index 19 – the swappable script carrying all fBTC mint/burn
   * rules; the `bridged_token` policy only requires a withdrawal from it. Small enough to inline in
   * the witness set (no CIP-33 ref needed), like the peg-out produced verifier.
   */

@@ -61,7 +61,7 @@ class BifrostContractsTest extends AnyFunSuite {
 
     test("bridged_token (fBTC) policy matches the deployed value") {
         val bt = BridgedTokenContract(blueprint, configPolicy, configAssetName)
-        assert(hex(bt.policyId) == "61ac3cdfc9b9069655fc7e8f8a09698739e55bc3ceed59bd29f22717")
+        assert(hex(bt.policyId) == "e9376fc61a9de71f858a8a6e7471d96336f78ba63473705474fc9e28")
     }
 
     test("fbtc_mint_checker hash is stable for the 2-param encoding") {
