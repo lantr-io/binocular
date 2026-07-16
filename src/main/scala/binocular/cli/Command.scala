@@ -5,7 +5,7 @@ import binocular.bitcoin.*
 import binocular.oracle.*
 import binocular.watchtower.*
 import scalus.cardano.address.{Address, Network}
-import scalus.cardano.ledger.{AssetName, ScriptHash, ScriptRef, TransactionOutput, Utxo, Value}
+import scalus.cardano.ledger.{AssetName, Credential, Script, ScriptHash, ScriptRef, TransactionOutput, Utxo, Value}
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.wallet.hd.HdAccount
 import scalus.uplc.PlutusV3
@@ -44,8 +44,13 @@ case class OracleSetup(
     provider: BlockchainProvider,
     network: Network
 ) {
-    lazy val script = compiled.script
-    lazy val scriptAddress = compiled.address(network)
+
+    /** Deployable oracle script: blueprint-loaded, UPLC-applied — the form whose hash matches
+      * on-chain deployments. `compiled` (SIR-applied) is kept for CEK evaluation/debugging only.
+      */
+    lazy val script: Script.PlutusV3 = BitcoinContract.script(params)
+    lazy val scriptAddress =
+        Address(network, Credential.ScriptHash(script.scriptHash))
     lazy val scriptAddressBech32 = scriptAddress.encode.get
     lazy val signer = hdAccount.signerForUtxos
     lazy val sponsorAddress = hdAccount.baseAddress(network)

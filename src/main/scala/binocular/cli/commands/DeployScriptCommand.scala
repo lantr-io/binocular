@@ -45,7 +45,7 @@ case class DeployScriptCommand() extends Command with LazyLogging {
         OracleTransactions.deployReferenceScript(
           setup.provider,
           setup.hdAccount,
-          setup.compiled,
+          setup.script,
           timeout
         ) match {
             case Right((deployTxHash, deployOutputIdx, _)) =>

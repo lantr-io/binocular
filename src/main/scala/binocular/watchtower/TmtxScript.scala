@@ -5,8 +5,10 @@ import binocular.bitcoin.*
 import binocular.oracle.*
 
 import binocular.cli.Console
+import binocular.blueprint.BinocularBlueprint
+import scalus.cardano.blueprint.{Blueprint, Contract}
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{TransactionHash, Utxo}
+import scalus.cardano.ledger.{Script, TransactionHash, Utxo}
 import scalus.cardano.node.{BlockchainProvider, TransactionStatus}
 import scalus.cardano.txbuilder.TxBuilder
 import scalus.cardano.wallet.hd.HdAccount
@@ -25,7 +27,7 @@ import scala.concurrent.duration.Duration
   * salt constant, so the script hash differs from bare `PlutusV3.alwaysOk`. On-chain the CEK
   * machine performs the single beta-reduction, which is negligible for an alwaysOk script.
   */
-object TmtxScript {
+object TmtxScript extends Contract {
 
     /** Random 32-byte salt — included in the compiled UPLC to produce a distinct script hash. */
     private val salt: ByteString =
@@ -43,15 +45,20 @@ object TmtxScript {
             )
             .apply(salt)
 
-    /** Pinned (frozen-blueprint-backed) script; falls back to a fresh compile when not pinned. Used
-      * for tx-building and policy-id derivation so the deployed tmtx policy survives compiler
-      * upgrades.
+    /** Blueprint-loaded script (salt already applied at compile time, so the blueprint entry is
+      * param-free). Used for tx-building and policy-id derivation.
       */
-    lazy val pinnedScript: scalus.cardano.ledger.Script.PlutusV3 =
-        binocular.blueprint.PinnedBlueprint.pinned(
-          binocular.blueprint.PinnedBlueprint.Titles.Tmtx,
-          binocular.blueprint.PinnedBlueprint.NoParams
-        )(mintingScript.script)
+    lazy val pinnedScript: Script.PlutusV3 =
+        BinocularBlueprint.script("TmtxScript")
+
+    /** CIP-57 blueprint for the (salt-applied) tmtx minting script. */
+    lazy val blueprint: Blueprint =
+        BinocularBlueprint.paramFreeBlueprint(
+          title = "TmtxScript",
+          description =
+              "Always-succeeds salted minting policy marking TMTx state UTxOs (salt baked in).",
+          compiled = mintingScript
+        )
 
     /** Spend the existing TMTx UTxO and recreate it with datum Constr(1, [txBytes]).
       *

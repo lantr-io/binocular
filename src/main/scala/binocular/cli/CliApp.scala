@@ -14,11 +14,11 @@ object CliApp {
     /** CLI command enum for routing */
     enum Cmd:
         case Version
-        case Blueprint
         case Info
         case ListOracles(limit: Int)
         case VerifyOracle
         case Init(startBlock: Option[Long], dryRun: Boolean)
+        case SetState(height: Long, dryRun: Boolean)
         case UpdateOracle(fromBlock: Option[Long], toBlock: Option[Long])
         case Run(dryRun: Boolean)
         case Attack(parent: String, rogueSprint: Int, blockSpacing: Long, dryRun: Boolean)
@@ -123,10 +123,6 @@ object CliApp {
             .flag("version", help = "Print version and exit", short = "v")
             .map(_ => Cmd.Version)
 
-        val blueprintCommand = Opts.subcommand("blueprint", "Print CIP-57 Blueprint JSON") {
-            Opts(Cmd.Blueprint)
-        }
-
         val infoCommand = Opts.subcommand("info", "Display oracle configuration and info") {
             Opts(Cmd.Info)
         }
@@ -141,6 +137,16 @@ object CliApp {
 
         val initCommand = Opts.subcommand("init", "Initialize new oracle") {
             (startBlockOpt, dryRunFlag).mapN(Cmd.Init.apply)
+        }
+
+        val setStateCommand = Opts.subcommand(
+          "set-state",
+          "Owner state reset of a STALE oracle (testing + deep-reorg recovery): replaces the " +
+              "ChainState in one tx, preserving the NFT and all dependent contracts"
+        ) {
+            val heightOpt: Opts[Long] =
+                Opts.option[Long]("height", "Bitcoin block height to anchor the new state at")
+            (heightOpt, dryRunFlag).mapN(Cmd.SetState.apply)
         }
 
         val updateCommand = Opts.subcommand("update-oracle", "Update oracle with new blocks") {
@@ -385,11 +391,11 @@ object CliApp {
 
         val subcommands =
             versionFlag `orElse`
-                blueprintCommand `orElse`
                 infoCommand `orElse`
                 listCommand `orElse`
                 verifyCommand `orElse`
                 initCommand `orElse`
+                setStateCommand `orElse`
                 updateCommand `orElse`
                 runCommand `orElse`
                 attackCommand `orElse`
@@ -429,9 +435,6 @@ object CliApp {
                 println(s"binocular ${BuildInfo.version}")
                 0
 
-            case Right((configPath, Cmd.Blueprint)) =>
-                BlueprintCommand().execute(BinocularConfig.load(configPath))
-
             case Right((configPath, cmd)) =>
                 try {
                     val config = BinocularConfig.load(configPath)
@@ -445,6 +448,8 @@ object CliApp {
                             VerifyOracleCommand()
                         case Cmd.Init(startBlock, dryRun) =>
                             InitOracleCommand(startBlock, dryRun)
+                        case Cmd.SetState(height, dryRun) =>
+                            SetStateCommand(height, dryRun)
                         case Cmd.UpdateOracle(from, to) =>
                             UpdateOracleCommand(from, to)
                         case Cmd.Run(dryRun) =>
@@ -516,7 +521,7 @@ object CliApp {
                             )
                         case Cmd.PegOutComplete(pegOut, tm, priorPegouts, dryRun) =>
                             PegOutCompleteCommand(pegOut, tm, priorPegouts, dryRun)
-                        case Cmd.Version | Cmd.Blueprint =>
+                        case Cmd.Version =>
                             return 0 // unreachable: handled above
                     }
 

@@ -3,6 +3,9 @@ package binocular.watchtower
 import binocular.*
 import binocular.bitcoin.*
 import binocular.oracle.*
+import binocular.blueprint.BinocularBlueprint
+import scalus.cardano.blueprint.{Blueprint, Contract}
+import scalus.cardano.ledger.Script
 
 import scalus.cardano.onchain.plutus.prelude.{List, *}
 import scalus.cardano.onchain.plutus.v1.Credential
@@ -168,23 +171,26 @@ object TransactionVerifierValidator {
     }
 }
 
-object TransactionVerifierContract {
+object TransactionVerifierContract extends Contract {
     given Options = Options(
       optimizeUplc = true,
       generateErrorTraces = true,
       targetLoweringBackend = TargetLoweringBackend.SirToUplcV3Lowering
     )
 
-    def compileVerifierProgram(): Program = {
-        PlutusV3.compile(TransactionVerifierValidator.validate).program
-    }
+    lazy val compiled: PlutusV3[Data => Unit] =
+        PlutusV3.compile(TransactionVerifierValidator.validate)
 
-    lazy val validator: Program = compileVerifierProgram()
+    lazy val validator: Program = compiled.program
 
-    /** Pinned (frozen-blueprint-backed) script; falls back to a fresh compile when not pinned. */
-    lazy val pinnedScript: scalus.cardano.ledger.Script.PlutusV3 =
-        binocular.blueprint.PinnedBlueprint.pinned(
-          binocular.blueprint.PinnedBlueprint.Titles.TxVerifier,
-          binocular.blueprint.PinnedBlueprint.NoParams
-        )(scalus.cardano.ledger.Script.PlutusV3(validator.cborByteString))
+    /** Blueprint-loaded script (param-free, loaded verbatim). */
+    lazy val pinnedScript: Script.PlutusV3 =
+        BinocularBlueprint.script("TransactionVerifierContract")
+
+    lazy val blueprint: Blueprint =
+        BinocularBlueprint.paramFreeBlueprint(
+          title = "TransactionVerifierContract",
+          description = "Bitcoin transaction inclusion verifier (withdraw-based).",
+          compiled = compiled
+        )
 }

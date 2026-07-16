@@ -405,6 +405,8 @@ enum OracleAction {
         mpfInsertProofs: List[List[ProofStep]] // MPF non-membership proofs for promoted blocks
     )
     case CloseOracle  // Close stale Oracle and burn NFT
+    case SetState     // Owner state reset of a STALE Oracle (testing + deep-reorg recovery);
+                      // the replacement state is the continuing output's inline datum
 }
 ```
 
@@ -1195,6 +1197,16 @@ The on-chain validator enforces the following rules:
     seconds on-chain aging (e.g. 200 minutes)
 13. **MPF Proof Count**: Number of promoted blocks must exactly match number of MPF proofs provided
 
+**SetState Validation** (owner state reset of a stale Oracle — see §Owner State Reset):
+
+14. **Staleness**: `currentTime - ctx.timestamps.head > closureTimeout` (same as `CloseOracle`)
+15. **Owner Signature**: transaction signed by `params.owner`
+16. **Continuity**: continuing output at the script address carries the NFT; non-ADA preserved,
+    ADA not decreased
+17. **Structural Validity**: the replacement datum strictly parses as `ChainState` (32-byte root
+    and tip hash, 4-byte bits, 11 timestamps, positive height/timestamps, fork tree within
+    `maxBlocksInForkTree`)
+
 **Security Note**: These validations prevent spam attacks. An attacker cannot submit fake blocks
 without performing valid proof-of-work. Each block must meet Bitcoin's difficulty requirement and
 have a valid hash, making it computationally expensive to create even a single invalid fork. This
@@ -1280,6 +1292,76 @@ submits updates), the owner can reclaim the funds.
 - Together, these prevent the owner from griefing active users while providing a recovery mechanism
 
 **Implementation Reference:** See `spend` (CloseOracle branch) in `BitcoinValidator.scala`
+
+### Owner State Reset (SetState)
+
+The `SetState` action allows the Oracle owner to replace the entire `ChainState` of a **stale**
+Oracle in a single transaction, preserving the Oracle NFT — and therefore the identity that every
+dependent contract (parameterized by the Oracle script hash) relies on.
+
+**Motivation.** A Bitcoin reorganization deeper than the maturation depth poisons the Oracle
+irrecoverably: `confirmedBlocksRoot` is an append-only MPF commitment, so orphaned block hashes
+can never be removed by `UpdateOracle`. Before `SetState`, the only recovery was `CloseOracle`
+followed by a fresh `init` — which mints a new NFT under a new policy and forces a redeploy of
+every contract parameterized by the Oracle script hash (treasury-movement, peg-in, peg-out, …).
+On Bitcoin mainnet a >`maturationConfirmations` (100-block) reorg is a catastrophic, never-observed
+event; on test networks (testnet4) it is a regular occurrence. `SetState` reduces the recovery to
+one owner-signed transaction. It also serves as a state-injection tool for test deployments,
+**without** disabling any consensus validation (unlike `testingMode`, which skips proof-of-work
+checks, `SetState` leaves `UpdateOracle` validation fully intact).
+
+**SetState Requirements:**
+
+1. **Staleness Check** — identical to `CloseOracle`:
+   ```
+   require currentTime - ctx.timestamps.head > params.closureTimeout
+   ```
+2. **Owner Authorization**:
+   ```
+   require tx.isSignedBy(params.owner)
+   ```
+3. **Continuity**: a continuing output at the Oracle script address carrying the Oracle NFT, with
+   non-ADA value preserved and ADA not decreased (same rules as `UpdateOracle`).
+4. **Structural Validity**: the continuing output's inline datum must strictly parse as a
+   `ChainState` — every field is forced during validation, so a malformed datum fails immediately
+   rather than bricking the Oracle on the next spend. Enforced: `confirmedBlocksRoot` is 32 bytes,
+   `height > 0`, `currentBits` is 4 bytes, `lastBlockHash` is 32 bytes, `timestamps` has exactly
+   `MedianTimeSpan` (11) entries, `prevDiffAdjTimestamp > 0`, and the fork tree holds at most
+   `maxBlocksInForkTree` blocks.
+
+The injected state is **not** consensus-validated — exactly like the init datum, its correctness
+is the owner's responsibility. Anyone can verify it off-chain against the canonical Bitcoin chain,
+and the challenge mechanism applies to all subsequent updates as usual.
+
+**Security argument (zero new power).** `SetState` grants the owner no capability beyond what
+`CloseOracle` already grants:
+
+- *Same guard, same trust envelope.* The staleness + owner-signature conditions are exactly those
+  of `CloseOracle`. An owner who can close a stale Oracle can already replace its state
+  destructively (close, re-init, redeploy dependents); `SetState` performs the same reset while
+  keeping the NFT and dependent deployments intact.
+- *Unreachable on a live Oracle.* Updates are permissionless, so **any single honest updater**
+  keeps `ctx.timestamps.head` within `closureTimeout` of wall-clock time, making the staleness
+  condition — and thus `SetState` — unsatisfiable. Under the protocol's standing 1-honest-party
+  assumption, the owner cannot rewrite the state of an Oracle anyone is still maintaining. This
+  requires `closureTimeout` to comfortably exceed the worst-case promotion lag (the confirmed
+  tip's Bitcoin timestamp trails wall-clock by up to
+  `maturationConfirmations × 10 min + challengeAging`, ≈ 17 hours mainnet); the mainnet default
+  of 30 days provides a ~40× margin.
+- *Residual power = closure power.* The only scenario where the owner can invoke `SetState` is an
+  Oracle abandoned by every updater for `closureTimeout` — precisely the scenario in which the
+  owner may already close it and start over. Consumers referencing the Oracle inherit no new risk:
+  a state injected after 30 days of global abandonment is no less trustworthy than a fresh init,
+  which the same recovery would otherwise produce.
+
+**Recovery workflow** (off-chain, `set-state` CLI): anchor the replacement state at a canonical
+height `H` (fetching header, difficulty-boundary bits, and 11 trailing timestamps exactly like
+`init`), and rebuild `confirmedBlocksRoot` from the configured `start-height` up to `H` against
+the canonical chain — so every block previously provable against the Oracle remains provable and
+the deployment's `start-height` is unchanged.
+
+**Implementation Reference:** See `spend` (SetState branch) in `BitcoinValidator.scala` and
+`SetStateCommand.scala`
 
 ### Parameterized Validator
 

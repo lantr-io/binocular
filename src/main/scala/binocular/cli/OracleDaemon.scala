@@ -310,7 +310,7 @@ class OracleDaemon(planner: UpdatePlanner, dryRun: Boolean) {
                     val result = OracleTransactions.buildOptimalUpdateTransaction(
                       setup.provider,
                       setup.hdAccount,
-                      setup.compiled,
+                      setup.script,
                       currentOracleUtxo,
                       currentChainState,
                       headersList,

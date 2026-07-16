@@ -233,6 +233,13 @@ enum OracleAction derives FromData, ToData {
         mpfInsertProofs: List[List[ProofStep]]
     )
     case CloseOracle
+
+    /** Owner state reset — testing and disaster recovery (a reorg deeper than the maturation depth
+      * poisons the append-only `confirmedBlocksRoot`; see Whitepaper §Owner State Reset). The
+      * replacement state is the continuing output's inline datum; it is structurally validated but
+      * NOT consensus-validated (same trust as the init datum).
+      */
+    case SetState
 }
 
 case class TraversalCtx(
@@ -1300,6 +1307,81 @@ object BitcoinValidator extends DataParameterizedValidator {
                       .singleton(ByteString.empty, BigInt(-1))
                       .toData,
                   "Must burn oracle NFT"
+                )
+
+            case OracleAction.SetState =>
+                // Owner state reset. Grants the owner ZERO new power: the guards below are
+                // exactly CloseOracle's, and an owner who can close a stale oracle can already
+                // replace its state destructively (close, then re-init) — at the cost of a new
+                // NFT policy and a redeploy of every contract parameterized by this script hash.
+                // SetState performs the same reset in one transaction while preserving the NFT
+                // and all downstream deployments.
+                //
+                // On a live oracle this branch is unreachable: updates are permissionless, so
+                // any single honest updater keeps the confirmed tip's timestamp within
+                // closureTimeout (which must be chosen well above the worst-case promotion lag;
+                // mainnet: 30 days vs ~17 h). The residual power — rewriting state after
+                // closureTimeout of total network abandonment — is identical to the existing
+                // closure power. Unlike testingMode, this leaves all consensus validation of
+                // UpdateOracle (PoW, difficulty, timestamps) fully enforced.
+
+                // 1. Staleness check — identical to CloseOracle
+                require(
+                  intervalEndInSeconds - chainState.ctx.timestamps.head > params.closureTimeout,
+                  "Oracle is not stale"
+                )
+                // 2. Owner authorization
+                require(tx.isSignedBy(params.owner), "Not signed by oracle owner")
+                // 3. Continuing output at own address carrying the oracle NFT, nothing drained
+                val continuingOutput = outputs
+                    .find(out =>
+                        out.address.toData == ownInput.address.toData
+                            && out.value.quantityOf(policyId, ByteString.empty) == BigInt(1)
+                    )
+                    .getOrFail("No continuing output with oracle NFT found")
+                require(
+                  ownInput.value.withoutLovelace.toData == continuingOutput.value.withoutLovelace.toData,
+                  "Non-ADA tokens must be preserved"
+                )
+                require(
+                  continuingOutput.value.lovelaceAmount >= ownInput.value.lovelaceAmount,
+                  "ADA value can only increase"
+                )
+                // 4. The replacement state must be a structurally valid ChainState: every field
+                //    is forced so a malformed datum fails HERE, not on the next spend (which
+                //    would brick the oracle — UpdateOracle, CloseOracle and SetState all begin
+                //    by parsing the current datum). Consensus validity of the injected state is
+                //    deliberately NOT checked — it is the owner's responsibility, exactly like
+                //    the init datum.
+                val newState = continuingOutput.datum match
+                    case OutputDatum.OutputDatum(d) => d.to[ChainState]
+                    case _                          => fail("No inline datum on continuing output")
+                require(
+                  newState.confirmedBlocksRoot.length == BigInt(32),
+                  "confirmedBlocksRoot must be 32 bytes"
+                )
+                require(newState.ctx.height > BigInt(0), "Height must be positive")
+                require(
+                  newState.ctx.currentBits.length == BigInt(4),
+                  "currentBits must be 4 bytes"
+                )
+                require(
+                  newState.ctx.lastBlockHash.length == BigInt(32),
+                  "lastBlockHash must be 32 bytes"
+                )
+                // Forces the full timestamps list and keeps median-time-past well-defined
+                require(
+                  newState.ctx.timestamps.length == MedianTimeSpan,
+                  "timestamps must have MedianTimeSpan entries"
+                )
+                require(
+                  newState.ctx.prevDiffAdjTimestamp > BigInt(0),
+                  "prevDiffAdjTimestamp must be positive"
+                )
+                // Forces the whole fork tree and keeps it within the datum-size envelope
+                require(
+                  forkTreeBlockCount(newState.forkTree) <= params.maxBlocksInForkTree,
+                  "Fork tree exceeds maxBlocksInForkTree"
                 )
     }
 

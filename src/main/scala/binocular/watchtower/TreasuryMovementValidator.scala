@@ -3,6 +3,9 @@ package binocular.watchtower
 import binocular.*
 import binocular.bitcoin.*
 import binocular.oracle.{BlockHeader, ChainState}
+import binocular.blueprint.BinocularBlueprint
+import scalus.cardano.blueprint.{Blueprint, Contract}
+import scalus.cardano.ledger.Script
 
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry as MPF
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
@@ -381,7 +384,7 @@ object TreasuryMovementValidator {
   * and spent into `Confirmed` ones; the TM NFT can only be minted by the key the control datum
   * names.
   */
-object TreasuryMovementContract {
+object TreasuryMovementContract extends Contract {
     given opts: Options = Options.release
 
     /** Curried form: `oracleScriptHash -> controlNftPolicy -> controlNftName -> (scriptContext ->
@@ -407,23 +410,55 @@ object TreasuryMovementContract {
     ): PlutusV3[Data => Unit] =
         parameterized.apply(oracleScriptHash).apply(controlNftPolicy).apply(controlNftName)
 
-    /** Treasury-movement script for the given params, loaded verbatim from the frozen blueprint
-      * when present (preserving deployed hashes across compiler upgrades) and compiled fresh
-      * otherwise.
+    /** Treasury-movement script for the given params: the unapplied program from the generated
+      * CIP-57 blueprint with the three `ByteString` params applied at the UPLC level as bare
+      * bytestring constants (the validator is compiled from curried `ByteString` lambdas, not
+      * `Data` — see [[parameterized]]).
       */
     def script(
         oracleScriptHash: ByteString,
         controlNftPolicy: ByteString,
         controlNftName: ByteString
-    ): scalus.cardano.ledger.Script.PlutusV3 =
-        binocular.blueprint.PinnedBlueprint.pinned(
-          binocular.blueprint.PinnedBlueprint.Titles.TreasuryMovement,
-          binocular.blueprint.PinnedBlueprint.paramsKeyOf(
-            oracleScriptHash,
-            controlNftPolicy,
-            controlNftName
+    ): Script.PlutusV3 =
+        BinocularBlueprint.script(
+          "TreasuryMovementContract",
+          BinocularBlueprint.bytesParam(oracleScriptHash),
+          BinocularBlueprint.bytesParam(controlNftPolicy),
+          BinocularBlueprint.bytesParam(controlNftName)
+        )
+
+    /** CIP-57 blueprint over the UNAPPLIED parameterized program: consumers (and [[script]]) apply
+      * the three params UPLC-level, Aiken-style. Built manually because the `Blueprint.plutusV3`
+      * helpers only model single-parameter validators.
+      */
+    lazy val blueprint: Blueprint = {
+        // Validator would clash with plutus.v3.Validator (wildcard-imported above) — keep scoped
+        import scalus.cardano.blueprint.{Preamble, Validator}
+        import scalus.utils.Hex.toHex
+        val title = "TreasuryMovementContract"
+        val description =
+            "Bifrost treasury-movement validator: holds Unconfirmed→Confirmed TM state, " +
+                "parameterized by (oracleScriptHash, controlNftPolicy, controlNftName)."
+        val bytes = BinocularBlueprint.bytesParamDescription
+        Blueprint(
+          preamble = Preamble(
+            title,
+            description,
+            "1.0.0",
+            plutusVersion = parameterized.language,
+            license = Some("Apache-2.0")
+          ),
+          validators = Seq(
+            Validator(
+              title = title,
+              description = Some(description),
+              redeemer = Some(BinocularBlueprint.opaqueDataDescription),
+              datum = None,
+              parameters = Some(scala.List(bytes, bytes, bytes)),
+              compiledCode = Some(parameterized.program.cborEncoded.toHex),
+              hash = Some(parameterized.script.scriptHash.toHex)
+            )
           )
-        ) {
-            contract(oracleScriptHash, controlNftPolicy, controlNftName).script
-        }
+        )
+    }
 }

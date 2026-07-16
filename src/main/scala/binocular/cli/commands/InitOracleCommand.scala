@@ -177,6 +177,8 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
         )
         val compiled = BitcoinContract.makeContract(params)
         val setup = OracleSetup(params, compiled, hdAccount, provider, network)
+        // Deployable script: blueprint-loaded, UPLC-applied (hash matches the published CIP-57)
+        val script = setup.script
         Console.info("Address", setup.scriptAddressBech32)
         Console.info("Script Hash", setup.script.scriptHash.toHex)
         Console.info("Owner", owner.hash.toHex)
@@ -190,7 +192,7 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
             OracleTransactions.deployReferenceScript(
               provider,
               hdAccount,
-              compiled,
+              script,
               timeout
             ) match {
                 case Right(result) =>
@@ -233,7 +235,7 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
             .buildAndSubmitInitTransaction(
               provider,
               hdAccount,
-              compiled,
+              script,
               initialState,
               oneShotUtxo,
               referenceScriptUtxo,

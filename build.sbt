@@ -25,7 +25,7 @@ addCommandAlias(
 
 // Root project (binocular)
 lazy val binocular = (project in file("."))
-    .enablePlugins(BuildInfoPlugin)
+    .enablePlugins(BuildInfoPlugin, ScalusBlueprintPlugin)
     .settings(
       name := "binocular",
       run / fork := true,
@@ -40,7 +40,10 @@ lazy val binocular = (project in file("."))
       // Assembly configuration
       assembly / assemblyMergeStrategy := {
           case PathList("META-INF", "MANIFEST.MF") => MergeStrategy.discard
-          case PathList("META-INF", xs @ _*)       => MergeStrategy.discard
+          // Generated CIP-57 blueprints — the runtime loads scripts from these; keep them
+          // ahead of the blanket META-INF discard below.
+          case PathList("META-INF", "scalus", xs @ _*) => MergeStrategy.first
+          case PathList("META-INF", xs @ _*)           => MergeStrategy.discard
           case PathList("module-info.class")       => MergeStrategy.discard
           case x if x.endsWith(".proto")           => MergeStrategy.first
           case x if x.contains("bouncycastle")     => MergeStrategy.first

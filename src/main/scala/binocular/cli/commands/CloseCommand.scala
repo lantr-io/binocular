@@ -116,7 +116,7 @@ case class CloseCommand() extends Command {
           setup.hdAccount,
           oracleUtxo,
           referenceScriptUtxo,
-          setup.compiled,
+          setup.script,
           timeout
         ) match {
             case Right(txHash) =>

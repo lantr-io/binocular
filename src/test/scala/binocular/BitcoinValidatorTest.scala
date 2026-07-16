@@ -3,13 +3,14 @@ package binocular
 import binocular.bitcoin.*
 import binocular.oracle.*
 import binocular.watchtower.*
+import binocular.blueprint.BinocularBlueprint
 
 import binocular.oracle.ForkTree.*
 import binocular.oracle.OracleAction.*
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
 import scalus.*
-import scalus.cardano.address.{ShelleyAddress, ShelleyDelegationPart, ShelleyPaymentPart}
+import scalus.cardano.address.{Address, ShelleyAddress, ShelleyDelegationPart, ShelleyPaymentPart}
 import scalus.cardano.ledger.*
 import scalus.cardano.ledger.utils.MinTransactionFee
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
@@ -20,7 +21,7 @@ import scalus.cardano.txbuilder.txBuilder
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 import scalus.testing.kit.TestUtil.getScriptContextV3
 import scalus.testing.kit.{Party, ScalusTest}
-import scalus.uplc.builtin.ByteString
+import scalus.uplc.builtin.{ByteString, Data}
 import scalus.uplc.builtin.ByteString.hex
 import scalus.uplc.builtin.Data.toData
 import scalus.uplc.eval.*
@@ -234,7 +235,8 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         val contract = BitcoinContract.makeContract(testParams)
         info(s"Contract size: ${contract.script.script.size}")
 //        println(contract.program.showHighlighted)
-        assert(contract.script.script.size == 8207)
+        // 8207 before the SetState action was added (+451 bytes for the owner-reset branch)
+        assert(contract.script.script.size == 8658)
     }
 
     test("Block header throughput - max headers per transaction") {
@@ -1220,9 +1222,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         info(f"  Tx Fee:       $txFeeAda%15.6f ADA")
 
         assert(txSize <= maxTxSize, "Tx size exceeded")
+        // 943423 before SetState grew the (referenced) oracle script by 451 bytes
         assert(
-          tx.body.value.fee == Coin(943423),
-          s"Tx fee ${tx.body.value.fee} != 943423 lovelace"
+          tx.body.value.fee == Coin(955695),
+          s"Tx fee ${tx.body.value.fee} != 955695 lovelace"
         )
     }
 
@@ -1840,6 +1843,139 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         println(s"  Validated $validated blocks ($startHeight-$endHeight)")
 
         assert(validated == 205, s"Expected 205 validated blocks, got $validated")
+    }
+
+    // =========================================================================
+    // SetState tests
+    // =========================================================================
+
+    /** A structurally valid replacement state, unrelated to the previous one — SetState does not
+      * consensus-validate the injected state, only its structure.
+      */
+    private def replacementState(anchorTimestamp: BigInt): ChainState = ChainState(
+      confirmedBlocksRoot = ByteString.unsafeFromArray(Array.fill(32)(7: Byte)),
+      ctx = TraversalCtx(
+        timestamps = prelude.List.from((0 until 11).map(i => anchorTimestamp - i * 600).toList),
+        height = 900000,
+        currentBits = ByteString.fromHex("17030ecd"),
+        prevDiffAdjTimestamp = anchorTimestamp - 2016 * 600,
+        lastBlockHash = ByteString.unsafeFromArray(Array.fill(32)(9: Byte))
+      ),
+      forkTree = ForkTree.End
+    )
+
+    /** Builds a SetState draft over the standard stale-oracle setup. Variation points cover every
+      * validator guard: staleness (currentTime), signer, output address/value, and output datum.
+      */
+    private def setStateDraft(
+        currentTime: BigInt,
+        lastBlockTimestamp: BigInt,
+        signer: AddrKeyHash = Party.Alice.addrKeyHash,
+        outputAda: Long = 5,
+        outputAddr: Option[Address] = None,
+        outputDatum: Option[Data] = None
+    ) = {
+        val (prevState, input, refScriptUtxo) = closeOracleSetup(lastBlockTimestamp)
+        val inputValue = nftValue(5)
+        val utxo = Utxo(
+          input,
+          Output(testScriptAddr, inputValue, DatumOption.Inline(prevState.toData))
+        )
+        val utxos: Utxos =
+            Map(utxo.input -> utxo.output, refScriptUtxo.input -> refScriptUtxo.output)
+
+        val datum = outputDatum.getOrElse(replacementState(currentTime).toData)
+        val outValue = Value.asset(testScriptHash, AssetName.empty, 1, Coin.ada(outputAda))
+        val validTo = Instant.ofEpochSecond(currentTime.toLong)
+        val draft = txBuilder
+            .references(refScriptUtxo, testContract)
+            .spend(utxo, OracleAction.SetState.toData)
+            .payTo(outputAddr.getOrElse(testScriptAddr), outValue, datum)
+            .requireSignature(signer)
+            .validFrom(validTo.minusSeconds(600))
+            .validTo(validTo)
+            .draft
+
+        (draft.getScriptContextV3(utxos, ForSpend(input)), utxos)
+    }
+
+    private val setStateLastBlockTs = BigInt(1700000000)
+    private val setStateStaleTime = setStateLastBlockTs + 60 * 24 * 60 * 60 // 60 days later
+
+    test("SetState succeeds when stale, owner-signed, NFT preserved, valid new state") {
+        val (ctx, _) = setStateDraft(setStateStaleTime, setStateLastBlockTs)
+        val result = testProgram.applyArg(ctx.toData).evaluateDebug
+        assert(result.isSuccess, s"SetState should succeed, but got: $result")
+    }
+
+    test("blueprint-loaded UPLC-applied oracle validates the same SetState context") {
+        // The deployable script is the blueprint's unapplied program with params applied at the
+        // UPLC level (BitcoinContract.script). It must accept exactly what the SIR-applied test
+        // contract accepts — this guards the semantic equivalence of the two application styles.
+        val (ctx, _) = setStateDraft(setStateStaleTime, setStateLastBlockTs)
+        val applied =
+            (BinocularBlueprint.program("BitcoinContract") $ testParams.toData).deBruijnedProgram
+        val result = applied.applyArg(ctx.toData).evaluateDebug
+        assert(result.isSuccess, s"blueprint-applied oracle should succeed, but got: $result")
+    }
+
+    test("SetState fails when oracle is not stale") {
+        val freshTime = setStateLastBlockTs + 24 * 60 * 60 // 1 day < 30-day closureTimeout
+        val (ctx, _) = setStateDraft(freshTime, setStateLastBlockTs)
+        val result = testProgram.applyArg(ctx.toData).evaluateDebug
+        assert(result.isFailure, "SetState must fail on a non-stale oracle")
+    }
+
+    test("SetState fails when not signed by the owner") {
+        val wrongSigner = AddrKeyHash(
+          hex"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        )
+        val (ctx, _) =
+            setStateDraft(setStateStaleTime, setStateLastBlockTs, signer = wrongSigner)
+        val result = testProgram.applyArg(ctx.toData).evaluateDebug
+        assert(result.isFailure, "SetState must fail without the owner signature")
+    }
+
+    test("SetState fails when the oracle NFT is not returned to the script address") {
+        val (ctx, _) = setStateDraft(
+          setStateStaleTime,
+          setStateLastBlockTs,
+          outputAddr = Some(Party.Bob.address)
+        )
+        val result = testProgram.applyArg(ctx.toData).evaluateDebug
+        assert(result.isFailure, "SetState must fail when the NFT leaves the oracle address")
+    }
+
+    test("SetState fails when ADA is drained from the oracle UTxO") {
+        val (ctx, _) = setStateDraft(setStateStaleTime, setStateLastBlockTs, outputAda = 2)
+        val result = testProgram.applyArg(ctx.toData).evaluateDebug
+        assert(result.isFailure, "SetState must fail when output ADA < input ADA")
+    }
+
+    test("SetState fails on a malformed replacement datum") {
+        val (ctx, _) = setStateDraft(
+          setStateStaleTime,
+          setStateLastBlockTs,
+          outputDatum = Some(Data.I(42))
+        )
+        val result = testProgram.applyArg(ctx.toData).evaluateDebug
+        assert(result.isFailure, "SetState must fail when the new datum is not a ChainState")
+    }
+
+    test("SetState fails on a structurally invalid replacement state (wrong timestamps arity)") {
+        val bad = replacementState(setStateStaleTime)
+        val truncated = bad.copy(ctx =
+            bad.ctx.copy(timestamps =
+                prelude.List.from((0 until 5).map(i => setStateStaleTime - i * 600).toList)
+            )
+        )
+        val (ctx, _) = setStateDraft(
+          setStateStaleTime,
+          setStateLastBlockTs,
+          outputDatum = Some(truncated.toData)
+        )
+        val result = testProgram.applyArg(ctx.toData).evaluateDebug
+        assert(result.isFailure, "SetState must fail when timestamps arity != MedianTimeSpan")
     }
 
 }

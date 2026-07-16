@@ -69,7 +69,7 @@ case class UpdateOracleCommand(
                         OracleTransactions.deployReferenceScript(
                           setup.provider,
                           setup.hdAccount,
-                          setup.compiled,
+                          setup.script,
                           timeout
                         ) match {
                             case Right((deployTxHash, deployOutputIdx, savedOutput)) =>
@@ -413,7 +413,7 @@ case class UpdateOracleCommand(
                 val txResult = OracleTransactions.buildAndSubmitUpdateTransaction(
                   setup.provider,
                   setup.hdAccount,
-                  setup.compiled,
+                  setup.script,
                   currentOracleUtxo,
                   currentState,
                   newChainState,

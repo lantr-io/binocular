@@ -1,6 +1,9 @@
 package binocular.watchtower
 
 import binocular.bitcoin.*
+import binocular.blueprint.BinocularBlueprint
+import scalus.cardano.blueprint.{Blueprint, Contract}
+import scalus.cardano.ledger.Script
 
 import scalus.cardano.onchain.plutus.prelude.*
 import scalus.cardano.onchain.plutus.v3.*
@@ -125,18 +128,24 @@ object PegOutProducedVerifier {
     }
 }
 
-object PegOutProducedVerifierContract {
+object PegOutProducedVerifierContract extends Contract {
     given opts: Options = Options.release
 
     lazy val compiled: PlutusV3[Data => Unit] =
         PlutusV3.compile((scData: Data) => PegOutProducedVerifier.validate(scData))
 
-    /** Pinned (frozen-blueprint-backed) script; falls back to a fresh compile when not pinned. */
-    lazy val pinnedScript: scalus.cardano.ledger.Script.PlutusV3 =
-        binocular.blueprint.PinnedBlueprint.pinned(
-          binocular.blueprint.PinnedBlueprint.Titles.PegOutProduced,
-          binocular.blueprint.PinnedBlueprint.NoParams
-        )(compiled.script)
+    /** Blueprint-loaded script (param-free, loaded verbatim). */
+    lazy val pinnedScript: Script.PlutusV3 =
+        BinocularBlueprint.script("PegOutProducedVerifierContract")
+
+    lazy val blueprint: Blueprint =
+        BinocularBlueprint.paramFreeBlueprint(
+          title = "PegOutProducedVerifierContract",
+          description =
+              "legit_treasury_movement_and_peg_out_produced_verifier (config[13]) — withdraw-based " +
+                  "verifier that a TM legitimately fulfilled a peg-out.",
+          compiled = compiled
+        )
 }
 
 /** The `legit_treasury_movement_and_peg_out_not_produced_verifier` — config[14]. Only invoked by
@@ -151,16 +160,22 @@ object PegOutNotProducedVerifier {
         fail("peg-out not-produced verifier: Cancel/refund path not implemented yet")
 }
 
-object PegOutNotProducedVerifierContract {
+object PegOutNotProducedVerifierContract extends Contract {
     given opts: Options = Options.release
 
     lazy val compiled: PlutusV3[Data => Unit] =
         PlutusV3.compile((scData: Data) => PegOutNotProducedVerifier.validate(scData))
 
-    /** Pinned (frozen-blueprint-backed) script; falls back to a fresh compile when not pinned. */
-    lazy val pinnedScript: scalus.cardano.ledger.Script.PlutusV3 =
-        binocular.blueprint.PinnedBlueprint.pinned(
-          binocular.blueprint.PinnedBlueprint.Titles.PegOutNotProduced,
-          binocular.blueprint.PinnedBlueprint.NoParams
-        )(compiled.script)
+    /** Blueprint-loaded script (param-free, loaded verbatim). */
+    lazy val pinnedScript: Script.PlutusV3 =
+        BinocularBlueprint.script("PegOutNotProducedVerifierContract")
+
+    lazy val blueprint: Blueprint =
+        BinocularBlueprint.paramFreeBlueprint(
+          title = "PegOutNotProducedVerifierContract",
+          description =
+              "legit_treasury_movement_and_peg_out_not_produced_verifier (config[14]) — " +
+                  "intentionally unsatisfiable until the refund path is built.",
+          compiled = compiled
+        )
 }
