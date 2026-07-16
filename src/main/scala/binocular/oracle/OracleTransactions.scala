@@ -34,7 +34,9 @@ object OracleTransactions {
     def buildDeployReferenceScript(
         provider: BlockchainProvider,
         sponsor: HdAccount,
-        script: Script.PlutusV3
+        script: Script.PlutusV3,
+        excludeInputs: Set[TransactionInput] = Set.empty,
+        timeout: Duration = 120.seconds
     )(using ExecutionContext): Future[(Transaction, TransactionOutput)] = {
         val network = provider.cardanoInfo.network
         val signer = sponsor.signerForUtxos
@@ -48,12 +50,14 @@ object OracleTransactions {
           scriptRef = Some(ScriptRef(script))
         )
 
-        TxBuilder(provider.cardanoInfo)
-            .output(output)
-            .complete(provider, sponsorAddress)
-            .map { completed =>
-                (completed.sign(signer).transaction, output)
-            }
+        Future {
+            val sponsorUtxos =
+                sponsorUtxosExcluding(provider, sponsorAddress, excludeInputs, timeout)
+            val completed = TxBuilder(provider.cardanoInfo)
+                .output(output)
+                .complete(sponsorUtxos, sponsorAddress)
+            (completed.sign(signer).transaction, output)
+        }
     }
 
     /** Deploy the oracle script to a UTxO as a reference script. */
@@ -61,14 +65,17 @@ object OracleTransactions {
         provider: BlockchainProvider,
         sponsor: HdAccount,
         script: Script.PlutusV3,
-        timeout: Duration = 120.seconds
+        timeout: Duration = 120.seconds,
+        excludeInputs: Set[TransactionInput] = Set.empty
     ): Either[String, (String, Int, TransactionOutput)] = {
         given ec: ExecutionContext = provider.executionContext
         Try {
             val (tx, output) = buildDeployReferenceScript(
               provider,
               sponsor,
-              script
+              script,
+              excludeInputs,
+              timeout
             ).await(timeout)
 
             // Find actual output index (TxBuilder may reorder outputs)
@@ -816,6 +823,24 @@ object OracleTransactions {
         }
     }
 
+    /** Sponsor UTxOs with the caller's exclusions dropped (reference-script UTxOs parked at the
+      * wallet: BlockfrostProvider drops their `scriptRef`, so fee estimation misses the Conway
+      * reference-script surcharge → FeeTooSmallUTxO; spending them would also destroy a deployed
+      * ref script). Same rationale as `buildOptimalUpdateTransaction`'s `excludeInputs`.
+      */
+    private def sponsorUtxosExcluding(
+        provider: BlockchainProvider,
+        sponsorAddress: Address,
+        excludeInputs: Set[TransactionInput],
+        timeout: Duration
+    )(using ExecutionContext): Utxos = {
+        provider
+            .findUtxos(sponsorAddress)
+            .await(timeout)
+            .valueOr(err => throw new RuntimeException(s"Failed to fetch sponsor UTxOs: $err"))
+            .filterNot { case (input, _) => excludeInputs.contains(input) }
+    }
+
     /** Create a dedicated one-shot UTxO by paying to sponsor address.
       *
       * Returns the tx hash, output index, and output of the created UTxO.
@@ -824,17 +849,20 @@ object OracleTransactions {
         provider: BlockchainProvider,
         sponsor: HdAccount,
         lovelaceAmount: Long = 10_000_000L,
-        timeout: Duration = 120.seconds
+        timeout: Duration = 120.seconds,
+        excludeInputs: Set[TransactionInput] = Set.empty
     ): Either[String, (String, Int, TransactionOutput)] = {
         given ec: ExecutionContext = provider.executionContext
         val signer = sponsor.signerForUtxos
         val sponsorAddress = sponsor.baseAddress(provider.cardanoInfo.network)
         Try {
+            val sponsorUtxos =
+                sponsorUtxosExcluding(provider, sponsorAddress, excludeInputs, timeout)
             val tx = TxBuilder(provider.cardanoInfo)
                 .payTo(address = sponsorAddress, value = Value.lovelace(lovelaceAmount))
-                .complete(provider, sponsorAddress)
-                .map(_.sign(signer).transaction)
-                .await(timeout)
+                .complete(sponsorUtxos, sponsorAddress)
+                .sign(signer)
+                .transaction
 
             submitTx(provider, tx, timeout).map((_, 0, tx.body.value.outputs.head.value))
         } match {

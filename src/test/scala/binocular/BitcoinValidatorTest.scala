@@ -235,8 +235,8 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         val contract = BitcoinContract.makeContract(testParams)
         info(s"Contract size: ${contract.script.script.size}")
 //        println(contract.program.showHighlighted)
-        // 8207 before the SetState action was added (+451 bytes for the owner-reset branch)
-        assert(contract.script.script.size == 8658)
+        // 8207 before SetState; 8658 with the owner-reset branch; 8754 with its timestamp bounds
+        assert(contract.script.script.size == 8754)
     }
 
     test("Block header throughput - max headers per transaction") {
@@ -1222,10 +1222,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         info(f"  Tx Fee:       $txFeeAda%15.6f ADA")
 
         assert(txSize <= maxTxSize, "Tx size exceeded")
-        // 943423 before SetState grew the (referenced) oracle script by 451 bytes
+        // 943423 before SetState; grows with the (referenced) oracle script size
         assert(
-          tx.body.value.fee == Coin(955695),
-          s"Tx fee ${tx.body.value.fee} != 955695 lovelace"
+          tx.body.value.fee == Coin(958103),
+          s"Tx fee ${tx.body.value.fee} != 958103 lovelace"
         )
     }
 
@@ -1960,6 +1960,19 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         )
         val result = testProgram.applyArg(ctx.toData).evaluateDebug
         assert(result.isFailure, "SetState must fail when the new datum is not a ChainState")
+    }
+
+    test("SetState fails on out-of-range timestamps (e.g. milliseconds instead of seconds)") {
+        // Without value bounds a ms-scaled datum would pass and permanently brick the oracle:
+        // staleness (Close/SetState) and median-time-past (Update) become unsatisfiable.
+        val ms = replacementState(setStateStaleTime * 1000)
+        val (ctx, _) = setStateDraft(
+          setStateStaleTime,
+          setStateLastBlockTs,
+          outputDatum = Some(ms.toData)
+        )
+        val result = testProgram.applyArg(ctx.toData).evaluateDebug
+        assert(result.isFailure, "SetState must reject timestamps beyond the futurity bound")
     }
 
     test("SetState fails on a structurally invalid replacement state (wrong timestamps arity)") {

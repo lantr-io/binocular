@@ -1,0 +1,28 @@
+{
+  "preamble": {
+    "title": "TmtxScript",
+    "description": "Always-succeeds salted minting policy marking TMTx state UTxOs (salt baked in).",
+    "version": "1.0.0",
+    "compiler": {
+      "name": "scalus",
+      "version": "0.18.2"
+    },
+    "plutusVersion": "v3",
+    "license": "Apache-2.0"
+  },
+  "validators": [
+    {
+      "title": "TmtxScript",
+      "description": "Always-succeeds salted minting policy marking TMTx state UTxOs (salt baked in).",
+      "redeemer": {
+        "title": "Data",
+        "description": "Any Plutus data",
+        "schema": {
+          
+        }
+      },
+      "compiledCode": "582b010100322499220120a7f3e82b1c49d056f7a3b9c124d8e05f6a2b7c9d3e4f0a1b2c3d4e5f6a7b8c900001",
+      "hash": "eafdc4d9733275d3e06cfe5fe54a13fff3ba5baa8d65636260537907"
+    }
+  ]
+}

@@ -1374,9 +1374,22 @@ object BitcoinValidator extends DataParameterizedValidator {
                   newState.ctx.timestamps.length == MedianTimeSpan,
                   "timestamps must have MedianTimeSpan entries"
                 )
+                // Timestamp VALUES must be plausible — positive and within Bitcoin's futurity
+                // bound of the tx's notion of "now". Without this, a mistaken owner datum (e.g.
+                // milliseconds instead of seconds) passes the arity check yet makes staleness
+                // (CloseOracle / SetState) and median-time-past (UpdateOracle) permanently
+                // unsatisfiable, bricking the oracle with no recovery. `forall` also forces
+                // every element of the list.
                 require(
-                  newState.ctx.prevDiffAdjTimestamp > BigInt(0),
-                  "prevDiffAdjTimestamp must be positive"
+                  newState.ctx.timestamps.forall(ts =>
+                      ts > BigInt(0) && ts <= intervalEndInSeconds + MaxFutureBlockTime
+                  ),
+                  "timestamps must be positive and within the futurity bound"
+                )
+                require(
+                  newState.ctx.prevDiffAdjTimestamp > BigInt(0)
+                      && newState.ctx.prevDiffAdjTimestamp <= intervalEndInSeconds + MaxFutureBlockTime,
+                  "prevDiffAdjTimestamp out of range"
                 )
                 // Forces the whole fork tree and keeps it within the datum-size envelope
                 require(

@@ -91,10 +91,10 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
         // Re-derive the 5 scripts the completion paths need (peg-in: peg_in, bridged_token,
         // completed_peg_ins; peg-out: peg_out, completed_peg_outs) — same constructor invocations
         // DeployBridgeCommand uses, so the hashes line up exactly. (bridged_token is shared.)
+        // Blueprint script() — must match DeployBridgeCommand and the watchtower exactly.
         val tmNftPolicy = ByteString.fromArray(
           TreasuryMovementContract
-              .contract(oraclePolicyId, tmControlPolicy, tmControlAsset)
-              .script
+              .script(oraclePolicyId, tmControlPolicy, tmControlAsset)
               .scriptHash
               .bytes
         )

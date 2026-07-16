@@ -28,8 +28,13 @@ class TmLivenessTest extends AnyFunSuite {
     private val txidA = "aa" * 32
     private val txidB = "bb" * 32
 
-    /** Rpc stub where only isTxOutUnspent matters; everything else is unimplemented. */
-    private class StubRpc(unspent: (String, Int, Boolean) => Future[Boolean]) extends BitcoinRpc {
+    /** Rpc stub: isTxOutUnspent per test; getRawTransaction succeeds for `knownTxids` and fails
+      * with bitcoind's -5 otherwise (funding tx not broadcast).
+      */
+    private class StubRpc(
+        unspent: (String, Int, Boolean) => Future[Boolean],
+        knownTxids: Set[String] = Set(txidA, txidB)
+    ) extends BitcoinRpc {
         override def isTxOutUnspent(
             txid: String,
             vout: Int,
@@ -40,7 +45,16 @@ class TmLivenessTest extends AnyFunSuite {
         def getBlockHeader(hash: String) = Future.failed(new UnsupportedOperationException)
         def getBlock(hash: String) = Future.failed(new UnsupportedOperationException)
         def getBlockchainInfo() = Future.failed(new UnsupportedOperationException)
-        def getRawTransaction(txid: String) = Future.failed(new UnsupportedOperationException)
+        def getRawTransaction(txid: String) =
+            if knownTxids.contains(txid) then
+                Future.successful(binocular.bitcoin.RawTransactionInfo(txid, txid, "00", None, 0))
+            else
+                Future.failed(
+                  new RuntimeException(
+                    "RPC error: No such mempool or blockchain transaction. " +
+                        "Use gettransaction for wallet transactions."
+                  )
+                )
         def sendRawTransaction(hexString: String) = Future.failed(new UnsupportedOperationException)
     }
 
@@ -94,6 +108,17 @@ class TmLivenessTest extends AnyFunSuite {
     test("firstDeadInput: RPC failure during the check -> None (unknown, retry)") {
         val rpc = new StubRpc((_, _, _) => Future.failed(new RuntimeException("node down")))
         assert(TmLiveness.firstDeadInput(rpc, Seq(outpoint(txidA, 0)), timeout).isEmpty)
+    }
+
+    test("firstDeadInput: input missing but funding tx unknown to node -> retry (chained TM)") {
+        val rpc = new StubRpc((_, _, _) => Future.successful(false), knownTxids = Set.empty)
+        assert(TmLiveness.firstDeadInput(rpc, Seq(outpoint(txidA, 0)), timeout).isEmpty)
+    }
+
+    test("parseOutpoint handles vout >= 0x80000000 (coinbase marker) without throwing") {
+        val (txid, vout) = TmLiveness.parseOutpoint(outpoint(txidA, 0xffffffff))
+        assert(txid == txidA)
+        assert(vout == -1) // unsigned 0xffffffff as Int bits
     }
 
     test("firstDeadInput: reports the first dead input among live ones") {

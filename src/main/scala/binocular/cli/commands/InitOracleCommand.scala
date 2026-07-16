@@ -120,7 +120,8 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
             OracleTransactions.createOneShotUtxo(
               provider,
               hdAccount,
-              timeout = timeout
+              timeout = timeout,
+              excludeInputs = CommandHelpers.bridgeRefOutpoints(config)
             ) match {
                 case Right(result) =>
                     Console.tx("Tx", s"${result._1}#${result._2}")
@@ -193,7 +194,8 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
               provider,
               hdAccount,
               script,
-              timeout
+              timeout,
+              excludeInputs = CommandHelpers.bridgeRefOutpoints(config)
             ) match {
                 case Right(result) =>
                     Console.tx("Tx", s"${result._1}#${result._2}")

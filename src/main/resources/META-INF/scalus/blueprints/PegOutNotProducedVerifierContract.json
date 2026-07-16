@@ -1,0 +1,28 @@
+{
+  "preamble": {
+    "title": "PegOutNotProducedVerifierContract",
+    "description": "legit_treasury_movement_and_peg_out_not_produced_verifier (config[14]) — intentionally unsatisfiable until the refund path is built.",
+    "version": "1.0.0",
+    "compiler": {
+      "name": "scalus",
+      "version": "0.18.2"
+    },
+    "plutusVersion": "v3",
+    "license": "Apache-2.0"
+  },
+  "validators": [
+    {
+      "title": "PegOutNotProducedVerifierContract",
+      "description": "legit_treasury_movement_and_peg_out_not_produced_verifier (config[14]) — intentionally unsatisfiable until the refund path is built.",
+      "redeemer": {
+        "title": "Data",
+        "description": "Any Plutus data",
+        "schema": {
+          
+        }
+      },
+      "compiledCode": "4b0101003226490101530001",
+      "hash": "094b9bad54c9dbc67855d0e2e6b1773b1d7dc5a932782418708af38f"
+    }
+  ]
+}

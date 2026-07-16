@@ -38,31 +38,48 @@ object TmLiveness {
     }
 
     /** Parse a 36-byte Bitcoin outpoint (32-byte txid in internal/LE order ++ 4-byte LE vout) into
-      * the human/RPC form (display/BE txid, vout).
+      * the human/RPC form (display/BE txid, vout). The vout is parsed unsigned: values ≥ 0x80000000
+      * (e.g. the coinbase marker 0xffffffff) are valid outpoint encodings and must not throw — a
+      * crafted TM datum would otherwise poison the whole confirm batch.
       */
     def parseOutpoint(op: ByteString): (String, Int) = {
         val hex = op.toHex // 72 hex chars
         val txid = hex.substring(0, 64).grouped(2).toList.reverse.mkString // LE -> display (BE)
-        val vout = Integer.parseInt(hex.substring(64, 72).grouped(2).toList.reverse.mkString, 16)
+        val vout =
+            Integer.parseUnsignedInt(hex.substring(64, 72).grouped(2).toList.reverse.mkString, 16)
         (txid, vout)
     }
 
     /** First input outpoint proving the TM can never be mined (see class doc), as a
       * `displaytxid:vout` string. None = every input still spendable or unverifiable → transient.
+      *
+      * An outpoint that is unspent in NEITHER gettxout view is only dead if its funding tx is
+      * actually known to the node: an input created by a parent tx that has not been broadcast yet
+      * (a chained TM whose parent the relay hasn't sent) is also absent from both views, but is
+      * merely early, not dead. Any classification error (including a parse failure on a malformed
+      * outpoint) counts as alive → retried next poll, never permanently skipped.
       */
     def firstDeadInput(
         rpc: BitcoinRpc,
         outpoints: Seq[ByteString],
         timeout: Duration
     )(using ExecutionContext): Option[String] = {
-        outpoints.view
-            .map(parseOutpoint)
-            .find { case (txid, vout) =>
-                try
+        outpoints.view.flatMap { op =>
+            try {
+                val (txid, vout) = parseOutpoint(op)
+                val dead =
                     !rpc.isTxOutUnspent(txid, vout, includeMempool = false).await(timeout)
-                        && !rpc.isTxOutUnspent(txid, vout, includeMempool = true).await(timeout)
-                catch case _: Throwable => false // can't verify → treat as alive, retry later
+                        && !rpc
+                            .isTxOutUnspent(txid, vout, includeMempool = true)
+                            .await(timeout)
+                        // Distinguish "spent" from "parent not broadcast yet": only a known
+                        // funding tx whose output is gone proves a double-spend. getRawTransaction
+                        // throws -5 for an unknown parent → transient (caught below).
+                        && rpc.getRawTransaction(txid).await(timeout) != null
+                if dead then Some(s"$txid:$vout") else None
+            } catch {
+                case _: Throwable => None // can't verify → treat as alive, retry later
             }
-            .map { case (txid, vout) => s"$txid:$vout" }
+        }.headOption
     }
 }

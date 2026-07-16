@@ -261,10 +261,12 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         // TM-NFT policy = the TreasuryMovementValidator script hash (oracle hash + the TM-control
         // NFT minted in this same deploy tx). peg_in.ak references the Confirmed TM UTxO by this NFT
         // (its 4th param), so the peg_in hash depends on it.
+        // Derived from the blueprint script() — the SAME path the watchtower/relay/confirm
+        // use. The SIR-applied contract() hashes differently (params applied pre-optimization),
+        // so using it here would split the system across two TM script hashes.
         val tmNftPolicy = ByteString.fromArray(
           TreasuryMovementContract
-              .contract(oraclePolicyId, tmControlPolicy, TmControlAssetName)
-              .script
+              .script(oraclePolicyId, tmControlPolicy, TmControlAssetName)
               .scriptHash
               .bytes
         )

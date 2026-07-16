@@ -23,11 +23,42 @@ addCommandAlias(
   ";scalafmtCheck;Test/scalafmtCheck;it/scalafmtCheck;it/Test/scalafmtCheck;example/scalafmtCheck"
 )
 
+// Copies freshly generated CIP-57 blueprints over the PINNED copies in src/main/resources.
+// Re-pinning is a deliberate, git-visible act: the diff shows exactly which compiledCode/hash
+// changed, and committing it is the decision that the next deployment uses those scripts.
+lazy val blueprintCopy = taskKey[Unit](
+  "Copy generated CIP-57 blueprints from resourceManaged over the pinned copies in src/main/resources"
+)
+
+// `blueprint / skip := true` suppresses generation everywhere (including direct invocation), so
+// re-pinning flips it off for one session, regenerates, and copies.
+addCommandAlias(
+  "blueprintPin",
+  ";set binocular / blueprint / skip := false; binocular / blueprint; binocular / blueprintCopy"
+)
+
 // Root project (binocular)
 lazy val binocular = (project in file("."))
     .enablePlugins(BuildInfoPlugin, ScalusBlueprintPlugin)
     .settings(
       name := "binocular",
+      // Blueprints are PINNED (src/main/resources/META-INF/scalus/blueprints, committed): the
+      // runtime always loads the pin, so validator edits never silently move a deployed script
+      // hash — development runs freshly compiled code only in tests. Regenerate deliberately
+      // with `sbt blueprintPin` when preparing a redeploy.
+      blueprint / skip := true,
+      blueprintCopy := {
+          val pinDir = (Compile / resourceDirectory).value / "META-INF" / "scalus" / "blueprints"
+          IO.createDirectory(pinDir)
+          val genDir = (Compile / resourceManaged).value / "META-INF" / "scalus" / "blueprints"
+          val files = Option(genDir.listFiles()).getOrElse(Array.empty[File])
+              .filter(_.getName.endsWith(".json"))
+          require(files.nonEmpty, s"no generated blueprints in $genDir — run the blueprint task first")
+          files.foreach(f => IO.copyFile(f, pinDir / f.getName))
+          streams.value.log.info(
+            s"Pinned ${files.length} blueprint(s) to $pinDir — review the git diff before committing"
+          )
+      },
       run / fork := true,
       run / connectInput := true,
       run / javaOptions += "--sun-misc-unsafe-memory-access=allow",
@@ -40,10 +71,14 @@ lazy val binocular = (project in file("."))
       // Assembly configuration
       assembly / assemblyMergeStrategy := {
           case PathList("META-INF", "MANIFEST.MF") => MergeStrategy.discard
-          // Generated CIP-57 blueprints — the runtime loads scripts from these; keep them
-          // ahead of the blanket META-INF discard below.
-          case PathList("META-INF", "scalus", xs @ _*) => MergeStrategy.first
-          case PathList("META-INF", xs @ _*)           => MergeStrategy.discard
+          // PINNED CIP-57 blueprints — the runtime loads scripts from these; keep them ahead of
+          // the blanket META-INF discard below. `deduplicate` (not `first`): with generation
+          // skipped there is exactly one copy; a second differing copy on the classpath means
+          // the pin is being shadowed and the build must fail loudly. The scalus jars' own
+          // `blueprint-modules` compiler manifests are build-time-only — discard.
+          case PathList("META-INF", "scalus", "blueprints", xs @ _*) =>
+              MergeStrategy.deduplicate
+          case PathList("META-INF", xs @ _*) => MergeStrategy.discard
           case PathList("module-info.class")       => MergeStrategy.discard
           case x if x.endsWith(".proto")           => MergeStrategy.first
           case x if x.contains("bouncycastle")     => MergeStrategy.first

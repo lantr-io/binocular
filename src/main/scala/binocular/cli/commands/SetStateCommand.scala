@@ -114,7 +114,10 @@ case class SetStateCommand(height: Long, dryRun: Boolean = false) extends Comman
                 Console.log(
                   s"Rebuilding confirmed-blocks MPF from $start..$height (canonical chain)..."
                 )
-                val root = buildCanonicalMpf(rpc, start, height, timeout).valueOr { err =>
+                // Dedicated timeout scaled to the range — the tx timeout (120s) would fail a
+                // mainnet-scale recovery of thousands of sequential getblockhash round-trips.
+                val mpfTimeout = (60 + (height - start + 1) / 5).seconds
+                val root = buildCanonicalMpf(rpc, start, height, mpfTimeout).valueOr { err =>
                     Console.error(err); break(1)
                 }
                 Console.logSuccess(
