@@ -30,7 +30,9 @@ import scala.util.chaining.scalaUtilChainingOps
   *     `MintRedeemer` pointing at the peg_out `CompletePegOut` withdrawal + that withdrawal present.
   *   - Withdrawals (0 ADA): `peg_out` → [[PegOutWithdrawRedeemer]] `CompletePegOut`; the
   *     produced-verifier ([[PegOutProducedVerifier]]) → the bare `List<Data>` redeemer it + peg_out.ak
-  *     both read.
+  *     both read; the fBTC mint checker (config[19]) → [[FbtcMintCheckerRedeemer]] pointing at the
+  *     peg_out withdrawal — `bridged_token` only requires the checker to run; the checker enforces
+  *     the burn rules.
   *   - Outputs: the updated completed-peg-outs UTxO (same value+address, new MPF root); change →
   *     sponsor (carrying the burned PegOut UTxO's freed MIN_ADA).
   *
@@ -41,12 +43,13 @@ import scala.util.chaining.scalaUtilChainingOps
   */
 object PegOutCompleteTx {
 
-    /** The four Plutus scripts that run in the completion tx. */
+    /** The five Plutus scripts that run in the completion tx. */
     final case class Scripts(
         pegOut: PlutusScript,
         completedPegOuts: PlutusScript,
         bridgedToken: PlutusScript,
-        producedVerifier: PlutusScript
+        producedVerifier: PlutusScript,
+        fbtcMintChecker: PlutusScript
     )
 
     /** The pre-existing UTxOs the tx spends (`pegOut`, `completedPegOuts`) / references (`config`,
@@ -145,12 +148,16 @@ object PegOutCompleteTx {
               pegOutWithdrawRedeemerIndex = rewardRedeemerIndex(tx, pegOutHash)
             ).toData
 
-        // bridged_token burn (negative mint) reads config + requires the peg_out CompletePegOut
-        // withdrawal at this index (bridged-token.ak's `minted_tokens_quantity < 0` branch).
+        // bridged_token is a pure delegator: it only requires the fBTC mint checker (config[19])
+        // withdrawal. The checker's own redeemer points at the peg_out CompletePegOut withdrawal
+        // (the checker's negative-mint branch).
         val bridgedTokenMintRedeemer: Transaction => Data = tx =>
-            BridgedTokenMintRedeemer(
+            BridgedTokenMintRedeemer(configRefInputIndex = configRefIndex(tx)).toData
+
+        val fbtcMintCheckerRedeemer: Transaction => Data = tx =>
+            FbtcMintCheckerRedeemer(
               configRefInputIndex = configRefIndex(tx),
-              wantedPegWithdrawRedeemerIndex = rewardRedeemerIndex(tx, pegOutHash)
+              pegWithdrawRedeemerIndex = rewardRedeemerIndex(tx, pegOutHash)
             ).toData
 
         // --- output: the updated completed-peg-outs UTxO (same value + address, new MPF root) ---
@@ -183,6 +190,11 @@ object PegOutCompleteTx {
         val producedVerifierWitness: TwoArg = TwoArg(
           scriptSource = PlutusScriptValue(scripts.producedVerifier),
           redeemer = verifierRedeemer
+        )
+        // The fBTC mint checker is likewise small — always inlined.
+        val checkerWithdrawWitness: TwoArg = TwoArg(
+          scriptSource = PlutusScriptValue(scripts.fbtcMintChecker),
+          redeemerBuilder = fbtcMintCheckerRedeemer
         )
 
         // `.references(...)` MUST precede any PlutusScriptAttached / `.mint(policyId, ...)` /
@@ -217,6 +229,11 @@ object PegOutCompleteTx {
         withBurn
             .withdrawRewards(stake(pegOutHash), Coin.zero, pegOutWithdrawWitness)
             .withdrawRewards(stake(producedVerifierHash), Coin.zero, producedVerifierWitness)
+            .withdrawRewards(
+              stake(scripts.fbtcMintChecker.scriptHash),
+              Coin.zero,
+              checkerWithdrawWitness
+            )
             // owner_auth = CardanoSignature(owner pkh); peg_out.ak checks the pkh is in the tx's
             // signatories (= required signers). The PegOut was locked with owner = sponsor pkh, so
             // require + sign with it. (If a peg-out used a different owner, only that key could

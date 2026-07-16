@@ -9,13 +9,14 @@ import scalus.uplc.builtin.Data.toData
 
 /** Tests for the F3 bridge-contract hash computation in [[BifrostContracts]].
   *
-  * The known-answer cases pin the exact policy IDs / asset name the live `deploy-bridge` run
-  * produced on the devnet (2026-05-21) — where `config.ak` and `completed-peg-ins-merkle-tree.ak`'s
-  * mint validators *accepted* the resulting NFTs on-chain. So these assertions lock in the whole
-  * CIP-57 parameter-application encoding (`Data.B` for byte params, `Data.I` for `index0`, the
-  * one-shot `OutputReference` as `Data`, and param order) against an on-chain-validated reference.
-  * They use a trimmed `plutus.json` (only the four `.mint` validators' `compiledCode`) checked in
-  * as a test resource, so the test runs without the sibling ft-bifrost-bridge checkout.
+  * The known-answer cases are REGRESSION LOCKS over the CIP-57 parameter-application encoding
+  * (`Data.B` for byte params, `Data.I` for `index0`, the one-shot `OutputReference` as `Data`, and
+  * param order). They were recomputed after the delegated-fBTC-mint rewrite (ConfigDatum field 19,
+  * `bridged_token` renamed + reduced to a delegator, new `fbtc_mint_checker`) changed every
+  * compiled hash, and are NOT yet on-chain-validated: the next `deploy-bridge` run re-validates
+  * them (the 2026-05-21 devnet deploy validated the pre-rewrite encoding). They use a trimmed
+  * `plutus.json` (only the referenced validators' `compiledCode`) checked in as a test resource, so
+  * the test runs without the sibling ft-bifrost-bridge checkout.
   */
 class BifrostContractsTest extends AnyFunSuite {
 
@@ -54,13 +55,20 @@ class BifrostContractsTest extends AnyFunSuite {
 
     test("config NFT policy matches the deployed value") {
         assert(
-          hex(configContract.policyId) == "82cbd7e4d37868ac0f59961dadc789e755dfe2dd0135c63908282186"
+          hex(configContract.policyId) == "75886148b65c25ace525571f6d93f908387475c33a14d69cff7b970b"
         )
     }
 
     test("bridged_token (fBTC) policy matches the deployed value") {
         val bt = BridgedTokenContract(blueprint, configPolicy, configAssetName)
-        assert(hex(bt.policyId) == "2fb4053064cd915983b4573967ae70c5c76c674d31107092d5122712")
+        assert(hex(bt.policyId) == "61ac3cdfc9b9069655fc7e8f8a09698739e55bc3ceed59bd29f22717")
+    }
+
+    test("fbtc_mint_checker hash is stable for the 2-param encoding") {
+        val checker = FbtcMintCheckerContract(blueprint, configPolicy, configAssetName)
+        assert(
+          hex(checker.scriptHash) == "62562a7b9916c6d248e17f274831c8f8345ebfb507481dfa50bf1cd2"
+        )
     }
 
     test("completed-peg-ins policy + asset name match the B1 rebuild") {
@@ -69,7 +77,7 @@ class BifrostContractsTest extends AnyFunSuite {
         // thus the policy hash) moved from 64b45a49…. The asset name = sha2_256(serialiseData(ref))
         // is independent of compiledCode and is unchanged.
         val cpi = CompletedPegInsContract(blueprint, configPolicy, configAssetName, cpiRef)
-        assert(hex(cpi.policyId) == "017fa184276b60fa63517fc59e5c993e578b0c4b2d36d9dcabe12df5")
+        assert(hex(cpi.policyId) == "7d297fa75863fb0e6f0f8ecc68eba83c3913a5e836943d230bb7aa9d")
         assert(
           CompletedPegInsContract.assetName(cpiRef).toHex
               == "bc7b1b2eec39061b7e2561b81163c6b037e59e27930db71a704122d952ea772d"
@@ -88,7 +96,7 @@ class BifrostContractsTest extends AnyFunSuite {
         // the old policy are orphaned and must be re-minted under this one.
         val pegIn =
             PegInContract(blueprint, oraclePolicy, configPolicy, configAssetName, tmNftPolicy)
-        assert(hex(pegIn.policyId) == "274bc78ba9339522165868f09bbb1caad0a9a3431d71249b0ad03cf3")
+        assert(hex(pegIn.policyId) == "fc61f1904c96f24e33cd637c724921a7c5de18c652ac787187f49167")
     }
 
     // --- determinism + parameter-sensitivity ---

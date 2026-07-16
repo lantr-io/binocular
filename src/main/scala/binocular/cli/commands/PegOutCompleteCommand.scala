@@ -106,6 +106,7 @@ case class PegOutCompleteCommand(
 
         val pegOut = PegOutContract(blueprint, oraclePolicyBS, configNftPolicy, configNftAsset)
         val bridgedToken = BridgedTokenContract(blueprint, configNftPolicy, configNftAsset)
+        val fbtcMintChecker = FbtcMintCheckerContract(blueprint, configNftPolicy, configNftAsset)
         val cpoContract =
             CompletedPegOutsContract(blueprint, configNftPolicy, configNftAsset, cpoOneShot)
         val cpoPolicy = cpoContract.policyId
@@ -339,7 +340,8 @@ case class PegOutCompleteCommand(
                         pegOut.script,
                         cpoContract.script,
                         bridgedToken.script,
-                        producedVerifier
+                        producedVerifier,
+                        fbtcMintChecker.script
                       ),
                       scriptRefs = scriptRefs,
                       inputs = PegOutCompleteTx.Inputs(pegOutUtxo, cpoUtxo, configUtxo, oracleUtxo),

@@ -37,8 +37,9 @@ import cats.syntax.either.*
   * Peg-out wiring (this iteration): config indices 8/9 (completed-peg-outs MPF), 11 (peg_out
   * withdraw), 13 (real BTC-tx-parsing produced verifier, [[PegOutProducedVerifier]]) and 14
   * (not-produced placeholder, [[PegOutNotProducedVerifier]] — `Cancel`/refund is out of scope) are
-  * now REAL. Because `config.ak` is immutable (`spend = False`), these must be set at mint time;
-  * minting a new config NFT changes the fBTC policy, so re-mint fBTC under this config. Treasury /
+  * now REAL, as are index 18 (`update_auth` — the sponsor's payment key, which may Update/Retire
+  * the config per config.ak's spend handler) and index 19 (the swappable fBTC mint checker).
+  * Minting a new config NFT changes the fBTC policy, so re-mint fBTC under this config. Treasury /
   * source-chain / block-header entries remain dummies (no path reads them yet).
   */
 case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: Boolean = false)
@@ -253,6 +254,11 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         val bridgedToken = BridgedTokenContract(blueprint, configPolicy, ConfigAssetName)
         val bridgedTokenPolicy = ByteString.fromArray(bridgedToken.policyId.bytes)
 
+        // The swappable fBTC mint checker (ConfigDatum index 19). bridged_token only requires a
+        // withdrawal from this script; all mint/burn rules live here and rotate via config Update.
+        val fbtcMintChecker = FbtcMintCheckerContract(blueprint, configPolicy, ConfigAssetName)
+        val fbtcMintCheckerHash = ByteString.fromArray(fbtcMintChecker.scriptHash.bytes)
+
         val cpiContract =
             CompletedPegInsContract(blueprint, configPolicy, ConfigAssetName, cpiRef)
         val cpiPolicy = ByteString.fromArray(cpiContract.policyId.bytes)
@@ -313,7 +319,15 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
           legitTmAndPegOutNotProducedVerifierScriptHash = pegOutNotProducedVerifierHash,
           treasuryNftPolicyId = Dummy28,
           treasuryNftAssetName = ByteString.empty,
-          minStake = BigInt(0)
+          minStake = BigInt(0),
+          // Demo/testnet governance: the sponsor's payment key may Update/Retire the config
+          // (progressive decentralization rotates this later via a config update).
+          updateAuth = scalus.cardano.onchain.plutus.prelude.Option.Some(
+            AuthorizationMethod.CardanoSignature(
+              ByteString.fromArray(setup.hdAccount.paymentKeyHash.bytes)
+            )
+          ),
+          bridgedTokenMintCheckerScriptHash = fbtcMintCheckerHash
         )
 
         Console.info("Oracle policy", oraclePolicyId.toHex)
@@ -324,6 +338,7 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         Console.info("config NFT asset", ConfigAssetName.toHex)
         Console.info("bridged_token (fBTC) policy", bridgedTokenPolicy.toHex)
         Console.info("bridged_token (fBTC) asset", BridgedTokenAssetName.toHex)
+        Console.info("fbtc mint checker hash", fbtcMintCheckerHash.toHex)
         Console.info("completed-peg-ins policy", cpiPolicy.toHex)
         Console.info("completed-peg-ins asset", cpiAssetName.toHex)
         Console.info("cpo one-shot", s"${cpoRef.id.hash.toHex}#${cpoRef.idx}")

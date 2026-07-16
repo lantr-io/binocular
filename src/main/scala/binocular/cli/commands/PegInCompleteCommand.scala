@@ -144,6 +144,7 @@ case class PegInCompleteCommand(
         val cpiPolicy = cpiContract.policyId
         val cpiAsset = AssetName(CompletedPegInsContract.assetName(cpiRef))
         val bridgedToken = BridgedTokenContract(blueprint, configNftPolicy, configNftAsset)
+        val fbtcMintChecker = FbtcMintCheckerContract(blueprint, configNftPolicy, configNftAsset)
 
         Console.info("Peg-in policy", pegIn.policyId.toHex)
         Console.info("fBTC policy", bridgedToken.policyId.toHex)
@@ -349,7 +350,8 @@ case class PegInCompleteCommand(
                       scripts = PegInCompleteTx.Scripts(
                         pegIn.script,
                         cpiContract.script,
-                        bridgedToken.script
+                        bridgedToken.script,
+                        fbtcMintChecker.script
                       ),
                       scriptRefs = scriptRefs,
                       inputs =

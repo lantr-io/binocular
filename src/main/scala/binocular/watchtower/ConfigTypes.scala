@@ -15,7 +15,9 @@ import scalus.cardano.onchain.plutus.v3.TxOutRef
 // the peg-in CLOSE verifier hash: peg_in.ak's Cancel branch delegates the F4/F5 close checks to a
 // withdrawal from this script. It's a runtime config field, so the close verifier can be deployed +
 // wired via a config update with no peg_in recompile / PIR re-mint. Dummy (Cancel disabled) until
-// the F1–F6 failure-mode milestone ships. The rest are dummies for the peg-in-only demo.
+// the F1–F6 failure-mode milestone ships. Index 18 is the config Update/Retire authority
+// (Aiken `Option<AuthorizationMethod>`); index 19 the fBTC mint-checker withdraw script hash.
+// The rest are dummies for the peg-in-only demo.
 case class ConfigDatum(
     bridgedTokenPolicyId: ByteString,
     bridgedTokenAssetName: ByteString,
@@ -34,7 +36,13 @@ case class ConfigDatum(
     legitTmAndPegOutNotProducedVerifierScriptHash: ByteString,
     treasuryNftPolicyId: ByteString,
     treasuryNftAssetName: ByteString,
-    minStake: BigInt
+    minStake: BigInt,
+    // Index 18: the authority allowed to Update/Retire the config UTxO
+    // (config.ak spend handler). None = permanently frozen.
+    updateAuth: scalus.cardano.onchain.plutus.prelude.Option[AuthorizationMethod],
+    // Index 19: the withdraw script carrying ALL fBTC mint/burn rules; the
+    // immutable bridged_token policy only requires it to run in the tx.
+    bridgedTokenMintCheckerScriptHash: ByteString
 ) derives FromData,
       ToData
 
@@ -64,13 +72,21 @@ case class CompletedPegInsSpendRedeemer(
 ) derives FromData,
       ToData
 
-// Mint redeemer for `bridged-token.ak::MintRedeemer` (the fBTC policy). For a positive mint it reads
-// config[1] = bridged_token_asset_name and config[10] = peg_in_withdraw_script_hash, then requires
-// the peg_in withdraw redeemer at `wantedPegWithdrawRedeemerIndex` to be a CompletePegIn withdraw of
-// that script. `configRefInputIndex` + `wantedPegWithdrawRedeemerIndex` are computed from the
-// assembled tx.
+// Mint redeemer for `bridged-token.ak::MintRedeemer` (the fBTC policy). The policy is a pure
+// delegator: it reads config[19] = bridged_token_mint_checker_script_hash from the config ref
+// input at `configRefInputIndex` and requires that withdraw script to run in the tx. All actual
+// mint/burn rules live in the checker (FbtcMintCheckerRedeemer below).
 case class BridgedTokenMintRedeemer(
+    configRefInputIndex: BigInt
+) derives FromData,
+      ToData
+
+// Withdraw redeemer for `fbtc-mint-checker.ak::CheckerRedeemer`. V1 checker rules: exactly one
+// asset entry under the fBTC policy with the configured name; mint (>0) requires the peg_in
+// withdraw redeemer at `pegWithdrawRedeemerIndex` to be a CompletePegIn, burn (<0) a peg_out
+// CompletePegOut. Both indices are computed from the assembled tx.
+case class FbtcMintCheckerRedeemer(
     configRefInputIndex: BigInt,
-    wantedPegWithdrawRedeemerIndex: BigInt
+    pegWithdrawRedeemerIndex: BigInt
 ) derives FromData,
       ToData

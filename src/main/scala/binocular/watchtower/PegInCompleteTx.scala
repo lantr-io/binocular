@@ -31,24 +31,29 @@ import scala.concurrent.{ExecutionContext, Future}
   *   - References: the config-NFT UTxO (`ConfigDatum`) and the Confirmed TM UTxO (TM NFT).
   *   - Mint: `+peg_in_amount` fBTC (`bridged_token` policy). The PegInRequest NFT is NOT burned —
   *     `CompletePegIn` does not check it (only `Cancel` burns); it rides out in the change.
-  *   - Withdrawal (0 ADA): `peg_in` → [[PegInWithdrawRedeemer]] `CompletePegIn`.
+  *   - Withdrawals (0 ADA): `peg_in` → [[PegInWithdrawRedeemer]] `CompletePegIn`; the fBTC mint
+  *     checker (config[19]) → [[FbtcMintCheckerRedeemer]] pointing at the peg_in withdrawal — the
+  *     `bridged_token` policy only requires the checker to run; the checker enforces the mint
+  *     rules.
   *   - Outputs: fBTC → recipient; the updated completed-peg-ins UTxO (same value+address, new MPF
   *     root); change → sponsor (carrying the PegInRequest NFT).
   *
   * ==Index redeemers==
   * Several redeemer fields are indices into the *assembled* tx and are filled by delayed
   * `Transaction => Data` builders. The on-chain `self.redeemers` list is ordered by Scalus's
-  * `(RedeemerTag ordinal, index)` — all Spend(0), then Mint(1), then Reward(3) — so the lone peg_in
-  * reward redeemer's position is `#scriptSpends + #mintPolicies + 0`. Inputs/reference-inputs are
-  * ordered by `(txid, index)`; outputs keep insertion order.
+  * `(RedeemerTag ordinal, index)` — all Spend(0), then Mint(1), then Reward(3) — so a reward
+  * redeemer's flat position is `#scriptSpends + #mintPolicies + (its position in the sorted
+  * withdrawals)`. Inputs/reference-inputs are ordered by `(txid, index)`; outputs keep insertion
+  * order.
   */
 object PegInCompleteTx {
 
-    /** The three Plutus scripts that run in the completion tx. */
+    /** The four Plutus scripts that run in the completion tx. */
     final case class Scripts(
         pegIn: PlutusScript,
         completedPegIns: PlutusScript,
-        bridgedToken: PlutusScript
+        bridgedToken: PlutusScript,
+        fbtcMintChecker: PlutusScript
     )
 
     /** The four pre-existing UTxOs the tx spends/references. `confirmedTm` is the Confirmed TM UTxO
@@ -114,19 +119,25 @@ object PegInCompleteTx {
               outputs(tx).indexWhere(_.value.value.hasAsset(bridgedTokenPolicy, bridgedTokenAsset))
             )
 
-        // The lone peg_in reward redeemer's position in the on-chain `self.redeemers` list.
-        // `MultiAsset.assets: SortedMap[PolicyId, SortedMap[AssetName, Long]]` keys at the outer
-        // level by policy, so `.assets.size` counts distinct policies — matching the on-chain
-        // Mint-tag flat-list cardinality (one redeemer per policy id, irrespective of how many
-        // asset names that policy mints in the same tx).
-        def pegInWithdrawRedeemerIndex(tx: Transaction): BigInt = {
-            val scriptSpends =
-                Seq(inputs.pir.input, inputs.completedPegIns.input).count(inputsSorted(tx).contains)
-            val mintPolicies = tx.body.value.mint.map(_.assets.size).getOrElse(0)
-            BigInt(
-              scriptSpends + mintPolicies
-            ) // + withdrawalIndex 0 (peg_in is the only withdrawal)
-        }
+        // Reward redeemer flat index = #scriptSpends + #mintPolicies + position in the sorted
+        // withdrawals (there are now TWO 0-ADA withdrawals — `peg_in` and the fBTC mint checker —
+        // ordered by reward account). `MultiAsset.assets: SortedMap[PolicyId, SortedMap[AssetName,
+        // Long]]` keys at the outer level by policy, so `.assets.size` counts distinct policies —
+        // matching the on-chain Mint-tag flat-list cardinality (one redeemer per policy id,
+        // irrespective of how many asset names that policy mints in the same tx).
+        def stake(h: ScriptHash): StakeAddress = StakeAddress(network, StakePayload.Script(h))
+        def scriptSpends(tx: Transaction): Int =
+            Seq(inputs.pir.input, inputs.completedPegIns.input).count(inputsSorted(tx).contains)
+        def mintPolicies(tx: Transaction): Int =
+            tx.body.value.mint.map(_.assets.size).getOrElse(0)
+        def withdrawalPos(tx: Transaction, h: ScriptHash): Int =
+            tx.body.value.withdrawals
+                .map(_.withdrawals.keys.toIndexedSeq.indexWhere(_.address == stake(h)))
+                .getOrElse(-1)
+        def rewardRedeemerIndex(tx: Transaction, h: ScriptHash): BigInt =
+            BigInt(scriptSpends(tx) + mintPolicies(tx) + withdrawalPos(tx, h))
+        def pegInWithdrawRedeemerIndex(tx: Transaction): BigInt =
+            rewardRedeemerIndex(tx, scripts.pegIn.scriptHash)
 
         // --- redeemers ---
         val pegInWithdrawRedeemer: Transaction => Data = tx => {
@@ -150,9 +161,13 @@ object PegInCompleteTx {
             ).toData
 
         val bridgedTokenMintRedeemer: Transaction => Data = tx =>
-            BridgedTokenMintRedeemer(
+            BridgedTokenMintRedeemer(configRefInputIndex = configRefIndex(tx)).toData
+
+        // The checker validates the fBTC mint by pointing at the peg_in CompletePegIn withdrawal.
+        val fbtcMintCheckerRedeemer: Transaction => Data = tx =>
+            FbtcMintCheckerRedeemer(
               configRefInputIndex = configRefIndex(tx),
-              wantedPegWithdrawRedeemerIndex = pegInWithdrawRedeemerIndex(tx)
+              pegWithdrawRedeemerIndex = pegInWithdrawRedeemerIndex(tx)
             ).toData
 
         // --- values / outputs ---
@@ -166,7 +181,6 @@ object PegInCompleteTx {
         // (MPF root) changes — peg-in.ak checks without_lovelace value + address are unchanged.
         val newCpiDatum = CompletedPegInsMerkleTreeDatum(completedPegInsNewRoot)
 
-        def stake(h: ScriptHash): StakeAddress = StakeAddress(network, StakePayload.Script(h))
         import TwoArgumentPlutusScriptWitness.attached
         import scalus.cardano.txbuilder.{ScriptSource, ThreeArgumentPlutusScriptWitness, TwoArgumentPlutusScriptWitness as TwoArg}
 
@@ -196,6 +210,12 @@ object PegInCompleteTx {
         val withdrawWitness: TwoArg = TwoArg(
           scriptSource = spendSource(scriptRefs.pegIn.isDefined, scripts.pegIn),
           redeemerBuilder = pegInWithdrawRedeemer
+        )
+        // The fBTC mint checker is small — always inlined (no CIP-33 ref), like the peg-out
+        // produced verifier.
+        val checkerWithdrawWitness: TwoArg = TwoArg(
+          scriptSource = ScriptSource.PlutusScriptValue(scripts.fbtcMintChecker),
+          redeemerBuilder = fbtcMintCheckerRedeemer
         )
 
         // Mint: the policyId-based overload uses PlutusScriptAttached; the script-based overload
@@ -234,6 +254,11 @@ object PegInCompleteTx {
 
         withMint
             .withdrawRewards(stake(scripts.pegIn.scriptHash), Coin.zero, withdrawWitness)
+            .withdrawRewards(
+              stake(scripts.fbtcMintChecker.scriptHash),
+              Coin.zero,
+              checkerWithdrawWitness
+            )
             .payTo(recipientAddress, fbtcValue)
             .payTo(
               inputs.completedPegIns.output.address,

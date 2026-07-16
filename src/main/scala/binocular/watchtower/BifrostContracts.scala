@@ -104,16 +104,16 @@ object ConfigContract {
 }
 
 /** The `bridged_token` (fBTC) mint policy: params `(configNFTPolicyId, configNFTAssetName)`. The
-  * script hash is the fBTC policyId = ConfigDatum index 0. (The validator is named
-  * `completed_peg_ins_merkle_tree_validator` inside the `bridged_token` Aiken module — a source
-  * quirk; it is the fBTC policy.)
+  * script hash is the fBTC policyId = ConfigDatum index 0. A pure delegator: it only requires the
+  * mint-checker withdraw script (ConfigDatum index 19, [[FbtcMintCheckerContract]]) to run in the
+  * tx; all mint/burn rules live in the checker.
   */
 final case class BridgedTokenContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash
 }
 
 object BridgedTokenContract {
-    val ValidatorTitle = "bitcoin/bridged_token.completed_peg_ins_merkle_tree_validator.mint"
+    val ValidatorTitle = "bitcoin/bridged_token.bridged_token.mint"
 
     def apply(
         blueprint: BifrostBlueprint,
@@ -125,6 +125,31 @@ object BridgedTokenContract {
             .$(Data.B(configNftPolicyId))
             .$(Data.B(configNftAssetName))
         BridgedTokenContract(Script.PlutusV3(applied.cborByteString))
+    }
+}
+
+/** The `fbtc_mint_checker` withdraw validator: params `(configNFTPolicyId, configNFTAssetName)`.
+  * Its script hash is ConfigDatum index 19 — the swappable script carrying all fBTC mint/burn
+  * rules; the `bridged_token` policy only requires a withdrawal from it. Small enough to inline in
+  * the witness set (no CIP-33 ref needed), like the peg-out produced verifier.
+  */
+final case class FbtcMintCheckerContract(script: Script.PlutusV3) {
+    def scriptHash: ScriptHash = script.scriptHash
+}
+
+object FbtcMintCheckerContract {
+    val ValidatorTitle = "bitcoin/fbtc_mint_checker.fbtc_mint_checker.withdraw"
+
+    def apply(
+        blueprint: BifrostBlueprint,
+        configNftPolicyId: ByteString,
+        configNftAssetName: ByteString
+    ): FbtcMintCheckerContract = {
+        val applied = Program
+            .fromCborHex(blueprint.compiledCode(ValidatorTitle))
+            .$(Data.B(configNftPolicyId))
+            .$(Data.B(configNftAssetName))
+        FbtcMintCheckerContract(Script.PlutusV3(applied.cborByteString))
     }
 }
 
