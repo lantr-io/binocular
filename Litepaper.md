@@ -12,7 +12,7 @@ NFT) without registration or bonding. The Cardano smart contract validates all b
 consensus rules (proof-of-work, difficulty, timestamps) and automatically selects the canonical
 chain. Blocks with 100+ confirmations and 200+ minutes on-chain aging are promoted to confirmed
 state, stored via Merkle Patricia Forestry (MPF), enabling transaction inclusion proofs. Security
-relies on a 1-honest-party assumption and Bitcoin's proof-of-work, with attack costs exceeding $46
+relies on a 1-honest-party assumption and Bitcoin's proof-of-work, with attack costs exceeding $30
 million.
 
 ## Introduction
@@ -173,31 +173,32 @@ The promoted block's hash is inserted into the confirmed MPF trie. During promot
 To attack the Oracle and confirm invalid Bitcoin blocks, an adversary must mine 100+ Bitcoin blocks.
 This is economically infeasible:
 
-**Cost Breakdown (2026 estimates):**
+**Cost Breakdown (July 2026 estimates):**
 
-- Bitcoin network hashrate: ~600 EH/s
+- Bitcoin network hashrate: ~900 EH/s
 - Mining 100 blocks requires >50% hashrate control
 - Time: ~16.7 hours (1000 minutes)
 
 **Direct Costs:**
 
-- **Energy**: 300 million kWh × $0.05/kWh = **$15 million**
+- **Energy**: 900 EH/s at ~13 J/TH (current-generation ASICs) ≈ 11.7 GW;
+  ~195 million kWh × $0.05/kWh = **$10 million**
 - **Opportunity cost**: Lost block rewards from honest
-  mining = **$31 million** (100 blocks × 3.125 BTC × $100k)
-- **Total: $46 million minimum**
+  mining = **$20 million** (100 blocks × 3.125 BTC × ~$65k)
+- **Total: $30 million minimum**
 
 **Alternative (Hardware Purchase):**
 
-- Required hashrate: 600 EH/s = 600 million TH/s
-- ASIC cost: $30/TH
-- **Hardware cost: $18 billion** (plus energy)
+- Required hashrate: 900 EH/s = 900 million TH/s
+- ASIC cost: ~$20/TH (current-generation miners)
+- **Hardware cost: ~$18 billion** (plus energy)
 
 **Realistic Attack Rewards:**
 
 - Oracle manipulation for DApp exploit: < $10M
 - Attack destroys Bitcoin value, making reward worthless
 
-**Conclusion**: Attack cost ($46M - $18B) far exceeds any realistic reward (< $10M).
+**Conclusion**: Attack cost ($30M - $18B) far exceeds any realistic reward (< $10M).
 
 ### Challenge Period Defense
 
@@ -279,7 +280,7 @@ observer software. Applications depending on the Oracle have natural incentives 
 
 - **Safety**: Confirmed state never contains invalid Bitcoin blocks (enforced by validator)
 - **Liveness**: Oracle progresses under 1-honest-party assumption (~17 hour latency)
-- **Economic Security**: Attack costs $46M+ far exceed realistic rewards
+- **Economic Security**: Attack costs $30M+ far exceed realistic rewards
 - **Challenge Defense**: 200-minute aging prevents pre-computed attacks
 - **Validity Interval**: ≤10 minute constraint ensures trustworthy block aging
 
@@ -326,7 +327,7 @@ automatic best-chain selection, block promotion, and garbage collection.
 **Key achievements:**
 
 - **Permissionless**: Anyone can submit blocks without registration or bonding
-- **Secure**: $46M+ attack costs far exceed realistic rewards
+- **Secure**: $30M+ attack costs far exceed realistic rewards
 - **Validated**: All Bitcoin consensus rules enforced on-chain (PoW, difficulty, timestamps)
 - **Minimal Trust**: Requires only 1-honest-party assumption with ~17 hour latency
 - **Efficient**: 3-field BlockSummary and binary ForkTree maximize fork tree capacity
