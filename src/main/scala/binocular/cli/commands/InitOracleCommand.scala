@@ -17,7 +17,11 @@ import scalus.utils.await
 import cats.syntax.either.*
 
 /** Initialize new oracle from Bitcoin block */
-case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) extends Command {
+case class InitOracleCommand(
+    startBlock: Option[Long],
+    confirmedUntil: Option[Long],
+    dryRun: Boolean = false
+) extends Command {
 
     override def execute(config: BinocularConfig): Int = boundary {
         Console.header("Binocular Oracle Init")
@@ -44,6 +48,7 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
             Console.error("Use --start-block <HEIGHT> or configure ORACLE_START_HEIGHT")
             break(1)
         }
+        val confirmedTip = confirmedUntil.getOrElse(blockHeight)
 
         val walletAddr = sponsorAddress.toBech32.getOrElse("?")
         Console.info("Network", s"${config.bitcoinNode.network} → ${config.cardano.network}")
@@ -70,12 +75,27 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
         )
         println()
 
+        InitOracleCommand.validateConfirmedRange(
+          startHeight = blockHeight,
+          confirmedTip = confirmedTip,
+          tip = info.blocks.toLong,
+          maturationConfirmations = oracleConf.maturationConfirmations.toLong
+        ) match {
+            case Left(err) =>
+                Console.error(err)
+                break(1)
+            case Right(maybeWarn) =>
+                maybeWarn.foreach(Console.warn)
+        }
+
         // Step 2
         Console.step(2, "Fetching initial chain state")
         val t2 = System.nanoTime()
         val initialState =
             try {
-                BitcoinChainState.getInitialChainState(rpc, blockHeight.toInt).await(30.seconds)
+                BitcoinChainState
+                    .getInitialChainState(rpc, blockHeight.toInt, confirmedTip.toInt)
+                    .await(30.seconds)
             } catch {
                 case e: Exception =>
                     Console.error(s"Fetching Bitcoin block: ${e.getMessage}")
@@ -107,8 +127,11 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
         if dryRun then {
             println()
             Console.success("Dry-run complete. Transaction would initialize oracle with:")
+            Console.info("Start Height", f"$blockHeight%,d")
+            Console.info("Confirmed Tip", f"$confirmedTip%,d")
             Console.info("Height", initialState.ctx.height)
             Console.info("Hash", initialState.ctx.lastBlockHash.toHex)
+            Console.info("Confirmed Root", initialState.confirmedBlocksRoot.toHex)
             break(0)
         }
 
@@ -263,4 +286,34 @@ case class InitOracleCommand(startBlock: Option[Long], dryRun: Boolean = false) 
         Console.separator()
         0
     }
+}
+
+object InitOracleCommand {
+
+    /** Validate the seeded confirmed range against the node tip.
+      *
+      *   - `Left(err)` – fatal, abort init.
+      *   - `Right(Some(warn))` – proceed, but surface a reorg-depth warning.
+      *   - `Right(None)` – clean.
+      */
+    def validateConfirmedRange(
+        startHeight: Long,
+        confirmedTip: Long,
+        tip: Long,
+        maturationConfirmations: Long
+    ): Either[String, Option[String]] =
+        if startHeight > confirmedTip then
+            Left(s"--confirmed-until ($confirmedTip) must be >= --start-block ($startHeight)")
+        else if confirmedTip > tip then
+            Left(s"--confirmed-until ($confirmedTip) is beyond the node tip ($tip)")
+        else if confirmedTip > tip - maturationConfirmations then
+            Right(
+              Some(
+                s"confirmed-until ($confirmedTip) is shallower than the maturation depth " +
+                    s"($maturationConfirmations) below tip ($tip). A reorg could orphan these " +
+                    s"seeded blocks and re-poison the append-only confirmed root – the exact " +
+                    s"failure this seeds to recover from. Consider a deeper --confirmed-until."
+              )
+            )
+        else Right(None)
 }

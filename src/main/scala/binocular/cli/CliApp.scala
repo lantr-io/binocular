@@ -17,7 +17,7 @@ object CliApp {
         case Info
         case ListOracles(limit: Int)
         case VerifyOracle
-        case Init(startBlock: Option[Long], dryRun: Boolean)
+        case Init(startBlock: Option[Long], confirmedUntil: Option[Long], dryRun: Boolean)
         case SetState(height: Long, dryRun: Boolean)
         case UpdateOracle(fromBlock: Option[Long], toBlock: Option[Long])
         case Run(dryRun: Boolean)
@@ -73,6 +73,13 @@ object CliApp {
 
         val startBlockOpt: Opts[Option[Long]] = Opts
             .option[Long]("start-block", help = "Bitcoin block height to start from", short = "s")
+            .orNone
+
+        val confirmedUntilOpt: Opts[Option[Long]] = Opts
+            .option[Long](
+              "confirmed-until",
+              help = "Seed confirmed blocks up to this height (default: single block at start)"
+            )
             .orNone
 
         val dryRunFlag: Opts[Boolean] = Opts
@@ -136,7 +143,7 @@ object CliApp {
         }
 
         val initCommand = Opts.subcommand("init", "Initialize new oracle") {
-            (startBlockOpt, dryRunFlag).mapN(Cmd.Init.apply)
+            (startBlockOpt, confirmedUntilOpt, dryRunFlag).mapN(Cmd.Init.apply)
         }
 
         val setStateCommand = Opts.subcommand(
@@ -446,8 +453,8 @@ object CliApp {
                             ListOraclesCommand(limit)
                         case Cmd.VerifyOracle =>
                             VerifyOracleCommand()
-                        case Cmd.Init(startBlock, dryRun) =>
-                            InitOracleCommand(startBlock, dryRun)
+                        case Cmd.Init(startBlock, confirmedUntil, dryRun) =>
+                            InitOracleCommand(startBlock, confirmedUntil, dryRun)
                         case Cmd.SetState(height, dryRun) =>
                             SetStateCommand(height, dryRun)
                         case Cmd.UpdateOracle(from, to) =>
