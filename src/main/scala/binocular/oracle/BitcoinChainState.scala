@@ -117,7 +117,19 @@ object BitcoinChainState {
     def getInitialChainState(
         rpc: BitcoinRpc,
         blockHeight: Int
+    )(using ec: ExecutionContext): Future[ChainState] =
+        getInitialChainState(rpc, blockHeight, blockHeight)
+
+    /** Range-seeded init: ctx anchored at `confirmedTip`, `confirmedBlocksRoot` = MPF over the
+      * canonical hashes `[startHeight, confirmedTip]`. When `startHeight == confirmedTip` this is
+      * byte-identical to the previous single-block behavior.
+      */
+    def getInitialChainState(
+        rpc: BitcoinRpc,
+        startHeight: Int,
+        confirmedTip: Int
     )(using ec: ExecutionContext): Future[ChainState] = {
+        val blockHeight = confirmedTip
         val interval = BitcoinHelpers.DifficultyAdjustmentInterval.toInt
         val adjustmentBlockHeight = blockHeight - (blockHeight % interval)
         val medianTimeSpan = BitcoinHelpers.MedianTimeSpan.toInt // 11 blocks
@@ -160,13 +172,16 @@ object BitcoinChainState {
             bits = rpcBitsToCompactBits(adjustmentHeader.bits)
             // Block hash from RPC is in display order (big-endian), but we store it in internal order (little-endian)
             blockHash = ByteString.fromArray(header.hash.hexToBytes.reverse)
+            // Confirmed set seeded over [startHeight, confirmedTip] (single-source range->root
+            // walk); for startHeight == confirmedTip this reduces to the single-block root.
+            confirmedRoot <- mpfForRange(rpc, startHeight, confirmedTip)
             // Timestamps are in block order (newest first) — matching how the validator
             // prepends each new block's timestamp during accumulation.
             recentTimestamps = recentTimestampsSeq.foldRight(
               prelude.List.Nil: prelude.List[BigInt]
             )((ts, acc) => prelude.List.Cons(ts, acc))
         } yield ChainState(
-          confirmedBlocksRoot = mpfRootForSingleBlock(blockHash), // MPF trie with single block
+          confirmedBlocksRoot = confirmedRoot.rootHash, // MPF over [startHeight, confirmedTip]
           ctx = TraversalCtx(
             timestamps = recentTimestamps,
             height = blockHeight,
