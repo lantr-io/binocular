@@ -11,6 +11,7 @@ import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import scalus.cardano.txbuilder.TxBuilder
 import scalus.uplc.builtin.{ByteString, Data}
 import scalus.uplc.builtin.Data.toData
+import scalus.cardano.onchain.plutus.prelude.Option as POption
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
@@ -292,6 +293,21 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         val pegOutNotProducedVerifierHash =
             ByteString.fromArray(PegOutNotProducedVerifierContract.pinnedScript.scriptHash.bytes)
 
+        // config Update/Retire authority = the binocular owner key (oracle.owner-pkh),
+        // so the same operator that runs the oracle governs the bridge config.
+        val updateAuthPkh = {
+            val s = config.oracle.ownerPkh
+            if s.length == 56 && s.forall(c => "0123456789abcdefABCDEF".contains(c)) then
+                ByteString.fromHex(s)
+            else {
+                Console.error(
+                  "oracle.owner-pkh must be a 28-byte (56 hex) pubkey hash for config update_auth " +
+                      "(set ORACLE_OWNER_PKH or the owner-pkh in your preprod conf)"
+                )
+                break(1)
+            }
+        }
+
         val configDatum = ConfigDatum(
           bridgedTokenPolicyId = bridgedTokenPolicy,
           bridgedTokenAssetName = BridgedTokenAssetName,
@@ -308,12 +324,10 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
           legitTmAndPegOutProducedVerifierScriptHash = pegOutProducedVerifierHash,
           legitTmAndPegOutNotProducedVerifierScriptHash = pegOutNotProducedVerifierHash,
           minStake = BigInt(0),
-          // Demo/testnet governance: the sponsor's payment key may Update/Retire the config
-          // (progressive decentralization rotates this later via a config update).
-          updateAuth = scalus.cardano.onchain.plutus.prelude.Option.Some(
-            AuthorizationMethod.CardanoSignature(
-              ByteString.fromArray(setup.hdAccount.paymentKeyHash.bytes)
-            )
+          // Governance: the binocular owner key (oracle.owner-pkh) may Update/Retire
+          // the config (progressive decentralization rotates this via a later update).
+          updateAuth = POption.Some(
+            AuthorizationMethod.CardanoSignature(updateAuthPkh)
           )
         )
 
