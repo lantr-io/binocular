@@ -22,6 +22,31 @@ object BitcoinChainState {
     def mpfRootForSingleBlock(blockHash: ByteString): ByteString =
         OffChainMPF.empty.insert(blockHash, blockHash).rootHash
 
+    /** Build the confirmed-blocks MPF over the canonical hashes in `[startHeight, endHeight]`.
+      *
+      * Single source of the range->root walk: both oracle init (seeding `confirmedBlocksRoot`) and
+      * [[binocular.cli.Command.rebuildMpf]] call this, so a seeded root can never diverge from a
+      * later rebuild. Each block hash is stored in internal (little-endian) order, keyed by and
+      * valued as itself – identical to `mpfRootForSingleBlock` for a one-element range.
+      */
+    def mpfForRange(
+        rpc: BitcoinRpc,
+        startHeight: Long,
+        endHeight: Long
+    )(using ec: ExecutionContext): Future[OffChainMPF] = {
+        def loop(heights: scala.List[Long], mpf: OffChainMPF): Future[OffChainMPF] =
+            heights match {
+                case Nil => Future.successful(mpf)
+                case h :: tail =>
+                    for {
+                        hashHex <- rpc.getBlockHash(h.toInt)
+                        blockHash = ByteString.fromArray(hashHex.hexToBytes.reverse)
+                        rest <- loop(tail, mpf.insert(blockHash, blockHash))
+                    } yield rest
+            }
+        loop((startHeight to endHeight).toList, OffChainMPF.empty)
+    }
+
     /** Build 80-byte raw header from block header info */
     private def buildRawHeader(header: BlockHeaderInfo): Array[Byte] = {
         val buffer = new Array[Byte](80)

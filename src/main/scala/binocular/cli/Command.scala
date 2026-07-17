@@ -356,28 +356,20 @@ object CommandHelpers {
         }
     }
 
-    /** Reconstruct off-chain MPF from Bitcoin RPC by re-inserting all confirmed block hashes. */
+    /** Reconstruct off-chain MPF from Bitcoin RPC by re-inserting all confirmed block hashes.
+      *
+      * The range->root walk lives in [[binocular.oracle.BitcoinChainState.mpfForRange]] so this
+      * rebuild and oracle init share one implementation and can never diverge.
+      */
     def rebuildMpf(
-        rpc: SimpleBitcoinRpc,
+        rpc: BitcoinRpc,
         startHeight: Long,
         endHeight: Long,
         expectedRoot: ByteString
     )(using ExecutionContext): Either[String, OffChainMPF] = {
-        def loop(heights: List[Long], mpf: OffChainMPF): Future[OffChainMPF] = {
-            heights match {
-                case Nil => Future.successful(mpf)
-                case h :: tail =>
-                    for {
-                        hashHex <- rpc.getBlockHash(h.toInt)
-                        blockHash = ByteString.fromArray(hashHex.hexToBytes.reverse)
-                        updatedMpf = mpf.insert(blockHash, blockHash)
-                        result <- loop(tail, updatedMpf)
-                    } yield result
-            }
-        }
-        val heights = (startHeight to endHeight).toList
         try {
-            val rebuilt = loop(heights, OffChainMPF.empty).await(120.seconds)
+            val rebuilt =
+                BitcoinChainState.mpfForRange(rpc, startHeight, endHeight).await(120.seconds)
             if rebuilt.rootHash != expectedRoot then
                 Left(
                   s"Rebuilt MPF root does not match on-chain confirmedBlocksRoot. " +
@@ -387,7 +379,7 @@ object CommandHelpers {
                       s"chain in that range. Likely cause: a reorg below the oracle's confirmed " +
                       s"tip orphaned one or more committed blocks. The on-chain root is a " +
                       s"hash commitment, so the exact divergence height cannot be recovered " +
-                      s"from chain state alone — manual recovery required (re-init the oracle " +
+                      s"from chain state alone – manual recovery required (re-init the oracle " +
                       s"from a current canonical height)."
                 )
             else Right(rebuilt)
