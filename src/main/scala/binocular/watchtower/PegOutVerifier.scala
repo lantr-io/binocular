@@ -12,14 +12,14 @@ import scalus.uplc.PlutusV3
 import scalus.uplc.builtin.*
 import scalus.uplc.builtin.Builtins.*
 
-/** The `legit_treasury_movement_and_peg_out_produced_verifier` — config[7].
+/** The `legit_treasury_movement_and_peg_out_produced_verifier` – config[7].
   *
   * `peg_out.ak::CompletePegOut` mandatorily delegates to this script via
   * `stake_validator.validate_withdraw`: it finds the withdrawal whose credential is this script's
   * hash, runs this validator, and reads the withdrawal's redeemer. `peg_out.ak` then cross-checks
   * those redeemer fields equal the PegOutDatum (treasury utxo id, destination address), the
   * `peg_out_utxo_id`, the locked-fBTC quantity, and the raw TM tx. So the redeemer is the trust
-  * anchor — THIS validator must independently prove, from the raw TM bytes, that the TM both
+  * anchor – THIS validator must independently prove, from the raw TM bytes, that the TM both
   *   1. **spends** the treasury outpoint named in the redeemer, and
   *   2. **produces** an output paying the peg-out destination scriptPubKey the peg-out amount.
   *
@@ -38,10 +38,10 @@ import scalus.uplc.builtin.Builtins.*
   * `btc_output_value == peg_out_amount`. heimdall must build the TM with `per_pegout_fee = 0` so
   * the paid satoshis equal the fBTC quantity exactly; a non-zero fee would require this verifier to
   * subtract a fee it cannot trust. The TM's *Bitcoin confirmation* is proven by `peg_out.ak`
-  * against the Binocular oracle — not re-checked here.
+  * against the Binocular oracle – not re-checked here.
   *
   * The raw TM tx is walked exactly ONCE (inputs then outputs, in a single forward pass) rather than
-  * reusing [[TreasuryMovementValidator]]'s `allInputOutpoints` + `allOutputs` — those would walk
+  * reusing [[TreasuryMovementValidator]]'s `allInputOutpoints` + `allOutputs` – those would walk
   * the input region twice (the second time via `skipTxIns` inside `allOutputs`) and allocate two
   * intermediate lists. [[scanTm]] streams over the bytes, short-circuits, and allocates nothing.
   */
@@ -56,7 +56,7 @@ object PegOutProducedVerifier {
                 val treasuryUtxoId = unBData(items.head)
                 val afterTreasury = items.tail
                 val destinationAddress = unBData(afterTreasury.head)
-                // index 2 (peg_out_utxo_id) is not needed for the produced check — skip it.
+                // index 2 (peg_out_utxo_id) is not needed for the produced check – skip it.
                 val afterPegOutId = afterTreasury.tail.tail
                 val pegOutAmount = unIData(afterPegOutId.head)
                 val rawTx = unBData(afterPegOutId.tail.head)
@@ -72,7 +72,7 @@ object PegOutProducedVerifier {
     /** Single forward pass over a raw Bitcoin tx. Returns true iff the tx (1) spends
       * `treasuryUtxoId` as one of its inputs AND (2) produces an output paying `destinationSpk`
       * exactly `pegOutAmount` satoshis. Input-region offset advancement mirrors
-      * [[TreasuryMovementValidator.allInputOutpoints]]; output parsing mirrors `allOutputs` — kept
+      * [[TreasuryMovementValidator.allInputOutpoints]]; output parsing mirrors `allOutputs` – kept
       * byte-for-byte consistent so the two paths agree.
       */
     def scanTm(
@@ -148,7 +148,7 @@ object PegOutProducedVerifierContract extends Contract {
         )
 }
 
-/** The `legit_treasury_movement_and_peg_out_not_produced_verifier` — config[8]. Only invoked by the
+/** The `legit_treasury_movement_and_peg_out_not_produced_verifier` – config[8]. Only invoked by the
   * `peg_out.ak::Cancel` (refund) branch, which is out of scope this iteration. It needs a valid,
   * distinct script hash in the config datum but is never withdrawn from on the happy path, so it
   * has no reward account and is intentionally unsatisfiable until the refund path is built.

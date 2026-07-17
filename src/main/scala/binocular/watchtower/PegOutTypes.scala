@@ -4,7 +4,6 @@ import scalus.uplc.builtin.*
 import scalus.uplc.builtin.Data.{FromData, ToData}
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
-import scalus.cardano.onchain.plutus.v3.TxOutRef
 
 // Scalus mirrors of ft-bifrost-bridge's Aiken types in onchain/lib/bifrost/types/peg-out.ak and the
 // completed-peg-outs-merkle-tree.ak datum/redeemers. Variant order and field positions match Aiken —
@@ -78,16 +77,6 @@ case class PegOutWithdrawRedeemer(
   */
 case class CompletedPegOutsMerkleTreeDatum(
     root: ByteString
-) derives FromData,
-      ToData
-
-/** Mint redeemer for `completed-peg-outs-merkle-tree.ak::MintRedeemer`. Unlike the peg-ins minter
-  * this carries a `configRefInputIndex`, but the mint handler never reads config — keep the field
-  * for positional decode and set it to 0 at deploy.
-  */
-case class CompletedPegOutsMintRedeemer(
-    inputRef: TxOutRef,
-    configRefInputIndex: BigInt
 ) derives FromData,
       ToData
 

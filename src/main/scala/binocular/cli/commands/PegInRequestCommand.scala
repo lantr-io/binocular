@@ -20,7 +20,7 @@ import cats.syntax.either.*
 
 /** Watchtower Phase C: build + submit the `PegInRequest` mint tx for one BTC peg-in.
   *
-  * Permissionless — only the watchtower's own wallet (fees + one-shot `input_ref`) is needed; no
+  * Permissionless – only the watchtower's own wallet (fees + one-shot `input_ref`) is needed; no
   * depositor input. The BTC tx must already be in a block that the oracle's `confirmed_blocks_root`
   * commits to.
   */
@@ -121,7 +121,7 @@ case class PegInRequestCommand(
 
         // owner_auth is now vestigial: completion authorizes the depositor via an embedded BIP340
         // Schnorr in peg_in.ak (keyed by user_source_chain_pub_key, bound to the deposit at mint),
-        // and the peg-in CLOSE path (Cancel) delegates to the config[6] close verifier — neither
+        // and the peg-in CLOSE path (Cancel) delegates to the config[6] close verifier – neither
         // uses owner_auth. The field is kept for datum-shape stability; set to an inert,
         // never-satisfiable signature credential so it can never be (mis)used as an auth path.
         // source_chain_treasury_utxo_id is likewise no longer read on-chain (the legit_TM_verifier

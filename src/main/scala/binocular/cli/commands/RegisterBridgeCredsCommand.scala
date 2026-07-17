@@ -33,11 +33,11 @@ import cats.syntax.either.*
   * (out of scope), so it is intentionally left unregistered.
   *
   * Conway rejects a withdrawal whose reward account is not registered, and certificates validate
-  * against the *pre-transaction* ledger state, so registration must happen in an earlier tx — it
+  * against the *pre-transaction* ledger state, so registration must happen in an earlier tx – it
   * cannot be folded into the completion tx.
   *
   * Registration uses the deposit-less Shelley `RegCert` (`registerStake(stakeAddress)`), which does
-  * NOT execute the stake script — important because the peg_in script `fail`s on any non-Rewarding
+  * NOT execute the stake script – important because the peg_in script `fail`s on any non-Rewarding
   * purpose. (Same approach as ft-bifrost-bridge's offchain spo-demo
   * `registerBanWithdrawCredential`.)
   *
@@ -45,7 +45,7 @@ import cats.syntax.either.*
   * registered in its OWN tx and an already-registered one is skipped (not fatal): the
   * config-derived peg_in/peg_out hashes are fresh per deploy, but the produced verifier is a
   * parameterless script whose hash is constant across deploys, so on a redeploy it is already
-  * registered while the others are not — per-cred txs let the fresh ones through regardless. The
+  * registered while the others are not – per-cred txs let the fresh ones through regardless. The
   * command is therefore safe to re-run. It does NOT touch the config / completed-peg-ins /
   * completed-peg-outs / fBTC NFTs.
   */
@@ -92,7 +92,7 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
         val configNftAsset =
             hexBytes("bridge.config-nft-asset-name", config.bridge.configNftAssetName, None)
 
-        // peg_in withdraw script (= peg_in policy) — config[4]. Its hash now depends on the TM-NFT
+        // peg_in withdraw script (= peg_in policy) – config[4]. Its hash now depends on the TM-NFT
         // policy (peg_in.ak's 4th param), so apply the same value here.
         val pegIn = PegInContract(
           blueprint,
@@ -132,7 +132,7 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
 
         // Register each credential in its OWN tx, tolerating an already-registered one. The peg_in
         // and peg_out hashes are config-derived (fresh per deploy), but the produced verifier is a
-        // parameterless script whose hash is CONSTANT across every deploy — so on any redeploy it is
+        // parameterless script whose hash is CONSTANT across every deploy – so on any redeploy it is
         // already registered. A single atomic multi-RegCert tx would then be rejected wholesale,
         // leaving the fresh peg_in/peg_out creds unregistered. Per-cred txs let each one that is not
         // yet registered succeed independently. Registering an already-registered credential fails
@@ -171,7 +171,7 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
                         skipped += name
                     case Right(txHash) =>
                         // await window MUST exceed the poll budget (attempts*delayMs); otherwise it
-                        // preempts the poll and throws even when the tx confirms (seen on preprod —
+                        // preempts the poll and throws even when the tx confirms (seen on preprod –
                         // the verifier reg tx confirmed just after a 120s await gave up). See
                         // DeployBridgeCommand.confirmAwait.
                         val status = provider
