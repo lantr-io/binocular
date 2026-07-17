@@ -395,6 +395,16 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         Console.info("bridged-token-asset-name", BridgedTokenAssetName.toHex)
         Console.info("completed-peg-outs-policy-id", cpoPolicy.toHex)
         Console.info("completed-peg-outs-asset-name", cpoAssetName.toHex)
+        // Both completed-peg one-shot refs are the shared bootstrap one-shot; deploy-script-refs
+        // requires them set before it can publish the completed-peg-ins/outs reference scripts.
+        Console.info(
+          "completed-peg-ins-one-shot-ref",
+          s"${configRef.id.hash.toHex}#${configRef.idx}"
+        )
+        Console.info(
+          "completed-peg-outs-one-shot-ref",
+          s"${configRef.id.hash.toHex}#${configRef.idx}"
+        )
         Console.info("peg-out-withdraw-hash", pegOutWithdrawHash.toHex)
         Console.info("peg-out-produced-verifier-hash", pegOutProducedVerifierHash.toHex)
         Console.info(
