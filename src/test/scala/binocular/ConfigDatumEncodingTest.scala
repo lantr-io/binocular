@@ -8,8 +8,8 @@ import scalus.uplc.builtin.{ByteString, Data}
 import scalus.uplc.builtin.Data.toData
 
 /** Pins the Scala mirror of `lib/bifrost/types/config.ak::ConfigDatum` to the on-chain positional
-  * encoding: 20 Constr-0 fields, `update_auth` (18) as Aiken `Option` (Some = Constr 0 [v], None =
-  * Constr 1 []) and the fBTC mint-checker hash at index 19.
+  * encoding: 11 Constr-0 fields, `update_auth` (10) as Aiken `Option` (Some = Constr 0 [v], None =
+  * Constr 1 []).
   */
 class ConfigDatumEncodingTest extends AnyFunSuite {
 
@@ -24,35 +24,25 @@ class ConfigDatumEncodingTest extends AnyFunSuite {
         assert(none.toData == Data.Constr(1, PList()))
     }
 
-    test("ConfigDatum has 20 positional fields; checker hash is field 19") {
-        val checker = ByteString.fromHex("ee" * 28)
+    test("ConfigDatum has 11 positional fields; update_auth is field 10") {
         val d = ConfigDatum(
           bridgedTokenPolicyId = ByteString.fromHex("aa" * 28),
-          bridgedTokenAssetName = ByteString.fromString("fBTC"),
-          sourceChainMerkleTreePolicyId = ByteString.empty,
-          sourceChainMerkleTreeAssetName = ByteString.empty,
-          blockHeaderMerkleTreePolicyId = ByteString.empty,
-          blockHeaderMerkleTreeAssetName = ByteString.empty,
+          bridgedTokenAssetName = ByteString.fromString("fSAT"),
           completedPegInsMerkleTreePolicyId = ByteString.empty,
-          completedPegInsMerkleTreeAssetName = ByteString.empty,
           completedPegOutsMerkleTreePolicyId = ByteString.empty,
-          completedPegOutsMerkleTreeAssetName = ByteString.empty,
           pegInWithdrawScriptHash = ByteString.empty,
           pegOutWithdrawScriptHash = ByteString.empty,
           pegInCloseVerifierScriptHash = ByteString.empty,
           legitTmAndPegOutProducedVerifierScriptHash = ByteString.empty,
           legitTmAndPegOutNotProducedVerifierScriptHash = ByteString.empty,
-          treasuryNftPolicyId = ByteString.empty,
-          treasuryNftAssetName = ByteString.empty,
           minStake = BigInt(0),
-          updateAuth = POption.None,
-          bridgedTokenMintCheckerScriptHash = checker
+          updateAuth = POption.None
         )
         d.toData match {
             case Data.Constr(0, fields) =>
                 val fs = fields.asScala.toIndexedSeq
-                assert(fs.size == 20)
-                assert(fs(19) == Data.B(checker))
+                assert(fs.size == 11)
+                assert(fs(10) == Data.Constr(1, PList()))
             case other => fail(s"expected Constr 0, got $other")
         }
     }

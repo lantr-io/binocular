@@ -31,10 +31,9 @@ import scala.concurrent.{ExecutionContext, Future}
   *   - References: the config-NFT UTxO (`ConfigDatum`) and the Confirmed TM UTxO (TM NFT).
   *   - Mint: `+peg_in_amount` fBTC (`bridged_token` policy). The PegInRequest NFT is NOT burned —
   *     `CompletePegIn` does not check it (only `Cancel` burns); it rides out in the change.
-  *   - Withdrawals (0 ADA): `peg_in` → [[PegInWithdrawRedeemer]] `CompletePegIn`; the fBTC mint
-  *     checker (config[19]) → [[FbtcMintCheckerRedeemer]] pointing at the peg_in withdrawal – the
-  *     `bridged_token` policy only requires the checker to run; the checker enforces the mint
-  *     rules.
+  *   - Withdrawals (0 ADA): `peg_in` → [[PegInWithdrawRedeemer]] `CompletePegIn`. The
+  *     `bridged_token` policy reads the ConfigDatum and enforces the mint against this withdrawal
+  *     directly (Variant B – no separate mint checker).
   *   - Outputs: fBTC → recipient; the updated completed-peg-ins UTxO (same value+address, new MPF
   *     root); change → sponsor (carrying the PegInRequest NFT).
   *
@@ -48,12 +47,11 @@ import scala.concurrent.{ExecutionContext, Future}
   */
 object PegInCompleteTx {
 
-    /** The four Plutus scripts that run in the completion tx. */
+    /** The three Plutus scripts that run in the completion tx. */
     final case class Scripts(
         pegIn: PlutusScript,
         completedPegIns: PlutusScript,
-        bridgedToken: PlutusScript,
-        fbtcMintChecker: PlutusScript
+        bridgedToken: PlutusScript
     )
 
     /** The four pre-existing UTxOs the tx spends/references. `confirmedTm` is the Confirmed TM UTxO
@@ -120,8 +118,8 @@ object PegInCompleteTx {
             )
 
         // Reward redeemer flat index = #scriptSpends + #mintPolicies + position in the sorted
-        // withdrawals (there are now TWO 0-ADA withdrawals – `peg_in` and the fBTC mint checker –
-        // ordered by reward account). `MultiAsset.assets: SortedMap[PolicyId, SortedMap[AssetName,
+        // withdrawals (there is a single 0-ADA withdrawal – `peg_in`).
+        // `MultiAsset.assets: SortedMap[PolicyId, SortedMap[AssetName,
         // Long]]` keys at the outer level by policy, so `.assets.size` counts distinct policies –
         // matching the on-chain Mint-tag flat-list cardinality (one redeemer per policy id,
         // irrespective of how many asset names that policy mints in the same tx).
@@ -162,13 +160,6 @@ object PegInCompleteTx {
 
         val bridgedTokenMintRedeemer: Transaction => Data = tx =>
             BridgedTokenMintRedeemer(configRefInputIndex = configRefIndex(tx)).toData
-
-        // The checker validates the fBTC mint by pointing at the peg_in CompletePegIn withdrawal.
-        val fbtcMintCheckerRedeemer: Transaction => Data = tx =>
-            FbtcMintCheckerRedeemer(
-              configRefInputIndex = configRefIndex(tx),
-              pegWithdrawRedeemerIndex = pegInWithdrawRedeemerIndex(tx)
-            ).toData
 
         // --- values / outputs ---
         val fbtcValue =
@@ -211,12 +202,6 @@ object PegInCompleteTx {
           scriptSource = spendSource(scriptRefs.pegIn.isDefined, scripts.pegIn),
           redeemerBuilder = pegInWithdrawRedeemer
         )
-        // The fBTC mint checker is small – always inlined (no CIP-33 ref), like the peg-out
-        // produced verifier.
-        val checkerWithdrawWitness: TwoArg = TwoArg(
-          scriptSource = ScriptSource.PlutusScriptValue(scripts.fbtcMintChecker),
-          redeemerBuilder = fbtcMintCheckerRedeemer
-        )
 
         // Mint: the policyId-based overload uses PlutusScriptAttached; the script-based overload
         // inlines. Branch accordingly.
@@ -254,11 +239,6 @@ object PegInCompleteTx {
 
         withMint
             .withdrawRewards(stake(scripts.pegIn.scriptHash), Coin.zero, withdrawWitness)
-            .withdrawRewards(
-              stake(scripts.fbtcMintChecker.scriptHash),
-              Coin.zero,
-              checkerWithdrawWitness
-            )
             .payTo(recipientAddress, fbtcValue)
             .payTo(
               inputs.completedPegIns.output.address,

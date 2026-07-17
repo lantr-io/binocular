@@ -34,13 +34,14 @@ import cats.syntax.either.*
   * `binocular.bridge.{config-nft-*, bridged-token-*}` to the printed values and re-mint the
   * PegInRequests so the peg_in policy + owner_auth match.
   *
-  * Peg-out wiring (this iteration): config indices 8/9 (completed-peg-outs MPF), 11 (peg_out
-  * withdraw), 13 (real BTC-tx-parsing produced verifier, [[PegOutProducedVerifier]]) and 14
-  * (not-produced placeholder, [[PegOutNotProducedVerifier]] — `Cancel`/refund is out of scope) are
-  * now REAL, as are index 18 (`update_auth` – the sponsor's payment key, which may Update/Retire
-  * the config per config.ak's spend handler) and index 19 (the swappable fBTC mint checker).
-  * Minting a new config NFT changes the fBTC policy, so re-mint fBTC under this config. Treasury /
-  * source-chain / block-header entries remain dummies (no path reads them yet).
+  * Variant B config layout (11 fields): index 0/1 (bridged-token policy + asset), 2/3
+  * (completed-peg-ins / completed-peg-outs MPF policies), 4/5 (peg_in / peg_out withdraw), 6
+  * (peg-in close verifier, Dummy28 placeholder), 7 (real BTC-tx-parsing produced verifier,
+  * [[PegOutProducedVerifierContract]]), 8 (not-produced placeholder,
+  * [[PegOutNotProducedVerifierContract]] – `Cancel`/refund is out of scope), 9 (min_stake) and 10
+  * (`update_auth` – the sponsor's payment key, which may Update/Retire the config per config.ak's
+  * spend handler). Minting a new config NFT changes the bridged-token policy, so re-mint under this
+  * config. The cpi/cpo NFT asset names are the constants "CPI"/"CPO".
   */
 case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: Boolean = false)
     extends Command {
@@ -50,8 +51,8 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
 
     // Config NFT asset name (arbitrary; recorded as config asset name).
     private val ConfigAssetName: ByteString = ByteString.fromString("BIFCFG")
-    // fBTC asset name.
-    private val BridgedTokenAssetName: ByteString = ByteString.fromString("fBTC")
+    // Bridged-token asset name.
+    private val BridgedTokenAssetName: ByteString = ByteString.fromString("fSAT")
     private val Dummy28: ByteString = ByteString.fromArray(Array.fill[Byte](28)(0))
     private val EmptyRoot: ByteString = ByteString.fromArray(Array.fill[Byte](32)(0))
 
@@ -254,15 +255,10 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         val bridgedToken = BridgedTokenContract(blueprint, configPolicy, ConfigAssetName)
         val bridgedTokenPolicy = ByteString.fromArray(bridgedToken.policyId.bytes)
 
-        // The swappable fBTC mint checker (ConfigDatum index 19). bridged_token only requires a
-        // withdrawal from this script; all mint/burn rules live here and rotate via config Update.
-        val fbtcMintChecker = FbtcMintCheckerContract(blueprint, configPolicy, ConfigAssetName)
-        val fbtcMintCheckerHash = ByteString.fromArray(fbtcMintChecker.scriptHash.bytes)
-
         val cpiContract =
             CompletedPegInsContract(blueprint, configPolicy, ConfigAssetName, cpiRef)
         val cpiPolicy = ByteString.fromArray(cpiContract.policyId.bytes)
-        val cpiAssetName = CompletedPegInsContract.assetName(cpiRef)
+        val cpiAssetName = CompletedPegInsContract.assetName
 
         // TM-NFT policy = the TreasuryMovementValidator script hash (oracle hash + the TM-control
         // NFT minted in this same deploy tx). peg_in.ak references the Confirmed TM UTxO by this NFT
@@ -289,7 +285,7 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         val cpoContract =
             CompletedPegOutsContract(blueprint, configPolicy, ConfigAssetName, cpoRef)
         val cpoPolicy = ByteString.fromArray(cpoContract.policyId.bytes)
-        val cpoAssetName = CompletedPegOutsContract.assetName(cpoRef)
+        val cpoAssetName = CompletedPegOutsContract.assetName
 
         val pegOutProducedVerifierHash =
             ByteString.fromArray(PegOutProducedVerifierContract.pinnedScript.scriptHash.bytes)
@@ -299,26 +295,18 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         val configDatum = ConfigDatum(
           bridgedTokenPolicyId = bridgedTokenPolicy,
           bridgedTokenAssetName = BridgedTokenAssetName,
-          sourceChainMerkleTreePolicyId = Dummy28,
-          sourceChainMerkleTreeAssetName = ByteString.empty,
-          blockHeaderMerkleTreePolicyId = Dummy28,
-          blockHeaderMerkleTreeAssetName = ByteString.empty,
           completedPegInsMerkleTreePolicyId = cpiPolicy,
-          completedPegInsMerkleTreeAssetName = cpiAssetName,
           completedPegOutsMerkleTreePolicyId = cpoPolicy,
-          completedPegOutsMerkleTreeAssetName = cpoAssetName,
           pegInWithdrawScriptHash = pegInWithdrawHash,
           pegOutWithdrawScriptHash = pegOutWithdrawHash,
-          // config[12] = peg-in CLOSE verifier (the slot the retired legit_TM_verifier vacated).
-          // peg_in.ak's Cancel delegates the F4/F5 close checks to a withdrawal from this script.
-          // Dummy28 until the F1–F6 failure-mode close verifier is built + deployed; a Dummy28 hash
-          // has no reward account, so Cancel is cleanly unsatisfiable in the meantime. Wiring the
-          // real verifier later is a config update only — no peg_in recompile / PIR re-mint.
+          // config[6] = peg-in CLOSE verifier. peg_in.ak's Cancel delegates the F4/F5 close checks
+          // to a withdrawal from this script. Dummy28 until the F1–F6 failure-mode close verifier is
+          // built + deployed; a Dummy28 hash has no reward account, so Cancel is cleanly
+          // unsatisfiable in the meantime. Wiring the real verifier later is a config update only –
+          // no peg_in recompile / PIR re-mint.
           pegInCloseVerifierScriptHash = Dummy28,
           legitTmAndPegOutProducedVerifierScriptHash = pegOutProducedVerifierHash,
           legitTmAndPegOutNotProducedVerifierScriptHash = pegOutNotProducedVerifierHash,
-          treasuryNftPolicyId = Dummy28,
-          treasuryNftAssetName = ByteString.empty,
           minStake = BigInt(0),
           // Demo/testnet governance: the sponsor's payment key may Update/Retire the config
           // (progressive decentralization rotates this later via a config update).
@@ -326,8 +314,7 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
             AuthorizationMethod.CardanoSignature(
               ByteString.fromArray(setup.hdAccount.paymentKeyHash.bytes)
             )
-          ),
-          bridgedTokenMintCheckerScriptHash = fbtcMintCheckerHash
+          )
         )
 
         Console.info("Oracle policy", oraclePolicyId.toHex)
@@ -336,9 +323,8 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         println()
         Console.info("config NFT policy", configPolicy.toHex)
         Console.info("config NFT asset", ConfigAssetName.toHex)
-        Console.info("bridged_token (fBTC) policy", bridgedTokenPolicy.toHex)
-        Console.info("bridged_token (fBTC) asset", BridgedTokenAssetName.toHex)
-        Console.info("fbtc mint checker hash", fbtcMintCheckerHash.toHex)
+        Console.info("bridged_token policy", bridgedTokenPolicy.toHex)
+        Console.info("bridged_token asset", BridgedTokenAssetName.toHex)
         Console.info("completed-peg-ins policy", cpiPolicy.toHex)
         Console.info("completed-peg-ins asset", cpiAssetName.toHex)
         Console.info("cpo one-shot", s"${cpoRef.id.hash.toHex}#${cpoRef.idx}")
@@ -403,12 +389,11 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         val cpiAsset = AssetName(cpiAssetName)
         val cpiValue = Value.lovelace(2_000_000L) + Value.asset(cpiContract.policyId, cpiAsset, 1L)
         val cpiDatum = CompletedPegInsMerkleTreeDatum(EmptyRoot)
-        val cpiRedeemer = CompletedPegInsMintRedeemer(cpiRef)
         val cpiTx =
             try
                 TxBuilder(provider.cardanoInfo)
                     .spend(cpiOneShot)
-                    .mint(cpiContract.script, Map(cpiAsset -> 1L), cpiRedeemer.toData)
+                    .mint(cpiContract.script, Map(cpiAsset -> 1L), Data.unit)
                     .payTo(cpiContract.address(network), cpiValue, cpiDatum.toData)
                     .complete(provider, sponsorAddress)
                     .await(timeout)
@@ -441,13 +426,11 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         val cpoAsset = AssetName(cpoAssetName)
         val cpoValue = Value.lovelace(2_000_000L) + Value.asset(cpoContract.policyId, cpoAsset, 1L)
         val cpoDatum = CompletedPegOutsMerkleTreeDatum(EmptyRoot)
-        // The mint handler does not read config; configRefInputIndex is an inert positional field.
-        val cpoRedeemer = CompletedPegOutsMintRedeemer(cpoRef, BigInt(0))
         val cpoTx =
             try
                 TxBuilder(provider.cardanoInfo)
                     .spend(cpoOneShot)
-                    .mint(cpoContract.script, Map(cpoAsset -> 1L), cpoRedeemer.toData)
+                    .mint(cpoContract.script, Map(cpoAsset -> 1L), Data.unit)
                     .payTo(cpoContract.address(network), cpoValue, cpoDatum.toData)
                     .complete(provider, sponsorAddress)
                     .await(timeout)

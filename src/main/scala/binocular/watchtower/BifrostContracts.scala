@@ -103,10 +103,10 @@ object ConfigContract {
     }
 }
 
-/** The `bridged_token` (fBTC) mint policy: params `(configNFTPolicyId, configNFTAssetName)`. The
-  * script hash is the fBTC policyId = ConfigDatum index 0. A pure delegator: it only requires the
-  * mint-checker withdraw script (ConfigDatum index 19, [[FbtcMintCheckerContract]]) to run in the
-  * tx; all mint/burn rules live in the checker.
+/** The `bridged_token` (fBTC/fSAT) mint policy: params `(configNFTPolicyId, configNFTAssetName)`.
+  * The script hash is the token policyId = ConfigDatum index 0. It reads the ConfigDatum from the
+  * config ref input and enforces the Variant B mint/burn rules against the peg-in / peg-out
+  * withdrawals directly.
   */
 final case class BridgedTokenContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash
@@ -128,36 +128,10 @@ object BridgedTokenContract {
     }
 }
 
-/** The `fbtc_mint_checker` withdraw validator: params `(configNFTPolicyId, configNFTAssetName)`.
-  * Its script hash is ConfigDatum index 19 – the swappable script carrying all fBTC mint/burn
-  * rules; the `bridged_token` policy only requires a withdrawal from it. Small enough to inline in
-  * the witness set (no CIP-33 ref needed), like the peg-out produced verifier.
-  */
-final case class FbtcMintCheckerContract(script: Script.PlutusV3) {
-    def scriptHash: ScriptHash = script.scriptHash
-}
-
-object FbtcMintCheckerContract {
-    val ValidatorTitle = "bitcoin/fbtc_mint_checker.fbtc_mint_checker.withdraw"
-
-    def apply(
-        blueprint: BifrostBlueprint,
-        configNftPolicyId: ByteString,
-        configNftAssetName: ByteString
-    ): FbtcMintCheckerContract = {
-        val applied = Program
-            .fromCborHex(blueprint.compiledCode(ValidatorTitle))
-            .$(Data.B(configNftPolicyId))
-            .$(Data.B(configNftAssetName))
-        FbtcMintCheckerContract(Script.PlutusV3(applied.cborByteString))
-    }
-}
-
 /** The `completed_peg_ins_merkle_tree` one-shot NFT policy + state validator: params
-  * `(configNFTPolicyId, configNFTAssetName, one_shot_input_ref)`. policyId = ConfigDatum index 6;
-  * asset name = `sha2_256(serialise_data(one_shot))` = index 7. The MPF state UTxO (datum = root,
-  * empty `0x00*32` at mint) lives at this script's address and is spent+recreated on each
-  * completion.
+  * `(configNFTPolicyId, configNFTAssetName, one_shot_input_ref)`. policyId = ConfigDatum index 2;
+  * asset name = the constant `"CPI"`. The MPF state UTxO (datum = root, empty `0x00*32` at mint)
+  * lives at this script's address and is spent+recreated on each completion.
   */
 final case class CompletedPegInsContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash
@@ -183,9 +157,8 @@ object CompletedPegInsContract {
         CompletedPegInsContract(Script.PlutusV3(applied.cborByteString))
     }
 
-    /** NFT asset name per `completed-peg-ins-merkle-tree.ak`: `hash_output_ref(one_shot)`. */
-    def assetName(oneShotInputRef: TxOutRef): ByteString =
-        Builtins.sha2_256(Builtins.serialiseData(oneShotInputRef.toData))
+    /** Constant per completed-peg-ins-merkle-tree.ak. */
+    val assetName: ByteString = ByteString.fromString("CPI")
 }
 
 /** The `peg_out_validator` parameterized with `(oracle_policy_id, config_nft_policy_id,
@@ -219,10 +192,10 @@ object PegOutContract {
 }
 
 /** The `completed_peg_outs_merkle_tree` one-shot NFT policy + state validator: params
-  * `(configNFTPolicyId, configNFTAssetName, one_shot_input_ref)`. policyId = ConfigDatum index 8;
-  * asset name = `hash_output_ref(one_shot)` = index 9. The MPF state UTxO (datum = root, empty
-  * `0x00*32` at mint) lives at this script's address and is spent+recreated on each peg-out
-  * completion. Mirrors [[CompletedPegInsContract]].
+  * `(configNFTPolicyId, configNFTAssetName, one_shot_input_ref)`. policyId = ConfigDatum index 3;
+  * asset name = the constant `"CPO"`. The MPF state UTxO (datum = root, empty `0x00*32` at mint)
+  * lives at this script's address and is spent+recreated on each peg-out completion. Mirrors
+  * [[CompletedPegInsContract]].
   */
 final case class CompletedPegOutsContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash
@@ -248,7 +221,6 @@ object CompletedPegOutsContract {
         CompletedPegOutsContract(Script.PlutusV3(applied.cborByteString))
     }
 
-    /** NFT asset name per `completed-peg-outs-merkle-tree.ak`: `hash_output_ref(one_shot)`. */
-    def assetName(oneShotInputRef: TxOutRef): ByteString =
-        Builtins.sha2_256(Builtins.serialiseData(oneShotInputRef.toData))
+    /** Constant per completed-peg-outs-merkle-tree.ak. */
+    val assetName: ByteString = ByteString.fromString("CPO")
 }
