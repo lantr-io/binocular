@@ -12,7 +12,7 @@ import scalus.uplc.PlutusV3
 import scalus.uplc.builtin.*
 import scalus.uplc.builtin.Builtins.*
 
-/** The `legit_treasury_movement_and_peg_out_produced_verifier` — config[13].
+/** The `legit_treasury_movement_and_peg_out_produced_verifier` — config[7].
   *
   * `peg_out.ak::CompletePegOut` mandatorily delegates to this script via
   * `stake_validator.validate_withdraw`: it finds the withdrawal whose credential is this script's
@@ -148,10 +148,10 @@ object PegOutProducedVerifierContract extends Contract {
         )
 }
 
-/** The `legit_treasury_movement_and_peg_out_not_produced_verifier` — config[14]. Only invoked by
-  * the `peg_out.ak::Cancel` (refund) branch, which is out of scope this iteration. It needs a
-  * valid, distinct script hash in the config datum but is never withdrawn from on the happy path,
-  * so it has no reward account and is intentionally unsatisfiable until the refund path is built.
+/** The `legit_treasury_movement_and_peg_out_not_produced_verifier` — config[8]. Only invoked by the
+  * `peg_out.ak::Cancel` (refund) branch, which is out of scope this iteration. It needs a valid,
+  * distinct script hash in the config datum but is never withdrawn from on the happy path, so it
+  * has no reward account and is intentionally unsatisfiable until the refund path is built.
   * `fail`ing is safe: it cleanly disables `Cancel`.
   */
 @Compile

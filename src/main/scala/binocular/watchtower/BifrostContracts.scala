@@ -163,7 +163,7 @@ object CompletedPegInsContract {
 
 /** The `peg_out_validator` parameterized with `(oracle_policy_id, config_nft_policy_id,
   * config_nft_asset_name)`. The script hash is the peg-out withdraw script hash = ConfigDatum index
-  * 11, and the address that `PegOut` UTxOs are locked at. The completion path is a `withdraw`
+  * 5, and the address that `PegOut` UTxOs are locked at. The completion path is a `withdraw`
   * (`CompletePegOut`); creation is a plain pay-to-this-address output.
   */
 final case class PegOutContract(script: Script.PlutusV3) {

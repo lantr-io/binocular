@@ -92,7 +92,7 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
         val configNftAsset =
             hexBytes("bridge.config-nft-asset-name", config.bridge.configNftAssetName, None)
 
-        // peg_in withdraw script (= peg_in policy) — config[10]. Its hash now depends on the TM-NFT
+        // peg_in withdraw script (= peg_in policy) — config[4]. Its hash now depends on the TM-NFT
         // policy (peg_in.ak's 4th param), so apply the same value here.
         val pegIn = PegInContract(
           blueprint,

@@ -277,8 +277,8 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
             PegInContract(blueprint, oraclePolicyId, configPolicy, ConfigAssetName, tmNftPolicy)
         val pegInWithdrawHash = ByteString.fromArray(pegIn.policyId.bytes)
 
-        // --- peg-out side (config indices 8/9 = completed-peg-outs MPF, 11 = peg_out withdraw,
-        //     13 = produced verifier, 14 = not-produced verifier placeholder) ---
+        // --- peg-out side (config indices 3 = completed-peg-outs MPF, 5 = peg_out withdraw,
+        //     7 = produced verifier, 8 = not-produced verifier placeholder) ---
         val pegOut = PegOutContract(blueprint, oraclePolicyId, configPolicy, ConfigAssetName)
         val pegOutWithdrawHash = ByteString.fromArray(pegOut.policyId.bytes)
 

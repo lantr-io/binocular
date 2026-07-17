@@ -42,7 +42,7 @@ case class CompletedPegInsMerkleTreeDatum(
       ToData
 
 // Spend redeemer for `completed-peg-ins-merkle-tree.ak::SpendRedeemer`. The spend handler reads
-// config[10] = peg_in_withdraw_script_hash, then requires the peg_in withdraw redeemer at
+// config[4] = peg_in_withdraw_script_hash, then requires the peg_in withdraw redeemer at
 // `pegInWithdrawRedeemerIndex` to be a `Withdraw(Script(peg_in_withdraw_hash))` carrying a
 // CompletePegIn action, and that a withdrawal from that script is present. Both indices are
 // computed from the assembled tx (see PegInCompleteTx).

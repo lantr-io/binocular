@@ -92,7 +92,7 @@ case class CompletedPegOutsMintRedeemer(
       ToData
 
 /** Spend redeemer for `completed-peg-outs-merkle-tree.ak::SpendRedeemer`. The spend handler reads
-  * config[11] = peg_out_withdraw_script_hash and requires the peg_out withdraw redeemer at
+  * config[5] = peg_out_withdraw_script_hash and requires the peg_out withdraw redeemer at
   * `pegOutWithdrawRedeemerIndex` to be a `Withdraw(Script(peg_out_withdraw_hash))` carrying a
   * CompletePegOut action, plus a withdrawal from that script. Both indices are computed from the
   * assembled tx.
