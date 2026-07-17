@@ -22,27 +22,31 @@ import cats.syntax.either.*
 
 /** F3: deploy the ft-bifrost-bridge completion contracts on Cardano.
   *
-  * Mints, in two sequential txs, the two one-shot NFTs the peg-in completion path reads:
-  *   1. the **config NFT** (`config.ak`) carrying the [[ConfigDatum]] — the spine that records
+  * Bootstraps the whole bridge in ONE tx that spends a single one-shot wallet UTxO and creates
+  * every protocol UTxO at once:
+  *   1. the **config NFT** (`config.ak`) carrying the [[ConfigDatum]] – the spine that records
   *      every cross-referenced script hash;
   *   2. the **completed-peg-ins MPF NFT** (`completed-peg-ins-merkle-tree.ak`) with an empty root;
   *   3. the **completed-peg-outs MPF NFT** (`completed-peg-outs-merkle-tree.ak`) with an empty
-  *      root.
+  *      root;
+  *   4. the **TM-control NFT** carrying the [[TmControlDatum]].
   *
-  * The fBTC (`bridged_token`) policy has no state UTxO — it's a mint policy whose hash is recorded
-  * in the config datum (index 0). All hashes are computed deterministically from the chosen
-  * one-shot wallet UTxOs + the live oracle policy (see [[BifrostContracts]]). After deploy, set
+  * Every one of those policies is parameterized by the SAME one-shot outref, so they get distinct
+  * policy ids while all four mint handlers see the single UTxO consumed in this tx. The
+  * bridged-token (`bridged_token`) policy has no state UTxO – its hash is recorded in the config
+  * datum (index 0). All hashes are computed deterministically from the one-shot + the live oracle
+  * policy (see [[BifrostContracts]]). After deploy, set
   * `binocular.bridge.{config-nft-*, bridged-token-*}` to the printed values and re-mint the
-  * PegInRequests so the peg_in policy + owner_auth match.
+  * PegInRequests so the peg_in policy matches.
   *
   * Variant B config layout (11 fields): index 0/1 (bridged-token policy + asset), 2/3
   * (completed-peg-ins / completed-peg-outs MPF policies), 4/5 (peg_in / peg_out withdraw), 6
   * (peg-in close verifier, Dummy28 placeholder), 7 (real BTC-tx-parsing produced verifier,
   * [[PegOutProducedVerifierContract]]), 8 (not-produced placeholder,
   * [[PegOutNotProducedVerifierContract]] – `Cancel`/refund is out of scope), 9 (min_stake) and 10
-  * (`update_auth` – the sponsor's payment key, which may Update/Retire the config per config.ak's
-  * spend handler). Minting a new config NFT changes the bridged-token policy, so re-mint under this
-  * config. The cpi/cpo NFT asset names are the constants "CPI"/"CPO".
+  * (`update_auth` – the binocular owner key `oracle.owner-pkh`, which may Update/Retire the config
+  * per config.ak's spend handler). Minting a new config NFT changes the bridged-token policy, so
+  * re-mint under this config. The cpi/cpo NFT asset names are the constants "CPI"/"CPO".
   */
 case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: Boolean = false)
     extends Command {
@@ -103,8 +107,7 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
             TxOutRef(TxId(u.input.transactionId), u.input.index)
         def utxoKey(u: Utxo): String = { val r = refOf(u); s"${r.id.hash.toHex}#${r.idx}" }
 
-        // --- pick 4 distinct pure-ADA one-shot UTxOs (config + completed-peg-ins + completed-peg-outs
-        //     + TM-control) ---
+        // --- pick one clean pure-ADA one-shot UTxO (shared by config + cpi + cpo + TM-control) ---
         val walletUtxos = provider.findUtxos(sponsorAddress).await(timeout) match {
             case Right(utxos) => utxos.toList.map { case (i, o) => Utxo(i, o) }
             case Left(err)    => Console.error(s"Fetching wallet UTxOs: $err"); break(1)
@@ -180,69 +183,21 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
 
         val signer = setup.hdAccount.signerForUtxos
 
-        // A cluttered sponsor wallet often locks its ADA in multi-asset / reference-script UTxOs,
-        // leaving fewer than the 4 clean pure-ADA outputs the one-shots need. If short, split the
-        // largest clean UTxO into fresh self-outputs first (skipped in dry-run). Spending one clean
-        // UTxO yields `deficit` explicit outputs + a clean change output, so this always closes the
-        // gap when at least one large clean UTxO exists.
-        val MinOneShots = 4
-        val initialCandidates = cleanCandidates(walletUtxos)
-        val candidates =
-            if initialCandidates.size >= MinOneShots || dryRun then initialCandidates
-            else {
-                val deficit = MinOneShots - initialCandidates.size
-                Console.step(0, s"Preparing wallet: creating $deficit clean one-shot UTxO(s)")
-                val funder = initialCandidates.headOption.getOrElse {
-                    Console.error(
-                      "No clean pure-ADA UTxO (>=5 ADA) available to split for the one-shots"
-                    )
-                    break(1)
-                }
-                val splitOut = Value.lovelace(10_000_000L)
-                val splitTx =
-                    try
-                        (1 to deficit)
-                            .foldLeft(TxBuilder(provider.cardanoInfo).spend(funder))((b, _) =>
-                                b.payTo(sponsorAddress, splitOut)
-                            )
-                            .complete(provider, sponsorAddress)
-                            .await(timeout)
-                            .sign(signer)
-                            .transaction
-                    catch {
-                        case e: Exception =>
-                            Console.error(s"Building wallet-split tx: ${e.getMessage}"); break(1)
-                    }
-                val splitHash = submitAndConfirm(provider, splitTx, timeout)
-                Console.success(s"Wallet split tx: $splitHash")
-                OracleTransactions.waitForUtxoAtAddress(
-                  provider,
-                  sponsorAddress,
-                  TransactionHash.fromHex(splitHash),
-                  timeout
-                ) match {
-                    case Left(err) => Console.error(err); break(1)
-                    case _         =>
-                }
-                val refreshed = provider.findUtxos(sponsorAddress).await(timeout) match {
-                    case Right(utxos) => utxos.toList.map { case (i, o) => Utxo(i, o) }
-                    case Left(err)    => Console.error(s"Re-fetching wallet UTxOs: $err"); break(1)
-                }
-                cleanCandidates(refreshed)
-            }
-        val (configOneShot, cpiOneShot, cpoOneShot, tmControlOneShot) = candidates match {
-            case a :: b :: c :: d :: _ => (a, b, c, d)
-            case _ =>
-                Console.error(
-                  "Need >=4 pure-ADA wallet UTxOs (>=5 ADA each, excluding reference-script UTxOs) " +
-                      "for the one-shots; wallet-split could not produce enough"
-                )
-                break(1)
+        // The whole bridge is bootstrapped in ONE tx that spends a single one-shot UTxO. Every
+        // protocol NFT policy (config, cpi, cpo, tm-control) is parameterized by that same outref,
+        // so they get distinct policy ids while all their mint handlers see the one UTxO consumed.
+        val oneShotUtxo = cleanCandidates(walletUtxos).headOption.getOrElse {
+            Console.error(
+              "No clean pure-ADA wallet UTxO (>=5 ADA, excluding reference-script UTxOs) for the " +
+                  "bridge one-shot; fund the sponsor wallet"
+            )
+            break(1)
         }
-        val configRef = refOf(configOneShot)
-        val cpiRef = refOf(cpiOneShot)
-        val cpoRef = refOf(cpoOneShot)
-        val tmControlRef = refOf(tmControlOneShot)
+        val oneShotRef = refOf(oneShotUtxo)
+        val configRef = oneShotRef
+        val cpiRef = oneShotRef
+        val cpoRef = oneShotRef
+        val tmControlRef = oneShotRef
 
         // TM-control one-shot NFT — authenticates the control UTxO (TmControlDatum).
         val tmControlContract = OneShotMintContract.contract(tmControlRef)
@@ -362,133 +317,41 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
             break(0)
         }
 
-        // --- Tx 1: mint the config NFT, carrying the ConfigDatum, to the config script address ---
-        Console.step(1, "Minting config NFT")
+        // --- Single bootstrap tx: spend the one-shot, mint all four protocol NFTs, and create
+        //     every protocol UTxO in one atomic tx. config.ak::mint checks self.outputs[0] is the
+        //     config UTxO, so the config output MUST be first. cpi/cpo/tm-control mint handlers each
+        //     find their own output by script address and see the shared one-shot consumed. ---
+        Console.step(1, "Bootstrapping bridge (config + cpi + cpo + tm-control) in one tx")
         val configAsset = AssetName(ConfigAssetName)
+        val cpiAsset = AssetName(cpiAssetName)
+        val cpoAsset = AssetName(cpoAssetName)
+        val tmControlAsset = AssetName(TmControlAssetName)
         val configValue =
             Value.lovelace(2_000_000L) + Value.asset(configContract.policyId, configAsset, 1L)
-        val configTx =
-            try
-                TxBuilder(provider.cardanoInfo)
-                    .spend(configOneShot)
-                    .mint(configContract.script, Map(configAsset -> 1L), Data.unit)
-                    .payTo(configContract.address(network), configValue, configDatum.toData)
-                    .complete(provider, sponsorAddress)
-                    .await(timeout)
-                    .sign(signer)
-                    .transaction
-            catch {
-                case e: Exception => Console.error(s"Building config tx: ${e.getMessage}"); break(1)
-            }
-        val configTxHash = submitAndConfirm(provider, configTx, timeout)
-        Console.success(s"Config NFT minted: $configTxHash")
-        Console.info("config address", configContract.address(network).encode.getOrElse("?"))
-        println()
-
-        // Wait for the address-based UTxO index to reflect tx 1 before building tx 2, so tx 2's
-        // fee/change selection doesn't pick tx 1's already-spent inputs (pollForConfirmation
-        // checks tx status, not the address index). Same convention as InitOracleCommand.
-        OracleTransactions.waitForUtxoAtAddress(
-          provider,
-          sponsorAddress,
-          TransactionHash.fromHex(configTxHash),
-          timeout
-        ) match {
-            case Left(err) => Console.error(err); break(1)
-            case _         =>
-        }
-
-        // --- Tx 2: mint the completed-peg-ins NFT (empty MPF root) to its script address ---
-        Console.step(2, "Minting completed-peg-ins MPF NFT")
-        val cpiAsset = AssetName(cpiAssetName)
         val cpiValue = Value.lovelace(2_000_000L) + Value.asset(cpiContract.policyId, cpiAsset, 1L)
-        val cpiDatum = CompletedPegInsMerkleTreeDatum(EmptyRoot)
-        val cpiTx =
-            try
-                TxBuilder(provider.cardanoInfo)
-                    .spend(cpiOneShot)
-                    .mint(cpiContract.script, Map(cpiAsset -> 1L), Data.unit)
-                    .payTo(cpiContract.address(network), cpiValue, cpiDatum.toData)
-                    .complete(provider, sponsorAddress)
-                    .await(timeout)
-                    .sign(signer)
-                    .transaction
-            catch {
-                case e: Exception =>
-                    Console.error(s"Building completed-peg-ins tx: ${e.getMessage}"); break(1)
-            }
-        val cpiTxHash = submitAndConfirm(provider, cpiTx, timeout)
-        Console.success(s"Completed-peg-ins NFT minted: $cpiTxHash")
-        Console.info(
-          "completed-peg-ins address",
-          cpiContract.address(network).encode.getOrElse("?")
-        )
-        println()
-
-        OracleTransactions.waitForUtxoAtAddress(
-          provider,
-          sponsorAddress,
-          TransactionHash.fromHex(cpiTxHash),
-          timeout
-        ) match {
-            case Left(err) => Console.error(err); break(1)
-            case _         =>
-        }
-
-        // --- Tx 2b: mint the completed-peg-outs NFT (empty MPF root) to its script address ---
-        Console.step(3, "Minting completed-peg-outs MPF NFT")
-        val cpoAsset = AssetName(cpoAssetName)
         val cpoValue = Value.lovelace(2_000_000L) + Value.asset(cpoContract.policyId, cpoAsset, 1L)
-        val cpoDatum = CompletedPegOutsMerkleTreeDatum(EmptyRoot)
-        val cpoTx =
-            try
-                TxBuilder(provider.cardanoInfo)
-                    .spend(cpoOneShot)
-                    .mint(cpoContract.script, Map(cpoAsset -> 1L), Data.unit)
-                    .payTo(cpoContract.address(network), cpoValue, cpoDatum.toData)
-                    .complete(provider, sponsorAddress)
-                    .await(timeout)
-                    .sign(signer)
-                    .transaction
-            catch {
-                case e: Exception =>
-                    Console.error(s"Building completed-peg-outs tx: ${e.getMessage}"); break(1)
-            }
-        val cpoTxHash = submitAndConfirm(provider, cpoTx, timeout)
-        Console.success(s"Completed-peg-outs NFT minted: $cpoTxHash")
-        Console.info(
-          "completed-peg-outs address",
-          cpoContract.address(network).encode.getOrElse("?")
-        )
-        println()
-
-        OracleTransactions.waitForUtxoAtAddress(
-          provider,
-          sponsorAddress,
-          TransactionHash.fromHex(cpoTxHash),
-          timeout
-        ) match {
-            case Left(err) => Console.error(err); break(1)
-            case _         =>
-        }
-
-        // --- Tx 3: mint the TM-control NFT to the (immutable, spend=False) config address, carrying
-        //     the TmControlDatum that names the authorized TM-NFT minter. The one-shot policy makes
-        //     the NFT unforgeable; config.ak's spend=False makes the control UTxO immutable. ---
-        Console.step(4, "Minting TM-control NFT")
-        val tmControlAsset = AssetName(TmControlAssetName)
         val tmControlValue =
             Value.lovelace(2_000_000L) + Value.asset(
               tmControlContract.script.scriptHash,
               tmControlAsset,
               1L
             )
+        val cpiDatum = CompletedPegInsMerkleTreeDatum(EmptyRoot)
+        val cpoDatum = CompletedPegOutsMerkleTreeDatum(EmptyRoot)
         val tmControlDatum = TmControlDatum(authorizedMinterBS)
-        val tmControlTx =
+        val bootstrapTx =
             try
                 TxBuilder(provider.cardanoInfo)
-                    .spend(tmControlOneShot)
+                    .spend(oneShotUtxo)
+                    .mint(configContract.script, Map(configAsset -> 1L), Data.unit)
+                    .mint(cpiContract.script, Map(cpiAsset -> 1L), Data.unit)
+                    .mint(cpoContract.script, Map(cpoAsset -> 1L), Data.unit)
                     .mint(tmControlContract, Map(tmControlAsset -> 1L), Data.unit)
+                    // config UTxO first (config.ak::mint reads self.outputs[0]); tm-control also goes
+                    // to the config address (immutable, spend=False) carrying the TmControlDatum.
+                    .payTo(configContract.address(network), configValue, configDatum.toData)
+                    .payTo(cpiContract.address(network), cpiValue, cpiDatum.toData)
+                    .payTo(cpoContract.address(network), cpoValue, cpoDatum.toData)
                     .payTo(configContract.address(network), tmControlValue, tmControlDatum.toData)
                     .complete(provider, sponsorAddress)
                     .await(timeout)
@@ -496,12 +359,22 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
                     .transaction
             catch {
                 case e: Exception =>
-                    Console.error(s"Building TM-control tx: ${e.getMessage}"); break(1)
+                    Console.error(s"Building bootstrap tx: ${e.getMessage}")
+                    Option(e.getCause).foreach(c => Console.error(s"Cause: ${c.getMessage}"))
+                    break(1)
             }
-        val tmControlTxHash = submitAndConfirm(provider, tmControlTx, timeout)
-        Console.success(s"TM-control NFT minted: $tmControlTxHash")
+        val bootstrapTxHash = submitAndConfirm(provider, bootstrapTx, timeout)
+        Console.success(s"Bridge bootstrapped in one tx: $bootstrapTxHash")
+        Console.info("config address", configContract.address(network).encode.getOrElse("?"))
+        Console.info(
+          "completed-peg-ins address",
+          cpiContract.address(network).encode.getOrElse("?")
+        )
+        Console.info(
+          "completed-peg-outs address",
+          cpoContract.address(network).encode.getOrElse("?")
+        )
         println()
-
         Console.separator()
         Console.success(
           "Bridge deployed. Set these in binocular.bridge and re-mint the PegInRequests:"
