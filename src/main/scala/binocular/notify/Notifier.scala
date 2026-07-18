@@ -45,7 +45,11 @@ object Notifier {
       */
     def fromConfig(config: NotificationConfig): Notifier =
         if config.enabled && config.discordWebhookUrl.trim.nonEmpty then
-            new DiscordNotifier(config.discordWebhookUrl.trim)
+            new DiscordNotifier(
+              webhookUrl = config.discordWebhookUrl.trim,
+              throttleIntervalMs = config.throttleIntervalSeconds.toLong * 1000L,
+              errorMentionUserId = Option(config.errorMentionUserId.trim).filter(_.nonEmpty)
+            )
         else NoopNotifier
 }
 

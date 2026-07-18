@@ -16,15 +16,28 @@ import java.util.concurrent.atomic.AtomicLong
   * a slow or failing Discord never blocks or crashes an oracle loop. When the queue is full posts
   * are dropped (and counted). All HTTP errors are swallowed and logged, never propagated.
   *
-  * `newBlock` is deduplicated by height (only strictly-increasing heights notify), and `error` is
-  * debounced via [[ErrorDebounce]] so the retry loops' repeated errors don't spam the channel.
+  * Routing per event kind:
+  *   - `newBlock` is deduplicated by height (only strictly-increasing heights notify), then rate-
+  *     limited via [[IntervalGate]]: at most one block notification per `throttleIntervalMs`, with
+  *     bursts coalesced into a summary (`N blocks — tip H`).
+  *   - `success` is likewise rate-limited; bursts are batched into one message so no TM event is
+  *     lost. Rare successes (idle >= interval) are sent promptly.
+  *   - `error` is NOT throttled — it is debounced only against IDENTICAL repeats via
+  *     [[ErrorDebounce]] (first + any new error immediate) and carries an optional `@`-mention
+  *     ping.
+  *
+  * A single daemon [[ScheduledExecutorService]] flushes held block/success summaries once their
+  * window elapses, so a coalesced summary still arrives on time even if events stop coming.
   *
   * Uses the JDK's built-in [[java.net.http.HttpClient]] — no extra dependencies.
   */
 class DiscordNotifier(
     webhookUrl: String,
+    throttleIntervalMs: Long = 60 * 60 * 1000L,
+    errorMentionUserId: Option[String] = None,
     errorDebounceWindowMs: Long = 5 * 60 * 1000L,
-    queueCapacity: Int = 64
+    queueCapacity: Int = 64,
+    maxPendingSuccess: Int = 20
 ) extends Notifier {
 
     private val client =
@@ -53,10 +66,42 @@ class DiscordNotifier(
         )
     }
 
-    // Guards `lastHeight`; only strictly-increasing heights notify (dedup batched/duplicate events).
-    private var lastHeight: BigInt = BigInt(-1)
-    // Guards `debounce`.
+    /** Latest block held by the throttle (fork-tree fields), sent when its window flushes. */
+    private final case class PendingBlock(
+        height: BigInt,
+        tipHash: String,
+        headersAdded: Int,
+        treeBlocks: Int,
+        confirmedBlocks: Int
+    )
+
+    // All of the following are guarded by `this` (synchronized).
+    private var lastHeight: BigInt = BigInt(-1) // newBlock dedup: only strictly-increasing heights
     private var debounce: ErrorDebounce.State = ErrorDebounce.State.empty
+    private var blockGate: IntervalGate.State = IntervalGate.State.empty
+    private var pendingBlock: Option[PendingBlock] = scala.None
+    private var successGate: IntervalGate.State = IntervalGate.State.empty
+    private var pendingSuccess: List[(String, String)] = Nil // newest-first
+
+    // Flush held summaries when their window elapses even if events stop. Tick coarsely (bounded to
+    // [1s, 60s]) — a coalesced summary arriving up to a tick late is fine.
+    private val scheduler: ScheduledExecutorService = {
+        val tf: ThreadFactory = (r: Runnable) => {
+            val t = new Thread(r, "discord-notifier-flush")
+            t.setDaemon(true)
+            t
+        }
+        Executors.newSingleThreadScheduledExecutor(tf)
+    }
+    private val flushTickMs: Long = math.max(1000L, math.min(throttleIntervalMs, 60_000L))
+    scheduler.scheduleAtFixedRate(
+      () =>
+          try flushPending()
+          catch { case _: Throwable => () },
+      flushTickMs,
+      flushTickMs,
+      TimeUnit.MILLISECONDS
+    )
 
     def newBlock(
         height: BigInt,
@@ -65,14 +110,35 @@ class DiscordNotifier(
         treeBlocks: Int,
         confirmedBlocks: Int
     ): Unit = {
-        val shouldSend = synchronized {
-            if height > lastHeight then { lastHeight = height; true }
-            else false
+        val toSend = synchronized {
+            if height <= lastHeight then scala.None
+            else {
+                lastHeight = height
+                val (next, decision) =
+                    IntervalGate.offer(blockGate, System.currentTimeMillis(), throttleIntervalMs)
+                blockGate = next
+                decision match {
+                    case IntervalGate.SendNow(held) =>
+                        pendingBlock = scala.None
+                        Some(
+                          DiscordPayload.newBlock(
+                            height,
+                            tipHash,
+                            headersAdded,
+                            treeBlocks,
+                            confirmedBlocks,
+                            sinceCount = held + 1
+                          )
+                        )
+                    case IntervalGate.Hold =>
+                        pendingBlock = Some(
+                          PendingBlock(height, tipHash, headersAdded, treeBlocks, confirmedBlocks)
+                        )
+                        scala.None
+                }
+            }
         }
-        if shouldSend then
-            enqueue(
-              DiscordPayload.newBlock(height, tipHash, headersAdded, treeBlocks, confirmedBlocks)
-            )
+        toSend.foreach(enqueue)
     }
 
     def error(source: String, message: String): Unit = {
@@ -94,16 +160,67 @@ class DiscordNotifier(
                 val text =
                     if repeated > 0 then s"$message (repeated $repeated× while suppressed)"
                     else message
-                enqueue(DiscordPayload.error(source, text))
+                enqueue(DiscordPayload.error(source, text, errorMentionUserId))
         }
     }
 
-    // Successes (TM relayed / confirmed) are infrequent and each is a distinct event worth seeing,
-    // so they are sent directly — no debounce, no dedup.
-    def success(source: String, message: String): Unit =
-        enqueue(DiscordPayload.success(source, message))
+    def success(source: String, message: String): Unit = {
+        val toSend = synchronized {
+            val (next, decision) =
+                IntervalGate.offer(successGate, System.currentTimeMillis(), throttleIntervalMs)
+            successGate = next
+            decision match {
+                case IntervalGate.SendNow(_) =>
+                    val batch = pendingSuccess.reverse :+ (source -> message)
+                    pendingSuccess = Nil
+                    Some(DiscordPayload.successBatch(batch))
+                case IntervalGate.Hold =>
+                    // Newest-first; keep only the most recent `maxPendingSuccess` on overflow.
+                    pendingSuccess = ((source -> message) :: pendingSuccess).take(maxPendingSuccess)
+                    scala.None
+            }
+        }
+        toSend.foreach(enqueue)
+    }
+
+    /** Emit any block/success summaries whose throttle window has elapsed. Runs on the scheduler.
+      */
+    private def flushPending(): Unit = {
+        val posts = synchronized {
+            val now = System.currentTimeMillis()
+            val buf = scala.collection.mutable.ListBuffer.empty[String]
+
+            val (nb, blockHeld) = IntervalGate.flush(blockGate, now, throttleIntervalMs)
+            blockGate = nb
+            blockHeld.foreach { held =>
+                pendingBlock.foreach { b =>
+                    buf += DiscordPayload.newBlock(
+                      b.height,
+                      b.tipHash,
+                      b.headersAdded,
+                      b.treeBlocks,
+                      b.confirmedBlocks,
+                      sinceCount = held
+                    )
+                    pendingBlock = scala.None
+                }
+            }
+
+            val (ns, successHeld) = IntervalGate.flush(successGate, now, throttleIntervalMs)
+            successGate = ns
+            successHeld.foreach { _ =>
+                if pendingSuccess.nonEmpty then {
+                    buf += DiscordPayload.successBatch(pendingSuccess.reverse)
+                    pendingSuccess = Nil
+                }
+            }
+            buf.toList
+        }
+        posts.foreach(enqueue)
+    }
 
     override def close(): Unit = {
+        scheduler.shutdownNow()
         executor.shutdown()
         ()
     }

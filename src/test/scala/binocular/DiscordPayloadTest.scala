@@ -26,11 +26,48 @@ class DiscordPayloadTest extends AnyFunSuite {
         assert(!json.contains("(+"))
     }
 
+    test("newBlock shows a coalesced count and 'tip' title when sinceCount > 1") {
+        val json = DiscordPayload.newBlock(BigInt(144600), "beef", 0, 5, 8001, sinceCount = 12)
+        assert(json.contains("12 blocks — tip 144600"))
+        assert(json.contains("Since last alert:** 12 blocks"))
+    }
+
     test("error embeds the source label and the red color") {
         val json = DiscordPayload.error("oracle", "Tx failed: boom")
         assert(json.contains("\"color\":" + DiscordPayload.ColorError))
         assert(json.contains("[oracle]"))
         assert(json.contains("Tx failed: boom"))
+    }
+
+    test("error with a mention adds a content ping and a restrictive allowed_mentions") {
+        val json = DiscordPayload.error("oracle", "deep reorg", mentionUserId = Some("123456789"))
+        assert(json.contains("\"content\":\"<@123456789>\""))
+        // Only that user may be pinged — never @everyone/roles.
+        assert(json.contains("\"allowed_mentions\":{\"parse\":[],\"users\":[\"123456789\"]}"))
+        assert(json.contains("[oracle]"))
+        assert(json.contains("deep reorg"))
+    }
+
+    test("error without a mention (None or blank) omits content/allowed_mentions") {
+        val none = DiscordPayload.error("oracle", "boom")
+        assert(!none.contains("content"))
+        assert(!none.contains("allowed_mentions"))
+        val blank = DiscordPayload.error("oracle", "boom", mentionUserId = Some("  "))
+        assert(!blank.contains("content"))
+    }
+
+    test("successBatch renders a single item as a plain success, several as one list") {
+        val single = DiscordPayload.successBatch(List("relay" -> "TM relayed"))
+        assert(single.contains("[relay]"))
+        assert(!single.contains("actions"))
+
+        val many = DiscordPayload.successBatch(
+          List("relay" -> "TM relayed", "confirm" -> "TM confirmed")
+        )
+        assert(many.contains("2 actions"))
+        assert(many.contains("• [relay] TM relayed"))
+        assert(many.contains("• [confirm] TM confirmed"))
+        assert(many.contains("\"color\":" + DiscordPayload.ColorSuccess))
     }
 
     test("success embeds the source label and the green color") {
