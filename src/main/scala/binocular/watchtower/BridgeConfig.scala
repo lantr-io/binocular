@@ -41,22 +41,15 @@ case class BridgeConfig(
     // mint TM NFTs (the SPO/poster key — on the devnet, heimdall's Cardano signing key; get it from
     // `heimdall wallet-address`). Default for deploy-bridge's --authorized-minter.
     tmAuthorizedMinter: String = "",
-    // Reference-script UTxOs for the 3 heavy Plutus scripts pegin-complete needs. Without these,
-    // the witness set inlines ~28 KB of script bytes and the tx exceeds Cardano's 16 KB max.
-    // Set by deploy-script-refs (run after deploy-bridge) and consumed by pegin-complete to
-    // attach the scripts via reference inputs (CIP-33). TX_HASH#INDEX form; empty = falls back
-    // to inlining the scripts in the witness set (only works for small txs).
-    pegInScriptRef: String = "",
-    bridgedTokenScriptRef: String = "",
-    completedPegInsScriptRef: String = "",
-    // Peg-out side (P3–P5). The completed-peg-outs one-shot fixes that validator's params (hence its
-    // policyId + NFT asset name); peg-out-complete needs it to reconstruct the script to SPEND the
-    // MPF UTxO. The two script-refs are the CIP-33 reference UTxOs for the peg_out + completed-peg-outs
-    // scripts (set by deploy-script-refs) so peg-out-complete stays under the 16 KB tx limit.
-    // `Option` (not `""`): a peg-in-only bridge (e.g. the synced config) simply omits these keys —
-    // pureconfig maps a missing key to `None`, so no placeholder values are needed. The peg-out
-    // commands fail fast with a clear message when a required ref is absent.
-    completedPegOutsOneShotRef: Option[String] = None,
-    pegOutScriptRef: Option[String] = None,
-    completedPegOutsScriptRef: Option[String] = None
+    // The completed-peg-outs one-shot fixes that validator's params (hence its policyId + NFT asset
+    // name); peg-out-complete needs it to reconstruct the script to SPEND the MPF UTxO. `Option`
+    // (not `""`): a peg-in-only bridge (e.g. the synced config) simply omits the key — pureconfig
+    // maps a missing key to `None`. The peg-out commands fail fast when a required ref is absent.
+    //
+    // The heavy scripts' CIP-33 reference UTxOs (peg_in, bridged_token, completed_peg_ins, peg_out,
+    // completed_peg_outs) are no longer recorded here: deploy-script-refs publishes them to the
+    // sponsor wallet, and the completion paths discover them by the `reference_script_hash` each
+    // carries (see CommandHelpers.refScriptUtxosByHash). A script hash not found on-chain falls back
+    // to inlining the script in the witness set (only viable for small txs).
+    completedPegOutsOneShotRef: Option[String] = None
 ) derives ConfigReader

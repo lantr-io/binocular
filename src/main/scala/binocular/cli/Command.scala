@@ -5,7 +5,7 @@ import binocular.bitcoin.*
 import binocular.oracle.*
 import binocular.watchtower.*
 import scalus.cardano.address.{Address, Network}
-import scalus.cardano.ledger.{AssetName, Credential, Script, ScriptHash, ScriptRef, TransactionOutput, Utxo, Value}
+import scalus.cardano.ledger.{AssetName, Credential, Script, ScriptHash, ScriptRef, TransactionHash, TransactionInput, TransactionOutput, Utxo, Value}
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.wallet.hd.HdAccount
 import scalus.uplc.PlutusV3
@@ -195,57 +195,37 @@ object CommandHelpers {
         }
     }
 
-    /** Derive the TM-NFT policy id = the binocular [[TreasuryMovementValidator]] script hash,
-      * parameterized by the oracle script hash + the TM-control NFT `(policy, name)` from config.
-      * This is the policy `peg_in.ak` requires on the referenced Confirmed TM UTxO (its 4th param,
-      * `tm_nft_policy_id`), so the peg_in script hash now depends on it — every site that builds
-      * [[PegInContract]] must apply the same value.
+    /** Parse Blockfrost `/addresses/{addr}/utxos` items into the `(reference_script_hash ->
+      * outpoint)` pairs of the CIP-33 reference-script UTxOs among them. Items without a
+      * `reference_script_hash` (plain wallet UTxOs) are dropped. Duplicate UTxOs carrying the same
+      * script hash are all kept, so callers can either dedup by hash (resolution) or take every
+      * outpoint (fee exclusion). Pure — the network fetch lives in [[fetchAddressUtxos]].
       */
-    /** The bridge's deployed reference-script (CIP-33) UTxO outpoints, from config. These must be
-      * kept OUT of oracle/update fee selection: BlockfrostProvider drops their `scriptRef`, so the
-      * tx builder under-estimates the fee by the Conway reference-script surcharge →
-      * FeeTooSmallUTxO. Pass to `buildOptimalUpdateTransaction(excludeInputs = …)`. Empty entries
-      * (no bridge deployed) are skipped.
-      */
-    def bridgeRefOutpoints(config: BinocularConfig): Set[scalus.cardano.ledger.TransactionInput] = {
-        (Set(
-          config.bridge.pegInScriptRef,
-          config.bridge.bridgedTokenScriptRef,
-          config.bridge.completedPegInsScriptRef
-        ) ++ config.bridge.pegOutScriptRef ++ config.bridge.completedPegOutsScriptRef).iterator
-            .map(_.trim)
-            .filter(_.nonEmpty)
-            .flatMap { s =>
-                s.split("#") match {
-                    case Array(h, i) if i.toIntOption.isDefined =>
-                        Some(
-                          scalus.cardano.ledger.TransactionInput(
-                            scalus.cardano.ledger.TransactionHash.fromHex(h),
-                            i.toInt
+    def parseRefScriptOutpoints(
+        items: Seq[ujson.Value]
+    ): Seq[(ScriptHash, TransactionInput)] =
+        items.flatMap { o =>
+            o.obj.get("reference_script_hash") match {
+                case Some(ujson.Str(hash)) =>
+                    Some(
+                      ScriptHash.fromHex(hash) ->
+                          TransactionInput(
+                            TransactionHash.fromHex(o("tx_hash").str),
+                            o("output_index").num.toInt
                           )
-                        )
-                    case _ => None
-                }
+                    )
+                case _ => None
             }
-            .toSet
-    }
+        }
 
-    /** Query blockfrost for EVERY reference-script (CIP-33) UTxO at `addressBech32` and return
-      * their outpoints. More complete than [[bridgeRefOutpoints]]: it catches duplicate/leftover
-      * ref-script UTxOs from earlier deploy-script-refs runs that aren't recorded in config (the
-      * config-known set alone left the daemon still hitting FeeTooSmallUTxO on an un-recorded ref
-      * UTxO). Needed because BlockfrostProvider drops `scriptRef`, so the only way to spot a
-      * ref-script UTxO is the `reference_script_hash` field of the raw address-utxos JSON.
+    /** Fetch every UTxO JSON object at `addressBech32` from Blockfrost, following pagination.
       * Best-effort: returns empty on a non-blockfrost backend or any query failure.
       */
-    def refScriptOutpoints(
-        config: BinocularConfig,
-        addressBech32: String
-    ): Set[scalus.cardano.ledger.TransactionInput] = {
+    def fetchAddressUtxos(config: BinocularConfig, addressBech32: String): Seq[ujson.Value] = {
         if config.cardano.backend.toLowerCase != "blockfrost"
             || config.cardano.blockfrostProjectId.isEmpty
             || addressBech32.isEmpty
-        then Set.empty
+        then Seq.empty
         else {
             val base = config.cardano.network.toLowerCase match {
                 case "mainnet" => "https://cardano-mainnet.blockfrost.io/api/v0"
@@ -274,22 +254,42 @@ object CommandHelpers {
                     val next = acc ++ items
                     if items.size < 100 then next else collect(p + 1, next)
                 }
-                collect(1, Vector.empty).iterator.flatMap { o =>
-                    o.obj.get("reference_script_hash") match {
-                        case Some(ujson.Str(_)) =>
-                            Some(
-                              scalus.cardano.ledger.TransactionInput(
-                                scalus.cardano.ledger.TransactionHash.fromHex(o("tx_hash").str),
-                                o("output_index").num.toInt
-                              )
-                            )
-                        case _ => None
-                    }
-                }.toSet
-            } catch { case _: Exception => Set.empty }
+                collect(1, Vector.empty)
+            } catch { case _: Exception => Seq.empty }
         }
     }
 
+    /** Query blockfrost for EVERY reference-script (CIP-33) UTxO at `addressBech32` and return
+      * their outpoints. Catches duplicate/leftover ref-script UTxOs from earlier deploy-script-refs
+      * runs (the config-known set alone left the daemon still hitting FeeTooSmallUTxO on an
+      * un-recorded ref UTxO). Needed because BlockfrostProvider drops `scriptRef`, so the only way
+      * to spot a ref-script UTxO is the `reference_script_hash` field of the raw address-utxos
+      * JSON. Best-effort: returns empty on a non-blockfrost backend or any query failure.
+      */
+    def refScriptOutpoints(
+        config: BinocularConfig,
+        addressBech32: String
+    ): Set[TransactionInput] =
+        parseRefScriptOutpoints(fetchAddressUtxos(config, addressBech32)).map(_._2).toSet
+
+    /** Resolve the CIP-33 reference-script UTxOs at `addressBech32` keyed by the script hash each
+      * carries — the discovery path that lets the completion transactions attach their heavy
+      * scripts by reference without the outpoints being recorded in config. A script hash present
+      * on more than one UTxO (leftover from a re-run) collapses to the last seen; any of them is a
+      * valid reference input. Best-effort: empty on a non-blockfrost backend or query failure.
+      */
+    def refScriptUtxosByHash(
+        config: BinocularConfig,
+        addressBech32: String
+    ): Map[ScriptHash, TransactionInput] =
+        parseRefScriptOutpoints(fetchAddressUtxos(config, addressBech32)).toMap
+
+    /** Derive the TM-NFT policy id = the binocular [[TreasuryMovementValidator]] script hash,
+      * parameterized by the oracle script hash + the TM-control NFT `(policy, name)` from config.
+      * This is the policy `peg_in.ak` requires on the referenced Confirmed TM UTxO (its 4th param,
+      * `tm_nft_policy_id`), so the peg_in script hash now depends on it — every site that builds
+      * [[PegInContract]] must apply the same value.
+      */
     def tmNftPolicy(config: BinocularConfig, oracleScriptHash: ScriptHash): ByteString = {
         val tmScript = TreasuryMovementContract.script(
           ByteString.fromArray(oracleScriptHash.bytes),

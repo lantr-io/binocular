@@ -7,7 +7,7 @@ import binocular.watchtower.*
 import binocular.cli.{Command, CommandHelpers, Console}
 
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{AssetName, Credential, ScriptHash, TransactionHash, TransactionInput, Utxo}
+import scalus.cardano.ledger.{AssetName, Credential, Script, ScriptHash, ScriptRef, TransactionHash, TransactionInput, TransactionOutput, Utxo}
 import scalus.cardano.node.TransactionStatus
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
@@ -272,47 +272,43 @@ case class PegOutCompleteCommand(
         }
 
         Console.step(4, "Building + submitting completion tx")
+        // Discover the CIP-33 reference-script UTxOs by the script hash each carries, scanning the
+        // sponsor wallet where deploy-script-refs publishes them — so the outpoints need not be
+        // recorded in config. A script whose hash isn't found falls back to inlining it in the
+        // witness set. The provider drops scriptRef on the fetched UTxO, so re-attach the
+        // reconstructed script for the tx builder.
+        val refScriptUtxos =
+            CommandHelpers.refScriptUtxosByHash(config, setup.sponsorAddress.encode.getOrElse(""))
         def lookupRefUtxo(
             label: String,
-            refStr: String,
-            script: scalus.cardano.ledger.Script.PlutusV3
+            script: Script.PlutusV3
         ): Option[Utxo] =
-            if refStr.isEmpty then None
-            else {
-                val ref = parseRef(s"bridge.$label", refStr)
+            refScriptUtxos.get(script.scriptHash).map { ref =>
                 provider.findUtxo(ref).await(timeout) match {
                     case Right(u) =>
                         val enriched = u.output match {
-                            case b: scalus.cardano.ledger.TransactionOutput.Babbage =>
-                                b.copy(scriptRef = Some(scalus.cardano.ledger.ScriptRef(script)))
-                            case s: scalus.cardano.ledger.TransactionOutput.Shelley =>
-                                scalus.cardano.ledger.TransactionOutput.Babbage(
+                            case b: TransactionOutput.Babbage =>
+                                b.copy(scriptRef = Some(ScriptRef(script)))
+                            case s: TransactionOutput.Shelley =>
+                                TransactionOutput.Babbage(
                                   s.address,
                                   s.value,
                                   datumOption = None,
-                                  scriptRef = Some(scalus.cardano.ledger.ScriptRef(script))
+                                  scriptRef = Some(ScriptRef(script))
                                 )
                         }
-                        Some(Utxo(u.input, enriched))
-                    case Left(err) => Console.error(s"Looking up $label ($refStr): $err"); break(1)
+                        Utxo(u.input, enriched)
+                    case Left(err) =>
+                        Console.error(
+                          s"Looking up $label ref (${ref.transactionId.toHex}#${ref.index}): $err"
+                        )
+                        break(1)
                 }
             }
         val scriptRefs = PegOutCompleteTx.ScriptRefs(
-          pegOut = lookupRefUtxo(
-            "peg-out-script-ref",
-            config.bridge.pegOutScriptRef.getOrElse(""),
-            pegOut.script
-          ),
-          completedPegOuts = lookupRefUtxo(
-            "completed-peg-outs-script-ref",
-            config.bridge.completedPegOutsScriptRef.getOrElse(""),
-            cpoContract.script
-          ),
-          bridgedToken = lookupRefUtxo(
-            "bridged-token-script-ref",
-            config.bridge.bridgedTokenScriptRef,
-            bridgedToken.script
-          )
+          pegOut = lookupRefUtxo("peg_out", pegOut.script),
+          completedPegOuts = lookupRefUtxo("completed_peg_outs", cpoContract.script),
+          bridgedToken = lookupRefUtxo("bridged_token", bridgedToken.script)
         )
 
         // Diagnostic: PEGOUT_DEBUG_BLUEPRINT=<verbose-trace plutus.json> registers a `?`-instrumented

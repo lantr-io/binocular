@@ -144,7 +144,8 @@ case class InitOracleCommand(
               provider,
               hdAccount,
               timeout = timeout,
-              excludeInputs = CommandHelpers.bridgeRefOutpoints(config)
+              excludeInputs =
+                  CommandHelpers.refScriptOutpoints(config, sponsorAddress.encode.getOrElse(""))
             ) match {
                 case Right(result) =>
                     Console.tx("Tx", s"${result._1}#${result._2}")
@@ -218,7 +219,8 @@ case class InitOracleCommand(
               hdAccount,
               script,
               timeout,
-              excludeInputs = CommandHelpers.bridgeRefOutpoints(config)
+              excludeInputs =
+                  CommandHelpers.refScriptOutpoints(config, sponsorAddress.encode.getOrElse(""))
             ) match {
                 case Right(result) =>
                     Console.tx("Tx", s"${result._1}#${result._2}")

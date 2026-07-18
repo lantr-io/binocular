@@ -6,7 +6,7 @@ import binocular.watchtower.*
 import binocular.cli.{Command, CommandHelpers, Console}
 
 import scalus.cardano.address.{StakeAddress, StakePayload}
-import scalus.cardano.ledger.{AssetName, Transaction, TransactionHash, Utxo, Value}
+import scalus.cardano.ledger.{AssetName, Transaction, TransactionHash, TransactionInput, Utxo, Value}
 import scalus.cardano.node.{BlockchainProvider, TransactionStatus}
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import scalus.cardano.txbuilder.TxBuilder
@@ -106,7 +106,6 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
 
         def refOf(u: Utxo): TxOutRef =
             TxOutRef(TxId(u.input.transactionId), u.input.index)
-        def utxoKey(u: Utxo): String = { val r = refOf(u); s"${r.id.hash.toHex}#${r.idx}" }
 
         // --- pick one clean pure-ADA one-shot UTxO (shared by config + cpi + cpo + TM-control) ---
         val walletUtxos = provider.findUtxos(sponsorAddress).await(timeout) match {
@@ -117,69 +116,25 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         // identical to a plain change UTxO to the filter below — but spending one DESTROYS a deployed
         // reference script, and (because BlockfrostProvider drops `scriptRef` on findUtxos) the tx
         // builder under-estimates the fee by the Conway reference-script surcharge → the mint tx is
-        // rejected with FeeTooSmallUTxO. We must exclude every ref-script UTxO. The config-recorded
-        // refs are not enough (a sponsor wallet accumulates duplicate CIP-33 outputs across runs), so
-        // also query blockfrost's address-utxos endpoint directly for `reference_script_hash` — the
-        // one piece of state the provider discards. Best-effort: on any query failure we still exclude
-        // the config-known refs.
-        val configKnownRefs: Set[String] = Set(
-          config.bridge.pegInScriptRef,
-          config.bridge.bridgedTokenScriptRef,
-          config.bridge.completedPegInsScriptRef,
-          config.bridge.completedPegInsOneShotRef
-        ).iterator.map(_.trim.toLowerCase).filter(_.nonEmpty).toSet
+        // rejected with FeeTooSmallUTxO. Exclude every ref-script UTxO — discovered on-chain via the
+        // shared address-utxos `reference_script_hash` scan. The one-shot from a prior deploy is
+        // excluded too, in case a stale (now-spent) copy still lingers in the wallet index.
+        val staleOneShot: Option[TransactionInput] =
+            config.bridge.completedPegInsOneShotRef.trim.split("#") match {
+                case Array(h, i) if i.toIntOption.isDefined =>
+                    Some(TransactionInput(TransactionHash.fromHex(h), i.toInt))
+                case _ => None
+            }
+        val excludedInputs: Set[TransactionInput] =
+            CommandHelpers.refScriptOutpoints(config, sponsorAddress.encode.getOrElse("")) ++
+                staleOneShot
 
-        def queriedRefScriptOutrefs(): Set[String] = {
-            val backendOk = config.cardano.backend.toLowerCase == "blockfrost" &&
-                config.cardano.blockfrostProjectId.nonEmpty
-            val addr = sponsorAddress.encode.getOrElse("")
-            if !backendOk || addr.isEmpty then Set.empty
-            else
-                val base = config.cardano.network.toLowerCase match {
-                    case "mainnet" => "https://cardano-mainnet.blockfrost.io/api/v0"
-                    case "preview" => "https://cardano-preview.blockfrost.io/api/v0"
-                    case _         => "https://cardano-preprod.blockfrost.io/api/v0"
-                }
-                try {
-                    val client = java.net.http.HttpClient.newHttpClient()
-                    def page(p: Int): Seq[ujson.Value] = {
-                        val req = java.net.http.HttpRequest
-                            .newBuilder()
-                            .uri(
-                              java.net.URI.create(s"$base/addresses/$addr/utxos?count=100&page=$p")
-                            )
-                            .header("project_id", config.cardano.blockfrostProjectId)
-                            .GET()
-                            .build()
-                        val resp =
-                            client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString())
-                        if resp.statusCode() != 200 then Seq.empty
-                        else ujson.read(resp.body()).arr.toSeq
-                    }
-                    def collect(p: Int, acc: Vector[ujson.Value]): Vector[ujson.Value] = {
-                        val items = page(p)
-                        val next = acc ++ items
-                        if items.size < 100 then next else collect(p + 1, next)
-                    }
-                    collect(1, Vector.empty).iterator.flatMap { o =>
-                        o.obj.get("reference_script_hash") match {
-                            case Some(ujson.Str(_)) =>
-                                Some(
-                                  s"${o("tx_hash").str.toLowerCase}#${o("output_index").num.toInt}"
-                                )
-                            case _ => None
-                        }
-                    }.toSet
-                } catch { case _: Exception => Set.empty }
-        }
-
-        val excludedRefs: Set[String] = configKnownRefs ++ queriedRefScriptOutrefs()
         def cleanCandidates(utxos: List[Utxo]): List[Utxo] =
             utxos
                 .filter(u =>
                     u.output.value.assets.isEmpty && u.output.value.coin.value >= 5_000_000L
                 )
-                .filterNot(u => excludedRefs.contains(utxoKey(u)))
+                .filterNot(u => excludedInputs.contains(u.input))
                 .sortBy(-_.output.value.coin.value)
 
         val signer = setup.hdAccount.signerForUtxos

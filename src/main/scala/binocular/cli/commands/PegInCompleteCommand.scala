@@ -6,7 +6,7 @@ import binocular.watchtower.*
 import binocular.cli.{Command, CommandHelpers, Console}
 
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{AssetName, Credential, LedgerToPlutusTranslation, ScriptHash, TransactionHash, TransactionInput, Utxo}
+import scalus.cardano.ledger.{AssetName, Credential, LedgerToPlutusTranslation, Script, ScriptHash, ScriptRef, TransactionHash, TransactionInput, TransactionOutput, Utxo}
 import scalus.cardano.node.TransactionStatus
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
@@ -299,45 +299,43 @@ case class PegInCompleteCommand(
         // round-trip). We have the scripts locally already (we derive them every time from the
         // same blueprint + params the original deploy used), so we attach them directly. Each
         // empty config entry skips that ref → its script falls back to the witness set.
+        // Discover the CIP-33 reference-script UTxOs by the script hash each carries, scanning the
+        // sponsor wallet where deploy-script-refs publishes them — so the outpoints need not be
+        // recorded in config. A script whose hash isn't found falls back to inlining it in the
+        // witness set (only viable for small txs). The provider drops scriptRef on the fetched UTxO,
+        // so re-attach the reconstructed script for the tx builder.
+        val refScriptUtxos =
+            CommandHelpers.refScriptUtxosByHash(config, setup.sponsorAddress.encode.getOrElse(""))
         def lookupRefUtxo(
             label: String,
-            refStr: String,
-            script: scalus.cardano.ledger.Script.PlutusV3
+            script: Script.PlutusV3
         ): Option[Utxo] =
-            if refStr.isEmpty then None
-            else {
-                val ref = parseRef(s"bridge.$label", refStr)
+            refScriptUtxos.get(script.scriptHash).map { ref =>
                 provider.findUtxo(ref).await(timeout) match {
                     case Right(u) =>
                         val enrichedOutput = u.output match {
-                            case b: scalus.cardano.ledger.TransactionOutput.Babbage =>
-                                b.copy(scriptRef = Some(scalus.cardano.ledger.ScriptRef(script)))
-                            case s: scalus.cardano.ledger.TransactionOutput.Shelley =>
-                                scalus.cardano.ledger.TransactionOutput.Babbage(
+                            case b: TransactionOutput.Babbage =>
+                                b.copy(scriptRef = Some(ScriptRef(script)))
+                            case s: TransactionOutput.Shelley =>
+                                TransactionOutput.Babbage(
                                   s.address,
                                   s.value,
                                   datumOption = None,
-                                  scriptRef = Some(scalus.cardano.ledger.ScriptRef(script))
+                                  scriptRef = Some(ScriptRef(script))
                                 )
                         }
-                        Some(Utxo(u.input, enrichedOutput))
+                        Utxo(u.input, enrichedOutput)
                     case Left(err) =>
-                        Console.error(s"Looking up $label ($refStr): $err")
+                        Console.error(
+                          s"Looking up $label ref (${ref.transactionId.toHex}#${ref.index}): $err"
+                        )
                         break(1)
                 }
             }
         val scriptRefs = PegInCompleteTx.ScriptRefs(
-          pegIn = lookupRefUtxo("peg-in-script-ref", config.bridge.pegInScriptRef, pegIn.script),
-          completedPegIns = lookupRefUtxo(
-            "completed-peg-ins-script-ref",
-            config.bridge.completedPegInsScriptRef,
-            cpiContract.script
-          ),
-          bridgedToken = lookupRefUtxo(
-            "bridged-token-script-ref",
-            config.bridge.bridgedTokenScriptRef,
-            bridgedToken.script
-          )
+          pegIn = lookupRefUtxo("peg_in", pegIn.script),
+          completedPegIns = lookupRefUtxo("completed_peg_ins", cpiContract.script),
+          bridgedToken = lookupRefUtxo("bridged_token", bridgedToken.script)
         )
 
         val tx =

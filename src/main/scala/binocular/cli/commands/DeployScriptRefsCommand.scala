@@ -206,24 +206,29 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
             }
         }
 
-        // Each entry: (label, existing config ref, script). Skip any whose ref is already set so
-        // re-running (e.g. to add the peg-out side after the peg-in side) doesn't re-publish — and
-        // waste ~50 ADA on — refs that already exist.
+        // Each entry: (label, script). Skip any whose script hash already has a reference UTxO at the
+        // sponsor wallet so re-running (e.g. to add the peg-out side after the peg-in side) doesn't
+        // re-publish — and waste ~50 ADA on — refs that already exist. Discovery is on-chain
+        // (BlockfrostProvider drops scriptRef, so scan `reference_script_hash` directly), not config.
         val candidates = List(
-          ("peg_in", cfg.pegInScriptRef, pegIn.script),
-          ("bridged_token", cfg.bridgedTokenScriptRef, bridgedToken.script),
-          ("completed_peg_ins", cfg.completedPegInsScriptRef, cpi.script),
-          ("peg_out", cfg.pegOutScriptRef.getOrElse(""), pegOut.script),
-          ("completed_peg_outs", cfg.completedPegOutsScriptRef.getOrElse(""), cpo.script)
+          ("peg_in", pegIn.script),
+          ("bridged_token", bridgedToken.script),
+          ("completed_peg_ins", cpi.script),
+          ("peg_out", pegOut.script),
+          ("completed_peg_outs", cpo.script)
         )
-        val (already, toPublish) = candidates.partition(_._2.trim.nonEmpty)
-        already.foreach { case (label, ref, _) =>
-            Console.info(s"$label-script-ref already set, skipping", ref)
+        val deployedHashes = binocular.cli.CommandHelpers
+            .refScriptUtxosByHash(config, sponsorAddress.encode.getOrElse(""))
+            .keySet
+        val (already, toPublish) =
+            candidates.partition { case (_, script) => deployedHashes.contains(script.scriptHash) }
+        already.foreach { case (label, script) =>
+            Console.info(s"$label ref already deployed, skipping", script.scriptHash.toHex)
         }
 
         // Submit serially so each tx selects fresh wallet UTxOs.
         val results: List[(String, (String, Int))] =
-            toPublish.flatMap { case (label, _, script) =>
+            toPublish.flatMap { case (label, script) =>
                 submitOne(label, refOutput(script)).map(r => label -> r)
             }
 
@@ -233,8 +238,11 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
         }
 
         println()
-        Console.success("Bridge script references deployed. Set these in binocular.bridge:")
-        for (label, (hash, idx)) <- results do Console.info(s"$label-script-ref", s"$hash#$idx")
+        Console.success(
+          "Bridge script references deployed. No config needed — the completion paths discover " +
+              "them on-chain by script hash. Published outpoints (for your records):"
+        )
+        for (label, (hash, idx)) <- results do Console.info(s"$label ref", s"$hash#$idx")
         0
     }
 }
