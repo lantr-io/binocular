@@ -459,6 +459,10 @@ object CommandHelpers {
             searchedDepth
           )
         )
+        // A deep reorg orphans the oracle's confirmed history: no amount of retrying recovers it,
+        // only a manual re-init. Mark it so the watchtower supervisor stops the whole process
+        // (do-not-restart exit code) instead of looping every retry interval.
+        with binocular.watchtower.UnrecoverableWorkerError
 
     object DeepReorgException {
         private[cli] def format(

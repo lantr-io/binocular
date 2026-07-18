@@ -107,6 +107,10 @@ in
         '';
         Restart = "always";
         RestartSec = 10;
+        # Exit code 3 = unrecoverable watchtower state (deep reorg orphaned the oracle's confirmed
+        # history; see Watchtower.UnrecoverableExitCode). Restarting would only re-detect it, so
+        # leave the service stopped for manual re-init + `systemctl restart binocular-watchtower`.
+        RestartPreventExitStatus = "3";
 
         # Hardening
         NoNewPrivileges = true;

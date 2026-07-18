@@ -124,9 +124,12 @@ class OracleDaemon(planner: UpdatePlanner, dryRun: Boolean) {
                         break(1)
                     }
             catch {
+                // Unrecoverable — let it propagate out of the daemon so the watchtower supervisor
+                // stops the whole process (do-not-restart exit code) rather than restarting us into
+                // the same deep reorg every retry interval.
                 case e: CommandHelpers.DeepReorgException =>
                     Console.error(e.getMessage)
-                    break(1)
+                    throw e
             }
         Console.success(s"MPF reconstructed: ${currentMpf.size} confirmed blocks")
         println(
@@ -468,9 +471,13 @@ class OracleDaemon(planner: UpdatePlanner, dryRun: Boolean) {
                 // and loop forever).
                 case b: boundary.Break[?] =>
                     throw b
+                // Unrecoverable — confirmed history orphaned; manual re-init required. Propagate
+                // out of the daemon (rather than break(1)) so the watchtower supervisor stops the
+                // whole process with a do-not-restart exit code, instead of the Supervisor
+                // restarting us every retryInterval only to re-detect the same reorg (the 5s spam).
                 case e: CommandHelpers.DeepReorgException =>
                     Console.logError(e.getMessage)
-                    break(1)
+                    throw e
                 case e: Exception =>
                     Console.logError(
                       s"Error: ${e.getMessage} — retrying in ${retryInterval}s"

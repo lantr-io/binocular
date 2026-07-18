@@ -1,10 +1,12 @@
 package binocular
 
-import binocular.watchtower.Supervisor
+import binocular.watchtower.{Supervisor, UnrecoverableWorkerError}
 import org.scalatest.funsuite.AnyFunSuite
 import java.util.concurrent.atomic.AtomicInteger
 
 class SupervisorTest extends AnyFunSuite {
+
+    private class Unrecoverable extends RuntimeException("orphaned") with UnrecoverableWorkerError
 
     test("restarts a worker that keeps throwing, until stopped") {
         val calls = new AtomicInteger(0)
@@ -14,6 +16,19 @@ class SupervisorTest extends AnyFunSuite {
             throw new RuntimeException("boom")
         }
         assert(calls.get() == 3)
+    }
+
+    test("re-raises an UnrecoverableWorkerError instead of restarting it") {
+        val calls = new AtomicInteger(0)
+        val sup = new Supervisor("test", retryDelayMs = 0, sleep = _ => ())
+        assertThrows[Unrecoverable] {
+            sup.supervise { () =>
+                calls.incrementAndGet()
+                throw new Unrecoverable
+            }
+        }
+        // Thrown on the first attempt — never retried.
+        assert(calls.get() == 1)
     }
 
     test("does not propagate the worker's exception to the caller") {

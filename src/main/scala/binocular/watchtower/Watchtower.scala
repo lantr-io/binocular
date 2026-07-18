@@ -2,6 +2,18 @@ package binocular.watchtower
 
 import binocular.cli.Console
 
+/** Marker for a worker failure that no amount of retrying can fix — only manual intervention can
+  * (e.g. a deep Bitcoin reorg that orphaned the oracle's confirmed history, requiring a re-init).
+  *
+  * The [[Supervisor]] must NOT restart a worker that fails this way: restarting would just re-hit
+  * the identical state every retry interval (the 5-second log spam this is meant to end). Instead
+  * the [[Watchtower]] orchestrator stops the WHOLE process with
+  * [[Watchtower.UnrecoverableExitCode]] — a code the systemd unit lists in
+  * `RestartPreventExitStatus`, so the service stays down until an operator re-inits the oracle and
+  * restarts it.
+  */
+trait UnrecoverableWorkerError extends Throwable
+
 /** Runs several long-lived daemon loops in one process, each on its own labeled thread.
   *
   * The watchtower runs the oracle sync, TM relay, and TM confirm loops together. They are NOT
@@ -10,6 +22,12 @@ import binocular.cli.Console
   * UTxO). A crash in one loop is contained by its [[Supervisor]] and does not stop the others.
   */
 object Watchtower {
+
+    /** Process exit code signalling an unrecoverable worker state (manual re-init required). The
+      * systemd unit lists this in `RestartPreventExitStatus`, so `Restart=always` does NOT bring
+      * the service back — otherwise it would just re-detect the same condition on every restart.
+      */
+    val UnrecoverableExitCode = 3
 
     /** A named unit of work. `run` is a full daemon loop (it normally never returns). */
     case class Worker(label: String, run: () => Unit)
@@ -31,24 +49,36 @@ object Watchtower {
       * systemd's `Restart=always` brings every loop back on a fresh JVM. `onWorkerExit` is
       * injectable for tests (a fresh JVM is the only reliable recovery from OOM/stack overflow
       * anyway).
+      *
+      * A worker that throws an [[UnrecoverableWorkerError]] is different: retrying cannot help, so
+      * the [[Supervisor]] re-raises it here and we stop the WHOLE process via `onUnrecoverable` —
+      * by default [[exitUnrecoverable]], which exits with [[UnrecoverableExitCode]] so systemd (via
+      * `RestartPreventExitStatus`) leaves the service stopped for manual re-init instead of
+      * restarting it into the same failure.
       */
     def runSupervised(
         workers: List[Worker],
         retryDelayMs: Long,
-        onWorkerExit: String => Unit = Watchtower.exitProcess
+        onWorkerExit: String => Unit = Watchtower.exitProcess,
+        onUnrecoverable: String => Unit = Watchtower.exitUnrecoverable
     ): Unit = {
         val threads = workers.map { w =>
             val t = thread(
               w,
               () => {
                   Console.setLabel(Some(w.label))
-                  try new Supervisor(w.label, retryDelayMs).supervise(w.run)
-                  catch {
+                  try {
+                      new Supervisor(w.label, retryDelayMs).supervise(w.run)
+                      // Reaching here means the supervised loop returned (a daemon loop must never
+                      // end) — restart the whole process on a fresh JVM.
+                      onWorkerExit(w.label)
+                  } catch {
+                      case _: UnrecoverableWorkerError =>
+                          onUnrecoverable(w.label)
                       case t: Throwable =>
                           Console.logError(s"${w.label} loop crashed fatally: $t")
+                          onWorkerExit(w.label)
                   }
-                  // Reaching here means the supervised loop is gone (a daemon loop must never end).
-                  onWorkerExit(w.label)
               }
             )
             t.start()
@@ -65,6 +95,19 @@ object Watchtower {
           s"watchtower loop '$label' terminated — exiting so systemd restarts all loops"
         )
         System.exit(1)
+    }
+
+    /** `onUnrecoverable` default: a worker hit a state manual intervention alone can fix. Log it
+      * and exit with [[UnrecoverableExitCode]] so the service manager (via
+      * `RestartPreventExitStatus`) leaves the watchtower stopped rather than restarting it into the
+      * same failure.
+      */
+    def exitUnrecoverable(label: String): Unit = {
+        Console.logError(
+          s"watchtower loop '$label' hit an unrecoverable state — manual re-init required. " +
+              s"Exiting $UnrecoverableExitCode so the service stays stopped (no auto-restart)."
+        )
+        System.exit(UnrecoverableExitCode)
     }
 
     /** Dry-run mode: run each worker once, concurrently, and return once they finish or `timeoutMs`

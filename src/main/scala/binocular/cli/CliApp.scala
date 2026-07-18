@@ -534,6 +534,12 @@ object CliApp {
 
                     commandImpl.execute(config)
                 } catch {
+                    // Unrecoverable state (e.g. a deep reorg orphaning confirmed history) — a
+                    // known terminal condition, so report it plainly without a stack trace. The
+                    // watchtower handles its own exit; this covers the standalone `run` command.
+                    case e: binocular.watchtower.UnrecoverableWorkerError =>
+                        System.err.println(s"Unrecoverable: ${e.getMessage}")
+                        binocular.watchtower.Watchtower.UnrecoverableExitCode
                     case e: pureconfig.error.ConfigReaderException[?] =>
                         System.err.println(
                           s"Configuration error: ${e.failures.toList.map(_.description).mkString(", ")}"

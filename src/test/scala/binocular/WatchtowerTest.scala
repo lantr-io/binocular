@@ -2,11 +2,14 @@ package binocular
 
 import binocular.watchtower.Watchtower
 import binocular.watchtower.Watchtower.Worker
+import binocular.watchtower.UnrecoverableWorkerError
 import org.scalatest.funsuite.AnyFunSuite
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.ConcurrentLinkedQueue
 
 class WatchtowerTest extends AnyFunSuite {
+
+    private class Unrecoverable extends RuntimeException("orphaned") with UnrecoverableWorkerError
 
     test("runOnce runs every worker exactly once") {
         val counter = new AtomicInteger(0)
@@ -57,5 +60,20 @@ class WatchtowerTest extends AnyFunSuite {
           onWorkerExit = label => exited.set(label)
         )
         assert(exited.get() == "relay")
+    }
+
+    test("an unrecoverable worker error stops the process via onUnrecoverable, not restart") {
+        val restarted = new java.util.concurrent.atomic.AtomicReference[String]("")
+        val stopped = new java.util.concurrent.atomic.AtomicReference[String]("")
+        // A deep-reorg-style UnrecoverableWorkerError must NOT be restarted (onWorkerExit) — it must
+        // route to onUnrecoverable, which in production exits with the do-not-restart code.
+        Watchtower.runSupervised(
+          workers = List(Worker("oracle", () => throw new Unrecoverable)),
+          retryDelayMs = 0,
+          onWorkerExit = label => restarted.set(label),
+          onUnrecoverable = label => stopped.set(label)
+        )
+        assert(stopped.get() == "oracle")
+        assert(restarted.get() == "", "unrecoverable error must not trigger the restart path")
     }
 }

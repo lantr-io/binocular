@@ -21,7 +21,9 @@ class Supervisor(
 
     def isRunning: Boolean = running
 
-    /** Run `work` under supervision until [[stop]] is called. Never propagates `work`'s exception.
+    /** Run `work` under supervision until [[stop]] is called. Swallows and retries transient
+      * failures, but re-raises an [[UnrecoverableWorkerError]]: retrying cannot fix it, so the
+      * orchestrator must stop the whole process instead of looping every retry interval.
       */
     def supervise(work: () => Unit): Unit = {
         var first = true
@@ -30,6 +32,9 @@ class Supervisor(
             first = false
             try work()
             catch {
+                // Unrecoverable (e.g. a deep reorg orphaning confirmed history) — do NOT retry;
+                // propagate so runSupervised stops the process with a do-not-restart exit code.
+                case e: UnrecoverableWorkerError => throw e
                 case NonFatal(e) =>
                     Console.logError(
                       s"$name loop crashed: ${e.getMessage} — restarting in ${retryDelayMs}ms"
