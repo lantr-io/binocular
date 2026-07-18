@@ -5,6 +5,7 @@ import binocular.bitcoin.*
 import binocular.oracle.*
 import binocular.watchtower.*
 import binocular.cli.{Command, CommandHelpers, Console}
+import binocular.notify.Notifier
 import scalus.cardano.address.Address
 import scalus.cardano.ledger.*
 import scalus.cardano.node.BlockchainProvider
@@ -33,16 +34,17 @@ import cats.syntax.either.*
   * Unlike the old always-ok scaffold, the datum flip is now only accepted if the Bitcoin
   * confirmation is *proven* against the oracle.
   */
-case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
+case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier] = None)
+    extends Command {
 
     override def execute(config: BinocularConfig): Int = {
         Console.header("Binocular TM Confirm (validated)")
         if dryRun then Console.warn("Dry-run mode — will check once and not submit")
         println()
-        runConfirm(config)
+        runConfirm(config, notifier.getOrElse(Notifier.fromConfig(config.notifications)))
     }
 
-    private def runConfirm(config: BinocularConfig): Int = boundary {
+    private def runConfirm(config: BinocularConfig, notifier: Notifier): Int = boundary {
         given ec: ExecutionContext = binocular.cli.DaemonExecution.ec
         val pollInterval = config.relay.pollInterval
         val retryInterval = config.relay.retryInterval
@@ -152,7 +154,8 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
                                   signedBtcTx,
                                   timeout,
                                   skipBtcTxids,
-                                  processed
+                                  processed,
+                                  notifier
                                 )
                 }
 
@@ -167,6 +170,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
                     throw e
                 case e: Exception =>
                     Console.logError(s"Error: ${e.getMessage} — retrying in ${retryInterval}s")
+                    notifier.error("confirm", s"Error: ${e.getMessage}")
                     if dryRun then break(1)
                     Thread.sleep(retryInterval * 1000L)
             }
@@ -187,7 +191,8 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
         signedBtcTx: ByteString,
         timeout: Duration,
         skipBtcTxids: Set[String],
-        processed: scala.collection.mutable.Map[String, String]
+        processed: scala.collection.mutable.Map[String, String],
+        notifier: Notifier
     )(using ExecutionContext): Unit = {
         val utxoRef = s"${utxo.input.transactionId.toHex}#${utxo.input.index}"
         // Parse the (attacker-placeable) datum bytes defensively: getTxHash/allInputOutpoints/
@@ -290,6 +295,11 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false) extends Command {
                                       cardanoTx = Some(hash)
                                     ).foreach(l => Console.log(s"    $l"))
                                     processed(utxoRef) = hash
+                                    notifier.success(
+                                      "confirm",
+                                      s"TM confirmed on Cardano — btc txid `$displayTxid`, " +
+                                          s"cardano tx `$hash` ($utxoRef)"
+                                    )
                                 case Left(err) =>
                                     Console.logError(s"    Confirm failed: $err — will retry")
                             }

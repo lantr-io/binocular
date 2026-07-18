@@ -2,6 +2,7 @@ package binocular.cli
 
 import binocular.*
 import binocular.bitcoin.*
+import binocular.notify.Notifier
 import binocular.oracle.*
 import binocular.oracle.ForkTreePretty.*
 import org.bouncycastle.crypto.digests.Blake2bDigest
@@ -33,7 +34,54 @@ private def assetFingerprint(policyId: ByteString, assetName: ByteString): Strin
   *
   * `planner` controls the strategy (honest vs. rogue); all other logic is shared.
   */
-class OracleDaemon(planner: UpdatePlanner, dryRun: Boolean) {
+class OracleDaemon(
+    planner: UpdatePlanner,
+    dryRun: Boolean,
+    notifier: Notifier = binocular.notify.NoopNotifier
+) {
+
+    /** Big-endian (block-explorer) hex of a confirmed tip hash, which is stored little-endian. */
+    private def displayHash(hash: ByteString): String =
+        ByteString.fromArray(hash.bytes.reverse).toHex
+
+    /** A rich, structured deep-reorg alert for the notifier.
+      *
+      * The exception's own message is a single dense sentence with internal-order hashes; this
+      * breaks the typed fields onto their own lines and renders every hash in big-endian
+      * (block-explorer) order so an operator can paste them straight into a Bitcoin explorer.
+      *
+      * @param phase
+      *   where it fired (e.g. "startup MPF reconstruction" / "update loop") for context
+      */
+    private def deepReorgAlert(
+        e: CommandHelpers.DeepReorgException,
+        phase: String,
+        network: String
+    ): String = {
+        val orphanLine = e.deepestConfirmedAncestor match {
+            case Some((h, hash)) =>
+                val orphaned = e.confirmedHeight - h
+                s"• Orphaned: $orphaned confirmed block(s) (deepest still-canonical ancestor: " +
+                    s"height $h, ${displayHash(hash)})"
+            case None =>
+                e.searchedDepth match {
+                    case Some(n) =>
+                        s"• Orphaned: unknown — reorg is deeper than the searched window " +
+                            s"($n heights) or beyond the oracle's known confirmed history"
+                    case None =>
+                        "• Orphaned: unknown — detected before the off-chain MPF was reconstructed"
+                }
+        }
+        s"""UNRECOVERABLE deep reorg ($phase) — manual re-init required
+           |The oracle's confirmed tip is no longer on Bitcoin's canonical chain.
+           |• Confirmed height: ${e.confirmedHeight}
+           |• Oracle tip:    ${displayHash(e.oracleHash)}
+           |• Canonical tip: ${displayHash(e.canonicalHash)}
+           |$orphanLine
+           |• Network: $network
+           |Action: the watchtower has stopped (no auto-restart). Re-init the oracle from a current
+           |canonical height, then restart it.""".stripMargin
+    }
 
     def run(config: BinocularConfig): Int = boundary {
         given ec: ExecutionContext = binocular.cli.DaemonExecution.ec
@@ -129,6 +177,10 @@ class OracleDaemon(planner: UpdatePlanner, dryRun: Boolean) {
                 // the same deep reorg every retry interval.
                 case e: CommandHelpers.DeepReorgException =>
                     Console.error(e.getMessage)
+                    notifier.error(
+                      "oracle",
+                      deepReorgAlert(e, "startup MPF reconstruction", config.bitcoinNode.network)
+                    )
                     throw e
             }
         Console.success(s"MPF reconstructed: ${currentMpf.size} confirmed blocks")
@@ -192,6 +244,13 @@ class OracleDaemon(planner: UpdatePlanner, dryRun: Boolean) {
                 confirmedBlocks = Some(currentMpf.size)
               )
             )
+            notifier.newBlock(
+              state.ctx.height,
+              displayHash(state.ctx.lastBlockHash),
+              0,
+              state.forkTree.blockCount.toInt,
+              currentMpf.size
+            )
         }
 
         /** Re-read oracle UTxO and chain state from the blockchain. Called after tx failure or
@@ -249,6 +308,13 @@ class OracleDaemon(planner: UpdatePlanner, dryRun: Boolean) {
                             state.ctx.height,
                             confirmedBlocks = Some(currentMpf.size)
                           )
+                        )
+                        notifier.newBlock(
+                          state.ctx.height,
+                          displayHash(state.ctx.lastBlockHash),
+                          0,
+                          state.forkTree.blockCount.toInt,
+                          currentMpf.size
                         )
                         done = true
                     }
@@ -365,6 +431,13 @@ class OracleDaemon(planner: UpdatePlanner, dryRun: Boolean) {
                                             confirmedBlocks = Some(updatedMpf.size)
                                           )
                                         )
+                                        notifier.newBlock(
+                                          newChainState.ctx.height,
+                                          displayHash(newChainState.ctx.lastBlockHash),
+                                          appliedHeaders.toInt,
+                                          newChainState.forkTree.blockCount.toInt,
+                                          updatedMpf.size
+                                        )
                                         // Wait for both wallet UTxOs AND the new oracle UTxO to
                                         // be indexed before the next iteration. Without the
                                         // oracle-side check, the next iteration's
@@ -460,6 +533,7 @@ class OracleDaemon(planner: UpdatePlanner, dryRun: Boolean) {
                                 }
                             } else {
                                 Console.logError(s"Tx failed: $err")
+                                notifier.error("oracle", s"Tx failed: $err")
                                 refreshOracleState()
                             }
                     }
@@ -477,11 +551,16 @@ class OracleDaemon(planner: UpdatePlanner, dryRun: Boolean) {
                 // restarting us every retryInterval only to re-detect the same reorg (the 5s spam).
                 case e: CommandHelpers.DeepReorgException =>
                     Console.logError(e.getMessage)
+                    notifier.error(
+                      "oracle",
+                      deepReorgAlert(e, "update loop", config.bitcoinNode.network)
+                    )
                     throw e
                 case e: Exception =>
                     Console.logError(
                       s"Error: ${e.getMessage} — retrying in ${retryInterval}s"
                     )
+                    notifier.error("oracle", s"Error: ${e.getMessage}")
                     Thread.sleep(retryInterval * 1000L)
             }
         }

@@ -2,6 +2,7 @@ package binocular.cli.commands
 
 import binocular.*
 import binocular.cli.{Command, Console}
+import binocular.notify.Notifier
 import binocular.watchtower.Watchtower
 import binocular.watchtower.Watchtower.Worker
 
@@ -24,10 +25,17 @@ case class WatchtowerCommand(dryRun: Boolean = false) extends Command {
         Console.info("Daemons", "oracle sync, TM relay, TM confirm")
         println()
 
+        // One shared notifier for all three loops, so error debounce and the new-block height
+        // dedup are coordinated across them (and there is a single background post thread).
+        val notifier = Notifier.fromConfig(config.notifications)
+
         val workers = List(
-          Worker("oracle", () => { RunCommand(dryRun).execute(config); () }),
-          Worker("relay", () => { RelayCommand(dryRun).execute(config); () }),
-          Worker("confirm", () => { ConfirmTmtxCommand(dryRun).execute(config); () })
+          Worker("oracle", () => { RunCommand(dryRun, Some(notifier)).execute(config); () }),
+          Worker("relay", () => { RelayCommand(dryRun, Some(notifier)).execute(config); () }),
+          Worker(
+            "confirm",
+            () => { ConfirmTmtxCommand(dryRun, Some(notifier)).execute(config); () }
+          )
         )
 
         if dryRun then

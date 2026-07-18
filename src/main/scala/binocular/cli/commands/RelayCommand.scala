@@ -5,6 +5,7 @@ import binocular.bitcoin.*
 import binocular.oracle.reverse
 import binocular.watchtower.*
 import binocular.cli.{Command, CommandHelpers, Console}
+import binocular.notify.Notifier
 import scalus.cardano.address.Address
 import scalus.cardano.ledger.{AssetName, Credential}
 import scalus.cardano.node.BlockchainProvider
@@ -48,16 +49,17 @@ private def isTransientError(msg: String): Boolean =
 private def isAlreadyConfirmed(msg: String): Boolean =
     msg.contains("Transaction outputs already in utxo set") // code -27
 
-case class RelayCommand(dryRun: Boolean = false) extends Command {
+case class RelayCommand(dryRun: Boolean = false, notifier: Option[Notifier] = None)
+    extends Command {
 
     override def execute(config: BinocularConfig): Int = {
         Console.header("Binocular TM Relay (Cardano → Bitcoin)")
         if dryRun then Console.warn("Dry-run mode — will check once and exit without broadcasting")
         println()
-        runRelay(config)
+        runRelay(config, notifier.getOrElse(Notifier.fromConfig(config.notifications)))
     }
 
-    private def runRelay(config: BinocularConfig): Int = boundary {
+    private def runRelay(config: BinocularConfig, notifier: Notifier): Int = boundary {
         given ec: ExecutionContext = binocular.cli.DaemonExecution.ec
         val pollInterval = config.relay.pollInterval
         val retryInterval = config.relay.retryInterval
@@ -130,7 +132,8 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                                                   skipBtcTxids,
                                                   utxoRef,
                                                   txBytes,
-                                                  processed
+                                                  processed,
+                                                  notifier
                                                 )
                                             case other =>
                                                 Console.logWarn(
@@ -165,6 +168,7 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                     throw e
                 case e: Exception =>
                     Console.logError(s"Error: ${e.getMessage} — retrying in ${retryInterval}s")
+                    notifier.error("relay", s"Error: ${e.getMessage}")
                     if dryRun then break(1)
                     Thread.sleep(retryInterval * 1000L)
             }
@@ -178,7 +182,8 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
         skipBtcTxids: Set[String],
         utxoRef: String,
         txBytes: ByteString,
-        processed: scala.collection.mutable.Map[String, RelayResult]
+        processed: scala.collection.mutable.Map[String, RelayResult],
+        notifier: Notifier
     )(using ExecutionContext): Unit = {
         // getTxHash strips witness data, which recurses on a tx-declared input count — a crafted
         // UTxO at the TM address could StackOverflow. Guard so a poison UTxO is skipped, not fatal.
@@ -205,6 +210,7 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                 val txid = rpc.sendRawTransaction(txBytes.toHex).await(30.seconds)
                 Console.logSuccess(s"    Broadcast OK: BTC txid=$txid")
                 processed(utxoRef) = RelayResult.Relayed(txid)
+                notifier.success("relay", s"TM relayed to Bitcoin — btc txid `$txid` ($utxoRef)")
             } catch {
                 case e: Exception =>
                     val msg = e.getMessage
@@ -213,6 +219,10 @@ case class RelayCommand(dryRun: Boolean = false) extends Command {
                     else if isAlreadyConfirmed(msg) then
                         Console.logSuccess(s"    Already on Bitcoin: BTC txid=$btcTxId")
                         processed(utxoRef) = RelayResult.Relayed(btcTxId)
+                        notifier.success(
+                          "relay",
+                          s"TM already on Bitcoin — btc txid `$btcTxId` ($utxoRef)"
+                        )
                     else
                         Console.logWarn(s"    Broadcast rejected: $msg")
                         processed(utxoRef) = RelayResult.Rejected(msg)
