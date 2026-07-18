@@ -727,7 +727,14 @@ object OracleTransactions {
         oracleUtxo: Utxo,
         referenceScriptUtxo: Utxo,
         script: Script.PlutusV3,
-        newState: ChainState
+        newState: ChainState,
+        // Sponsor UTxOs to keep OUT of fee/input selection. Reference-script (CIP-33) UTxOs parked
+        // at the sponsor wallet belong here: BlockfrostProvider drops their `scriptRef`, so coin
+        // selection picking one under-estimates the fee by the Conway reference-script surcharge →
+        // FeeTooSmallUTxO (and spending it would destroy a deployed ref script). Same rationale as
+        // `buildOptimalUpdateTransaction`'s `excludeInputs`. Default empty (pure-oracle use is
+        // unaffected — a wallet with no ref-script UTxOs never triggers the shortfall).
+        excludeInputs: Set[TransactionInput] = Set.empty
     )(using ExecutionContext): Future[Transaction] = {
         val cardanoInfo = provider.cardanoInfo
         val network = cardanoInfo.network
@@ -739,15 +746,23 @@ object OracleTransactions {
         val validToInstant =
             validityInstant.plusMillis(BitcoinValidator.MaxValidityWindow.toLong)
 
-        TxBuilder(cardanoInfo)
-            .references(referenceScriptUtxo)
-            .spend(oracleUtxo, OracleAction.SetState)
-            .requireSignatures(Set(owner.paymentKeyHash))
-            .payTo(scriptAddress, oracleUtxo.output.value, newState)
-            .validFrom(validityInstant)
-            .validTo(validToInstant)
-            .complete(provider, sponsorAddress)
-            .map(_.sign(signer).transaction)
+        // Pre-fetch sponsor UTxOs and drop the excluded ref-script inputs before coin selection,
+        // so the builder can't pick one and under-estimate the fee (see `excludeInputs`).
+        provider.findUtxos(sponsorAddress).map { result =>
+            val sponsorUtxos = result
+                .valueOr(err => throw new RuntimeException(s"Failed to fetch sponsor UTxOs: $err"))
+                .filterNot { case (input, _) => excludeInputs.contains(input) }
+            TxBuilder(cardanoInfo)
+                .references(referenceScriptUtxo)
+                .spend(oracleUtxo, OracleAction.SetState)
+                .requireSignatures(Set(owner.paymentKeyHash))
+                .payTo(scriptAddress, oracleUtxo.output.value, newState)
+                .validFrom(validityInstant)
+                .validTo(validToInstant)
+                .complete(sponsorUtxos, sponsorAddress)
+                .sign(signer)
+                .transaction
+        }
     }
 
     /** Build and submit a SetState transaction. */
@@ -758,7 +773,8 @@ object OracleTransactions {
         referenceScriptUtxo: Utxo,
         script: Script.PlutusV3,
         newState: ChainState,
-        timeout: Duration = 120.seconds
+        timeout: Duration = 120.seconds,
+        excludeInputs: Set[TransactionInput] = Set.empty
     ): Either[String, String] = {
         given ec: ExecutionContext = provider.executionContext
         Try {
@@ -768,7 +784,8 @@ object OracleTransactions {
               oracleUtxo,
               referenceScriptUtxo,
               script,
-              newState
+              newState,
+              excludeInputs
             ).await(timeout)
             submitTx(provider, tx, timeout)
         } match {

@@ -159,6 +159,17 @@ case class SetStateCommand(height: Long, dryRun: Boolean = false) extends Comman
                 break(1)
         }
 
+        // Keep the bridge's CIP-33 reference-script UTxOs (parked at the sponsor wallet) OUT of fee
+        // selection — BlockfrostProvider drops their scriptRef, so picking one under-estimates the
+        // fee by the Conway ref-script surcharge → FeeTooSmallUTxO. Same fix the update loop applies.
+        val excludeInputs =
+            CommandHelpers.refScriptOutpoints(config, setup.sponsorAddress.encode.getOrElse(""))
+        if excludeInputs.nonEmpty then
+            Console.info(
+              "Excluding",
+              s"${excludeInputs.size} ref-script UTxO(s) from fee selection"
+            )
+
         Console.log("Building SetState transaction...")
         OracleTransactions.buildAndSubmitSetStateTransaction(
           setup.provider,
@@ -167,7 +178,8 @@ case class SetStateCommand(height: Long, dryRun: Boolean = false) extends Comman
           referenceScriptUtxo,
           setup.script,
           newState,
-          timeout
+          timeout,
+          excludeInputs
         ) match {
             case Right(txHash) =>
                 Console.logSuccess(s"Oracle state reset | tx: $txHash")
