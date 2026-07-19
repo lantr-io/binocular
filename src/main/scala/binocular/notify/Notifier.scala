@@ -34,6 +34,15 @@ trait Notifier {
       */
     def success(source: String, message: String): Unit
 
+    /** Block until every already-enqueued notification has been delivered, or `timeoutMs` elapses.
+      *
+      * Posts are fire-and-forget on a background daemon thread, so a caller that is about to end
+      * the JVM (e.g. the watchtower exiting on an unrecoverable deep reorg) MUST call this first —
+      * otherwise `System.exit` halts the process before the HTTP POST completes and the alert is
+      * lost. No-op for notifiers that deliver synchronously.
+      */
+    def flush(timeoutMs: Long): Unit = ()
+
     /** Release background resources (executor threads). Safe to call more than once. */
     def close(): Unit = ()
 }

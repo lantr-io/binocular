@@ -40,6 +40,11 @@ class OracleDaemon(
     notifier: Notifier = binocular.notify.NoopNotifier
 ) {
 
+    /** How long to wait for the deep-reorg alert to be delivered before letting the exception
+      * propagate and the watchtower `System.exit`. Covers the Discord HTTP POST round-trip.
+      */
+    private val DeepReorgAlertFlushMs = 10_000L
+
     /** Big-endian (block-explorer) hex of a confirmed tip hash, which is stored little-endian. */
     private def displayHash(hash: ByteString): String =
         ByteString.fromArray(hash.bytes.reverse).toHex
@@ -181,6 +186,9 @@ class OracleDaemon(
                       "oracle",
                       deepReorgAlert(e, "startup MPF reconstruction", config.bitcoinNode.network)
                     )
+                    // The watchtower exits (System.exit) right after this propagates; drain the
+                    // async post first or the alert is killed mid-flight and never delivered.
+                    notifier.flush(DeepReorgAlertFlushMs)
                     throw e
             }
         Console.success(s"MPF reconstructed: ${currentMpf.size} confirmed blocks")
@@ -555,6 +563,9 @@ class OracleDaemon(
                       "oracle",
                       deepReorgAlert(e, "update loop", config.bitcoinNode.network)
                     )
+                    // The watchtower exits (System.exit) right after this propagates; drain the
+                    // async post first or the alert is killed mid-flight and never delivered.
+                    notifier.flush(DeepReorgAlertFlushMs)
                     throw e
                 case e: Exception =>
                     Console.logError(

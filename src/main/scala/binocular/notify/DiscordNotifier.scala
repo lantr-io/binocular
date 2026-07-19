@@ -97,8 +97,7 @@ class DiscordNotifier(
     scheduler.scheduleAtFixedRate(
       () =>
           try flushPending()
-          catch { case _: Throwable => () },
-      flushTickMs,
+          catch { case _: Throwable => () }, flushTickMs,
       flushTickMs,
       TimeUnit.MILLISECONDS
     )
@@ -219,6 +218,17 @@ class DiscordNotifier(
         posts.foreach(enqueue)
     }
 
+    /** Block until the post queue drains (no queued and no in-flight post) or `timeoutMs` elapses.
+      * Called before the process exits on an unrecoverable deep reorg so the enqueued alert is
+      * actually delivered rather than killed mid-flight by `System.exit`.
+      */
+    override def flush(timeoutMs: Long): Unit = {
+        val deadline = System.currentTimeMillis() + math.max(0L, timeoutMs)
+        while (executor.getQueue.size() > 0 || executor.getActiveCount > 0) &&
+            System.currentTimeMillis() < deadline
+        do Thread.sleep(25)
+    }
+
     override def close(): Unit = {
         scheduler.shutdownNow()
         executor.shutdown()
@@ -229,10 +239,13 @@ class DiscordNotifier(
     def droppedCount: Long = dropped.get()
 
     private def enqueue(payload: String): Unit =
-        try executor.execute(() => post(payload))
+        try executor.execute(() => deliver(payload))
         catch { case _: RejectedExecutionException => dropped.incrementAndGet() }
 
-    private def post(payload: String): Unit =
+    /** Deliver one payload. Overridable so tests can substitute a synchronous/counting sink for the
+      * real HTTP POST without a live webhook.
+      */
+    protected def deliver(payload: String): Unit =
         try {
             val request = HttpRequest
                 .newBuilder(URI.create(webhookUrl))
