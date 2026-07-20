@@ -97,11 +97,18 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
         Console.separator()
         println()
 
-        // Build the Unconfirmed datum: Constr 0 [signed_btc_tx] — matches heimdall publish.rs and
-        // what TreasuryMovementValidator expects to spend.
+        // Build the Unconfirmed datum: Constr 0 [signed_btc_tx, creator, created] — matches
+        // heimdall publish.rs and what TreasuryMovementValidator expects to spend. creator =
+        // the sponsor payment key (it may GC the Confirmed record after the grace period);
+        // created = now (the real TM mint policy anchors it to the tx validity interval).
         val btcTxBytes = ByteString.fromHex(btcTxHex)
         import scalus.cardano.onchain.plutus.prelude.List as ScalusList
-        val datum = Data.Constr(0, ScalusList(Data.B(btcTxBytes)))
+        val creatorPkh = ByteString.fromArray(hdAccount.paymentKeyHash.bytes)
+        val createdMs = BigInt(System.currentTimeMillis())
+        val datum = Data.Constr(
+          0,
+          ScalusList(Data.B(btcTxBytes), Data.B(creatorPkh), Data.I(createdMs))
+        )
 
         // Mint TMTx token and send to script address with datum
         val mintAssets = Map(assetName -> 1L)

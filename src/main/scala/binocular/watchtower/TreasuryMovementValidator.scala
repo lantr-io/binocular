@@ -2,22 +2,27 @@ package binocular.watchtower
 
 import binocular.*
 import binocular.bitcoin.*
-import binocular.oracle.{BlockHeader, ChainState}
 import binocular.blueprint.BinocularBlueprint
-import scalus.cardano.blueprint.{Blueprint, Contract}
+import binocular.oracle.BlockHeader
+import binocular.oracle.ChainState
+import scalus.cardano.blueprint.Blueprint
+import scalus.cardano.blueprint.Contract
 import scalus.cardano.ledger.Script
-
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry as MPF
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import scalus.cardano.onchain.plutus.prelude.{List as ScalusList, *}
-import scalus.cardano.onchain.plutus.v1.{Credential, PubKeyHash}
+import scalus.cardano.onchain.plutus.v1.Credential
 import scalus.cardano.onchain.plutus.v2.OutputDatum
 import scalus.cardano.onchain.plutus.v3.*
-import scalus.compiler.{Compile, Options}
+import scalus.compiler.Compile
+import scalus.compiler.Options
 import scalus.uplc.PlutusV3
 import scalus.uplc.builtin.*
 import scalus.uplc.builtin.Builtins.*
-import scalus.uplc.builtin.Data.{toData, FromData, ToData}
+import scalus.uplc.builtin.ByteString.hex
+import scalus.uplc.builtin.Data.FromData
+import scalus.uplc.builtin.Data.ToData
+import scalus.uplc.builtin.Data.toData
 
 /** A single fulfilled peg-out parsed from a Treasury Movement output: the raw Bitcoin
   * `scriptPubKey` the TM pays to, and the satoshi `amount`. Mirrors the doc's `fulfilled_peg_outs`
@@ -41,11 +46,13 @@ object PegOutEntry
   * Variant order is positional in the Plutus Constr — do not reorder.
   */
 enum TmDatum derives FromData, ToData {
-    case Unconfirmed(signedBtcTx: ByteString)
+    case Unconfirmed(signedBtcTx: ByteString, creator: PubKeyHash, created: PosixTime)
     case Confirmed(
         btcTxid: ByteString,
         sweptPegInUtxoIds: ScalusList[ByteString],
-        fulfilledPegOuts: ScalusList[PegOutEntry]
+        fulfilledPegOuts: ScalusList[PegOutEntry],
+        creator: PubKeyHash,
+        created: PosixTime
     )
 }
 
@@ -95,9 +102,6 @@ enum TmMintRedeemer derives FromData, ToData {
     case Chain(prevTmRefInputIndex: BigInt)
 }
 
-@Compile
-object TmMintRedeemer
-
 /** Treasury-movement validator: enforces the `Unconfirmed -> Confirmed` transition on-chain.
   *
   * This replaces the always-ok scaffold (`TmtxScript`). The only legal spend of an
@@ -125,6 +129,14 @@ object TmMintRedeemer
   */
 @Compile
 object TreasuryMovementValidator {
+
+    /** Grace period before a Confirmed record's creator may GC it (burn NFT + reclaim min-ADA).
+      * BigInt arithmetic — the equivalent Int literal product (30*24*3600*1000) overflows Int32.
+      */
+    val GcGraceMs: BigInt = BigInt(30) * 24 * 3600 * 1000 // 30 days
+
+    /** Max allowed backdating of `created` relative to the mint tx's validity lower bound. */
+    val CreatedSlackMs: BigInt = BigInt(3600) * 1000 // 1 hour
 
     /** All input outpoints (prev_txid(32) ++ prev_vout(4), 36 bytes each) of a raw Bitcoin tx, in
       * input order. These are the `sweptPegInUtxoIds` of a TM (the old treasury input is included —
@@ -173,81 +185,19 @@ object TreasuryMovementValidator {
         refInputs: ScalusList[TxInInfo],
         oracleScriptHash: ByteString
     ): TxOut = {
-        def search(remaining: ScalusList[TxInInfo]): TxOut =
-            remaining match
-                case ScalusList.Nil => fail("Oracle reference input not found")
-                case ScalusList.Cons(input, tail) =>
-                    val resolved = input.resolved
-                    resolved.address.credential match
-                        case Credential.ScriptCredential(hash) =>
-                            if hash == oracleScriptHash
-                                && resolved.value.quantityOf(
-                                  oracleScriptHash,
-                                  ByteString.empty
-                                ) == BigInt(1)
-                            then resolved
-                            else search(tail)
-                        case _ => search(tail)
-        search(refInputs)
-    }
-
-    /** The unique tx output carrying the freshly minted TM NFT. Fails on zero or multiple. */
-    def outputWithNft(outputs: ScalusList[TxOut], policy: ByteString): TxOut = {
-        def loop(remaining: ScalusList[TxOut], acc: Option[TxOut]): TxOut =
-            remaining match
-                case ScalusList.Nil =>
-                    acc match
-                        case Option.Some(o) => o
-                        case Option.None    => fail("No output carries the TM NFT")
-                case ScalusList.Cons(out, tail) =>
-                    if out.value.quantityOf(policy, ByteString.empty) == BigInt(1) then
-                        acc match
-                            case Option.Some(_) => fail("TM NFT on multiple outputs")
-                            case Option.None    => loop(tail, Option.Some(out))
-                    else loop(tail, acc)
-        loop(outputs, Option.None)
-    }
-
-    /** Config field 11 = `initial_btc_treasury_utxo`: 36 bytes, txid (internal) ++ vout (LE). Read
-      * positionally from the raw Constr field list (11 tails + head), never via a typed ConfigDatum
-      * cast — the config shape is append-only and a full cast would freeze it.
-      */
-    def initialTreasuryOutpoint(configDatum: Data): ByteString = {
-        val fields = unConstrData(configDatum).snd
-        unBData(
-          fields.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head
-        )
-    }
-
-    /** Resolve the TM script address from the input being spent (identified by `ownRef`). */
-    def ownResolved(inputs: ScalusList[TxInInfo], ownRef: TxOutRef): TxOut = {
-        def search(remaining: ScalusList[TxInInfo]): TxOut =
-            remaining match
-                case ScalusList.Nil => fail("Own input not found")
-                case ScalusList.Cons(input, tail) =>
-                    if equalsData(input.outRef.toData, ownRef.toData) then input.resolved
-                    else search(tail)
-        search(inputs)
-    }
-
-    /** The UNIQUE transaction output paid to `address` (the continuing TM UTxO). Fails if there are
-      * zero or more than one — otherwise a spend could add a second TM-address output to split the
-      * marker token or seed a parallel forged UTxO while only the first is value/datum-checked.
-      */
-    def continuingOutput(outputs: ScalusList[TxOut], address: Address): TxOut = {
-        def loop(remaining: ScalusList[TxOut], acc: Option[TxOut]): TxOut =
-            remaining match
-                case ScalusList.Nil =>
-                    acc match
-                        case Option.Some(o) => o
-                        case Option.None    => fail("No continuing TM output")
-                case ScalusList.Cons(out, tail) =>
-                    if equalsData(out.address.toData, address.toData) then
-                        acc match
-                            case Option.Some(_) => fail("Multiple TM-address outputs")
-                            case Option.None    => loop(tail, Option.Some(out))
-                    else loop(tail, acc)
-        loop(outputs, Option.None)
+        refInputs
+            .find { input =>
+                val resolved = input.resolved
+                resolved.address.credential match
+                    case Credential.ScriptCredential(hash) =>
+                        hash == oracleScriptHash && resolved.value.quantityOf(
+                          oracleScriptHash,
+                          ByteString.empty
+                        ) == BigInt(1)
+                    case _ => false
+            }
+            .get
+            .resolved
     }
 
     def spend(
@@ -257,69 +207,91 @@ object TreasuryMovementValidator {
         ownRef: TxOutRef,
         redeemer: Datum
     ): Unit = {
-        val datum = datumOpt match
-            case Option.Some(d) => d.to[TmDatum]
-            case Option.None    => fail("Missing TM datum")
-
+        val datum = datumOpt.getOrFail("Missing TM datum").to[TmDatum]
         // Only the Unconfirmed -> Confirmed transition is a legal spend.
-        val signedBtcTx = datum match
-            case TmDatum.Unconfirmed(rawTx) => rawTx
-            case TmDatum.Confirmed(_, _, _) =>
-                // TODO: implement burning the TM NFT to clean up Confirmed UTxOs after some time
-                // (or via a separate cleanup command) so we don't need to keep them around forever.
-                // For now, just fail if anyone tries to spend a Confirmed UTxO.
-                fail("TM UTxO is not Unconfirmed")
+        datum match
+            case TmDatum.Unconfirmed(signedBtcTx, creator, created) =>
+                val proof = redeemer.to[TmConfirmRedeemer]
 
-        val proof = redeemer.to[TmConfirmRedeemer]
+                // 1. Recompute the txid from the witness-stripped serialization — never trust the caller.
+                val txid = BitcoinHelpers.getTxHash(signedBtcTx)
 
-        // 1. Recompute the txid from the witness-stripped serialization — never trust the caller.
-        val txid = BitcoinHelpers.getTxHash(signedBtcTx)
+                // 2. The block is in the oracle's confirmed-blocks trie.
+                val oracleState = findOracleInput(tx.referenceInputs, oracleScriptHash).datum match
+                    case OutputDatum.OutputDatum(d) => d.to[ChainState]
+                    case _                          => fail("Oracle must have an inline datum")
+                val blockHash = BitcoinHelpers.blockHeaderHash(proof.blockHeader)
+                MPF(oracleState.confirmedBlocksRoot).verifyMembership(
+                  blockHash,
+                  blockHash,
+                  proof.blockMpfProof
+                )
 
-        // 2. The block is in the oracle's confirmed-blocks trie.
-        val oracleState = findOracleInput(tx.referenceInputs, oracleScriptHash).datum match
-            case OutputDatum.OutputDatum(d) => d.to[ChainState]
-            case _                          => fail("Oracle must have an inline datum")
-        val blockHash = BitcoinHelpers.blockHeaderHash(proof.blockHeader)
-        MPF(oracleState.confirmedBlocksRoot).verifyMembership(
-          blockHash,
-          blockHash,
-          proof.blockMpfProof
-        )
+                // 3+4. The header hashes to that block hash and commits to txid at txIndex.
+                val computedRoot = BitcoinHelpers.merkleRootFromInclusionProof(
+                  proof.txMerkleProof,
+                  txid,
+                  proof.txIndex
+                )
+                require(
+                  computedRoot == proof.blockHeader.merkleRoot,
+                  "TM tx not in block merkle root"
+                )
 
-        // 3+4. The header hashes to that block hash and commits to txid at txIndex.
-        val computedRoot = BitcoinHelpers.merkleRootFromInclusionProof(
-          proof.txMerkleProof,
-          txid,
-          proof.txIndex
-        )
-        require(computedRoot == proof.blockHeader.merkleRoot, "TM tx not in block merkle root")
+                // 5. The continuing output carries the TM NFT and the parsed Confirmed datum.
+                val ownOut = tx.findOwnInput(ownRef).get.resolved
+                val contOut = tx.outputs.find(out => out.address === ownOut.address).get
+                // Preserve the TM NFT (the minted part), NOT the exact Value. The lovelace need not match:
+                // the Confirmed datum is a different size (so a different min-UTxO), and any lovelace
+                // difference (tx fees / a watchtower reward) is allowed. The TM NFT (policy = this script's
+                // own hash, since spend + mint share the script; empty asset name) is what authenticates the
+                // Confirmed UTxO downstream, so it MUST ride along.
+                val tmNftPolicy = ownOut.address.credential match
+                    case Credential.ScriptCredential(h) => h
+                    case _ => fail("TM input is not at a script address")
+                require(
+                  contOut.value.quantityOf(tmNftPolicy, ByteString.empty) == BigInt(1),
+                  "TM NFT not preserved on the continuing output"
+                )
 
-        // 5. The continuing output carries the TM NFT and the parsed Confirmed datum.
-        val ownOut = ownResolved(tx.inputs, ownRef)
-        val contOut = continuingOutput(tx.outputs, ownOut.address)
-        // Preserve the TM NFT (the minted part), NOT the exact Value. The lovelace need not match:
-        // the Confirmed datum is a different size (so a different min-UTxO), and any lovelace
-        // difference (tx fees / a watchtower reward) is allowed. The TM NFT (policy = this script's
-        // own hash, since spend + mint share the script; empty asset name) is what authenticates the
-        // Confirmed UTxO downstream, so it MUST ride along.
-        val tmNftPolicy = ownOut.address.credential match
-            case Credential.ScriptCredential(h) => h
-            case _                              => fail("TM input is not at a script address")
-        require(
-          contOut.value.quantityOf(tmNftPolicy, ByteString.empty) == BigInt(1),
-          "TM NFT not preserved on the continuing output"
-        )
+                // 6. Ensure it's the real TM transaction by checking the presence of the TM input and output using address from Treasury State UTxO (reference input by NFT)
+                // TODO:
 
-        // 6. Ensure it's the real TM transaction by checking the presence of the TM input and output using address from Treasury State UTxO (reference input by NFT)
-        // TODO:
-
-        val swept = allInputOutpoints(signedBtcTx)
-        val fulfilled = allOutputs(signedBtcTx)
-        val exp = OutputDatum.OutputDatum(TmDatum.Confirmed(txid, swept, fulfilled).toData)
-        require(
-          equalsData(exp.toData, contOut.datum.toData),
-          "Continuing output datum does not match parsed TM Confirmed"
-        )
+                val swept = allInputOutpoints(signedBtcTx)
+                val fulfilled = allOutputs(signedBtcTx)
+                val exp = OutputDatum.OutputDatum(
+                  TmDatum.Confirmed(txid, swept, fulfilled, creator, created).toData
+                )
+                require(
+                  exp === contOut.datum,
+                  "Continuing output datum does not match parsed TM Confirmed"
+                )
+            case TmDatum.Confirmed(_, _, _, creator, created) =>
+                // Garbage collection: after the grace period the CREATOR may reclaim the record's
+                // min-ADA, burning the TM NFT. By then all peg-ins/peg-outs swept by this TM are
+                // expected to be completed (the record is no longer needed as proof material).
+                // `created` is anchored to the mint tx's validity interval (see `mint`), so the
+                // grace period cannot be shortcut by backdating.
+                //
+                // OPERATIONAL RULE (accepted residual risk): burning the chain-TIP record leaves
+                // the next TM with no predecessor to reference (and Genesis no longer applies), so
+                // the creator must not burn the tip. While the bridge is active a successor lands
+                // well within the grace period; after a >30-day quiet spell, recovery is a config
+                // Update re-anchoring `initial_btc_treasury_utxo` to the current outpoint.
+                val ownOut = tx.findOwnInput(ownRef).get.resolved
+                ownOut.address.credential match
+                    case Credential.ScriptCredential(ownScriptHash) =>
+                        require(
+                          tx.mint.quantityOf(ownScriptHash, ByteString.empty) == BigInt(-1),
+                          "Must burn TM NFT"
+                        )
+                    case Credential.PubKeyCredential(_) => impossible()
+                val timeout = created + GcGraceMs
+                require(
+                  tx.validRange.isEntirelyAfter(timeout),
+                  "TM GC: grace period has not elapsed"
+                )
+                require(tx.isSignedBy(creator), "TM GC: not signed by the record's creator")
     }
 
     /** Minting policy for the TM NFT — the policy id IS this script's hash, so the NFT and the
@@ -337,60 +309,77 @@ object TreasuryMovementValidator {
         tx: TxInfo,
         redeemer: Datum
     ): Unit = {
-        val minted = tx.mint.quantityOf(ownPolicyId, ByteString.empty)
-        if minted > BigInt(0) then {
-            require(minted == BigInt(1), "TM mint: must mint exactly one TM NFT")
-            // Bind the NFT to a TM-address output whose Unconfirmed datum embeds the BTC tx being
-            // verified — without this binding the linkage check below would gate nothing.
-            val tmOut = outputWithNft(tx.outputs, ownPolicyId)
-            tmOut.address.credential match
-                case Credential.ScriptCredential(h) =>
-                    require(h == ownPolicyId, "TM mint: NFT output not at the TM script address")
-                case _ => fail("TM mint: NFT output not at a script address")
-            val signedBtcTx = (tmOut.datum match
-                case OutputDatum.OutputDatum(d) => d.to[TmDatum]
-                case _                          => fail("TM mint: NFT output needs an inline datum")
-            ) match
-                case TmDatum.Unconfirmed(rawTx) => rawTx
-                case _ => fail("TM mint: NFT output datum is not Unconfirmed")
-            // The outpoint the embedded BTC tx spends first: input 0 is the treasury by the
-            // deterministic TM layout (input[0] = treasury, output[0] = treasury change).
-            val spent = allInputOutpoints(signedBtcTx) match
-                case ScalusList.Cons(first, _) => first
-                case ScalusList.Nil            => fail("TM mint: embedded BTC tx has no inputs")
-            val expected = redeemer.to[TmMintRedeemer] match
-                case TmMintRedeemer.Genesis(i) =>
-                    val cfg = tx.referenceInputs.at(i).resolved
-                    // The config NFT — not the index or address — is the trust anchor: it is
-                    // minted exactly once, so a forged UTxO cannot carry it.
+        tx.mint.tokens(ownPolicyId).toList match
+            case ScalusList.Cons((nft, amount), ScalusList.Nil) if nft == ByteString.empty =>
+                if amount == BigInt(1) then
+                    // Bind the NFT to a TM-address output whose Unconfirmed datum embeds the BTC tx being
+                    // verified — without this binding the linkage check below would gate nothing.
+                    val tmOut = tx.outputs
+                        .find(txout =>
+                            txout.value.quantityOf(ownPolicyId, ByteString.empty) == BigInt(1)
+                        )
+                        .get
+                    tmOut.address.credential match
+                        case Credential.ScriptCredential(h) if h == ownPolicyId => ()
+                        case _ => fail("TM mint: NFT output not at own script address")
+                    val signedBtcTx = tmOut.datum match
+                        case OutputDatum.OutputDatum(d) =>
+                            d.to[TmDatum] match
+                                case TmDatum.Unconfirmed(rawTx, _, created) =>
+                                    // `created` seeds the GC grace period (see the Confirmed spend
+                                    // branch) and is poster-chosen: anchor it to the tx validity
+                                    // interval so it cannot be backdated to shortcut the timer.
+                                    // `isEntirelyBefore(created + slack)` requires the tx's
+                                    // `invalid_hereafter` to be finite and below created+slack, so
+                                    // created >= upper-slack >= now-slack. (Future-dating only
+                                    // delays the poster's own GC — harmless, not checked.)
+                                    require(
+                                      tx.validRange.isEntirelyBefore(created + CreatedSlackMs),
+                                      "TM mint: created is backdated"
+                                    )
+                                    rawTx
+                                case _ => fail("TM mint: NFT output datum is not Unconfirmed")
+                        case _ => fail("TM mint: NFT output needs an inline datum")
+                    // The outpoint the embedded BTC tx spends first: input 0 is the treasury by the
+                    // deterministic TM layout (input[0] = treasury, output[0] = treasury change).
+                    val spent = allInputOutpoints(signedBtcTx).head
+                    val expected = redeemer.to[TmMintRedeemer] match
+                        case TmMintRedeemer.Genesis(i) =>
+                            val cfg = tx.referenceInputs.at(i).resolved
+                            // The config NFT — not the index or address — is the trust anchor: it is
+                            // minted exactly once, so a forged UTxO cannot carry it.
+                            require(
+                              cfg.value.quantityOf(configNftPolicy, configNftName) == BigInt(1),
+                              "TM mint: reference input lacks the config NFT"
+                            )
+                            cfg.datum match
+                                case OutputDatum.OutputDatum(d) =>
+                                    d.to[ConfigDatum].initialBtcTreasuryUtxo
+                                case _ => fail("Config UTxO needs an inline datum")
+                        case TmMintRedeemer.Chain(i) =>
+                            val prev = tx.referenceInputs.at(i).resolved
+                            require(
+                              prev.value.quantityOf(ownPolicyId, ByteString.empty) == BigInt(1),
+                              "TM mint: predecessor lacks the TM NFT"
+                            )
+                            prev.datum match
+                                case OutputDatum.OutputDatum(d) =>
+                                    d.to[TmDatum] match
+                                        case TmDatum.Confirmed(btcTxid, _, _, _, _) =>
+                                            // Predecessor treasury output = (btcTxid, vout 0).
+                                            btcTxid ++ hex"00000000"
+                                        case _ => fail("TM mint: predecessor is not Confirmed")
+                                case _ => fail("TM mint: predecessor needs an inline datum")
+
                     require(
-                      cfg.value.quantityOf(configNftPolicy, configNftName) == BigInt(1),
-                      "TM mint: reference input lacks the config NFT"
+                      spent == expected,
+                      "TM mint: BTC tx does not spend the treasury outpoint"
                     )
-                    initialTreasuryOutpoint(cfg.datum match
-                        case OutputDatum.OutputDatum(d) => d
-                        case _ => fail("Config UTxO needs an inline datum"))
-                case TmMintRedeemer.Chain(i) =>
-                    val prev = tx.referenceInputs.at(i).resolved
-                    require(
-                      prev.value.quantityOf(ownPolicyId, ByteString.empty) == BigInt(1),
-                      "TM mint: predecessor lacks the TM NFT"
-                    )
-                    (prev.datum match
-                        case OutputDatum.OutputDatum(d) => d.to[TmDatum]
-                        case _ => fail("TM mint: predecessor needs an inline datum")
-                    ) match
-                        case TmDatum.Confirmed(btcTxid, _, _) =>
-                            // Predecessor treasury output = (btcTxid, vout 0).
-                            appendByteString(btcTxid, ByteString.fromHex("00000000"))
-                        case _ => fail("TM mint: predecessor is not Confirmed")
-            require(spent == expected, "TM mint: BTC tx does not spend the treasury outpoint")
-        } else
-            // minted < 0 => burning a TM NFT (drain). Permissionless cleanup. minted == 0 (only other
-            // asset names under this policy) is rejected.
-            // TODO: allow burning when spending a Confirmed TM UTxO, so cleanup can be done in one step.
-            // For now, just fail if anyone tries to burn without minting in the same tx.
-            require(minted < BigInt(0), "TM mint: nothing minted/burned under the TM policy")
+                else if amount == BigInt(-1) then
+                    // burning is allowed, all the check are in `spend` validator
+                    ()
+                else fail("Only singe TM NFT is allowed")
+            case _ => fail("Only singe TM NFT is allowed")
     }
 
     /** Entry point: dispatch on script purpose — minting (the TM NFT) or spending (the Confirm

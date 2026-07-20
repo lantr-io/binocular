@@ -118,14 +118,17 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                         val unconfirmed = utxos.toList
                             .collect { case (in, out) =>
                                 out.inlineDatum match
-                                    case Some(Data.Constr(0, args))
+                                    case Some(d @ Data.Constr(0, args))
                                         if args.nonEmpty && out.value.hasAsset(
                                           tmNftPolicy,
                                           tmNftAsset
                                         ) =>
-                                        args.head match
-                                            case Data.B(tx) => Some((Utxo(in, out), tx))
-                                            case _          => None
+                                        // Full typed decode (signedBtcTx, creator, created): the
+                                        // creator/created fields must be carried verbatim into the
+                                        // Confirmed datum the validator expects.
+                                        scala.util.Try(d.to[TmDatum]).toOption.collect {
+                                            case u: TmDatum.Unconfirmed => (Utxo(in, out), u)
+                                        }
                                     case _ => None
                             }
                             .flatten
@@ -141,7 +144,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                             )
                         else
                             Console.log(s"Found ${unconfirmed.size} Unconfirmed TM UTxO(s)")
-                            for (utxo, signedBtcTx) <- unconfirmed do
+                            for (utxo, unconfirmedDatum) <- unconfirmed do
                                 confirmOne(
                                   provider,
                                   hdAccount,
@@ -151,7 +154,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                                   obMpf,
                                   rpc,
                                   utxo,
-                                  signedBtcTx,
+                                  unconfirmedDatum,
                                   timeout,
                                   skipBtcTxids,
                                   processed,
@@ -188,12 +191,13 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         obMpf: scalus.crypto.trie.MerklePatriciaForestry,
         rpc: SimpleBitcoinRpc,
         utxo: Utxo,
-        signedBtcTx: ByteString,
+        unconfirmedDatum: TmDatum.Unconfirmed,
         timeout: Duration,
         skipBtcTxids: Set[String],
         processed: scala.collection.mutable.Map[String, String],
         notifier: Notifier
     )(using ExecutionContext): Unit = {
+        val signedBtcTx = unconfirmedDatum.signedBtcTx
         val utxoRef = s"${utxo.input.transactionId.toHex}#${utxo.input.index}"
         // Parse the (attacker-placeable) datum bytes defensively: getTxHash/allInputOutpoints/
         // allOutputs recurse on a tx-declared count, so a crafted UTxO at the TM address could
@@ -266,7 +270,13 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                           blockHeader = binocular.oracle.BlockHeader(tm.blockHeader)
                         ).toData
                         val confirmed: Data =
-                            (TmDatum.Confirmed(txid, swept, fulfilled): TmDatum).toData
+                            (TmDatum.Confirmed(
+                              txid,
+                              swept,
+                              fulfilled,
+                              unconfirmedDatum.creator,
+                              unconfirmedDatum.created
+                            ): TmDatum).toData
 
                         if dryRun then {
                             Console.logSuccess(s"    [dry-run] would confirm  spent=$utxoRef")

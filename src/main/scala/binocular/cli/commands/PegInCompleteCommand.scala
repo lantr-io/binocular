@@ -205,7 +205,7 @@ case class PegInCompleteCommand(
                             o.inlineDatum
                                 .flatMap(d => scala.util.Try(fromData[TmDatum](d)).toOption)
                                 .collect {
-                                    case TmDatum.Confirmed(txid, swept, _)
+                                    case TmDatum.Confirmed(txid, swept, _, _, _)
                                         if swept.toScalaList.contains(datum.pegInUtxoId) =>
                                         (Utxo(i, o), txid)
                                 }

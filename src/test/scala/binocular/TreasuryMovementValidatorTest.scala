@@ -98,7 +98,10 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     )
 
     private val ownRef = TxOutRef(TxId(filled(0x01, 32)), BigInt(0))
-    private val unconfirmedDatum: Data = (TmDatum.Unconfirmed(rawTm): TmDatum).toData
+    private val creatorPkh = PubKeyHash(filled(0x7a, 28))
+    private val createdAt: BigInt = BigInt("1700000000000")
+    private val unconfirmedDatum: Data =
+        (TmDatum.Unconfirmed(rawTm, creatorPkh, createdAt): TmDatum).toData
 
     private def tmInput(value: Value, datum: Data) = TxInInfo(
       outRef = ownRef,
@@ -226,7 +229,9 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
                 )
             else Value.lovelace(2_000_000),
         datum = OutputDatum.OutputDatum(
-          if confirmed then (TmDatum.Confirmed(prevTxid, PList.Nil, PList.Nil): TmDatum).toData
+          if confirmed then
+              (TmDatum
+                  .Confirmed(prevTxid, PList.Nil, PList.Nil, creatorPkh, createdAt): TmDatum).toData
           else unconfirmedDatum
         ),
         referenceScript = Option.None
@@ -256,7 +261,10 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         nftQty: BigInt,
         rdmr: Data,
         refInputs: PList[TxInInfo],
-        outputs: PList[TxOut]
+        outputs: PList[TxOut],
+        // The mint anchors `created` to the validity interval (isEntirelyBefore(created+slack)),
+        // so a bounded window around createdAt is the default; Interval.always must fail.
+        validRange: Interval = Interval.between(createdAt - 600_000, createdAt + 600_000)
     ): ScriptContext =
         ScriptContext(
           txInfo = TxInfo(
@@ -264,11 +272,41 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
             referenceInputs = refInputs,
             outputs = outputs,
             mint = Value.unsafeFromList(PList((tmPolicy, PList((ByteString.empty, nftQty))))),
+            validRange = validRange,
             id = TxId(filled(0x00, 32))
           ),
           redeemer = rdmr,
           scriptInfo = ScriptInfo.MintingScript(tmPolicy)
         )
+
+    /** A GC (Confirmed-spend) ScriptContext: spend a Confirmed TM UTxO, optionally burning the NFT,
+      * signed by `signer`, within `validRange`.
+      */
+    private def gcContext(
+        burnQty: BigInt,
+        signer: ByteString,
+        validRange: Interval,
+        datum: Data = confirmedDatum()
+    ): ScriptContext =
+        ScriptContext(
+          txInfo = TxInfo(
+            inputs = PList.from(List(tmInput(tmValue, datum))),
+            outputs = PList.Nil,
+            mint =
+                if burnQty == BigInt(0) then Value.zero
+                else
+                    Value.unsafeFromList(PList((tmScriptHash, PList((ByteString.empty, burnQty)))))
+            ,
+            signatories = PList.from(List(PubKeyHash(signer))),
+            validRange = validRange,
+            id = TxId(filled(0x00, 32))
+          ),
+          redeemer = Data.unit,
+          scriptInfo = SpendingScript(ownRef, Option.Some(datum))
+        )
+
+    private val afterGrace: Interval =
+        Interval.after(createdAt + TreasuryMovementValidator.GcGraceMs + 1)
 
     private val genesisRdmr: Data = (TmMintRedeemer.Genesis(0): TmMintRedeemer).toData
     private def genesisRdmrAt(i: BigInt): Data = (TmMintRedeemer.Genesis(i): TmMintRedeemer).toData
@@ -277,7 +315,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     private def confirmedDatum(
         swept: PList[ByteString] = expectedSwept,
         fulfilled: PList[PegOutEntry] = expectedFulfilled
-    ): Data = (TmDatum.Confirmed(txid, swept, fulfilled): TmDatum).toData
+    ): Data = (TmDatum.Confirmed(txid, swept, fulfilled, creatorPkh, createdAt): TmDatum).toData
 
     // --- tests ---
 
@@ -401,14 +439,58 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
 
-    test("TM NFT burn: -1 is permissionless (no authority needed)") {
+    test("TM NFT burn: -1 passes the mint policy (checks live in the spend path)") {
         val sc = mintContext(BigInt(-1), Data.unit, PList.Nil, PList.Nil)
         assert(program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
 
+    test("TM mint: backdated created fails (validity window far after created)") {
+        val sc = mintContext(
+          BigInt(1),
+          genesisRdmr,
+          PList.from(List(configRefInput())),
+          PList.from(List(mintedTmOutput())),
+          validRange = Interval.between(createdAt + 7_200_000, createdAt + 7_800_000)
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("TM mint: unbounded validity range fails (created cannot be anchored)") {
+        val sc = mintContext(
+          BigInt(1),
+          genesisRdmr,
+          PList.from(List(configRefInput())),
+          PList.from(List(mintedTmOutput())),
+          validRange = Interval.always
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("TM GC: creator burns a Confirmed record after the grace period") {
+        val sc = gcContext(BigInt(-1), creatorPkh.hash, afterGrace)
+        val result = program.applyArg(sc.toData).evaluateDebug
+        assert(result.isSuccess, s"Expected success, got: $result")
+    }
+
+    test("TM GC: before the grace period elapses fails") {
+        val sc = gcContext(BigInt(-1), creatorPkh.hash, Interval.after(createdAt + 1000))
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("TM GC: non-creator signer fails") {
+        val sc = gcContext(BigInt(-1), filled(0x11, 28), afterGrace)
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("TM GC: spending without burning the TM NFT fails") {
+        val sc = gcContext(BigInt(0), creatorPkh.hash, afterGrace)
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
     test("TmDatum / redeemer Data round-trip") {
-        assert(unconfirmedDatum.to[TmDatum] == TmDatum.Unconfirmed(rawTm))
-        val conf: TmDatum = TmDatum.Confirmed(txid, expectedSwept, expectedFulfilled)
+        assert(unconfirmedDatum.to[TmDatum] == TmDatum.Unconfirmed(rawTm, creatorPkh, createdAt))
+        val conf: TmDatum =
+            TmDatum.Confirmed(txid, expectedSwept, expectedFulfilled, creatorPkh, createdAt)
         assert(conf.toData.to[TmDatum] == conf)
     }
 
@@ -467,14 +549,40 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
 
-    test("a second output at the TM address fails") {
+    test("extra TM-address outputs are tolerated (first output is the checked one)") {
+        // The confirm check takes the FIRST output at the TM address; it must carry the NFT and
+        // the exact Confirmed datum. Later duplicates are unauthenticated junk (downstream readers
+        // filter by the TM NFT, which exists in only one output).
         val sc = scriptContext(
           tmValue,
           confirmedDatum(),
           redeemer(mpfProof),
-          extraOutputs = PList.from(List(confirmedOutput(tmValue, confirmedDatum())))
+          extraOutputs =
+              PList.from(List(confirmedOutput(Value.lovelace(2_000_000), confirmedDatum())))
         )
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        val result = program.applyArg(sc.toData).evaluateDebug
+        assert(result.isSuccess, s"Expected success, got: $result")
+    }
+
+    test("a first TM-address output without the NFT fails (decoy ordering)") {
+        // If a decoy without the NFT comes FIRST, the NFT-preservation check fails - the prover
+        // cannot demote the genuine continuing output to a later position.
+        val decoyFirst = ScriptContext(
+          txInfo = TxInfo(
+            inputs = PList.from(List(tmInput(tmValue, unconfirmedDatum))),
+            referenceInputs = PList.from(List(oracleRefInput())),
+            outputs = PList.from(
+              List(
+                confirmedOutput(Value.lovelace(2_000_000), confirmedDatum()),
+                confirmedOutput(tmValue, confirmedDatum())
+              )
+            ),
+            id = TxId(filled(0x00, 32))
+          ),
+          redeemer = redeemer(mpfProof),
+          scriptInfo = SpendingScript(ownRef, Option.Some(unconfirmedDatum))
+        )
+        assert(!program.applyArg(decoyFirst.toData).evaluateDebug.isSuccess)
     }
 
     test("block header not in oracle's confirmed-blocks root fails") {
