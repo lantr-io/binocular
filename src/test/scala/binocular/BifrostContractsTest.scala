@@ -10,11 +10,15 @@ import scalus.uplc.builtin.ByteString
   *
   * The known-answer cases are REGRESSION LOCKS over the CIP-57 parameter-application encoding
   * (`Data.B` for byte params, `Data.I` for `index0`, the one-shot `OutputReference` as `Data`, and
-  * param order). They were recomputed after the Variant B on-chain rebuild (11-field ConfigDatum,
-  * `bridged_token` enforcing the mint directly, cpi/cpo asset names as the "CPI"/"CPO" constants)
-  * changed every compiled hash, and are re-validated at the next `deploy-bridge` run. They use a
-  * trimmed `plutus.json` (only the referenced validators' `compiledCode`) checked in as a test
-  * resource, so the test runs without the sibling ft-bifrost-bridge checkout.
+  * param order). They are re-validated at the next `deploy-bridge` run. They use a trimmed
+  * `plutus.json` (only the referenced validators' `compiledCode`) checked in as a test resource, so
+  * the test runs without the sibling ft-bifrost-bridge checkout.
+  *
+  * Refreshed 2026-07-20 (Route-1 alignment) to the current ft blueprint: the 17-field ConfigDatum
+  * (upstream's `initial_btc_treasury_utxo` #11 + our tunables #12-16) changed `config.config`'s
+  * compiledCode, which cascades through the config policy into every config-parameterized contract,
+  * so all four policy pins moved. The min-json was also brought up to ft's current `compiledCode`
+  * for the other validators (it had drifted behind upstream's own regenerated blueprint).
   */
 class BifrostContractsTest extends AnyFunSuite {
 
@@ -53,20 +57,20 @@ class BifrostContractsTest extends AnyFunSuite {
 
     test("config NFT policy matches the deployed value") {
         assert(
-          hex(configContract.policyId) == "295ca1215bcd72b6912ac839c87700e0189b10a7e25fc7217ad48093"
+          hex(configContract.policyId) == "48273334c60ab4be2aea0df669f039817b7c078815e94cca45a2ca39"
         )
     }
 
     test("bridged_token policy matches the deployed value") {
         val bt = BridgedTokenContract(blueprint, configPolicy, configAssetName)
-        assert(hex(bt.policyId) == "8f9e114bbededed8567e15638f3ece22b57ac2d17f6ac995661d0775")
+        assert(hex(bt.policyId) == "7e9b1c95e2b19bc384fa5df1ca024519f84a95a04bbf0e86b6405721")
     }
 
     test("completed-peg-ins policy + asset name match the Variant B rebuild") {
         // policyId regression lock over the Variant B rebuild. The asset name is now the constant
         // "CPI" (bytes 435049), independent of the one-shot ref and the compiledCode.
         val cpi = CompletedPegInsContract(blueprint, configPolicy, configAssetName, cpiRef)
-        assert(hex(cpi.policyId) == "e55230769526deaf63e3081596c84345c6ca90087b241f4d44d20c59")
+        assert(hex(cpi.policyId) == "bc57e42636bab1756ede91ae3f1702ee6da1a877c2f5d98098dac40b")
         assert(CompletedPegInsContract.assetName == ByteString.fromString("CPI"))
     }
 
@@ -82,7 +86,7 @@ class BifrostContractsTest extends AnyFunSuite {
         // the old policy are orphaned and must be re-minted under this one.
         val pegIn =
             PegInContract(blueprint, oraclePolicy, configPolicy, configAssetName, tmNftPolicy)
-        assert(hex(pegIn.policyId) == "5645bb289408342cc783df87808443da5a803c119be6f5d2d8023179")
+        assert(hex(pegIn.policyId) == "80126462fdc2e1548c6c1852d0664606a6b9b4c73a3a8534d8e2d8cd")
     }
 
     // --- determinism + parameter-sensitivity ---
