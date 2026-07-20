@@ -39,6 +39,11 @@ object CliApp {
         case TmScript
         case PegInRequest(btcTxId: String, dryRun: Boolean)
         case DeployBridge(dryRun: Boolean)
+        case UpdateConfig(
+            initialBtcTreasuryUtxo: String,
+            pegInWithdrawHash: Option[String],
+            dryRun: Boolean
+        )
         case DeployScriptRefs(dryRun: Boolean)
         case RegisterBridgeCreds(dryRun: Boolean)
         case SignPeginMsg(keyPath: String, message: String)
@@ -286,6 +291,24 @@ object CliApp {
                 dryRunFlag.map(Cmd.RegisterBridgeCreds.apply)
             }
 
+        val updateConfigCommand =
+            Opts.subcommand(
+              "update-config",
+              "Update the deployed Config UTxO in place: set the initial-treasury anchor (field 11) and optionally swap the peg-in withdraw hash (field 4)"
+            ) {
+                val anchorOpt = Opts.option[String](
+                  "initial-btc-treasury-utxo",
+                  help = "Initial Bitcoin treasury outpoint as TXID:VOUT (display txid)"
+                )
+                val pegInHashOpt = Opts
+                    .option[String](
+                      "peg-in-withdraw-hash",
+                      help = "New peg_in withdraw script hash (56 hex) for config field 4"
+                    )
+                    .orNone
+                (anchorOpt, pegInHashOpt, dryRunFlag).mapN(Cmd.UpdateConfig.apply)
+            }
+
         val deployScriptRefsCommand =
             Opts.subcommand(
               "deploy-script-refs",
@@ -410,6 +433,7 @@ object CliApp {
                 tmScriptCommand `orElse`
                 pegInRequestCommand `orElse`
                 deployBridgeCommand `orElse`
+                updateConfigCommand `orElse`
                 deployScriptRefsCommand `orElse`
                 registerBridgeCredsCommand `orElse`
                 pegInCompleteCommand `orElse`
@@ -490,6 +514,8 @@ object CliApp {
                             PegInRequestCommand(btcTxId, dryRun)
                         case Cmd.DeployBridge(dryRun) =>
                             DeployBridgeCommand(dryRun)
+                        case Cmd.UpdateConfig(anchor, pegInHash, dryRun) =>
+                            UpdateConfigCommand(anchor, pegInHash, dryRun)
                         case Cmd.DeployScriptRefs(dryRun) =>
                             DeployScriptRefsCommand(dryRun)
                         case Cmd.RegisterBridgeCreds(dryRun) =>
