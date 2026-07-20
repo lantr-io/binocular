@@ -35,6 +35,13 @@ case class BridgeConfig(
     // byte order internally). The FIRST Treasury Movement must spend this outpoint; every
     // subsequent TM chains from the previous Confirmed TM record.
     initialBtcTreasuryUtxo: String = "",
+    // Operational-parameter tunables written into config fields 12–15 at deploy (off-chain
+    // consensus anchors; the schedule #16 uses spec devnet defaults, replaced wholesale by a
+    // governance Update). See ConfigDatum #12–16.
+    feeRateSatPerVb: Long = 1L,
+    perPegoutFeeSat: Long = 1000L,
+    minPegOutSat: Long = 10000L,
+    leaderRewardLovelace: Long = 2000000L,
     // The completed-peg-outs one-shot fixes that validator's params (hence its policyId + NFT asset
     // name); peg-out-complete needs it to reconstruct the script to SPEND the MPF UTxO. `Option`
     // (not `""`): a peg-in-only bridge (e.g. the synced config) simply omits the key — pureconfig

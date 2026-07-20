@@ -240,7 +240,26 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
             AuthorizationMethod.CardanoSignature(updateAuthPkh)
           ),
           // The anchor outpoint the first Treasury Movement must spend (chain genesis).
-          initialBtcTreasuryUtxo = initialTreasuryOutpoint
+          initialBtcTreasuryUtxo = initialTreasuryOutpoint,
+          // Operational-parameter tunables (config #12–16; off-chain readers only).
+          feeRateSatPerVb = BigInt(config.bridge.feeRateSatPerVb),
+          perPegoutFee = BigInt(config.bridge.perPegoutFeeSat),
+          minPegOutFbtc = BigInt(config.bridge.minPegOutSat),
+          leaderReward = BigInt(config.bridge.leaderRewardLovelace),
+          // Devnet-scale schedule defaults (spec §TM batches — governance replaces the record
+          // wholesale, effective next epoch, so creation values only need to be sane).
+          schedule = ScheduleParams(
+            dkgR1Deadline = BigInt(3600),
+            dkgR2Deadline = BigInt(7200),
+            updateYDeadline = BigInt(10800),
+            tmBatchInterval = BigInt(21600),
+            signR1Window = BigInt(1800),
+            signR2Window = BigInt(1800),
+            leaderSlotT = BigInt(600),
+            tmRecoveryWindow = BigInt(129600),
+            finalTmCutoff = BigInt(345600),
+            stabilityWindow = BigInt(129600)
+          )
         )
 
         Console.info("Oracle policy", oraclePolicyId.toHex)
