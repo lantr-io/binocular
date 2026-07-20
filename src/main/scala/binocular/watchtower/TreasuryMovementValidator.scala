@@ -75,21 +75,23 @@ case class TmConfirmRedeemer(
 @Compile
 object TmConfirmRedeemer
 
-/** Mint redeemer: which anchor the posted TM chains from.
+/** Mint redeemer: which anchor the posted TM chains from. Both variants carry the 0-based
+  * reference-input index of their anchor UTxO; the anchor is authenticated by its NFT at that index
+  * (config NFT / TM NFT), never by position alone.
   *
-  *   - [[Genesis]] — the FIRST Treasury Movement: the embedded BTC tx's input 0 must spend the
-  *     initial treasury outpoint stored in the Config UTxO (field 11, `initial_btc_treasury_utxo`),
-  *     located among reference inputs by the config NFT.
+  *   - [[Genesis]] — the FIRST Treasury Movement: the reference input at `configRefInputIndex` must
+  *     be the Config UTxO (config NFT), and the embedded BTC tx's input 0 must spend the initial
+  *     treasury outpoint stored in its field 11 (`initial_btc_treasury_utxo`).
   *   - [[Chain]] — every subsequent TM: the reference input at `prevTmRefInputIndex` must be a
-  *     `Confirmed` TM record (authenticated by the TM NFT), and the embedded BTC tx's input 0 must
-  *     spend that record's treasury output `(btcTxid, vout 0)`.
+  *     `Confirmed` TM record (TM NFT), and the embedded BTC tx's input 0 must spend that record's
+  *     treasury output `(btcTxid, vout 0)`.
   *
   * Minting is PERMISSIONLESS: anyone may post a TM chaining from any anchor, but a Bitcoin outpoint
   * spends exactly once, so at most one such TM can ever confirm — the Confirmed chain cannot fork.
   * Uniqueness is inherited from Bitcoin, not enforced here.
   */
 enum TmMintRedeemer derives FromData, ToData {
-    case Genesis
+    case Genesis(configRefInputIndex: BigInt)
     case Chain(prevTmRefInputIndex: BigInt)
 }
 
@@ -189,26 +191,6 @@ object TreasuryMovementValidator {
         search(refInputs)
     }
 
-    /** Find the bridge Config UTxO among reference inputs by the config NFT. The NFT — not the
-      * UTxO's address — is the trust anchor: it is minted exactly once, so a forged UTxO with an
-      * attacker-chosen datum cannot carry it and is never read.
-      */
-    def findConfigInput(
-        refInputs: ScalusList[TxInInfo],
-        configNftPolicy: ByteString,
-        configNftName: ByteString
-    ): TxOut = {
-        def search(remaining: ScalusList[TxInInfo]): TxOut =
-            remaining match
-                case ScalusList.Nil => fail("Config reference input (NFT) not found")
-                case ScalusList.Cons(input, tail) =>
-                    val resolved = input.resolved
-                    if resolved.value.quantityOf(configNftPolicy, configNftName) == BigInt(1) then
-                        resolved
-                    else search(tail)
-        search(refInputs)
-    }
-
     /** The unique tx output carrying the freshly minted TM NFT. Fails on zero or multiple. */
     def outputWithNft(outputs: ScalusList[TxOut], policy: ByteString): TxOut = {
         def loop(remaining: ScalusList[TxOut], acc: Option[TxOut]): TxOut =
@@ -224,16 +206,6 @@ object TreasuryMovementValidator {
                             case Option.None    => loop(tail, Option.Some(out))
                     else loop(tail, acc)
         loop(outputs, Option.None)
-    }
-
-    /** Reference input at `index` (0-based). */
-    def refInputAt(refInputs: ScalusList[TxInInfo], index: BigInt): TxOut = {
-        def loop(remaining: ScalusList[TxInInfo], i: BigInt): TxOut =
-            remaining match
-                case ScalusList.Nil => fail("TM predecessor reference input index out of range")
-                case ScalusList.Cons(input, tail) =>
-                    if i == BigInt(0) then input.resolved else loop(tail, i - 1)
-        loop(refInputs, index)
     }
 
     /** Config field 11 = `initial_btc_treasury_utxo`: 36 bytes, txid (internal) ++ vout (LE). Read
@@ -387,18 +359,19 @@ object TreasuryMovementValidator {
                 case ScalusList.Cons(first, _) => first
                 case ScalusList.Nil            => fail("TM mint: embedded BTC tx has no inputs")
             val expected = redeemer.to[TmMintRedeemer] match
-                case TmMintRedeemer.Genesis =>
-                    initialTreasuryOutpoint(
-                      findConfigInput(
-                        tx.referenceInputs,
-                        configNftPolicy,
-                        configNftName
-                      ).datum match
-                          case OutputDatum.OutputDatum(d) => d
-                          case _ => fail("Config UTxO needs an inline datum")
+                case TmMintRedeemer.Genesis(i) =>
+                    val cfg = tx.referenceInputs.at(i).resolved
+                    // The config NFT — not the index or address — is the trust anchor: it is
+                    // minted exactly once, so a forged UTxO cannot carry it.
+                    require(
+                      cfg.value.quantityOf(configNftPolicy, configNftName) == BigInt(1),
+                      "TM mint: reference input lacks the config NFT"
                     )
+                    initialTreasuryOutpoint(cfg.datum match
+                        case OutputDatum.OutputDatum(d) => d
+                        case _ => fail("Config UTxO needs an inline datum"))
                 case TmMintRedeemer.Chain(i) =>
-                    val prev = refInputAt(tx.referenceInputs, i)
+                    val prev = tx.referenceInputs.at(i).resolved
                     require(
                       prev.value.quantityOf(ownPolicyId, ByteString.empty) == BigInt(1),
                       "TM mint: predecessor lacks the TM NFT"

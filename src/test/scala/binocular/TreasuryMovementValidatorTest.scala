@@ -270,7 +270,8 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           scriptInfo = ScriptInfo.MintingScript(tmPolicy)
         )
 
-    private val genesisRdmr: Data = (TmMintRedeemer.Genesis: TmMintRedeemer).toData
+    private val genesisRdmr: Data = (TmMintRedeemer.Genesis(0): TmMintRedeemer).toData
+    private def genesisRdmrAt(i: BigInt): Data = (TmMintRedeemer.Genesis(i): TmMintRedeemer).toData
     private def chainRdmr(i: BigInt): Data = (TmMintRedeemer.Chain(i): TmMintRedeemer).toData
 
     private def confirmedDatum(
@@ -302,6 +303,16 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           BigInt(1),
           genesisRdmr,
           PList.from(List(configRefInput(anchor = filled(0xee, 36)))),
+          PList.from(List(mintedTmOutput()))
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("TM mint Genesis: reference-input index out of range fails") {
+        val sc = mintContext(
+          BigInt(1),
+          genesisRdmrAt(1), // only one reference input exists
+          PList.from(List(configRefInput())),
           PList.from(List(mintedTmOutput()))
         )
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
