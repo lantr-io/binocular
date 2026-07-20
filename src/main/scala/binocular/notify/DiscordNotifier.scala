@@ -94,13 +94,10 @@ class DiscordNotifier(
         Executors.newSingleThreadScheduledExecutor(tf)
     }
     private val flushTickMs: Long = math.max(1000L, math.min(throttleIntervalMs, 60_000L))
-    scheduler.scheduleAtFixedRate(
-      () =>
-          try flushPending()
-          catch { case _: Throwable => () }, flushTickMs,
-      flushTickMs,
-      TimeUnit.MILLISECONDS
-    )
+    private val flushTask: Runnable = () =>
+        try flushPending()
+        catch { case _: Throwable => () }
+    scheduler.scheduleAtFixedRate(flushTask, flushTickMs, flushTickMs, TimeUnit.MILLISECONDS)
 
     def newBlock(
         height: BigInt,
