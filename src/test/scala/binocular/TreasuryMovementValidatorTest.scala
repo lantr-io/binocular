@@ -33,9 +33,8 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
 
     private val oracleHash = filled(0xcd, 28)
     private val tmScriptHash = filled(0xab, 28)
-    private val authorityPkh = filled(0x7a, 28) // the key the control datum authorizes to mint
-    private val controlNftPolicy = filled(0xc0, 28)
-    private val controlNftName = ByteString.fromHex("544d43") // "TMC"
+    private val configNftPolicy = filled(0xc0, 28)
+    private val configNftName = ByteString.fromHex("434f4e464947") // "CONFIG"
     // The TM UTxO carries the TM NFT (policy = the TM script's own hash — here the stand-in
     // `tmScriptHash` the input/output sit at — empty asset name, qty 1) plus some ADA. The spend
     // validator derives the NFT policy from the UTxO's own address and requires it on the continuing
@@ -159,16 +158,39 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         )
 
     private lazy val compiled =
-        TreasuryMovementContract.contract(oracleHash, controlNftPolicy, controlNftName)
+        TreasuryMovementContract.contract(oracleHash, configNftPolicy, configNftName)
     private lazy val program = compiled.program.deBruijnedProgram
     // The TM NFT policy id == this script's own hash.
     private lazy val tmPolicy: ByteString = ByteString.fromArray(compiled.script.scriptHash.bytes)
 
-    /** The TM-control reference UTxO: carries the control NFT + a TmControlDatum naming `minter`.
-      * `withNft=false` simulates a forged control UTxO (right datum, no genuine NFT).
+    // The anchor outpoint = in0 of rawTm: aa*32 ++ 00000000 (txid internal order ++ vout LE).
+    private val anchorOutpoint = ByteString.fromHex(("aa" * 32) + "00000000")
+
+    /** A minimal 12-field config datum: only field 11 (initial_btc_treasury_utxo) matters here. */
+    private def configDatum(anchor: ByteString): Data =
+        Data.Constr(
+          0,
+          PList(
+            Data.B(ByteString.empty),
+            Data.B(ByteString.empty),
+            Data.B(ByteString.empty),
+            Data.B(ByteString.empty),
+            Data.B(ByteString.empty),
+            Data.B(ByteString.empty),
+            Data.B(ByteString.empty),
+            Data.B(ByteString.empty),
+            Data.B(ByteString.empty),
+            Data.I(0),
+            Data.Constr(1, PList.empty),
+            Data.B(anchor)
+          )
+        )
+
+    /** The Config reference UTxO carrying the config NFT + a config datum with the anchor at field
+      * 11. `withNft=false` simulates a forged config UTxO (right datum, no genuine NFT).
       */
-    private def controlRefInput(
-        minter: ByteString = authorityPkh,
+    private def configRefInput(
+        anchor: ByteString = anchorOutpoint,
         withNft: Boolean = true
     ): TxInInfo = TxInInfo(
       outRef = TxOutRef(TxId(filled(0x03, 32)), BigInt(0)),
@@ -176,33 +198,80 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         address = Address(Credential.ScriptCredential(filled(0xc1, 28)), Option.None),
         value =
             if withNft then
-                Value.unsafeFromList(PList((controlNftPolicy, PList((controlNftName, BigInt(1))))))
+                Value.unsafeFromList(PList((configNftPolicy, PList((configNftName, BigInt(1))))))
             else Value.lovelace(2_000_000),
-        datum = OutputDatum.OutputDatum(TmControlDatum(minter).toData),
+        datum = OutputDatum.OutputDatum(configDatum(anchor)),
         referenceScript = Option.None
       )
     )
 
-    /** A minting ScriptContext: mint `nftQty` of the TM NFT, signed by `sigs`, with the control
-      * UTxO referenced.
+    /** A predecessor TM record UTxO with `Confirmed(prevTxid, [], [])` (or Unconfirmed when
+      * `confirmed=false`), carrying the TM NFT unless `withNft=false`.
+      */
+    private def predecessorRefInput(
+        prevTxid: ByteString,
+        withNft: Boolean = true,
+        confirmed: Boolean = true
+    ): TxInInfo = TxInInfo(
+      outRef = TxOutRef(TxId(filled(0x04, 32)), BigInt(0)),
+      resolved = TxOut(
+        address = Address(Credential.ScriptCredential(tmPolicy), Option.None),
+        value =
+            if withNft then
+                Value.unsafeFromList(
+                  PList(
+                    (ByteString.empty, PList((ByteString.empty, BigInt(2_000_000)))),
+                    (tmPolicy, PList((ByteString.empty, BigInt(1))))
+                  )
+                )
+            else Value.lovelace(2_000_000),
+        datum = OutputDatum.OutputDatum(
+          if confirmed then (TmDatum.Confirmed(prevTxid, PList.Nil, PList.Nil): TmDatum).toData
+          else unconfirmedDatum
+        ),
+        referenceScript = Option.None
+      )
+    )
+
+    /** The freshly-posted Unconfirmed TM output the mint must bind the NFT to. */
+    private def mintedTmOutput(
+        datum: Data = unconfirmedDatum,
+        credential: Credential = Credential.ScriptCredential(tmPolicy)
+    ): TxOut = TxOut(
+      address = Address(credential, Option.None),
+      value = Value.unsafeFromList(
+        PList(
+          (ByteString.empty, PList((ByteString.empty, BigInt(2_000_000)))),
+          (tmPolicy, PList((ByteString.empty, BigInt(1))))
+        )
+      ),
+      datum = OutputDatum.OutputDatum(datum),
+      referenceScript = Option.None
+    )
+
+    /** A minting ScriptContext: mint `nftQty` of the TM NFT with the given redeemer, reference
+      * inputs, and outputs.
       */
     private def mintContext(
         nftQty: BigInt,
-        sigs: PList[PubKeyHash],
-        controlRef: TxInInfo = controlRefInput()
+        rdmr: Data,
+        refInputs: PList[TxInInfo],
+        outputs: PList[TxOut]
     ): ScriptContext =
         ScriptContext(
           txInfo = TxInfo(
-            inputs = PList.from(List(tmInput(tmValue, unconfirmedDatum))),
-            referenceInputs = PList.from(List(controlRef)),
-            outputs = PList.Nil,
+            inputs = PList.Nil,
+            referenceInputs = refInputs,
+            outputs = outputs,
             mint = Value.unsafeFromList(PList((tmPolicy, PList((ByteString.empty, nftQty))))),
-            signatories = sigs,
             id = TxId(filled(0x00, 32))
           ),
-          redeemer = Data.unit,
+          redeemer = rdmr,
           scriptInfo = ScriptInfo.MintingScript(tmPolicy)
         )
+
+    private val genesisRdmr: Data = (TmMintRedeemer.Genesis: TmMintRedeemer).toData
+    private def chainRdmr(i: BigInt): Data = (TmMintRedeemer.Chain(i): TmMintRedeemer).toData
 
     private def confirmedDatum(
         swept: PList[ByteString] = expectedSwept,
@@ -217,34 +286,112 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         assert(hash.length == 56)
     }
 
-    test("TM NFT mint: +1 signed by the control-datum's authorized minter succeeds") {
-        val sc = mintContext(BigInt(1), PList.from(List(PubKeyHash(authorityPkh))))
-        assert(program.applyArg(sc.toData).evaluateDebug.isSuccess)
-    }
-
-    test("TM NFT mint: +1 without the authorized minter's signature fails") {
-        val sc = mintContext(BigInt(1), PList.from(List(PubKeyHash(filled(0x11, 28)))))
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
-    }
-
-    test("TM NFT mint: forged control UTxO (datum present, no genuine NFT) fails") {
-        // Attacker references a UTxO naming themselves as minter, but without the one-shot NFT.
-        val attacker = filled(0x11, 28)
+    test("TM mint Genesis: +1 bound to Unconfirmed output, tx spends config anchor - succeeds") {
         val sc = mintContext(
           BigInt(1),
-          PList.from(List(PubKeyHash(attacker))),
-          controlRef = controlRefInput(minter = attacker, withNft = false)
+          genesisRdmr,
+          PList.from(List(configRefInput())),
+          PList.from(List(mintedTmOutput()))
+        )
+        val result = program.applyArg(sc.toData).evaluateDebug
+        assert(result.isSuccess, s"Expected success, got: $result")
+    }
+
+    test("TM mint Genesis: wrong anchor outpoint fails") {
+        val sc = mintContext(
+          BigInt(1),
+          genesisRdmr,
+          PList.from(List(configRefInput(anchor = filled(0xee, 36)))),
+          PList.from(List(mintedTmOutput()))
         )
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
 
-    test("TM NFT mint: minting more than one fails") {
-        val sc = mintContext(BigInt(2), PList.from(List(PubKeyHash(authorityPkh))))
+    test("TM mint Genesis: config ref input without the config NFT fails") {
+        val sc = mintContext(
+          BigInt(1),
+          genesisRdmr,
+          PList.from(List(configRefInput(withNft = false))),
+          PList.from(List(mintedTmOutput()))
+        )
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
 
-    test("TM NFT burn: −1 is permissionless (no authority needed)") {
-        val sc = mintContext(BigInt(-1), PList.Nil)
+    test("TM mint Chain: predecessor Confirmed(txid=aa*32), tx spends (aa*32, 0) - succeeds") {
+        val sc = mintContext(
+          BigInt(1),
+          chainRdmr(0),
+          PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32)))),
+          PList.from(List(mintedTmOutput()))
+        )
+        val result = program.applyArg(sc.toData).evaluateDebug
+        assert(result.isSuccess, s"Expected success, got: $result")
+    }
+
+    test("TM mint Chain: wrong predecessor txid fails") {
+        val sc = mintContext(
+          BigInt(1),
+          chainRdmr(0),
+          PList.from(List(predecessorRefInput(prevTxid = filled(0xbb, 32)))),
+          PList.from(List(mintedTmOutput()))
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("TM mint Chain: predecessor without the TM NFT fails") {
+        val sc = mintContext(
+          BigInt(1),
+          chainRdmr(0),
+          PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32), withNft = false))),
+          PList.from(List(mintedTmOutput()))
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("TM mint Chain: Unconfirmed predecessor fails") {
+        val sc = mintContext(
+          BigInt(1),
+          chainRdmr(0),
+          PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32), confirmed = false))),
+          PList.from(List(mintedTmOutput()))
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("TM mint: NFT output at a foreign credential fails") {
+        val sc = mintContext(
+          BigInt(1),
+          genesisRdmr,
+          PList.from(List(configRefInput())),
+          PList.from(
+            List(mintedTmOutput(credential = Credential.ScriptCredential(filled(0x99, 28))))
+          )
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("TM mint: NFT output with a Confirmed datum fails") {
+        val sc = mintContext(
+          BigInt(1),
+          genesisRdmr,
+          PList.from(List(configRefInput())),
+          PList.from(List(mintedTmOutput(datum = confirmedDatum())))
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("TM mint: minting more than one fails") {
+        val sc = mintContext(
+          BigInt(2),
+          genesisRdmr,
+          PList.from(List(configRefInput())),
+          PList.from(List(mintedTmOutput()))
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("TM NFT burn: -1 is permissionless (no authority needed)") {
+        val sc = mintContext(BigInt(-1), Data.unit, PList.Nil, PList.Nil)
         assert(program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
 

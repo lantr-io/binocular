@@ -75,16 +75,26 @@ case class TmConfirmRedeemer(
 @Compile
 object TmConfirmRedeemer
 
-/** Datum of the TM-control state UTxO — holds the key authorized to mint TM NFTs. Lives in a UTxO
-  * authenticated by a one-shot control NFT (see [[TreasuryMovementValidator.findControlInput]]);
-  * the NFT, not this datum's location, is the trust anchor (a forged UTxO can carry any datum but
-  * not the one-shot NFT). `authorizedMinter` is a 28-byte pubkey-hash; level C will generalize this
-  * to a roster + leader-election rule, with no change to the TM script hash / address.
+/** Mint redeemer: which anchor the posted TM chains from.
+  *
+  *   - [[Genesis]] — the FIRST Treasury Movement: the embedded BTC tx's input 0 must spend the
+  *     initial treasury outpoint stored in the Config UTxO (field 11, `initial_btc_treasury_utxo`),
+  *     located among reference inputs by the config NFT.
+  *   - [[Chain]] — every subsequent TM: the reference input at `prevTmRefInputIndex` must be a
+  *     `Confirmed` TM record (authenticated by the TM NFT), and the embedded BTC tx's input 0 must
+  *     spend that record's treasury output `(btcTxid, vout 0)`.
+  *
+  * Minting is PERMISSIONLESS: anyone may post a TM chaining from any anchor, but a Bitcoin outpoint
+  * spends exactly once, so at most one such TM can ever confirm — the Confirmed chain cannot fork.
+  * Uniqueness is inherited from Bitcoin, not enforced here.
   */
-case class TmControlDatum(authorizedMinter: ByteString) derives FromData, ToData
+enum TmMintRedeemer derives FromData, ToData {
+    case Genesis
+    case Chain(prevTmRefInputIndex: BigInt)
+}
 
 @Compile
-object TmControlDatum
+object TmMintRedeemer
 
 /** Treasury-movement validator: enforces the `Unconfirmed -> Confirmed` transition on-chain.
   *
@@ -101,17 +111,15 @@ object TmControlDatum
   *      TM identity token rides along), and carries a `Confirmed` datum whose `btcTxid` /
   *      `sweptPegInUtxoIds` / `fulfilledPegOuts` are exactly what the contract parsed out of the
   *      raw TM transaction.
-  *   6. **NOT YET ENFORCED** (open TODO at the spend handler): check that `signedBtcTx` is in fact
-  *      the protocol's Treasury Movement transaction by matching its input/output script-pubkey
-  *      against the address recorded in a referenced Treasury-State UTxO (NFT-authenticated). The
-  *      current implementation validates only the TM NFT identity + the parsed-vs-datum agreement
-  *      below, so on-chain does NOT yet rule out an attacker producing a syntactically valid but
-  *      semantically-unrelated raw Bitcoin tx whose merkle inclusion proof happens to validate
-  *      against the same block header. Wiring this is gated on the Treasury-State UTxO shape being
-  *      finalised; until then operators must rely on heimdall posting only legitimate TM bytes.
   *
-  * Parameterized by the Binocular oracle script hash (applied via
-  * [[TreasuryMovementContract.contract]]).
+  * That `signedBtcTx` is the protocol's real Treasury Movement transaction is enforced at MINT time
+  * (see [[TmMintRedeemer]]): the minted TM NFT is bound to an `Unconfirmed` output whose embedded
+  * BTC tx spends the protocol treasury outpoint — the config anchor (first TM) or the referenced
+  * predecessor `Confirmed` record's output 0 (every subsequent TM). The Confirm spend needs no
+  * linkage re-check: the bytes were committed at mint.
+  *
+  * Parameterized by the Binocular oracle script hash and the config NFT `(policy, name)` (applied
+  * via [[TreasuryMovementContract.contract]]).
   */
 @Compile
 object TreasuryMovementValidator {
@@ -181,25 +189,62 @@ object TreasuryMovementValidator {
         search(refInputs)
     }
 
-    /** Find the TM-control state UTxO among reference inputs by its one-shot control NFT
-      * `(controlNftPolicy, controlNftName)`. The NFT — not the UTxO's address — is the trust
-      * anchor: it is minted exactly once, so a forged UTxO with an attacker-chosen
-      * [[TmControlDatum]] cannot carry it and is never read.
+    /** Find the bridge Config UTxO among reference inputs by the config NFT. The NFT — not the
+      * UTxO's address — is the trust anchor: it is minted exactly once, so a forged UTxO with an
+      * attacker-chosen datum cannot carry it and is never read.
       */
-    def findControlInput(
+    def findConfigInput(
         refInputs: ScalusList[TxInInfo],
-        controlNftPolicy: ByteString,
-        controlNftName: ByteString
+        configNftPolicy: ByteString,
+        configNftName: ByteString
     ): TxOut = {
         def search(remaining: ScalusList[TxInInfo]): TxOut =
             remaining match
-                case ScalusList.Nil => fail("TM-control reference input (NFT) not found")
+                case ScalusList.Nil => fail("Config reference input (NFT) not found")
                 case ScalusList.Cons(input, tail) =>
                     val resolved = input.resolved
-                    if resolved.value.quantityOf(controlNftPolicy, controlNftName) == BigInt(1) then
+                    if resolved.value.quantityOf(configNftPolicy, configNftName) == BigInt(1) then
                         resolved
                     else search(tail)
         search(refInputs)
+    }
+
+    /** The unique tx output carrying the freshly minted TM NFT. Fails on zero or multiple. */
+    def outputWithNft(outputs: ScalusList[TxOut], policy: ByteString): TxOut = {
+        def loop(remaining: ScalusList[TxOut], acc: Option[TxOut]): TxOut =
+            remaining match
+                case ScalusList.Nil =>
+                    acc match
+                        case Option.Some(o) => o
+                        case Option.None    => fail("No output carries the TM NFT")
+                case ScalusList.Cons(out, tail) =>
+                    if out.value.quantityOf(policy, ByteString.empty) == BigInt(1) then
+                        acc match
+                            case Option.Some(_) => fail("TM NFT on multiple outputs")
+                            case Option.None    => loop(tail, Option.Some(out))
+                    else loop(tail, acc)
+        loop(outputs, Option.None)
+    }
+
+    /** Reference input at `index` (0-based). */
+    def refInputAt(refInputs: ScalusList[TxInInfo], index: BigInt): TxOut = {
+        def loop(remaining: ScalusList[TxInInfo], i: BigInt): TxOut =
+            remaining match
+                case ScalusList.Nil => fail("TM predecessor reference input index out of range")
+                case ScalusList.Cons(input, tail) =>
+                    if i == BigInt(0) then input.resolved else loop(tail, i - 1)
+        loop(refInputs, index)
+    }
+
+    /** Config field 11 = `initial_btc_treasury_utxo`: 36 bytes, txid (internal) ++ vout (LE). Read
+      * positionally from the raw Constr field list (11 tails + head), never via a typed ConfigDatum
+      * cast — the config shape is append-only and a full cast would freeze it.
+      */
+    def initialTreasuryOutpoint(configDatum: Data): ByteString = {
+        val fields = unConstrData(configDatum).snd
+        unBData(
+          fields.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.tail.head
+        )
     }
 
     /** Resolve the TM script address from the input being spent (identified by `ownRef`). */
@@ -306,49 +351,73 @@ object TreasuryMovementValidator {
     }
 
     /** Minting policy for the TM NFT — the policy id IS this script's hash, so the NFT and the
-      * spend logic share one script. Gated by an authority signature (the SPO/poster key): minting
-      * a new TM NFT requires exactly +1 of the NFT (empty asset name) AND the authority's
-      * signature; burning (draining a Confirmed TM) is permissionless cleanup.
-      *
-      * This is the single-key "level B" gate — the precursor to the protocol's roster +
-      * leader-election (technical_documentation.md §"Post signed TM"). Only the authority key can
-      * create a legitimate TM NFT, so a Confirmed TM UTxO bearing this policy's token is authentic.
+      * spend logic share one script. PERMISSIONLESS, gated by chain linkage: the freshly posted
+      * `Unconfirmed` TM must embed a BTC tx whose input 0 spends the protocol treasury outpoint —
+      * the config anchor ([[TmMintRedeemer.Genesis]]) or the referenced predecessor `Confirmed`
+      * record's output 0 ([[TmMintRedeemer.Chain]]). See [[TmMintRedeemer]] for why permissionless
+      * minting is safe (Bitcoin's spend-once semantics — the Confirmed chain cannot fork). Burning
+      * (draining a Confirmed TM) is permissionless cleanup.
       */
     def mint(
-        controlNftPolicy: ByteString,
-        controlNftName: ByteString,
+        configNftPolicy: ByteString,
+        configNftName: ByteString,
         ownPolicyId: ByteString,
-        tx: TxInfo
+        tx: TxInfo,
+        redeemer: Datum
     ): Unit = {
         val minted = tx.mint.quantityOf(ownPolicyId, ByteString.empty)
         if minted > BigInt(0) then {
             require(minted == BigInt(1), "TM mint: must mint exactly one TM NFT")
-            // Read the authorized minter from the NFT-authenticated control UTxO (reference input),
-            // then require that key to have signed. The NFT proves WHICH datum is authoritative; the
-            // signature proves the authorized key acted. Neither alone suffices.
-            val authorizedMinter =
-                findControlInput(tx.referenceInputs, controlNftPolicy, controlNftName).datum match
-                    case OutputDatum.OutputDatum(d) => d.to[TmControlDatum].authorizedMinter
-                    case _                          => fail("TM-control UTxO needs an inline datum")
-            require(
-              signedByAuthority(tx.signatories, authorizedMinter),
-              "TM mint: not signed by the authorized minter"
-            )
+            // Bind the NFT to a TM-address output whose Unconfirmed datum embeds the BTC tx being
+            // verified — without this binding the linkage check below would gate nothing.
+            val tmOut = outputWithNft(tx.outputs, ownPolicyId)
+            tmOut.address.credential match
+                case Credential.ScriptCredential(h) =>
+                    require(h == ownPolicyId, "TM mint: NFT output not at the TM script address")
+                case _ => fail("TM mint: NFT output not at a script address")
+            val signedBtcTx = (tmOut.datum match
+                case OutputDatum.OutputDatum(d) => d.to[TmDatum]
+                case _                          => fail("TM mint: NFT output needs an inline datum")
+            ) match
+                case TmDatum.Unconfirmed(rawTx) => rawTx
+                case _ => fail("TM mint: NFT output datum is not Unconfirmed")
+            // The outpoint the embedded BTC tx spends first: input 0 is the treasury by the
+            // deterministic TM layout (input[0] = treasury, output[0] = treasury change).
+            val spent = allInputOutpoints(signedBtcTx) match
+                case ScalusList.Cons(first, _) => first
+                case ScalusList.Nil            => fail("TM mint: embedded BTC tx has no inputs")
+            val expected = redeemer.to[TmMintRedeemer] match
+                case TmMintRedeemer.Genesis =>
+                    initialTreasuryOutpoint(
+                      findConfigInput(
+                        tx.referenceInputs,
+                        configNftPolicy,
+                        configNftName
+                      ).datum match
+                          case OutputDatum.OutputDatum(d) => d
+                          case _ => fail("Config UTxO needs an inline datum")
+                    )
+                case TmMintRedeemer.Chain(i) =>
+                    val prev = refInputAt(tx.referenceInputs, i)
+                    require(
+                      prev.value.quantityOf(ownPolicyId, ByteString.empty) == BigInt(1),
+                      "TM mint: predecessor lacks the TM NFT"
+                    )
+                    (prev.datum match
+                        case OutputDatum.OutputDatum(d) => d.to[TmDatum]
+                        case _ => fail("TM mint: predecessor needs an inline datum")
+                    ) match
+                        case TmDatum.Confirmed(btcTxid, _, _) =>
+                            // Predecessor treasury output = (btcTxid, vout 0).
+                            appendByteString(btcTxid, ByteString.fromHex("00000000"))
+                        case _ => fail("TM mint: predecessor is not Confirmed")
+            require(spent == expected, "TM mint: BTC tx does not spend the treasury outpoint")
         } else
             // minted < 0 => burning a TM NFT (drain). Permissionless cleanup. minted == 0 (only other
             // asset names under this policy) is rejected.
             // TODO: allow burning when spending a Confirmed TM UTxO, so cleanup can be done in one step.
             // For now, just fail if anyone tries to burn without minting in the same tx.
             require(minted < BigInt(0), "TM mint: nothing minted/burned under the TM policy")
-    }
-
-    /** True iff `pkh` is among the transaction's signatories. */
-    def signedByAuthority(sigs: ScalusList[PubKeyHash], pkh: ByteString): Boolean = {
-        def loop(remaining: ScalusList[PubKeyHash]): Boolean =
-            remaining match
-                case ScalusList.Nil           => false
-                case ScalusList.Cons(s, tail) => if s.hash == pkh then true else loop(tail)
-        loop(sigs)
     }
 
     /** Entry point: dispatch on script purpose — minting (the TM NFT) or spending (the Confirm
@@ -361,54 +430,53 @@ object TreasuryMovementValidator {
       */
     def validate(
         oracleScriptHash: ByteString,
-        controlNftPolicy: ByteString,
-        controlNftName: ByteString,
+        configNftPolicy: ByteString,
+        configNftName: ByteString,
         scData: Data
     ): Unit = {
         val ctx = scData.to[ScriptContext]
         ctx.scriptInfo match
             // MintingScript(policyId): policyId is this script's own hash.
             case ScriptInfo.MintingScript(ownPolicyId) =>
-                mint(controlNftPolicy, controlNftName, ownPolicyId, ctx.txInfo)
+                mint(configNftPolicy, configNftName, ownPolicyId, ctx.txInfo, ctx.redeemer)
             case ScriptInfo.SpendingScript(ownRef, datumOpt) =>
                 spend(oracleScriptHash, datumOpt, ctx.txInfo, ownRef, ctx.redeemer)
             case _ => fail("TM validator: unsupported script purpose")
     }
 }
 
-/** The TM validator parameterized with the Binocular oracle script hash and the TM-control NFT
+/** The TM validator parameterized with the Binocular oracle script hash and the config NFT
   * `(policy, name)`. The compiled script's hash is BOTH the TM UTxO address (spend) and the TM NFT
   * policy id (mint). All three parameters are STABLE — the address does NOT depend on any
-  * participant key, so it never moves when the authorized minter / roster rotates (that lives in
-  * the NFT-authenticated [[TmControlDatum]], read at runtime). `Unconfirmed` UTxOs are locked here
-  * and spent into `Confirmed` ones; the TM NFT can only be minted by the key the control datum
-  * names.
+  * participant key. `Unconfirmed` UTxOs are locked here and spent into `Confirmed` ones; the TM NFT
+  * can be minted by ANYONE whose posted TM chains from the current treasury outpoint (config anchor
+  * or predecessor `Confirmed` record — see [[TmMintRedeemer]]).
   */
 object TreasuryMovementContract extends Contract {
     given opts: Options = Options.release
 
-    /** Curried form: `oracleScriptHash -> controlNftPolicy -> controlNftName -> (scriptContext ->
+    /** Curried form: `oracleScriptHash -> configNftPolicy -> configNftName -> (scriptContext ->
       * ())`. Applied via `.apply`, like the always-ok scaffold bakes in its salt.
       */
     lazy val parameterized: PlutusV3[ByteString => (ByteString => (ByteString => (Data => Unit)))] =
         PlutusV3.compile((oracleScriptHash: ByteString) =>
-            (controlNftPolicy: ByteString) =>
-                (controlNftName: ByteString) =>
+            (configNftPolicy: ByteString) =>
+                (configNftName: ByteString) =>
                     (scData: Data) =>
                         TreasuryMovementValidator.validate(
                           oracleScriptHash,
-                          controlNftPolicy,
-                          controlNftName,
+                          configNftPolicy,
+                          configNftName,
                           scData
                         )
         )
 
     def contract(
         oracleScriptHash: ByteString,
-        controlNftPolicy: ByteString,
-        controlNftName: ByteString
+        configNftPolicy: ByteString,
+        configNftName: ByteString
     ): PlutusV3[Data => Unit] =
-        parameterized.apply(oracleScriptHash).apply(controlNftPolicy).apply(controlNftName)
+        parameterized.apply(oracleScriptHash).apply(configNftPolicy).apply(configNftName)
 
     /** Treasury-movement script for the given params: the unapplied program from the generated
       * CIP-57 blueprint with the three `ByteString` params applied at the UPLC level as bare
@@ -417,14 +485,14 @@ object TreasuryMovementContract extends Contract {
       */
     def script(
         oracleScriptHash: ByteString,
-        controlNftPolicy: ByteString,
-        controlNftName: ByteString
+        configNftPolicy: ByteString,
+        configNftName: ByteString
     ): Script.PlutusV3 =
         BinocularBlueprint.script(
           "TreasuryMovementContract",
           BinocularBlueprint.bytesParam(oracleScriptHash),
-          BinocularBlueprint.bytesParam(controlNftPolicy),
-          BinocularBlueprint.bytesParam(controlNftName)
+          BinocularBlueprint.bytesParam(configNftPolicy),
+          BinocularBlueprint.bytesParam(configNftName)
         )
 
     /** CIP-57 blueprint over the UNAPPLIED parameterized program: consumers (and [[script]]) apply
@@ -438,7 +506,7 @@ object TreasuryMovementContract extends Contract {
         val title = "TreasuryMovementContract"
         val description =
             "Bifrost treasury-movement validator: holds Unconfirmed→Confirmed TM state, " +
-                "parameterized by (oracleScriptHash, controlNftPolicy, controlNftName)."
+                "parameterized by (oracleScriptHash, configNftPolicy, configNftName)."
         val bytes = BinocularBlueprint.bytesParamDescription
         Blueprint(
           preamble = Preamble(

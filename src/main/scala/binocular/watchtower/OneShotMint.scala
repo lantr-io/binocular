@@ -11,7 +11,7 @@ import scalus.uplc.builtin.Data.toData
 /** A one-shot minting policy: a mint is allowed only if the transaction consumes the parameterized
   * output reference. Because an outpoint can be spent exactly once, the policy can ever mint at
   * most once — making its token a true singleton (NFT) that cannot be re-minted or forged. Used to
-  * authenticate the TM-control UTxO ([[TmControlDatum]]). Parameterized by the one-shot outpoint.
+  * authenticate protocol state UTxOs. Parameterized by the one-shot outpoint.
   */
 @Compile
 object OneShotMint {
