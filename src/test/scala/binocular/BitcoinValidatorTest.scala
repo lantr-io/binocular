@@ -1034,10 +1034,24 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         )
     }
 
-    test("Bifrost scenario - 100 blocks in tree, add 1 header, promote 1 block") {
+    /** Everything needed to build the Bifrost-scenario update transaction: 100 blocks preloaded in
+      * the fork tree (866881..866980), 1 new header (866981), 1 promotion with its MPF proof.
+      */
+    private case class BifrostScenario(
+        stateWith100Blocks: ChainState,
+        update: OracleAction,
+        expectedState: ChainState,
+        input: Input,
+        utxo: Utxo,
+        refScriptUtxo: Utxo,
+        inputValue: Value,
+        validFrom: Instant,
+        validTo: Instant
+    )
+
+    private def bifrostScenarioSetup(): BifrostScenario = {
         val baseHeight = 866880
         val preloadCount = 100
-        val maxTxSize = CardanoInfo.mainnet.protocolParams.maxTxSize
 
         val (baseFixture, _) = BlockFixture.loadWithHeader(baseHeight)
         val confirmedTip = ByteString.fromHex(baseFixture.hash).reverse
@@ -1160,6 +1174,36 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
             Some(ScriptRef(testContract.script))
           )
         )
+        val inputValue = nftValue(5)
+        val utxo = Utxo(
+          input,
+          Output(
+            testScriptAddr,
+            inputValue,
+            DatumOption.Inline(stateWith100Blocks.toData)
+          )
+        )
+        // Validator reads validRange.to as currentTime; align validTo with the off-chain
+        // currentTime used to compute expectedState.
+        val validTo = Instant.ofEpochSecond(currentTime.toLong)
+        val validFrom = validTo.minusSeconds(600)
+
+        BifrostScenario(
+          stateWith100Blocks = stateWith100Blocks,
+          update = update,
+          expectedState = expectedState,
+          input = input,
+          utxo = utxo,
+          refScriptUtxo = refScriptUtxo,
+          inputValue = inputValue,
+          validFrom = validFrom,
+          validTo = validTo
+        )
+    }
+
+    test("Bifrost scenario - 100 blocks in tree, add 1 header, promote 1 block") {
+        val s = bifrostScenarioSetup()
+        val maxTxSize = CardanoInfo.mainnet.protocolParams.maxTxSize
         val feePayerUtxo = Utxo(
           Input(
             TransactionHash.fromHex(
@@ -1179,28 +1223,14 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
           Output(Party.Alice.address, Value.ada(5))
         )
 
-        val inputValue = nftValue(5)
-        val utxo = Utxo(
-          input,
-          Output(
-            testScriptAddr,
-            inputValue,
-            DatumOption.Inline(stateWith100Blocks.toData)
-          )
-        )
-        // Validator reads validRange.to as currentTime; align validTo with the off-chain
-        // currentTime used to compute expectedState.
-        val validTo = Instant.ofEpochSecond(currentTime.toLong)
-        val validFrom = validTo.minusSeconds(600)
-
         val built = txBuilder
             .spend(feePayerUtxo)
             .collaterals(collateralUtxo)
-            .references(refScriptUtxo, testContract)
-            .spend(utxo, update.toData)
-            .payTo(testScriptAddr, inputValue, expectedState.toData)
-            .validFrom(validFrom)
-            .validTo(validTo)
+            .references(s.refScriptUtxo, testContract)
+            .spend(s.utxo, s.update.toData)
+            .payTo(testScriptAddr, s.inputValue, s.expectedState.toData)
+            .validFrom(s.validFrom)
+            .validTo(s.validTo)
             .build(changeTo = Party.Alice.address)
 
         val pp = CardanoInfo.mainnet.protocolParams
@@ -1227,6 +1257,55 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
           tx.body.value.fee == Coin(958103),
           s"Tx fee ${tx.body.value.fee} != 958103 lovelace"
         )
+    }
+
+    // The documented `SCALUS_PROFILE=1 sbt test` convention (scalus docs, Project Commands /
+    // Profiling): the report emission is opt-in so the default run stays quiet, while the test
+    // itself always exercises the profiler so a positions regression fails fast.
+    private val profilingEnabled =
+        sys.env.get("SCALUS_PROFILE").contains("1") ||
+            sys.props.get("scalus.profile").contains("true")
+
+    test("Profile - Bifrost scenario: add 1 header, promote 1 block") {
+        val s = bifrostScenarioSetup()
+        val pp = CardanoInfo.mainnet.protocolParams
+        val utxos: Utxos =
+            Map(s.utxo.input -> s.utxo.output, s.refScriptUtxo.input -> s.refScriptUtxo.output)
+        val draft = txBuilder
+            .references(s.refScriptUtxo, testContract)
+            .spend(s.utxo, s.update.toData)
+            .payTo(testScriptAddr, s.inputValue, s.expectedState.toData)
+            .validFrom(s.validFrom)
+            .validTo(s.validTo)
+            .draft
+        val scriptContext = draft.getScriptContextV3(utxos, ForSpend(s.input))
+
+        val result = summon[PlutusVM].evaluateScriptProfile(
+          testProgram.applyArg(scriptContext.toData)
+        )
+        result match
+            case _: Result.Success => ()
+            case r: Result.Failure =>
+                fail(s"Validator failed: ${r.exception.getMessage}\n${r.logs.mkString("\n")}")
+
+        val profile = result.profile.getOrElse(fail("no profiling data collected"))
+        assert(profile.totalBudget.steps > 0 && profile.totalBudget.memory > 0)
+        assert(profile.byFunction.nonEmpty, "builtin profile must not be empty")
+        assert(
+          profile.bySourceLocation.exists(_.file.contains("BitcoinValidator")),
+          "source-location profile must contain validator lines (plugin positions missing?)"
+        )
+
+        if profilingEnabled then
+            val p = profile.withPrices(pp.executionUnitPrices)
+            ProfileFormatter.summary(p).linesIterator.foreach(info(_))
+            ProfileFormatter.writeHtml(
+              p,
+              "target/binocular-profile.html",
+              title = "BitcoinValidator — Bifrost scenario: add 1 header, promote 1 block"
+            )
+            ProfileFormatter.writeJson(p, "target/binocular-profile.json")
+            info("Wrote profile to target/binocular-profile.html and .json")
     }
 
     // =========================================================================

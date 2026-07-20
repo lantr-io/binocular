@@ -187,7 +187,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         )
 
     /** The Config reference UTxO carrying the config NFT + a config datum with the anchor at field
-      * 11. `withNft=false` simulates a forged config UTxO (right datum, no genuine NFT).
+      *   11. `withNft=false` simulates a forged config UTxO (right datum, no genuine NFT).
       */
     private def configRefInput(
         anchor: ByteString = anchorOutpoint,
