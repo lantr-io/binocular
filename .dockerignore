@@ -1,0 +1,8 @@
+# Docker build context hygiene for image builds using this repo as context.
+target/
+project/target/
+.bloop/
+.metals/
+.bsp/
+anthill-todo/
+.claude/
