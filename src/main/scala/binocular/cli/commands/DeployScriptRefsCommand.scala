@@ -74,8 +74,6 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
         }
         val configNftPolicy = ByteString.fromHex(cfg.configNftPolicyId)
         val configNftAsset = ByteString.fromHex(cfg.configNftAssetName)
-        val tmControlPolicy = ByteString.fromHex(cfg.tmControlNftPolicy)
-        val tmControlAsset = ByteString.fromHex(cfg.tmControlNftName)
         val cpiRefInput = parseRef("completed-peg-ins-one-shot-ref", cfg.completedPegInsOneShotRef)
         val cpiOneShotRef = TxOutRef(TxId(cpiRefInput.transactionId), cpiRefInput.index)
         if cfg.completedPegOutsOneShotRef.forall(_.trim.isEmpty) then {
@@ -94,7 +92,7 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
         // Blueprint script() — must match DeployBridgeCommand and the watchtower exactly.
         val tmNftPolicy = ByteString.fromArray(
           TreasuryMovementContract
-              .script(oraclePolicyId, tmControlPolicy, tmControlAsset)
+              .script(oraclePolicyId, configNftPolicy, configNftAsset)
               .scriptHash
               .bytes
         )

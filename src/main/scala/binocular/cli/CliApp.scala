@@ -38,7 +38,7 @@ object CliApp {
         case Watchtower(dryRun: Boolean)
         case TmScript
         case PegInRequest(btcTxId: String, dryRun: Boolean)
-        case DeployBridge(authorizedMinter: Option[String], dryRun: Boolean)
+        case DeployBridge(dryRun: Boolean)
         case DeployScriptRefs(dryRun: Boolean)
         case RegisterBridgeCreds(dryRun: Boolean)
         case SignPeginMsg(keyPath: String, message: String)
@@ -273,16 +273,9 @@ object CliApp {
         val deployBridgeCommand =
             Opts.subcommand(
               "deploy-bridge",
-              "Deploy the ft-bifrost-bridge completion contracts (config NFT + completed-peg-ins MPF + TM-control NFT)"
+              "Deploy the ft-bifrost-bridge completion contracts (config NFT + completed-peg-ins/outs MPFs)"
             ) {
-                val authorizedMinterOpt = Opts
-                    .option[String](
-                      "authorized-minter",
-                      help =
-                          "28-byte hex pkh allowed to mint TM NFTs (default: bridge.tm-authorized-minter)"
-                    )
-                    .orNone
-                (authorizedMinterOpt, dryRunFlag).mapN(Cmd.DeployBridge.apply)
+                dryRunFlag.map(Cmd.DeployBridge.apply)
             }
 
         val registerBridgeCredsCommand =
@@ -495,8 +488,8 @@ object CliApp {
                             TmScriptCommand()
                         case Cmd.PegInRequest(btcTxId, dryRun) =>
                             PegInRequestCommand(btcTxId, dryRun)
-                        case Cmd.DeployBridge(authorizedMinter, dryRun) =>
-                            DeployBridgeCommand(authorizedMinter, dryRun)
+                        case Cmd.DeployBridge(dryRun) =>
+                            DeployBridgeCommand(dryRun)
                         case Cmd.DeployScriptRefs(dryRun) =>
                             DeployScriptRefsCommand(dryRun)
                         case Cmd.RegisterBridgeCreds(dryRun) =>

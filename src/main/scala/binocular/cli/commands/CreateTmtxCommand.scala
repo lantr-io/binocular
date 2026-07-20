@@ -72,8 +72,8 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
             ByteString.fromArray(BitcoinContract.script(oracleParams).scriptHash.bytes)
         val tmScript = TreasuryMovementContract.script(
           oracleScriptHashBS,
-          ByteString.fromHex(config.bridge.tmControlNftPolicy),
-          ByteString.fromHex(config.bridge.tmControlNftName)
+          ByteString.fromHex(config.bridge.configNftPolicyId),
+          ByteString.fromHex(config.bridge.configNftAssetName)
         )
         val scriptAddress = Address(network, Credential.ScriptHash(tmScript.scriptHash))
 

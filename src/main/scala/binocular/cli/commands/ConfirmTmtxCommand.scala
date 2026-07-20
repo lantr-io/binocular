@@ -63,8 +63,8 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         // TM-control NFT that authenticates the authorized-minter datum).
         val tmScript = TreasuryMovementContract.script(
           oracleScriptHashBS,
-          ByteString.fromHex(config.bridge.tmControlNftPolicy),
-          ByteString.fromHex(config.bridge.tmControlNftName)
+          ByteString.fromHex(config.bridge.configNftPolicyId),
+          ByteString.fromHex(config.bridge.configNftAssetName)
         )
         val tmAddress = Address(network, Credential.ScriptHash(tmScript.scriptHash))
         // The TM NFT: policy = the validator's own script hash, empty asset name (minted by the

@@ -29,31 +29,30 @@ import cats.syntax.either.*
   *      every cross-referenced script hash;
   *   2. the **completed-peg-ins MPF NFT** (`completed-peg-ins-merkle-tree.ak`) with an empty root;
   *   3. the **completed-peg-outs MPF NFT** (`completed-peg-outs-merkle-tree.ak`) with an empty
-  *      root;
-  *   4. the **TM-control NFT** carrying the [[TmControlDatum]].
+  *      root.
   *
   * Every one of those policies is parameterized by the SAME one-shot outref, so they get distinct
-  * policy ids while all four mint handlers see the single UTxO consumed in this tx. The
-  * bridged-token (`bridged_token`) policy has no state UTxO – its hash is recorded in the config
-  * datum (index 0). All hashes are computed deterministically from the one-shot + the live oracle
-  * policy (see [[BifrostContracts]]). After deploy, set
-  * `binocular.bridge.{config-nft-*, bridged-token-*}` to the printed values and re-mint the
-  * PegInRequests so the peg_in policy matches.
+  * policy ids while all mint handlers see the single UTxO consumed in this tx. The bridged-token
+  * (`bridged_token`) policy has no state UTxO – its hash is recorded in the config datum (index 0).
+  * All hashes are computed deterministically from the one-shot + the live oracle policy (see
+  * [[BifrostContracts]]). After deploy, set `binocular.bridge.{config-nft-*, bridged-token-*}` to
+  * the printed values and re-mint the PegInRequests so the peg_in policy matches.
   *
-  * Variant B config layout (11 fields): index 0/1 (bridged-token policy + asset), 2/3
-  * (completed-peg-ins / completed-peg-outs MPF policies), 4/5 (peg_in / peg_out withdraw), 6
-  * (peg-in close verifier, Dummy28 placeholder), 7 (real BTC-tx-parsing produced verifier,
+  * Config layout (12 fields): index 0/1 (bridged-token policy + asset), 2/3 (completed-peg-ins /
+  * completed-peg-outs MPF policies), 4/5 (peg_in / peg_out withdraw), 6 (peg-in close verifier,
+  * Dummy28 placeholder), 7 (real BTC-tx-parsing produced verifier,
   * [[PegOutProducedVerifierContract]]), 8 (not-produced placeholder,
-  * [[PegOutNotProducedVerifierContract]] – `Cancel`/refund is out of scope), 9 (min_stake) and 10
+  * [[PegOutNotProducedVerifierContract]] – `Cancel`/refund is out of scope), 9 (min_stake), 10
   * (`update_auth` – the binocular owner key `oracle.owner-pkh`, which may Update/Retire the config
-  * per config.ak's spend handler). Minting a new config NFT changes the bridged-token policy, so
-  * re-mint under this config. The cpi/cpo NFT asset names are the constants "CPI"/"CPO".
+  * per config.ak's spend handler) and 11 (`initial_btc_treasury_utxo` – the 36-byte anchor outpoint
+  * the FIRST Treasury Movement must spend, from `bridge.initial-btc-treasury-utxo`). Minting a new
+  * config NFT changes the bridged-token policy, so re-mint under this config. The cpi/cpo NFT asset
+  * names are the constants "CPI"/"CPO". The TM validator is parameterized by (oracle hash, config
+  * NFT policy, config NFT asset), so its address derives from this deploy's config NFT — no
+  * TM-control NFT exists anymore; TM minting is permissionless, gated by chain linkage (see
+  * [[TmMintRedeemer]]).
   */
-case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: Boolean = false)
-    extends Command {
-
-    // TM-control NFT asset name (the control UTxO it tags holds the TmControlDatum).
-    private val TmControlAssetName: ByteString = ByteString.fromString("TMCTRL")
+case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
 
     // Config NFT asset name (arbitrary; recorded as config asset name).
     private val ConfigAssetName: ByteString = ByteString.fromString("BIFCFG")
@@ -78,20 +77,25 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         val sponsorAddress = setup.sponsorAddress
         val oraclePolicyId = setup.script.scriptHash
 
-        // The key authorized to mint TM NFTs (written into the TM-control datum).
-        val minterHex =
-            authorizedMinter.filter(_.nonEmpty).getOrElse(config.bridge.tmAuthorizedMinter)
-        val authorizedMinterBS =
-            if minterHex.length == 56 && minterHex.forall(c => "0123456789abcdefABCDEF".contains(c))
-            then ByteString.fromHex(minterHex)
-            else if dryRun then {
-                Console.warn("authorized-minter unset/invalid — zeros for dry-run"); Dummy28
-            } else {
-                Console.error(
-                  "Set --authorized-minter (or bridge.tm-authorized-minter) to the 28-byte (56 hex) " +
-                      "authorized-minter pkh (e.g. `heimdall wallet-address` → payment key hash)"
-                )
-                break(1)
+        // The initial Bitcoin treasury outpoint (config field 11): the FIRST TM must spend it.
+        val initialTreasuryOutpoint =
+            try
+                if config.bridge.initialBtcTreasuryUtxo.trim.nonEmpty then
+                    BridgeConfig.outpointFromDisplay(config.bridge.initialBtcTreasuryUtxo.trim)
+                else if dryRun then {
+                    Console.warn("bridge.initial-btc-treasury-utxo unset — zeros for dry-run")
+                    ByteString.fromArray(Array.fill[Byte](36)(0))
+                } else {
+                    Console.error(
+                      "Set bridge.initial-btc-treasury-utxo to the initial Bitcoin treasury " +
+                          "outpoint as TXID:VOUT (display txid)"
+                    )
+                    break(1)
+                }
+            catch {
+                case e: IllegalArgumentException =>
+                    Console.error(s"bridge.initial-btc-treasury-utxo: ${e.getMessage}")
+                    break(1)
             }
 
         val blueprint =
@@ -153,11 +157,6 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         val configRef = oneShotRef
         val cpiRef = oneShotRef
         val cpoRef = oneShotRef
-        val tmControlRef = oneShotRef
-
-        // TM-control one-shot NFT — authenticates the control UTxO (TmControlDatum).
-        val tmControlContract = OneShotMintContract.contract(tmControlRef)
-        val tmControlPolicy = tmControlContract.script.scriptHash
 
         // --- compute the deterministic hash chain ---
         val configContract =
@@ -172,15 +171,15 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         val cpiPolicy = cpiContract.policyId
         val cpiAssetName = CompletedPegInsContract.assetName
 
-        // TM-NFT policy = the TreasuryMovementValidator script hash (oracle hash + the TM-control
-        // NFT minted in this same deploy tx). peg_in.ak references the Confirmed TM UTxO by this NFT
+        // TM-NFT policy = the TreasuryMovementValidator script hash (oracle hash + the config NFT
+        // minted in this same deploy tx). peg_in.ak references the Confirmed TM UTxO by this NFT
         // (its 4th param), so the peg_in hash depends on it.
         // Derived from the blueprint script() — the SAME path the watchtower/relay/confirm
         // use. The SIR-applied contract() hashes differently (params applied pre-optimization),
         // so using it here would split the system across two TM script hashes.
         val tmNftPolicy = ByteString.fromArray(
           TreasuryMovementContract
-              .script(oraclePolicyId, tmControlPolicy, TmControlAssetName)
+              .script(oraclePolicyId, configPolicy, ConfigAssetName)
               .scriptHash
               .bytes
         )
@@ -239,7 +238,9 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
           // the config (progressive decentralization rotates this via a later update).
           updateAuth = POption.Some(
             AuthorizationMethod.CardanoSignature(updateAuthPkh)
-          )
+          ),
+          // The anchor outpoint the first Treasury Movement must spend (chain genesis).
+          initialBtcTreasuryUtxo = initialTreasuryOutpoint
         )
 
         Console.info("Oracle policy", oraclePolicyId.toHex)
@@ -260,10 +261,7 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
         Console.info("peg_out produced verifier", pegOutProducedVerifierHash.toHex)
         Console.info("peg_out not-produced verifier", pegOutNotProducedVerifierHash.toHex)
         Console.info("TM-NFT policy (peg_in param)", tmNftPolicy.toHex)
-        Console.info("TM-control one-shot", s"${tmControlRef.id.hash.toHex}#${tmControlRef.idx}")
-        Console.info("TM-control NFT policy", tmControlPolicy.toHex)
-        Console.info("TM-control NFT asset", TmControlAssetName.toHex)
-        Console.info("authorized minter", authorizedMinterBS.toHex)
+        Console.info("initial treasury outpoint", initialTreasuryOutpoint.toHex)
         println()
 
         if dryRun then {
@@ -273,28 +271,20 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
             break(0)
         }
 
-        // --- Single bootstrap tx: spend the one-shot, mint all four protocol NFTs, and create
+        // --- Single bootstrap tx: spend the one-shot, mint all three protocol NFTs, and create
         //     every protocol UTxO in one atomic tx. config.ak::mint checks self.outputs[0] is the
-        //     config UTxO, so the config output MUST be first. cpi/cpo/tm-control mint handlers each
-        //     find their own output by script address and see the shared one-shot consumed. ---
-        Console.step(1, "Bootstrapping bridge (config + cpi + cpo + tm-control) in one tx")
+        //     config UTxO, so the config output MUST be first. cpi/cpo mint handlers each find
+        //     their own output by script address and see the shared one-shot consumed. ---
+        Console.step(1, "Bootstrapping bridge (config + cpi + cpo) in one tx")
         val configAsset = AssetName(ConfigAssetName)
         val cpiAsset = AssetName(cpiAssetName)
         val cpoAsset = AssetName(cpoAssetName)
-        val tmControlAsset = AssetName(TmControlAssetName)
         val configValue =
             Value.lovelace(2_000_000L) + Value.asset(configContract.policyId, configAsset, 1L)
         val cpiValue = Value.lovelace(2_000_000L) + Value.asset(cpiContract.policyId, cpiAsset, 1L)
         val cpoValue = Value.lovelace(2_000_000L) + Value.asset(cpoContract.policyId, cpoAsset, 1L)
-        val tmControlValue =
-            Value.lovelace(2_000_000L) + Value.asset(
-              tmControlContract.script.scriptHash,
-              tmControlAsset,
-              1L
-            )
         val cpiDatum = CompletedPegInsMerkleTreeDatum(EmptyRoot)
         val cpoDatum = CompletedPegOutsMerkleTreeDatum(EmptyRoot)
-        val tmControlDatum = TmControlDatum(authorizedMinterBS)
         val bootstrapTx =
             try
                 TxBuilder(provider.cardanoInfo)
@@ -302,13 +292,10 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
                     .mint(configContract.script, Map(configAsset -> 1L), Data.unit)
                     .mint(cpiContract.script, Map(cpiAsset -> 1L), Data.unit)
                     .mint(cpoContract.script, Map(cpoAsset -> 1L), Data.unit)
-                    .mint(tmControlContract, Map(tmControlAsset -> 1L), Data.unit)
-                    // config UTxO first (config.ak::mint reads self.outputs[0]); tm-control also goes
-                    // to the config address (immutable, spend=False) carrying the TmControlDatum.
+                    // config UTxO first (config.ak::mint reads self.outputs[0]).
                     .payTo(configContract.address(network), configValue, configDatum.toData)
                     .payTo(cpiContract.address(network), cpiValue, cpiDatum.toData)
                     .payTo(cpoContract.address(network), cpoValue, cpoDatum.toData)
-                    .payTo(configContract.address(network), tmControlValue, tmControlDatum.toData)
                     // Register the peg_in / peg_out withdraw reward accounts here (deposit-less
                     // Shelley RegCert, no script execution) so completion txs can withdraw. Both
                     // hashes are fresh per deploy (they derive from this deploy's config policy), so
@@ -367,8 +354,7 @@ case class DeployBridgeCommand(authorizedMinter: Option[String] = None, dryRun: 
           "peg_in/peg_out reward accounts registered in the bootstrap tx; run " +
               "`register-bridge-creds` to register the produced verifier before peg-out completion"
         )
-        Console.info("tm-control-nft-policy", tmControlPolicy.toHex)
-        Console.info("tm-control-nft-name", TmControlAssetName.toHex)
+        Console.info("tm-nft-policy", tmNftPolicy.toHex)
         Console.separator()
         0
     }

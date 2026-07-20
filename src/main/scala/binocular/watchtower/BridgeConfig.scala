@@ -30,17 +30,11 @@ case class BridgeConfig(
     // reconstruct the script in order to SPEND the MPF UTxO. The config NFT, by contrast, is only a
     // reference input, so it is located by its NFT and needs no script. Empty until F3 is deployed.
     completedPegInsOneShotRef: String = "",
-    // The TM-control NFT (one-shot) that authenticates the control UTxO whose TmControlDatum names
-    // the key authorized to mint the TM NFT. These parameterize TreasuryMovementValidator (so they
-    // fix the TM script hash / address) and are STABLE — the address does NOT depend on the
-    // authorized key, which lives in the control datum and can rotate freely. policy = 28-byte hex;
-    // name = hex asset name. Empty = placeholder (until the control UTxO is deployed).
-    tmControlNftPolicy: String = "",
-    tmControlNftName: String = "",
-    // The 28-byte pubkey-hash written into the TM-control datum at deploy = the key authorized to
-    // mint TM NFTs (the SPO/poster key — on the devnet, heimdall's Cardano signing key; get it from
-    // `heimdall wallet-address`). Default for deploy-bridge's --authorized-minter.
-    tmAuthorizedMinter: String = "",
+    // The initial Bitcoin treasury outpoint written into config field 11 (initial_btc_treasury_utxo)
+    // at deploy, in display form "TXID:VOUT" (TXID as shown by explorers; converted to internal
+    // byte order internally). The FIRST Treasury Movement must spend this outpoint; every
+    // subsequent TM chains from the previous Confirmed TM record.
+    initialBtcTreasuryUtxo: String = "",
     // The completed-peg-outs one-shot fixes that validator's params (hence its policyId + NFT asset
     // name); peg-out-complete needs it to reconstruct the script to SPEND the MPF UTxO. `Option`
     // (not `""`): a peg-in-only bridge (e.g. the synced config) simply omits the key — pureconfig
@@ -53,3 +47,20 @@ case class BridgeConfig(
     // to inlining the script in the witness set (only viable for small txs).
     completedPegOutsOneShotRef: Option[String] = None
 ) derives ConfigReader
+
+object BridgeConfig {
+
+    /** "TXID:VOUT" (display txid) -> 36-byte outpoint (txid internal order ++ vout LE). */
+    def outpointFromDisplay(s: String): scalus.uplc.builtin.ByteString = {
+        val parts = s.split(':')
+        require(parts.length == 2, s"expected TXID:VOUT, got '$s'")
+        val txidHex = parts(0)
+        require(txidHex.length == 64, s"txid must be 64 hex chars: $txidHex")
+        val txidInternal = txidHex.grouped(2).toSeq.reverse.mkString
+        val vout = parts(1).toLong
+        require(vout >= 0 && vout <= 0xffffffffL, s"vout out of range: $vout")
+        val voutLe =
+            f"${vout & 0xff}%02x${(vout >> 8) & 0xff}%02x${(vout >> 16) & 0xff}%02x${(vout >> 24) & 0xff}%02x"
+        scalus.uplc.builtin.ByteString.fromHex(txidInternal + voutLe)
+    }
+}

@@ -17,7 +17,9 @@ import scalus.uplc.builtin.Data.{FromData, ToData}
 // withdrawal from this script. It's a runtime config field, so the close verifier can be deployed +
 // wired via a config update with no peg_in recompile / PIR re-mint. Dummy (Cancel disabled) until
 // the F1–F6 failure-mode milestone ships. Index 10 is the config Update/Retire authority
-// (Aiken `Option<AuthorizationMethod>`, None = permanently frozen).
+// (Aiken `Option<AuthorizationMethod>`, None = permanently frozen). Index 11 is the initial
+// Bitcoin treasury outpoint (36 bytes: txid internal order ++ vout LE) the FIRST Treasury
+// Movement must spend; subsequent TMs chain from the previous Confirmed TM record.
 case class ConfigDatum(
     bridgedTokenPolicyId: ByteString,
     bridgedTokenAssetName: ByteString,
@@ -29,7 +31,8 @@ case class ConfigDatum(
     legitTmAndPegOutProducedVerifierScriptHash: ByteString,
     legitTmAndPegOutNotProducedVerifierScriptHash: ByteString,
     minStake: BigInt,
-    updateAuth: scalus.cardano.onchain.plutus.prelude.Option[AuthorizationMethod]
+    updateAuth: scalus.cardano.onchain.plutus.prelude.Option[AuthorizationMethod],
+    initialBtcTreasuryUtxo: ByteString
 ) derives FromData,
       ToData
 

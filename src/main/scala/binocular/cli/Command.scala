@@ -293,8 +293,8 @@ object CommandHelpers {
     def tmNftPolicy(config: BinocularConfig, oracleScriptHash: ScriptHash): ByteString = {
         val tmScript = TreasuryMovementContract.script(
           ByteString.fromArray(oracleScriptHash.bytes),
-          ByteString.fromHex(config.bridge.tmControlNftPolicy),
-          ByteString.fromHex(config.bridge.tmControlNftName)
+          ByteString.fromHex(config.bridge.configNftPolicyId),
+          ByteString.fromHex(config.bridge.configNftAssetName)
         )
         ByteString.fromArray(tmScript.scriptHash.bytes)
     }

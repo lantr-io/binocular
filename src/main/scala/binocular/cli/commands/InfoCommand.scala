@@ -69,8 +69,8 @@ case class InfoCommand() extends Command {
                 val oracleHash = BitcoinContract.script(params).scriptHash
                 val tmScript = TreasuryMovementContract.script(
                   ByteString.fromArray(oracleHash.bytes),
-                  ByteString.fromHex(config.bridge.tmControlNftPolicy),
-                  ByteString.fromHex(config.bridge.tmControlNftName)
+                  ByteString.fromHex(config.bridge.configNftPolicyId),
+                  ByteString.fromHex(config.bridge.configNftAssetName)
                 )
                 val tmHash = tmScript.scriptHash
                 val tmAddr = Address(cardano.scalusNetwork, Credential.ScriptHash(tmHash)).encode
