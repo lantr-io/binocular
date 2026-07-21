@@ -36,14 +36,16 @@ object PegOutEntry
 /** Datum of the treasury-movement (TM) UTxO.
   *
   *   - [[Unconfirmed]] — created when the signed Bitcoin TM is posted to Cardano. Carries the full
-  *     segwit-serialized `signedBtcTx` (the bytes watchtowers relay to Bitcoin). Constr tag 0. This
-  *     is the single-field shape heimdall's `publish.rs` (`Constr(0, [signed_btc_tx])`) and
-  *     binocular's `create-tmtx` scaffold already post — do not add fields.
+  *     segwit-serialized `signedBtcTx` (the bytes watchtowers relay to Bitcoin), the poster's
+  *     `creator` key hash, and `created` (POSIX ms, must equal the posting tx's validity upper
+  *     bound — see the mint branch). Constr tag 0, `[signed_btc_tx, creator, created]` — the shape
+  *     heimdall's `publish.rs` and binocular's `create-tmtx` post.
   *   - [[Confirmed]] — produced by the Confirm transition once the TM is Binocular-confirmed. Holds
   *     the `btcTxid`, the list of swept peg-in outpoints (`sweptPegInUtxoIds`, 36-byte
-  *     prev_txid++vout each), and the `fulfilledPegOuts`. Constr tag 1.
+  *     prev_txid++vout each), the `fulfilledPegOuts`, and `creator`/`created` carried verbatim from
+  *     the Unconfirmed input (they drive the GC path). Constr tag 1.
   *
-  * Variant order is positional in the Plutus Constr — do not reorder.
+  * Variant order and field order are positional in the Plutus Constr — do not reorder.
   */
 enum TmDatum derives FromData, ToData {
     case Unconfirmed(signedBtcTx: ByteString, creator: PubKeyHash, created: PosixTime)
@@ -123,6 +125,10 @@ enum TmMintRedeemer derives FromData, ToData {
   * BTC tx spends the protocol treasury outpoint — the config anchor (first TM) or the referenced
   * predecessor `Confirmed` record's output 0 (every subsequent TM). The Confirm spend needs no
   * linkage re-check: the bytes were committed at mint.
+  *
+  * A `Confirmed` record is additionally spendable by its `creator` once the [[GcGraceMs]] grace
+  * period after `created` elapses: the spend burns the TM NFT and reclaims the min-ADA (garbage
+  * collection — see the Confirmed branch of `spend`). Operational rule: never GC the chain TIP.
   *
   * Parameterized by the Binocular oracle script hash and the config NFT `(policy, name)` (applied
   * via [[TreasuryMovementContract.contract]]).
