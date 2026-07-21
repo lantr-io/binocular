@@ -100,8 +100,11 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     private val ownRef = TxOutRef(TxId(filled(0x01, 32)), BigInt(0))
     private val creatorPkh = PubKeyHash(filled(0x7a, 28))
     private val createdAt: BigInt = BigInt("1700000000000")
+    // N7 datum fields — carried through Confirm, not yet enforced on-chain (pin lands with N9).
+    private val tmEpoch: BigInt = BigInt(42)
+    private val tmLeaderReward: BigInt = BigInt(2_000_000)
     private val unconfirmedDatum: Data =
-        (TmDatum.Unconfirmed(rawTm, creatorPkh, createdAt): TmDatum).toData
+        (TmDatum.Unconfirmed(rawTm, creatorPkh, createdAt, tmEpoch, tmLeaderReward): TmDatum).toData
 
     private def tmInput(value: Value, datum: Data) = TxInInfo(
       outRef = ownRef,
@@ -231,7 +234,15 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         datum = OutputDatum.OutputDatum(
           if confirmed then
               (TmDatum
-                  .Confirmed(prevTxid, PList.Nil, PList.Nil, creatorPkh, createdAt): TmDatum).toData
+                  .Confirmed(
+                    prevTxid,
+                    PList.Nil,
+                    PList.Nil,
+                    creatorPkh,
+                    createdAt,
+                    tmEpoch,
+                    tmLeaderReward
+                  ): TmDatum).toData
           else unconfirmedDatum
         ),
         referenceScript = Option.None
@@ -315,7 +326,16 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     private def confirmedDatum(
         swept: PList[ByteString] = expectedSwept,
         fulfilled: PList[PegOutEntry] = expectedFulfilled
-    ): Data = (TmDatum.Confirmed(txid, swept, fulfilled, creatorPkh, createdAt): TmDatum).toData
+    ): Data =
+        (TmDatum.Confirmed(
+          txid,
+          swept,
+          fulfilled,
+          creatorPkh,
+          createdAt,
+          tmEpoch,
+          tmLeaderReward
+        ): TmDatum).toData
 
     // --- tests ---
 
@@ -498,9 +518,20 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     }
 
     test("TmDatum / redeemer Data round-trip") {
-        assert(unconfirmedDatum.to[TmDatum] == TmDatum.Unconfirmed(rawTm, creatorPkh, createdAt))
+        assert(
+          unconfirmedDatum.to[TmDatum] == TmDatum
+              .Unconfirmed(rawTm, creatorPkh, createdAt, tmEpoch, tmLeaderReward)
+        )
         val conf: TmDatum =
-            TmDatum.Confirmed(txid, expectedSwept, expectedFulfilled, creatorPkh, createdAt)
+            TmDatum.Confirmed(
+              txid,
+              expectedSwept,
+              expectedFulfilled,
+              creatorPkh,
+              createdAt,
+              tmEpoch,
+              tmLeaderReward
+            )
         assert(conf.toData.to[TmDatum] == conf)
     }
 
@@ -634,7 +665,9 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
               PList.from(List(filled(0xfe, 36))),
               PList.Nil,
               creatorPkh,
-              createdAt
+              createdAt,
+              tmEpoch,
+              tmLeaderReward
             ): TmDatum).toData
         val escapedOutput = TxOut(
           address = Address(Credential.ScriptCredential(filled(0x99, 28)), Option.None),

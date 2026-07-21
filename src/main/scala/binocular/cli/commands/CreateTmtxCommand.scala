@@ -109,9 +109,20 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
         // used here does not check it, but keep the datum consistent with real posts.
         val validTo = java.time.Instant.ofEpochSecond(java.time.Instant.now().getEpochSecond + 1800)
         val createdMs = BigInt(validTo.toEpochMilli)
+        // N7 datum fields [.., epoch, leader_reward]. `leaderReward` mirrors the Config
+        // `leader_reward` tunable (its pin against the on-chain Config datum lands with N9). `epoch`
+        // is the Cardano epoch this TM belongs to — heimdall's `publish.rs` sets the real value; this
+        // manual scaffold leaves it 0 (the validator carries epoch but does not enforce it in N7).
+        val leaderReward = BigInt(config.bridge.leaderRewardLovelace)
         val datum = Data.Constr(
           0,
-          ScalusList(Data.B(btcTxBytes), Data.B(creatorPkh), Data.I(createdMs))
+          ScalusList(
+            Data.B(btcTxBytes),
+            Data.B(creatorPkh),
+            Data.I(createdMs),
+            Data.I(BigInt(0)),
+            Data.I(leaderReward)
+          )
         )
 
         // Mint TMTx token and send to script address with datum

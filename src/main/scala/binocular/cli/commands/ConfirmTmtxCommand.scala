@@ -275,7 +275,9 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                               swept,
                               fulfilled,
                               unconfirmedDatum.creator,
-                              unconfirmedDatum.created
+                              unconfirmedDatum.created,
+                              unconfirmedDatum.epoch,
+                              unconfirmedDatum.leaderReward
                             ): TmDatum).toData
 
                         if dryRun then {

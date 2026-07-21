@@ -37,24 +37,40 @@ object PegOutEntry
   *
   *   - [[Unconfirmed]] — created when the signed Bitcoin TM is posted to Cardano. Carries the full
   *     segwit-serialized `signedBtcTx` (the bytes watchtowers relay to Bitcoin), the poster's
-  *     `creator` key hash, and `created` (POSIX ms, must equal the posting tx's validity upper
-  *     bound — see the mint branch). Constr tag 0, `[signed_btc_tx, creator, created]` — the shape
-  *     heimdall's `publish.rs` and binocular's `create-tmtx` post.
+  *     `creator` key hash, `created` (POSIX ms, must equal the posting tx's validity upper bound —
+  *     see the mint branch), and the N7 fields `epoch` (the Cardano epoch this TM belongs to) and
+  *     `leaderReward` (the reward amount, a copy of the Config `leader_reward` tunable at post).
+  *     Constr tag 0, `[signed_btc_tx, creator, created, epoch, leader_reward]` — the shape
+  *     heimdall's `publish.rs` and binocular's `create-tmtx` post. N7 note: `epoch`/`leaderReward`
+  *     are carried here but NOT yet enforced on-chain — the leader_reward pin against the Config
+  *     and the reward payout land with N9 (see [[2026-07-21-n9-leader-reward-attribution]] in
+  *     internal-docs); `tm_sequence` is deliberately NOT a datum field (off-chain signing counter,
+  *     spec §Cardano submission and leader reward).
   *   - [[Confirmed]] — produced by the Confirm transition once the TM is Binocular-confirmed. Holds
   *     the `btcTxid`, the list of swept peg-in outpoints (`sweptPegInUtxoIds`, 36-byte
-  *     prev_txid++vout each), the `fulfilledPegOuts`, and `creator`/`created` carried verbatim from
-  *     the Unconfirmed input (they drive the GC path). Constr tag 1.
+  *     prev_txid++vout each), the `fulfilledPegOuts`, and
+  *     `creator`/`created`/`epoch`/`leaderReward` carried verbatim from the Unconfirmed input
+  *     (`creator`/`created` drive the GC path). Constr tag 1.
   *
-  * Variant order and field order are positional in the Plutus Constr — do not reorder.
+  * Variant order and field order are positional in the Plutus Constr — do not reorder; new fields
+  * are appended (epoch/leaderReward after created), never inserted.
   */
 enum TmDatum derives FromData, ToData {
-    case Unconfirmed(signedBtcTx: ByteString, creator: PubKeyHash, created: PosixTime)
+    case Unconfirmed(
+        signedBtcTx: ByteString,
+        creator: PubKeyHash,
+        created: PosixTime,
+        epoch: BigInt,
+        leaderReward: BigInt
+    )
     case Confirmed(
         btcTxid: ByteString,
         sweptPegInUtxoIds: ScalusList[ByteString],
         fulfilledPegOuts: ScalusList[PegOutEntry],
         creator: PubKeyHash,
-        created: PosixTime
+        created: PosixTime,
+        epoch: BigInt,
+        leaderReward: BigInt
     )
 }
 
@@ -253,7 +269,7 @@ object TreasuryMovementValidator {
         val datum = datumOpt.getOrFail("Missing TM datum").to[TmDatum]
         // Only the Unconfirmed -> Confirmed transition is a legal spend.
         datum match
-            case TmDatum.Unconfirmed(signedBtcTx, creator, created) =>
+            case TmDatum.Unconfirmed(signedBtcTx, creator, created, epoch, leaderReward) =>
                 val proof = redeemer.to[TmConfirmRedeemer]
 
                 // 1. Recompute the txid from the witness-stripped serialization — never trust the caller.
@@ -309,14 +325,19 @@ object TreasuryMovementValidator {
 
                 val swept = allInputOutpoints(signedBtcTx)
                 val fulfilled = allOutputs(signedBtcTx)
+                // N7: epoch + leaderReward ride through the Confirm transition verbatim (like
+                // creator/created), so the Confirmed record carries the poster-declared reward
+                // amount for N9's later payout enforcement.
                 val exp = OutputDatum.OutputDatum(
-                  TmDatum.Confirmed(txid, swept, fulfilled, creator, created).toData
+                  TmDatum
+                      .Confirmed(txid, swept, fulfilled, creator, created, epoch, leaderReward)
+                      .toData
                 )
                 require(
                   exp === contOut.datum,
                   "Continuing output datum does not match parsed TM Confirmed"
                 )
-            case TmDatum.Confirmed(_, _, _, creator, created) =>
+            case TmDatum.Confirmed(_, _, _, creator, created, _, _) =>
                 // Garbage collection: after the grace period the CREATOR may reclaim the record's
                 // min-ADA, burning the TM NFT. By then all peg-ins/peg-outs swept by this TM are
                 // expected to be completed (the record is no longer needed as proof material).
@@ -367,7 +388,7 @@ object TreasuryMovementValidator {
             case Credential.ScriptCredential(h) if h == ownPolicyId => ()
             case _ => fail("TM mint: NFT output not at own script address")
         val signedBtcTx = tmOut.datum.of[TmDatum] match
-            case TmDatum.Unconfirmed(rawTx, _, created) =>
+            case TmDatum.Unconfirmed(rawTx, _, created, _, _) =>
                 val txHappenedBefore = tx.validRange.to.finiteOrFail(
                   "TM mint: validity range upper bound must be finite"
                 )
@@ -402,7 +423,7 @@ object TreasuryMovementValidator {
                   "TM mint: predecessor lacks the TM NFT"
                 )
                 prev.datum.of[TmDatum] match
-                    case TmDatum.Confirmed(btcTxid, _, _, _, _) =>
+                    case TmDatum.Confirmed(btcTxid, _, _, _, _, _, _) =>
                         // Predecessor treasury output = (btcTxid, vout 0).
                         btcTxid ++ hex"00000000"
                     case _ => fail("TM mint: predecessor is not Confirmed")
