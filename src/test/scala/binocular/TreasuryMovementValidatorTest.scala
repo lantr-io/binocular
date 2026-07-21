@@ -262,9 +262,9 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         rdmr: Data,
         refInputs: PList[TxInInfo],
         outputs: PList[TxOut],
-        // The mint anchors `created` to the validity interval (isEntirelyBefore(created+slack)),
-        // so a bounded window around createdAt is the default; Interval.always must fail.
-        validRange: Interval = Interval.between(createdAt - 600_000, createdAt + 600_000)
+        // The mint requires `created == validRange.to` (a finite upper bound), so the default
+        // window ends exactly at createdAt; Interval.always must fail.
+        validRange: Interval = Interval.between(createdAt - 600_000, createdAt)
     ): ScriptContext =
         ScriptContext(
           txInfo = TxInfo(
@@ -444,7 +444,9 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         assert(program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
 
-    test("TM mint: backdated created fails (validity window far after created)") {
+    test("TM mint: created != validity upper bound fails (backdating impossible)") {
+        // A backdated `created` (upper bound after created) and any other mismatch both fail:
+        // created must EQUAL validRange.to, making it an upper bound on the real posting time.
         val sc = mintContext(
           BigInt(1),
           genesisRdmr,
@@ -453,6 +455,14 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           validRange = Interval.between(createdAt + 7_200_000, createdAt + 7_800_000)
         )
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        val off = mintContext(
+          BigInt(1),
+          genesisRdmr,
+          PList.from(List(configRefInput())),
+          PList.from(List(mintedTmOutput())),
+          validRange = Interval.between(createdAt - 600_000, createdAt + 1)
+        )
+        assert(!program.applyArg(off.toData).evaluateDebug.isSuccess)
     }
 
     test("TM mint: unbounded validity range fails (created cannot be anchored)") {

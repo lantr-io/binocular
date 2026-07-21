@@ -104,7 +104,11 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
         val btcTxBytes = ByteString.fromHex(btcTxHex)
         import scalus.cardano.onchain.plutus.prelude.List as ScalusList
         val creatorPkh = ByteString.fromArray(hdAccount.paymentKeyHash.bytes)
-        val createdMs = BigInt(System.currentTimeMillis())
+        // The real TM mint policy requires created == the tx validity upper bound (whole-second
+        // instant: 1s slots make the ledger's slot->ms translation exact). The scaffold policy
+        // used here does not check it, but keep the datum consistent with real posts.
+        val validTo = java.time.Instant.ofEpochSecond(java.time.Instant.now().getEpochSecond + 1800)
+        val createdMs = BigInt(validTo.toEpochMilli)
         val datum = Data.Constr(
           0,
           ScalusList(Data.B(btcTxBytes), Data.B(creatorPkh), Data.I(createdMs))
@@ -119,6 +123,7 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
         try {
             val tx = TxBuilder(provider.cardanoInfo)
                 .mint(mintingScript, mintAssets, Data.unit)
+                .validTo(validTo)
                 .payTo(scriptAddress, outputValue, datum)
                 .complete(provider, sponsorAddress)
                 .await(timeout)
