@@ -215,6 +215,34 @@ object TreasuryMovementValidator {
             .resolved
     }
 
+    /** Count the transaction inputs sitting at the TM script address (Script credential == the TM
+      * script hash). A legal TM spend — Confirm (`Unconfirmed -> Confirmed`) or GC (creator burns a
+      * grace-expired `Confirmed`) — spends EXACTLY ONE TM record; both branches of [[spend]]
+      * require this.
+      *
+      * Why: the TM NFT has an empty asset name and no one-shot seed, so `(policy, "")` is fungible
+      * across posts — permissionless posting lets the SAME confirmed `signedBtcTx` be posted as two
+      * `Unconfirmed` records, each bearing the token. Spending two TM records in one tx runs this
+      * validator once per input; every invocation accepts the single continuing output (Confirm) or
+      * the single NFT burn (GC), and ledger value-conservation forces the second token to escape to
+      * an attacker output carrying a fabricated `Confirmed` datum. `peg_in.ak` authenticates the
+      * Confirmed record by the NFT, not the address, so that fabricated record would be trusted —
+      * minting fBTC with no treasury backing. Requiring one TM input per spend closes the escape on
+      * both the Confirm and GC paths.
+      */
+    def tmInputCount(inputs: ScalusList[TxInInfo], tmScriptHash: ByteString): BigInt = {
+        def loop(remaining: ScalusList[TxInInfo]): BigInt =
+            remaining match
+                case ScalusList.Nil => BigInt(0)
+                case ScalusList.Cons(inp, tail) =>
+                    val here = inp.resolved.address.credential match
+                        case Credential.ScriptCredential(h) =>
+                            if h == tmScriptHash then BigInt(1) else BigInt(0)
+                        case _ => BigInt(0)
+                    here + loop(tail)
+        loop(inputs)
+    }
+
     def spend(
         oracleScriptHash: ByteString,
         datumOpt: Option[Datum],
@@ -263,6 +291,14 @@ object TreasuryMovementValidator {
                 val tmNftPolicy = ownOut.address.credential match
                     case Credential.ScriptCredential(h) => h
                     case _ => fail("TM input is not at a script address")
+                // NFT containment: exactly one TM record may be spent per Confirm tx. Without this,
+                // spending two duplicate Unconfirmed records lets the second (fungible, empty-name)
+                // TM NFT escape to an attacker output with a fabricated Confirmed datum — see
+                // [[tmInputCount]].
+                require(
+                  tmInputCount(tx.inputs, tmNftPolicy) == BigInt(1),
+                  "TM confirm: exactly one TM-script input per tx"
+                )
                 require(
                   contOut.value.quantityOf(tmNftPolicy, ByteString.empty) == BigInt(1),
                   "TM NFT not preserved on the continuing output"
@@ -298,6 +334,13 @@ object TreasuryMovementValidator {
                         require(
                           tx.mint.quantityOf(ownScriptHash, ByteString.empty) == BigInt(-1),
                           "Must burn TM NFT"
+                        )
+                        // NFT containment on the GC path too: burning ONE NFT while spending two
+                        // grace-expired Confirmed records (same creator) would let the un-burned
+                        // second NFT escape — see [[tmInputCount]].
+                        require(
+                          tmInputCount(tx.inputs, ownScriptHash) == BigInt(1),
+                          "TM GC: exactly one TM-script input per tx"
                         )
                     case Credential.PubKeyCredential(_) => impossible()
                 val timeout = created + GcGraceMs

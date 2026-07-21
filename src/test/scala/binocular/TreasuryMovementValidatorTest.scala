@@ -609,4 +609,89 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
 
+    test("NFT containment (Confirm): spending two duplicate Unconfirmed records is rejected") {
+        // The fund-theft repro. Two TM-script inputs embed the SAME signedBtcTx (permissionless
+        // duplicate posts, both bearing the fungible empty-name TM NFT). Otherwise this is a valid
+        // Confirm: the first output at the TM address carries the correct Confirmed datum + the NFT,
+        // and the oracle proof holds. Pre-fix, both per-input spend invocations accept that single
+        // continuing output, and ledger value-conservation forces the SECOND NFT to escape to the
+        // attacker output below (foreign address) bearing a fabricated Confirmed datum — which
+        // peg_in.ak trusts by NFT alone → unbacked fBTC. The single-TM-input rule rejects the tx.
+        val secondInput = TxInInfo(
+          outRef = TxOutRef(TxId(filled(0x05, 32)), BigInt(1)),
+          resolved = TxOut(
+            address = Address(Credential.ScriptCredential(tmScriptHash), Option.None),
+            value = tmValue,
+            datum = OutputDatum.OutputDatum(unconfirmedDatum),
+            referenceScript = Option.None
+          )
+        )
+        // The escaped NFT lands at an attacker address with a fabricated Confirmed datum (claims an
+        // arbitrary outpoint was swept). Ignored by the continuing-output check (foreign address).
+        val fabricated: Data =
+            (TmDatum.Confirmed(
+              filled(0xde, 32),
+              PList.from(List(filled(0xfe, 36))),
+              PList.Nil,
+              creatorPkh,
+              createdAt
+            ): TmDatum).toData
+        val escapedOutput = TxOut(
+          address = Address(Credential.ScriptCredential(filled(0x99, 28)), Option.None),
+          value = tmValue, // carries the TM NFT (policy = tmScriptHash, empty name, qty 1)
+          datum = OutputDatum.OutputDatum(fabricated),
+          referenceScript = Option.None
+        )
+        val sc = ScriptContext(
+          txInfo = TxInfo(
+            inputs = PList.from(List(tmInput(tmValue, unconfirmedDatum), secondInput)),
+            referenceInputs = PList.from(List(oracleRefInput())),
+            outputs = PList.from(List(confirmedOutput(tmValue, confirmedDatum()), escapedOutput)),
+            id = TxId(filled(0x00, 32))
+          ),
+          redeemer = redeemer(mpfProof),
+          scriptInfo = SpendingScript(ownRef, Option.Some(unconfirmedDatum))
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("NFT containment (GC): spending two Confirmed records while burning one is rejected") {
+        // The GC-path variant. Two grace-expired Confirmed records (same creator) are spent; the tx
+        // burns ONE TM NFT (mint == -1) and is signed by the creator after the grace period — so
+        // pre-fix each per-input GC invocation passes (its burn/grace/creator checks are all tx-wide
+        // and satisfied). Ledger value-conservation then forces the un-burned SECOND NFT to escape
+        // to the attacker output below with a fabricated Confirmed datum. The single-TM-input rule
+        // on the GC branch rejects it.
+        val secondConfirmed = TxInInfo(
+          outRef = TxOutRef(TxId(filled(0x05, 32)), BigInt(1)),
+          resolved = TxOut(
+            address = Address(Credential.ScriptCredential(tmScriptHash), Option.None),
+            value = tmValue,
+            datum = OutputDatum.OutputDatum(confirmedDatum()),
+            referenceScript = Option.None
+          )
+        )
+        val escapedOutput = TxOut(
+          address = Address(Credential.ScriptCredential(filled(0x99, 28)), Option.None),
+          value = tmValue, // the un-burned second NFT escapes
+          datum = OutputDatum.OutputDatum(confirmedDatum()),
+          referenceScript = Option.None
+        )
+        val sc = ScriptContext(
+          txInfo = TxInfo(
+            inputs = PList.from(List(tmInput(tmValue, confirmedDatum()), secondConfirmed)),
+            outputs = PList.from(List(escapedOutput)),
+            mint = Value.unsafeFromList(
+              PList((tmScriptHash, PList((ByteString.empty, BigInt(-1)))))
+            ),
+            signatories = PList.from(List(creatorPkh)),
+            validRange = afterGrace,
+            id = TxId(filled(0x00, 32))
+          ),
+          redeemer = Data.unit,
+          scriptInfo = SpendingScript(ownRef, Option.Some(confirmedDatum()))
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
 }
