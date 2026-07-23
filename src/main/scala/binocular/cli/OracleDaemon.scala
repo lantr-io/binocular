@@ -49,11 +49,11 @@ class OracleDaemon(
     private def displayHash(hash: ByteString): String =
         ByteString.fromArray(hash.bytes.reverse).toHex
 
-    /** A rich, structured deep-reorg alert for the notifier.
+    /** A compact, structured deep-reorg alert for the notifier.
       *
-      * The exception's own message is a single dense sentence with internal-order hashes; this
-      * breaks the typed fields onto their own lines and renders every hash in big-endian
-      * (block-explorer) order so an operator can paste them straight into a Bitcoin explorer.
+      * Leads with the reorg length (how many confirmed blocks were orphaned), then the fork point
+      * and both tip hashes in big-endian (block-explorer) order so an operator can paste them
+      * straight into a Bitcoin explorer.
       *
       * @param phase
       *   where it fired (e.g. "startup MPF reconstruction" / "update loop") for context
@@ -63,29 +63,33 @@ class OracleDaemon(
         phase: String,
         network: String
     ): String = {
-        val orphanLine = e.deepestConfirmedAncestor match {
-            case Some((h, hash)) =>
+        val (depthLabel, forkLine) = e.deepestConfirmedAncestor match {
+            case Some((h, _)) =>
                 val orphaned = e.confirmedHeight - h
-                s"• Orphaned: $orphaned confirmed block(s) (deepest still-canonical ancestor: " +
-                    s"height $h, ${displayHash(hash)})"
+                (
+                  s"$orphaned-block reorg",
+                  s"• Height ${e.confirmedHeight}, forked at $h ($orphaned confirmed orphaned)"
+                )
             case None =>
                 e.searchedDepth match {
                     case Some(n) =>
-                        s"• Orphaned: unknown — reorg is deeper than the searched window " +
-                            s"($n heights) or beyond the oracle's known confirmed history"
+                        (
+                          s"reorg ≥$n blocks",
+                          s"• Height ${e.confirmedHeight}, no fork within $n blocks"
+                        )
                     case None =>
-                        "• Orphaned: unknown — detected before the off-chain MPF was reconstructed"
+                        (
+                          "deep reorg",
+                          s"• Height ${e.confirmedHeight}, detected before MPF rebuild"
+                        )
                 }
         }
-        s"""UNRECOVERABLE deep reorg ($phase) — manual re-init required
-           |The oracle's confirmed tip is no longer on Bitcoin's canonical chain.
-           |• Confirmed height: ${e.confirmedHeight}
+        s"""UNRECOVERABLE $depthLabel — oracle tip off canonical chain ($phase)
+           |$forkLine
            |• Oracle tip:    ${displayHash(e.oracleHash)}
            |• Canonical tip: ${displayHash(e.canonicalHash)}
-           |$orphanLine
            |• Network: $network
-           |Action: the watchtower has stopped (no auto-restart). Re-init the oracle from a current
-           |canonical height, then restart it.""".stripMargin
+           |Action: watchtower stopped (no auto-restart). Resume with `set-state`, or re-init from a canonical height, then restart.""".stripMargin
     }
 
     def run(config: BinocularConfig): Int = boundary {
