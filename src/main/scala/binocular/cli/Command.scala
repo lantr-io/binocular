@@ -308,6 +308,7 @@ object CommandHelpers {
     )(using ExecutionContext): Either[String, OracleSetup] = {
         for {
             params <- config.oracle.toBitcoinValidatorParams(config.bitcoinNode.bitcoinNetwork)
+            _ <- config.oracle.verifyScriptHash(config.bitcoinNode.bitcoinNetwork)
             hdAccount <- config.wallet.createHdAccount()
             provider <- config.cardano.createBlockchainProvider()
         } yield {
