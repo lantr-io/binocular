@@ -15,6 +15,11 @@ object TimeFmt {
     def utc(epochSeconds: BigInt): String =
         Instant.ofEpochSecond(epochSeconds.toLong).atZone(ZoneId.of("UTC")).format(dateFmt)
 
+    /** Format an epoch-seconds timestamp as an ISO-8601 UTC instant, e.g. `2026-07-22T00:11:49Z`.
+      */
+    def iso(epochSeconds: BigInt): String =
+        Instant.ofEpochSecond(epochSeconds.toLong).toString
+
     /** Compact human-readable duration, e.g. `45s`, `3m`, `2h 5m`, `1d 4h`. Negative inputs (a
       * block timestamp ahead of wall-clock, which Bitcoin permits up to 2h) render as `0s`.
       */

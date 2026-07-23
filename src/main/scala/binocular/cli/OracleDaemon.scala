@@ -263,8 +263,10 @@ class OracleDaemon(
               )
             )
             notifier.newBlock(
+              state.forkTree.highestHeight(state.ctx.height),
               state.ctx.height,
               displayHash(state.ctx.lastBlockHash),
+              TimeFmt.iso(state.ctx.timestamps.head),
               0,
               state.forkTree.blockCount.toInt,
               currentMpf.size
@@ -328,8 +330,10 @@ class OracleDaemon(
                           )
                         )
                         notifier.newBlock(
+                          state.forkTree.highestHeight(state.ctx.height),
                           state.ctx.height,
                           displayHash(state.ctx.lastBlockHash),
+                          TimeFmt.iso(state.ctx.timestamps.head),
                           0,
                           state.forkTree.blockCount.toInt,
                           currentMpf.size
@@ -450,8 +454,12 @@ class OracleDaemon(
                                           )
                                         )
                                         notifier.newBlock(
+                                          newChainState.forkTree.highestHeight(
+                                            newChainState.ctx.height
+                                          ),
                                           newChainState.ctx.height,
                                           displayHash(newChainState.ctx.lastBlockHash),
+                                          TimeFmt.iso(newChainState.ctx.timestamps.head),
                                           appliedHeaders.toInt,
                                           newChainState.forkTree.blockCount.toInt,
                                           updatedMpf.size

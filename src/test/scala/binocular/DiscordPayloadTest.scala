@@ -5,29 +5,42 @@ import org.scalatest.funsuite.AnyFunSuite
 
 class DiscordPayloadTest extends AnyFunSuite {
 
-    test("newBlock embeds height, tip, and counts with the blurple color") {
+    test("newBlock shows fork tip, confirmed height + ISO timestamp, and counts") {
         val json = DiscordPayload.newBlock(
-          height = BigInt(144460),
-          tipHash = "00000000abcdef",
+          tipHeight = BigInt(144460),
+          confirmedHeight = BigInt(144448),
+          confirmedHash = "00000000abcdef",
+          confirmedTimeIso = "2026-07-22T00:11:49Z",
           headersAdded = 3,
           treeBlocks = 12,
           confirmedBlocks = 7850
         )
         assert(json.contains("\"color\":" + DiscordPayload.ColorNewBlock))
-        assert(json.contains("height 144460"))
+        assert(json.contains("New block — tip 144460"))
         assert(json.contains("(+3)"))
+        assert(json.contains("144448 @ 2026-07-22T00:11:49Z"))
         assert(json.contains("00000000abcdef"))
         assert(json.contains("12 blocks"))
         assert(json.contains("7850 blocks"))
     }
 
     test("newBlock omits the +N suffix when no headers were added") {
-        val json = DiscordPayload.newBlock(BigInt(1), "aa", 0, 1, 1)
+        val json =
+            DiscordPayload.newBlock(BigInt(1), BigInt(1), "aa", "2026-07-22T00:00:00Z", 0, 1, 1)
         assert(!json.contains("(+"))
     }
 
     test("newBlock shows a coalesced count and 'tip' title when sinceCount > 1") {
-        val json = DiscordPayload.newBlock(BigInt(144600), "beef", 0, 5, 8001, sinceCount = 12)
+        val json = DiscordPayload.newBlock(
+          BigInt(144600),
+          BigInt(144588),
+          "beef",
+          "2026-07-22T04:12:00Z",
+          0,
+          5,
+          8001,
+          sinceCount = 12
+        )
         assert(json.contains("12 blocks — tip 144600"))
         assert(json.contains("Since last alert:** 12 blocks"))
     }

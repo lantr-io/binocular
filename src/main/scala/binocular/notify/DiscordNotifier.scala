@@ -66,17 +66,19 @@ class DiscordNotifier(
         )
     }
 
-    /** Latest block held by the throttle (fork-tree fields), sent when its window flushes. */
+    /** Latest block held by the throttle, sent when its window flushes. */
     private final case class PendingBlock(
-        height: BigInt,
-        tipHash: String,
+        tipHeight: BigInt,
+        confirmedHeight: BigInt,
+        confirmedHash: String,
+        confirmedTimeIso: String,
         headersAdded: Int,
         treeBlocks: Int,
         confirmedBlocks: Int
     )
 
     // All of the following are guarded by `this` (synchronized).
-    private var lastHeight: BigInt = BigInt(-1) // newBlock dedup: only strictly-increasing heights
+    private var lastHeight: BigInt = BigInt(-1) // dedup: only strictly-increasing fork-tip heights
     private var debounce: ErrorDebounce.State = ErrorDebounce.State.empty
     private var blockGate: IntervalGate.State = IntervalGate.State.empty
     private var pendingBlock: Option[PendingBlock] = scala.None
@@ -100,16 +102,18 @@ class DiscordNotifier(
     scheduler.scheduleAtFixedRate(flushTask, flushTickMs, flushTickMs, TimeUnit.MILLISECONDS)
 
     def newBlock(
-        height: BigInt,
-        tipHash: String,
+        tipHeight: BigInt,
+        confirmedHeight: BigInt,
+        confirmedHash: String,
+        confirmedTimeIso: String,
         headersAdded: Int,
         treeBlocks: Int,
         confirmedBlocks: Int
     ): Unit = {
         val toSend = synchronized {
-            if height <= lastHeight then scala.None
+            if tipHeight <= lastHeight then scala.None
             else {
-                lastHeight = height
+                lastHeight = tipHeight
                 val (next, decision) =
                     IntervalGate.offer(blockGate, System.currentTimeMillis(), throttleIntervalMs)
                 blockGate = next
@@ -118,8 +122,10 @@ class DiscordNotifier(
                         pendingBlock = scala.None
                         Some(
                           DiscordPayload.newBlock(
-                            height,
-                            tipHash,
+                            tipHeight,
+                            confirmedHeight,
+                            confirmedHash,
+                            confirmedTimeIso,
                             headersAdded,
                             treeBlocks,
                             confirmedBlocks,
@@ -128,7 +134,15 @@ class DiscordNotifier(
                         )
                     case IntervalGate.Hold =>
                         pendingBlock = Some(
-                          PendingBlock(height, tipHash, headersAdded, treeBlocks, confirmedBlocks)
+                          PendingBlock(
+                            tipHeight,
+                            confirmedHeight,
+                            confirmedHash,
+                            confirmedTimeIso,
+                            headersAdded,
+                            treeBlocks,
+                            confirmedBlocks
+                          )
                         )
                         scala.None
                 }
@@ -191,8 +205,10 @@ class DiscordNotifier(
             blockHeld.foreach { held =>
                 pendingBlock.foreach { b =>
                     buf += DiscordPayload.newBlock(
-                      b.height,
-                      b.tipHash,
+                      b.tipHeight,
+                      b.confirmedHeight,
+                      b.confirmedHash,
+                      b.confirmedTimeIso,
                       b.headersAdded,
                       b.treeBlocks,
                       b.confirmedBlocks,

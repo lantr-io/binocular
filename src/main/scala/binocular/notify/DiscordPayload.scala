@@ -18,8 +18,10 @@ object DiscordPayload {
       * (1 = just this one; > 1 when the throttle coalesced a burst since the last notification).
       */
     def newBlock(
-        height: BigInt,
-        tipHash: String,
+        tipHeight: BigInt,
+        confirmedHeight: BigInt,
+        confirmedHash: String,
+        confirmedTimeIso: String,
         headersAdded: Int,
         treeBlocks: Int,
         confirmedBlocks: Int,
@@ -27,15 +29,14 @@ object DiscordPayload {
     ): String = {
         val added = if headersAdded > 0 then s" (+$headersAdded)" else ""
         val title =
-            if sinceCount > 1 then s"🔷 $sinceCount blocks — tip $height"
-            else s"🔷 New block — height $height$added"
+            if sinceCount > 1 then s"🔷 $sinceCount blocks — tip $tipHeight"
+            else s"🔷 New block — tip $tipHeight$added"
         val sinceLine =
             if sinceCount > 1 then s"\n**Since last alert:** $sinceCount blocks" else ""
         val description =
-            s"""**Height:** $height$added
-               |**Tip:** `$tipHash`
-               |**Fork tree:** $treeBlocks blocks
-               |**Confirmed:** $confirmedBlocks blocks$sinceLine""".stripMargin
+            s"""**Fork tip:** $tipHeight$added ($treeBlocks blocks)
+               |**Confirmed:** $confirmedHeight @ $confirmedTimeIso ($confirmedBlocks blocks)
+               |**Confirmed hash:** `$confirmedHash`$sinceLine""".stripMargin
         embed(title, description, ColorNewBlock)
     }
 
