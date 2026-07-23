@@ -94,6 +94,12 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         // utxoRef -> Cardano tx hash (or "dry-run"); avoids reprocessing within a run.
         val processed = scala.collection.mutable.Map[String, String]()
 
+        // Reference-script UTxOs at the sponsor address, excluded from the confirm's fee coin-
+        // selection: BlockfrostProvider drops their scriptRef, so the builder misses the Conway
+        // ref-script surcharge (-> FeeTooSmallUTxO); spending one would also destroy a ref script.
+        val excludeRefScripts =
+            CommandHelpers.refScriptOutpoints(config, hdAccount.baseAddress(network).encode.getOrElse(""))
+
         while true do {
             try {
                 // Re-read the oracle each cycle: its confirmed-blocks root advances as Bitcoin does.
@@ -153,6 +159,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                                   utxo,
                                   signedBtcTx,
                                   timeout,
+                                  excludeRefScripts,
                                   skipBtcTxids,
                                   processed,
                                   notifier
@@ -190,6 +197,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         utxo: Utxo,
         signedBtcTx: ByteString,
         timeout: Duration,
+        excludeInputs: Set[TransactionInput],
         skipBtcTxids: Set[String],
         processed: scala.collection.mutable.Map[String, String],
         notifier: Notifier
@@ -283,6 +291,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                               oracleUtxo,
                               redeemer,
                               confirmed,
+                              excludeInputs,
                               timeout
                             ) match {
                                 case Right(hash) =>
@@ -302,6 +311,10 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                                     )
                                 case Left(err) =>
                                     Console.logError(s"    Confirm failed: $err — will retry")
+                                    notifier.error(
+                                      "confirm",
+                                      s"TM confirm failed (btc `$displayTxid`, $utxoRef): $err"
+                                    )
                             }
                 }
             }

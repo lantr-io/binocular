@@ -3,7 +3,7 @@ package binocular.watchtower
 import binocular.cli.Console
 import binocular.oracle.OracleTransactions
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{TransactionHash, Utxo}
+import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.cardano.node.{BlockchainProvider, TransactionStatus}
 import scalus.cardano.txbuilder.TxBuilder
 import scalus.cardano.wallet.hd.HdAccount
@@ -34,18 +34,26 @@ object TreasuryMovementTx {
         oracle: Utxo,
         redeemer: Data,
         confirmedDatum: Data,
+        excludeInputs: Set[TransactionInput],
         timeout: Duration
     )(using ExecutionContext): Either[String, String] = {
         val signer = hdAccount.signerForUtxos
         val sponsorAddress = hdAccount.baseAddress(provider.cardanoInfo.network)
         try {
             Console.log("  Building TM Confirm transaction...")
+            // Exclude reference-script UTxOs at the sponsor address from fee selection.
+            // BlockfrostProvider drops their scriptRef, so the builder under-estimates the fee by the
+            // Conway ref-script surcharge (a spent ref-script UTxO is billed min-fee-ref-script per
+            // byte → FeeTooSmallUTxO); spending one would also destroy a deployed ref script.
+            val sponsorUtxos = provider.findUtxos(sponsorAddress).await(timeout) match {
+                case Right(u)  => u.filterNot { case (input, _) => excludeInputs.contains(input) }
+                case Left(err) => return Left(s"Failed to fetch sponsor UTxOs: $err")
+            }
             val tx = TxBuilder(provider.cardanoInfo)
                 .spend(unconfirmed, redeemer, tmScript)
                 .references(oracle)
                 .payTo(tmAddress, unconfirmed.output.value, confirmedDatum)
-                .complete(provider, sponsorAddress)
-                .await(timeout)
+                .complete(sponsorUtxos, sponsorAddress)
                 .sign(signer)
                 .transaction
 
