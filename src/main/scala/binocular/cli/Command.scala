@@ -449,7 +449,12 @@ object CommandHelpers {
         val oracleHash: ByteString,
         val canonicalHash: ByteString,
         val deepestConfirmedAncestor: Option[(Long, ByteString)],
-        val searchedDepth: Option[Long]
+        val searchedDepth: Option[Long],
+        // Highest block height the fork tree knew of when the reorg was detected. With the deepest
+        // confirmed ancestor it gives the FULL reorg depth (forkTipHeight - ancestorHeight), of
+        // which `confirmedHeight - ancestorHeight` reaches into confirmed history. Only the
+        // steady-state loop has a fork tree; the startup reconstruct path passes None.
+        val forkTipHeight: Option[Long] = None
     ) extends RuntimeException(
           DeepReorgException.format(
             confirmedHeight,
@@ -754,7 +759,8 @@ object CommandHelpers {
                                   oracleHash = chainState.ctx.lastBlockHash,
                                   canonicalHash = confirmedCanonical,
                                   deepestConfirmedAncestor = deepest,
-                                  searchedDepth = Some(deepReorgLookback)
+                                  searchedDepth = Some(deepReorgLookback),
+                                  forkTipHeight = Some(highestKnown)
                                 )
                             }
                             Console.logWarn(

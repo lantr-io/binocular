@@ -65,10 +65,16 @@ class OracleDaemon(
     ): String = {
         val (depthLabel, forkLine) = e.deepestConfirmedAncestor match {
             case Some((h, _)) =>
-                val orphaned = e.confirmedHeight - h
+                val intoConfirmed = e.confirmedHeight - h
+                // Full reorg depth = forkTipHeight - ancestor, of which `intoConfirmed` reaches into
+                // confirmed history. Fall back to the into-confirmed count if the fork tip is absent.
+                val label = e.forkTipHeight match {
+                    case Some(tip)  => s"~${tip - h}-block reorg"
+                    case scala.None => s"$intoConfirmed-block reorg"
+                }
                 (
-                  s"$orphaned-block reorg",
-                  s"• Height ${e.confirmedHeight}, forked at $h ($orphaned confirmed orphaned)"
+                  label,
+                  s"• Height ${e.confirmedHeight}, forked at $h — $intoConfirmed into confirmed history"
                 )
             case None =>
                 e.searchedDepth match {
