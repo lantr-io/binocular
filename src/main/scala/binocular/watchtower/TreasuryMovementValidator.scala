@@ -51,9 +51,9 @@ object PegOutEntry
   *     prev_txid++vout each), the `fulfilledPegOuts`, the N10b `spentViaFederationLeaf` flag, and
   *     `creator`/`created`/`epoch`/`leaderReward` carried verbatim from the Unconfirmed input
   *     (`creator`/`created` drive the GC path). Constr tag 1. `spentViaFederationLeaf` is the
-  *     objective dead-roster evidence `treasury.ak::FederationReset` gates on: it is `true` iff this
-  *     TM's treasury input (input 0, pinned to the treasury outpoint at mint) was spent via the
-  *     federation CSV leaf. The treasury taproot tree has a SINGLE leaf (the federation
+  *     objective dead-roster evidence `treasury.ak::FederationReset` gates on: it is `true` iff
+  *     this TM's treasury input (input 0, pinned to the treasury outpoint at mint) was spent via
+  *     the federation CSV leaf. The treasury taproot tree has a SINGLE leaf (the federation
   *     `<csv> OP_CSV OP_DROP <y_fed> OP_CHECKSIG`; internal key `Y_51` for the key-path roster
   *     sweep), so a *confirmed* 3-item script-path spend of input 0 can only be that leaf — and it
   *     could confirm only after `OP_CSV` was satisfied, i.e. the tip aged unmoved past
@@ -64,15 +64,17 @@ object PegOutEntry
   *     (permissionless) confirmer cannot forge it. [[binocular.cli.commands.ConfirmTmtxCommand]]
   *     computes the same value off-chain to build a matching output.
   *
-  * Variant order and field order are positional in the Plutus Constr — do not reorder. New fields are
-  * normally APPENDED (epoch/leaderReward after created), never inserted. `spentViaFederationLeaf` is
-  * the one deliberate exception: the Aiken mirror `treasury-movement.ak` is a decode-only PREFIX of
-  * this datum (it omits `creator`/`created`/`epoch`/`leaderReward`, which no Aiken validator reads),
-  * and `treasury.ak::FederationReset` binds the flag by its DECLARED position — index 3 — in that
-  * 4-field mirror. So the flag is pinned at Constr index 3 HERE too (inserted after `fulfilledPegOuts`,
-  * before `creator`); appending it after `leaderReward` would make Aiken read `creator` as the Bool.
-  * Downstream prefix readers that stop at index 2 — Aiken `peg_in.ak` (indices 0,1) and heimdall
-  * `parse_confirmed_tm_datum` (indices 0,1,2, `len>=3`) — are unaffected by the insert.
+  * Variant order and field order are positional in the Plutus Constr — do not reorder. New fields
+  * are normally APPENDED (epoch/leaderReward after created), never inserted.
+  * `spentViaFederationLeaf` is the one deliberate exception: the Aiken mirror
+  * `treasury-movement.ak` is a decode-only PREFIX of this datum (it omits
+  * `creator`/`created`/`epoch`/`leaderReward`, which no Aiken validator reads), and
+  * `treasury.ak::FederationReset` binds the flag by its DECLARED position — index 3 — in that
+  * 4-field mirror. So the flag is pinned at Constr index 3 HERE too (inserted after
+  * `fulfilledPegOuts`, before `creator`); appending it after `leaderReward` would make Aiken read
+  * `creator` as the Bool. Downstream prefix readers that stop at index 2 — Aiken `peg_in.ak`
+  * (indices 0,1) and heimdall `parse_confirmed_tm_datum` (indices 0,1,2, `len>=3`) — are unaffected
+  * by the insert.
   */
 enum TmDatum derives FromData, ToData {
     case Unconfirmed(
@@ -540,7 +542,15 @@ object TreasuryMovementValidator {
   * or predecessor `Confirmed` record — see [[TmMintRedeemer]]).
   */
 object TreasuryMovementContract extends Contract {
-    given opts: Options = Options.release
+    // MUST be releaseUntagged (no `_scalusTag` wrapper), like TmtxScript. This validator is
+    // parameterized by THREE curried ByteString params applied at the UPLC level (via
+    // BinocularBlueprint.bytesParam — the deployable, blueprint-reproducible path, and how
+    // `aiken blueprint apply`/Blaze apply params). With the `_scalusTag` wrapper that plain
+    // Options.release adds, that UPLC-level application mis-lands the params relative to the tag and
+    // the compiled [[script]] ERRORS on the spend/Confirm branch (while the typed `.apply` used by
+    // [[contract]] compensates and works — so unit tests over `contract` passed but the DEPLOYED
+    // `script` could never confirm a TM). See the "blueprint .script vs .contract" regression test.
+    given opts: Options = Options.releaseUntagged
 
     /** Curried form: `oracleScriptHash -> configNftPolicy -> configNftName -> (scriptContext ->
       * ())`. Applied via `.apply`, like the always-ok scaffold bakes in its salt.
@@ -616,4 +626,47 @@ object TreasuryMovementContract extends Contract {
           )
         )
     }
+}
+
+/** Trace-instrumented twin of [[TreasuryMovementContract]] for Scalus diagnostic replay. Compiled
+  * from the IDENTICAL validator source but with `generateErrorTraces = true` — the release compile
+  * strips trace strings, so a failing on-chain confirm reports only "Error evaluated" with no clue
+  * which `require` failed. This twin's script hash DIFFERS from the deployed
+  * [[TreasuryMovementContract.script]] (traces change the UPLC) — which is fine and intended: it is
+  * registered UNDER the deployed hash via `TxBuilder.withDebugScript` and only re-evaluated against
+  * the same script context to surface the failing check. Same validator logic ⇒ same failing
+  * require, now with its trace string.
+  *
+  * Kept in a SEPARATE object so its traces-on `Options` given does not clash with
+  * [[TreasuryMovementContract.opts]] during Scalus macro expansion.
+  */
+object TreasuryMovementDebugContract {
+    // Untagged like TreasuryMovementContract (so the twin mirrors the deployed script's logic +
+    // param application exactly), plus trace strings the release compile strips.
+    given opts: Options = Options.releaseUntagged.copy(generateErrorTraces = true)
+
+    lazy val parameterized: PlutusV3[ByteString => (ByteString => (ByteString => (Data => Unit)))] =
+        PlutusV3.compile((oracleScriptHash: ByteString) =>
+            (configNftPolicy: ByteString) =>
+                (configNftName: ByteString) =>
+                    (scData: Data) =>
+                        TreasuryMovementValidator.validate(
+                          oracleScriptHash,
+                          configNftPolicy,
+                          configNftName,
+                          scData
+                        )
+        )
+
+    /** Trace-compiled [[Script.PlutusV3]] twin for the given params (for `withDebugScript`). */
+    def script(
+        oracleScriptHash: ByteString,
+        configNftPolicy: ByteString,
+        configNftName: ByteString
+    ): Script.PlutusV3 =
+        parameterized
+            .apply(oracleScriptHash)
+            .apply(configNftPolicy)
+            .apply(configNftName)
+            .script
 }

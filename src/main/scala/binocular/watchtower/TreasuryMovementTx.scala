@@ -8,11 +8,13 @@ import scalus.cardano.node.{BlockchainProvider, TransactionStatus}
 import scalus.cardano.txbuilder.TxBuilder
 import scalus.cardano.wallet.hd.HdAccount
 import scalus.uplc.PlutusV3
+import scalus.uplc.DebugScript
 import scalus.uplc.builtin.Data
 import scalus.utils.await
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.Duration
+import scala.util.chaining.scalaUtilChainingOps
 
 /** Off-chain builder for the validated TM Confirm transaction (the on-chain counterpart is
   * [[TreasuryMovementValidator]]).
@@ -34,16 +36,24 @@ object TreasuryMovementTx {
         oracle: Utxo,
         redeemer: Data,
         confirmedDatum: Data,
-        timeout: Duration
+        timeout: Duration,
+        debugTmScript: Option[scalus.cardano.ledger.Script.PlutusV3] = None
     )(using ExecutionContext): Either[String, String] = {
         val signer = hdAccount.signerForUtxos
         val sponsorAddress = hdAccount.baseAddress(provider.cardanoInfo.network)
         try {
             Console.log("  Building TM Confirm transaction...")
+            // Diagnostic: when a trace-compiled twin is supplied (TM_DEBUG_TRACE), register it under
+            // the deployed TM hash so Scalus replays a failing eval WITH trace strings.
             val tx = TxBuilder(provider.cardanoInfo)
                 .spend(unconfirmed, redeemer, tmScript)
                 .references(oracle)
                 .payTo(tmAddress, unconfirmed.output.value, confirmedDatum)
+                .pipe(b =>
+                    debugTmScript.fold(b)(ds =>
+                        b.withDebugScript(tmScript.scriptHash, DebugScript(ds))
+                    )
+                )
                 .complete(provider, sponsorAddress)
                 .await(timeout)
                 .sign(signer)

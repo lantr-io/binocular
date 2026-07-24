@@ -552,6 +552,37 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         assert(result.isSuccess, s"Expected success, got: $result")
     }
 
+    test("deployed blueprint .script matches .contract on a valid confirm (untagged param apply)") {
+        // Regression for the `_scalusTag` bug: the DEPLOYED script is TreasuryMovementContract.script
+        // — the blueprint compiledCode with the 3 ByteString params applied at the UPLC level
+        // (BinocularBlueprint.bytesParam), NOT the typed `.contract` form that the other tests eval.
+        // With plain Options.release those two DIVERGED: `.contract` accepted a valid confirm while
+        // the deployed `.script` ERRORED ("Error evaluated") on the spend branch — so no deployed TM
+        // could ever be confirmed. Options.releaseUntagged makes UPLC-level application land the
+        // params correctly, so the two agree. Assert that invariant here.
+        val ctx = scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof)).toData
+
+        // The typed `.contract` form (what other tests exercise) — must accept.
+        assert(program.applyArg(ctx).evaluateDebug.isSuccess)
+
+        // The deployed blueprint `.script` form — the exact UPLC that gets locked/spent on-chain.
+        val bpProgram = binocular.blueprint.BinocularBlueprint
+            .program("TreasuryMovementContract")
+            .$(binocular.blueprint.BinocularBlueprint.bytesParam(oracleHash))
+            .$(binocular.blueprint.BinocularBlueprint.bytesParam(configNftPolicy))
+            .$(binocular.blueprint.BinocularBlueprint.bytesParam(configNftName))
+            .deBruijnedProgram
+        val deployedResult = bpProgram.applyArg(ctx).evaluateDebug
+        assert(
+          deployedResult.isSuccess,
+          s"deployed blueprint .script must accept a valid confirm, got: $deployedResult"
+        )
+        // NB: `.contract` (typed .apply) and `.script` (UPLC bytesParam) produce different-but-
+        // equivalent UPLC, so their hashes differ — that is fine: only `.script` is ever deployed
+        // (address, NFT policy, spend all use it). The invariant that matters is that the DEPLOYED
+        // form accepts a valid confirm (asserted above); with plain Options.release it did NOT.
+    }
+
     test("tampered Confirmed datum (wrong peg-out amount) fails") {
         val wrongFulfilled = PList.from(
           List(
@@ -578,7 +609,11 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         // true is therefore rejected — without this, a permissionless confirmer could fabricate the
         // dead-roster evidence treasury.ak::FederationReset consumes.
         val sc =
-            scriptContext(tmValue, confirmedDatum(spentViaFederationLeaf = true), redeemer(mpfProof))
+            scriptContext(
+              tmValue,
+              confirmedDatum(spentViaFederationLeaf = true),
+              redeemer(mpfProof)
+            )
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
 

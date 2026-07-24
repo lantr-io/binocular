@@ -72,6 +72,25 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         val tmNftPolicy = tmScript.scriptHash
         val tmNftAsset = AssetName.empty
 
+        // Diagnostic (TM_DEBUG_TRACE=1): a trace-compiled twin of the TM validator, registered under
+        // the deployed TM hash during Confirm-tx build so a failing eval reports WHICH `require`
+        // fails — the release compile strips trace strings, leaving only "Error evaluated". Costs a
+        // one-off in-code compile; only built when the env var is set. Needs a non-dry-run to fire.
+        val debugTmScript: Option[scalus.cardano.ledger.Script.PlutusV3] =
+            if sys.env.get("TM_DEBUG_TRACE").exists(v => v == "1" || v.equalsIgnoreCase("true"))
+            then
+                Console.warn(
+                  "TM_DEBUG_TRACE set — registering trace-compiled TM twin for diagnostic replay"
+                )
+                Some(
+                  TreasuryMovementDebugContract.script(
+                    oracleScriptHashBS,
+                    ByteString.fromHex(config.bridge.configNftPolicyId),
+                    ByteString.fromHex(config.bridge.configNftAssetName)
+                  )
+                )
+            else None
+
         // Operator-declared dead TMs (relay.skip-btc-txids): match on the display (big-endian) btc
         // txid, lower-cased so config casing doesn't matter.
         val skipBtcTxids: Set[String] = config.relay.skipBtcTxids.map(_.toLowerCase).toSet
@@ -158,7 +177,8 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                                   timeout,
                                   skipBtcTxids,
                                   processed,
-                                  notifier
+                                  notifier,
+                                  debugTmScript
                                 )
                 }
 
@@ -195,7 +215,8 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         timeout: Duration,
         skipBtcTxids: Set[String],
         processed: scala.collection.mutable.Map[String, String],
-        notifier: Notifier
+        notifier: Notifier,
+        debugTmScript: Option[scalus.cardano.ledger.Script.PlutusV3]
     )(using ExecutionContext): Unit = {
         val signedBtcTx = unconfirmedDatum.signedBtcTx
         val utxoRef = s"${utxo.input.transactionId.toHex}#${utxo.input.index}"
@@ -204,8 +225,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         // StackOverflow/OOM. A parse failure is deterministic → mark the UTxO skipped so it neither
         // crashes the watchtower nor is retried forever. RPC errors stay outside this guard (the
         // outer loop retries those).
-        val parsed
-            : Option[(ByteString, ScalusList[ByteString], ScalusList[PegOutEntry], Boolean)] =
+        val parsed: Option[(ByteString, ScalusList[ByteString], ScalusList[PegOutEntry], Boolean)] =
             try
                 Some(
                   (
@@ -307,7 +327,8 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                               oracleUtxo,
                               redeemer,
                               confirmed,
-                              timeout
+                              timeout,
+                              debugTmScript
                             ) match {
                                 case Right(hash) =>
                                     Console.logSuccess(s"    TM confirmed  spent=$utxoRef")
