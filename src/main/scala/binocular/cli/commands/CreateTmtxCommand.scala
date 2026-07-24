@@ -107,7 +107,10 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
         // The real TM mint policy requires created == the tx validity upper bound (whole-second
         // instant: 1s slots make the ledger's slot->ms translation exact). The scaffold policy
         // used here does not check it, but keep the datum consistent with real posts.
-        val validTo = java.time.Instant.ofEpochSecond(java.time.Instant.now().getEpochSecond + 1800)
+        // Window kept SHORT (90s): on a 1s-slot devnet a longer window lands past the era-forecast
+        // horizon (yaci StandardSafeZone ~90 slots) → TimeTranslationPastHorizon; 90s is well within
+        // both the devnet horizon and preprod's (20s slots, ~36h safe zone).
+        val validTo = java.time.Instant.ofEpochSecond(java.time.Instant.now().getEpochSecond + 90)
         val createdMs = BigInt(validTo.toEpochMilli)
         // N7 datum fields [.., epoch, leader_reward]. `leaderReward` mirrors the Config
         // `leader_reward` tunable (its pin against the on-chain Config datum lands with N9). `epoch`
