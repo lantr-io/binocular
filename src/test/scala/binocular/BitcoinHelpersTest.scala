@@ -74,6 +74,35 @@ class BitcoinHelpersTest extends AnyFunSuite with ScalusTest with ScalaCheckProp
         assert(blockHeight == BigInt(538403))
     }
 
+    test("federation CSV-leaf spend: witness parsing + spentViaLeaf (N15)") {
+        // A real regtest federation script-path spend of the treasury (heimdall
+        // N23): Taproot(Y_51, y_fed-leaf, csv=144) spent via the y_fed CSV leaf.
+        // Witness = [sig 64B, leaf 39B, control block 33B].
+        val rawTx =
+            hex"0200000000010102ba96a2bcdc144a69358166fa087accebf9b918c21159f7d7e4d5e43fd64289000000000090000000016b8401000000000022512083b0e13b31e6f2589b2963a10205c10de3c896f2c72aaa88d914ddf56358cbcf0340237da05a8d70543a9ddae57413dd285ac2df41350c45d636c8c28de7107242e11eefdd248ce492c6976d2371d6928c77dbe33b388e4a9884492fc1eeb379234e27029000b275200ce472ae5d8993e7609ee4ef33b344f6b8499a1259374bdf528f82240985bf03ac21c0b1e15a532a4e816ec75af608256b0808e36fb7d22560605178850885e53f285400000000"
+        val federationLeaf =
+            hex"029000b275200ce472ae5d8993e7609ee4ef33b344f6b8499a1259374bdf528f82240985bf03ac"
+        val controlBlock =
+            hex"c0b1e15a532a4e816ec75af608256b0808e36fb7d22560605178850885e53f2854"
+
+        // 3-item script-path witness, not key-path.
+        assert(witnessStackSize(rawTx, BigInt(0)) == BigInt(3))
+        assert(!isKeyPathWitness(rawTx, BigInt(0)))
+        assert(isValidScriptPathWitness(rawTx, BigInt(0)))
+
+        // Item extraction: leaf is item N-2 (=1), control block is item N-1 (=2).
+        assert(witnessItem(rawTx, BigInt(0), BigInt(1)) == federationLeaf)
+        assert(witnessItem(rawTx, BigInt(0), BigInt(2)) == controlBlock)
+
+        // The N15 discriminator: reveal + compare the leaf script.
+        assert(spentViaLeaf(rawTx, BigInt(0), federationLeaf))
+        // A DIFFERENT leaf (e.g. a refund leaf with another key) is rejected even
+        // though the item count is identical (3) — count alone is not enough.
+        val refundLeaf =
+            hex"029000b275200000000000000000000000000000000000000000000000000000000000000000ac"
+        assert(!spentViaLeaf(rawTx, BigInt(0), refundLeaf))
+    }
+
     test("getTxHash") {
         val coinbaseTx =
             hex"010000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff2503233708184d696e656420627920416e74506f6f6c373946205b8160a4256c0000946e0100ffffffff02f595814a000000001976a914edf10a7fac6b32e24daa5305c723f3de58db1bc888ac0000000000000000266a24aa21a9edfaa194df59043645ba0f58aad74bfd5693fa497093174d12a4bb3b0574a878db0120000000000000000000000000000000000000000000000000000000000000000000000000"

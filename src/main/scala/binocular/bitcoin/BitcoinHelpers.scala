@@ -436,24 +436,24 @@ object BitcoinHelpers {
     //   22  20 <Y_67 32B> ac          ← script: OP_PUSHBYTES_32 <Y_67> OP_CHECKSIG
     //   41  c0 <Y_51 32B> <hash 32B>  ← control block: leaf_ver=0xc0, internal=Y_51, 1 sibling
     //
-    // DEPOSITOR CSV REFUND — always 4-item witness
-    // ─────────────────────────────────────────────
-    // The depositor refund leaf script:
-    //   <4320> OP_CSV OP_DROP OP_DUP OP_HASH160 <hash160(pubkey) 20B> OP_EQUALVERIFY OP_CHECKSIG
+    // DEPOSITOR CSV REFUND — ALSO a 3-item witness (NOT 4)
+    // ─────────────────────────────────────────────────────
+    // heimdall's refund leaf embeds the FULL x-only depositor key, exactly like the
+    // federation leaf (spec §Peg-in Taproot: "same shape as the federation leaf"):
+    //   <refund_timeout> OP_CSV OP_DROP <depositor_xonly 32B> OP_CHECKSIG
+    // It needs only the signature as a witness input, so it spends with 3 items too:
     //
-    // It hardcodes only the HASH160 of the pubkey, not the pubkey itself.
-    // At spend time the depositor must supply the full x-only pubkey as a
-    // witness item so the script can verify OP_HASH160 matches.  This adds
-    // one extra item compared with a federation spend, giving 4 items total:
+    //   03                            ← N = 3, SAME COUNT as a federation spend
+    //   40  <sig 64B>
+    //   XX  <refund script>           ← item N-2 = the leaf
+    //   41  <control block 33B>       ← 33 B for the single-leaf treasury tree (not 65)
     //
-    //   04                            ← N = 4
-    //   40  <sig 64B>                 ← Schnorr sig
-    //   20  <pubkey 32B>              ← depositor x-only pubkey (needed for HASH160 check)
-    //   XX  <refund script>           ← leaf script
-    //   41  <control block 65B>       ← control block
-    //
-    // This 3-vs-4 item count is the reliable discriminator between a
-    // legitimate federation sweep and a depositor CSV refund.
+    // So the item COUNT is NOT a federation-vs-refund discriminator. (An earlier
+    // version of this file wrongly assumed the refund leaf hardcodes
+    // HASH160(pubkey) → 4 items — it does not.) The reliable test is to REVEAL and
+    // COMPARE the leaf script (item N-2): see `spentViaLeaf`.
+    // `isValidScriptPathWitness` (count == 3) survives only as a key-path vs
+    // script-path gate.
     // ============================================================================
 
     /** Skip one witness stack entry and return the offset of the next witness.
@@ -529,29 +529,65 @@ object BitcoinHelpers {
             val (itemLen, _) = readVarInt(rawTx, afterCount)
             itemLen >= BigInt(64) && itemLen <= BigInt(65)
 
-    /** Return true iff the witness at `inputIndex` is a Bifrost protocol script-path spend.
+    /** Return true iff the witness at `inputIndex` is a Bifrost protocol script-path spend — a
+      * key-path/script-path GATE only, NOT a leaf discriminator.
       *
-      * All Bifrost script leaves require exactly 1 signature as witness input (Y_67 OP_CHECKSIG; or
-      * timeout OP_CSV OP_DROP Y_fed OP_CHECKSIG), producing exactly 3 witness items: item 0:
-      * signature (64 B) item 1: leaf script item 2: control block (33 + 32*depth bytes; 65 B for a
-      * 2-leaf tree)
+      * Every Bifrost script leaf is `<timeout> OP_CSV OP_DROP <pubkey> OP_CHECKSIG`
+      * (`build_csv_checksig_script` in heimdall taproot.rs) — the depositor peg-in refund tree
+      * and the treasury federation tree share the exact same shape. Each embeds the FULL x-only key
+      * and spends with a single signature, so both produce exactly 3 witness items: item 0
+      * signature (64 B), item 1 leaf script, item 2 control block (33 + 32*depth bytes; 33 B for a
+      * single-leaf tree). A key-path spend is 1 item.
       *
-      * The depositor CSV refund leaf (`OP_HASH160 <hash> OP_EQUALVERIFY OP_CHECKSIG`) requires the
-      * depositor's x-only pubkey as an explicit witness item so the script can verify
-      * HASH160(pubkey) == stored_hash. This gives 4 items, not 3.
-      *
-      * Count == 3 is therefore a reliable discriminator: it accepts Y_67 and Y_fed script-path
-      * spends while rejecting depositor refunds and malformed witnesses.
+      * Count == 3 therefore only distinguishes script-path from key-path — it CANNOT tell the
+      * federation leaf from a depositor refund leaf (both are 3). To classify WHICH leaf was
+      * revealed, compare the revealed leaf bytes with [[spentViaLeaf]].
       *
       * @param rawTx
       *   Witness-serialized Bitcoin transaction bytes
       * @param inputIndex
       *   0-based index of the input whose witness to inspect
       * @return
-      *   true if witness is a 3-item protocol script-path (N=3)
+      *   true if witness is a 3-item script-path (N=3), whatever the leaf
       */
     def isValidScriptPathWitness(rawTx: ByteString, inputIndex: BigInt): Boolean =
         witnessStackSize(rawTx, inputIndex) == BigInt(3)
+
+    /** The bytes of witness stack item `itemIndex` of the input at `inputIndex`.
+      *
+      * Navigates to the input's witness (skipping `inputIndex` witnesses), skips the item-count
+      * varint, then walks `itemIndex` `[varlen][bytes]` entries and returns the target item's
+      * bytes. See the wire-format comment block above.
+      */
+    def witnessItem(rawTx: ByteString, inputIndex: BigInt, itemIndex: BigInt): ByteString =
+        val witnessStart = findWitnessSectionOffset(rawTx)
+        def skipInputs(n: BigInt, off: BigInt): BigInt =
+            if n == BigInt(0) then off
+            else skipInputs(n - 1, skipOneWitness(rawTx, off))
+        val (_, afterCount) = readVarInt(rawTx, skipInputs(inputIndex, witnessStart))
+        def itemAt(k: BigInt, off: BigInt): ByteString =
+            val (itemLen, afterLen) = readVarInt(rawTx, off)
+            if k == BigInt(0) then rawTx.slice(afterLen, itemLen)
+            else itemAt(k - 1, afterLen + itemLen)
+        itemAt(itemIndex, afterCount)
+
+    /** True iff the input at `inputIndex` is a Taproot SCRIPT-PATH spend that reveals exactly
+      * `expectedLeaf` — the reliable federation-vs-refund discriminator (N15).
+      *
+      * A witness-item COUNT is NOT reliable: heimdall's federation leaf (`<csv> OP_CSV OP_DROP
+      * <y_fed> OP_CHECKSIG`) and depositor refund leaf (same shape with the depositor key) BOTH
+      * embed the full x-only key and BOTH spend with 3 items — so [[isValidScriptPathWitness]]
+      * (count == 3) cannot tell them apart; it survives only as the key-path/script-path gate. The
+      * revealed leaf is always the item just before the control block (the LAST item), i.e. item
+      * `N-2`, regardless of how many script inputs precede it. The spend is confirmed on Bitcoin
+      * (the oracle's inclusion proof), so consensus already checked the control block commits
+      * `expectedLeaf` to the output key — this only re-reads which leaf was revealed. For the
+      * single-leaf treasury tree, revealing the federation leaf IS proof the roster was bypassed
+      * (feeds N10b's federation reset).
+      */
+    def spentViaLeaf(rawTx: ByteString, inputIndex: BigInt, expectedLeaf: ByteString): Boolean =
+        val n = witnessStackSize(rawTx, inputIndex)
+        n >= BigInt(3) && witnessItem(rawTx, inputIndex, n - BigInt(2)) == expectedLeaf
 
     // Insert a timestamp into a sorted list while maintaining order
     def insertReverseSorted(value: BigInt, sortedValues: List[BigInt]): List[BigInt] =
