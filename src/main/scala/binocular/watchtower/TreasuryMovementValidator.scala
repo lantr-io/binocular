@@ -48,12 +48,31 @@ object PegOutEntry
   *     spec §Cardano submission and leader reward).
   *   - [[Confirmed]] — produced by the Confirm transition once the TM is Binocular-confirmed. Holds
   *     the `btcTxid`, the list of swept peg-in outpoints (`sweptPegInUtxoIds`, 36-byte
-  *     prev_txid++vout each), the `fulfilledPegOuts`, and
+  *     prev_txid++vout each), the `fulfilledPegOuts`, the N10b `spentViaFederationLeaf` flag, and
   *     `creator`/`created`/`epoch`/`leaderReward` carried verbatim from the Unconfirmed input
-  *     (`creator`/`created` drive the GC path). Constr tag 1.
+  *     (`creator`/`created` drive the GC path). Constr tag 1. `spentViaFederationLeaf` is the
+  *     objective dead-roster evidence `treasury.ak::FederationReset` gates on: it is `true` iff this
+  *     TM's treasury input (input 0, pinned to the treasury outpoint at mint) was spent via the
+  *     federation CSV leaf. The treasury taproot tree has a SINGLE leaf (the federation
+  *     `<csv> OP_CSV OP_DROP <y_fed> OP_CHECKSIG`; internal key `Y_51` for the key-path roster
+  *     sweep), so a *confirmed* 3-item script-path spend of input 0 can only be that leaf — and it
+  *     could confirm only after `OP_CSV` was satisfied, i.e. the tip aged unmoved past
+  *     `federation_csv_blocks` (a live roster's coins never age that far). The flag is therefore
+  *     computed COARSELY as [[BitcoinHelpers.isValidScriptPathWitness]]`(signedBtcTx, 0)` (3-item
+  *     witness) — no `y_federation`/`csv` needed on-chain — and ENFORCED here: the Confirm branch
+  *     bakes it into the reconstructed `exp` datum the continuing output must match, so a
+  *     (permissionless) confirmer cannot forge it. [[binocular.cli.commands.ConfirmTmtxCommand]]
+  *     computes the same value off-chain to build a matching output.
   *
-  * Variant order and field order are positional in the Plutus Constr — do not reorder; new fields
-  * are appended (epoch/leaderReward after created), never inserted.
+  * Variant order and field order are positional in the Plutus Constr — do not reorder. New fields are
+  * normally APPENDED (epoch/leaderReward after created), never inserted. `spentViaFederationLeaf` is
+  * the one deliberate exception: the Aiken mirror `treasury-movement.ak` is a decode-only PREFIX of
+  * this datum (it omits `creator`/`created`/`epoch`/`leaderReward`, which no Aiken validator reads),
+  * and `treasury.ak::FederationReset` binds the flag by its DECLARED position — index 3 — in that
+  * 4-field mirror. So the flag is pinned at Constr index 3 HERE too (inserted after `fulfilledPegOuts`,
+  * before `creator`); appending it after `leaderReward` would make Aiken read `creator` as the Bool.
+  * Downstream prefix readers that stop at index 2 — Aiken `peg_in.ak` (indices 0,1) and heimdall
+  * `parse_confirmed_tm_datum` (indices 0,1,2, `len>=3`) — are unaffected by the insert.
   */
 enum TmDatum derives FromData, ToData {
     case Unconfirmed(
@@ -67,6 +86,9 @@ enum TmDatum derives FromData, ToData {
         btcTxid: ByteString,
         sweptPegInUtxoIds: ScalusList[ByteString],
         fulfilledPegOuts: ScalusList[PegOutEntry],
+        // N10b: index 3, pinned here to match the Aiken FederationReset positional read — see the
+        // datum scaladoc above. Inserted before the provenance fields, NOT appended.
+        spentViaFederationLeaf: Boolean,
         creator: PubKeyHash,
         created: PosixTime,
         epoch: BigInt,
@@ -325,19 +347,38 @@ object TreasuryMovementValidator {
 
                 val swept = allInputOutpoints(signedBtcTx)
                 val fulfilled = allOutputs(signedBtcTx)
+                // N10b: was the treasury (input 0) swept via the federation CSV leaf? The treasury
+                // taproot tree is single-leaf (federation `<csv> OP_CSV OP_DROP <y_fed> OP_CHECKSIG`;
+                // internal key Y_51 for the key-path roster sweep), so a 3-item script-path witness on
+                // input 0 IS that leaf. Because this TM is being confirmed against the oracle (it is
+                // mined on Bitcoin), that script-path spend satisfied OP_CSV — the tip had aged past
+                // federation_csv_blocks, i.e. the roster is provably dead. Computing it HERE (from the
+                // mint-committed signedBtcTx) and baking it into `exp` makes the flag unforgeable by a
+                // permissionless confirmer. treasury.ak::FederationReset consumes it. See the datum doc.
+                val spentViaFederationLeaf =
+                    BitcoinHelpers.isValidScriptPathWitness(signedBtcTx, BigInt(0))
                 // N7: epoch + leaderReward ride through the Confirm transition verbatim (like
                 // creator/created), so the Confirmed record carries the poster-declared reward
                 // amount for N9's later payout enforcement.
                 val exp = OutputDatum.OutputDatum(
                   TmDatum
-                      .Confirmed(txid, swept, fulfilled, creator, created, epoch, leaderReward)
+                      .Confirmed(
+                        txid,
+                        swept,
+                        fulfilled,
+                        spentViaFederationLeaf,
+                        creator,
+                        created,
+                        epoch,
+                        leaderReward
+                      )
                       .toData
                 )
                 require(
                   exp === contOut.datum,
                   "Continuing output datum does not match parsed TM Confirmed"
                 )
-            case TmDatum.Confirmed(_, _, _, creator, created, _, _) =>
+            case TmDatum.Confirmed(_, _, _, _, creator, created, _, _) =>
                 // Garbage collection: after the grace period the CREATOR may reclaim the record's
                 // min-ADA, burning the TM NFT. By then all peg-ins/peg-outs swept by this TM are
                 // expected to be completed (the record is no longer needed as proof material).
@@ -423,7 +464,7 @@ object TreasuryMovementValidator {
                   "TM mint: predecessor lacks the TM NFT"
                 )
                 prev.datum.of[TmDatum] match
-                    case TmDatum.Confirmed(btcTxid, _, _, _, _, _, _) =>
+                    case TmDatum.Confirmed(btcTxid, _, _, _, _, _, _, _) =>
                         // Predecessor treasury output = (btcTxid, vout 0).
                         btcTxid ++ hex"00000000"
                     case _ => fail("TM mint: predecessor is not Confirmed")

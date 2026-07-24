@@ -204,13 +204,19 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         // StackOverflow/OOM. A parse failure is deterministic → mark the UTxO skipped so it neither
         // crashes the watchtower nor is retried forever. RPC errors stay outside this guard (the
         // outer loop retries those).
-        val parsed: Option[(ByteString, ScalusList[ByteString], ScalusList[PegOutEntry])] =
+        val parsed
+            : Option[(ByteString, ScalusList[ByteString], ScalusList[PegOutEntry], Boolean)] =
             try
                 Some(
                   (
                     BitcoinHelpers.getTxHash(signedBtcTx), // internal (LE) — the Confirmed btc_txid
                     TreasuryMovementValidator.allInputOutpoints(signedBtcTx),
-                    TreasuryMovementValidator.allOutputs(signedBtcTx)
+                    TreasuryMovementValidator.allOutputs(signedBtcTx),
+                    // N10b: treasury (input 0) swept via the federation CSV leaf? Coarse = a 3-item
+                    // script-path witness on input 0 (the treasury tree is single-leaf, so that IS
+                    // the federation leaf). MUST equal what the on-chain Confirm branch computes,
+                    // else `exp === contOut.datum` fails. See TreasuryMovementValidator.TmDatum.
+                    BitcoinHelpers.isValidScriptPathWitness(signedBtcTx, BigInt(0))
                   )
                 )
             catch {
@@ -222,9 +228,14 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                     None
             }
 
-        parsed.foreach { case (txid, swept, fulfilled) =>
+        parsed.foreach { case (txid, swept, fulfilled, spentViaFederationLeaf) =>
             val displayTxid = txid.reverse.toHex
             Console.log(s"  $utxoRef: TM btc txid=$displayTxid")
+            if spentViaFederationLeaf then
+                Console.logWarn(
+                  s"    $utxoRef: treasury swept via the FEDERATION CSV leaf — " +
+                      "Confirmed record will carry spent_via_federation_leaf=true (N10b reset evidence)"
+                )
 
             if skipBtcTxids.contains(displayTxid.toLowerCase) then
                 Console.logWarn(s"    $utxoRef: skipped (relay.skip-btc-txids)")
@@ -274,6 +285,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                               txid,
                               swept,
                               fulfilled,
+                              spentViaFederationLeaf,
                               unconfirmedDatum.creator,
                               unconfirmedDatum.created,
                               unconfirmedDatum.epoch,

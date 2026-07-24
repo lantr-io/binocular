@@ -238,6 +238,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
                     prevTxid,
                     PList.Nil,
                     PList.Nil,
+                    false,
                     creatorPkh,
                     createdAt,
                     tmEpoch,
@@ -325,12 +326,16 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
 
     private def confirmedDatum(
         swept: PList[ByteString] = expectedSwept,
-        fulfilled: PList[PegOutEntry] = expectedFulfilled
+        fulfilled: PList[PegOutEntry] = expectedFulfilled,
+        // N10b flag. Default false: `rawTm`'s input 0 has 0 witness items (not a 3-item script-path),
+        // so the validator computes false — a continuing datum must carry the same value to match.
+        spentViaFederationLeaf: Boolean = false
     ): Data =
         (TmDatum.Confirmed(
           txid,
           swept,
           fulfilled,
+          spentViaFederationLeaf,
           creatorPkh,
           createdAt,
           tmEpoch,
@@ -527,6 +532,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
               txid,
               expectedSwept,
               expectedFulfilled,
+              false,
               creatorPkh,
               createdAt,
               tmEpoch,
@@ -562,6 +568,17 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         // Continuing output keeps only ADA, no TM NFT — must be rejected (the NFT authenticates the
         // Confirmed UTxO downstream).
         val sc = scriptContext(Value.lovelace(1_000_000), confirmedDatum(), redeemer(mpfProof))
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("forged spent_via_federation_leaf=true fails (N10b — flag is unforgeable)") {
+        // The confirmer cannot set the federation-leaf flag freely: the validator recomputes it from
+        // the mint-committed signedBtcTx (here `rawTm`, whose input 0 has 0 witness items → false)
+        // and bakes it into the datum the continuing output must match. A continuing datum claiming
+        // true is therefore rejected — without this, a permissionless confirmer could fabricate the
+        // dead-roster evidence treasury.ak::FederationReset consumes.
+        val sc =
+            scriptContext(tmValue, confirmedDatum(spentViaFederationLeaf = true), redeemer(mpfProof))
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
 
@@ -664,6 +681,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
               filled(0xde, 32),
               PList.from(List(filled(0xfe, 36))),
               PList.Nil,
+              false,
               creatorPkh,
               createdAt,
               tmEpoch,
