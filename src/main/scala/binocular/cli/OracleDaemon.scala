@@ -2,6 +2,7 @@ package binocular.cli
 
 import binocular.*
 import binocular.bitcoin.*
+import binocular.cli.commands.SetStateCommand
 import binocular.notify.Notifier
 import binocular.oracle.*
 import binocular.oracle.ForkTreePretty.*
@@ -61,7 +62,9 @@ class OracleDaemon(
     private def deepReorgAlert(
         e: CommandHelpers.DeepReorgException,
         phase: String,
-        network: String
+        network: String,
+        action: String =
+            "watchtower stopped (no auto-restart). Resume with `set-state`, or re-init from a canonical height, then restart."
     ): String = {
         val (depthLabel, forkLine) = e.deepestConfirmedAncestor match {
             case Some((h, _)) =>
@@ -95,7 +98,144 @@ class OracleDaemon(
            |• Oracle tip:    ${displayHash(e.oracleHash)}
            |• Canonical tip: ${displayHash(e.canonicalHash)}
            |• Network: $network
-           |Action: watchtower stopped (no auto-restart). Resume with `set-state`, or re-init from a canonical height, then restart.""".stripMargin
+           |Action: $action""".stripMargin
+    }
+
+    /** Extra wait on top of the computed staleness gap before submitting an auto-reset SetState,
+      * covering the tx validity-interval end offset so the validator's strict `>` check passes.
+      */
+    private val StalenessWaitBufferSeconds = 30L
+
+    /** Blocking recovery from a deep reorg via an owner SetState (`oracle.auto-reset = true`).
+      *
+      * Retries forever — no runaway guard by design; Discord alerts are the safety net for
+      * pathological cases (e.g. a local bitcoind stuck on a minority fork). Each attempt re-reads
+      * the oracle (adopting it outright if another instance already reset it), waits out the
+      * on-chain staleness gate, then submits a SetState anchored at
+      * `tip - oracle.effectiveAutoResetDepth`. Returns the recovered oracle UTxO, chain state, and
+      * off-chain MPF once the on-chain state reconstructs cleanly against the canonical chain.
+      */
+    private def performAutoReset(
+        config: BinocularConfig,
+        setup: OracleSetup,
+        rpc: SimpleBitcoinRpc,
+        referenceScriptUtxo: Utxo,
+        e: CommandHelpers.DeepReorgException,
+        phase: String
+    )(using ExecutionContext): (Utxo, ChainState, OffChainMPF) = {
+        val timeout = config.oracle.transactionTimeout.seconds
+        val retryInterval = config.oracle.retryInterval
+        val depth = config.oracle.effectiveAutoResetDepth
+        Console.logError(e.getMessage)
+        Console.logWarn(
+          s"Deep reorg — auto-reset engaged: resetting to tip-$depth once the oracle is stale"
+        )
+        notifier.error(
+          "oracle",
+          deepReorgAlert(
+            e,
+            phase,
+            config.bitcoinNode.network,
+            action =
+                s"auto-reset engaged — resetting to tip-$depth once the oracle is stale (closure-timeout)."
+          )
+        )
+        if setup.hdAccount.paymentKeyHash != setup.params.owner.hash then {
+            val msg =
+                "Auto-reset misconfigured: the wallet is not the oracle owner, so SetState can " +
+                    "never validate. Fix wallet/owner-pkh; retrying anyway."
+            Console.logError(msg)
+            notifier.error("oracle", msg)
+        }
+        while true do {
+            try {
+                // Fresh read each attempt: another instance may have reset (or advanced) the
+                // oracle meanwhile — if its state reconstructs cleanly, adopt it and we're done.
+                val fresh = CommandHelpers
+                    .findOracleUtxo(setup.provider, setup.script.scriptHash)
+                    .await(timeout)
+                val freshState = fresh.output.requireInlineDatum.to[ChainState]
+                val recovered =
+                    try
+                        Some(
+                          CommandHelpers.reconstructMpf(rpc, freshState, config.oracle.startHeight)
+                        )
+                    catch { case _: CommandHelpers.DeepReorgException => scala.None }
+                recovered match {
+                    case Some(Right(mpf)) =>
+                        Console.logSuccess(
+                          s"Auto-reset: oracle state at height ${freshState.ctx.height} " +
+                              "reconstructs cleanly — adopting"
+                        )
+                        return (fresh, freshState, mpf)
+                    case Some(Left(err)) =>
+                        throw new RuntimeException(s"MPF reconstruction: $err")
+                    case scala.None =>
+                    // Still committed to orphaned blocks — reset it below.
+                }
+                val headTs = freshState.ctx.timestamps.head.toLong
+                val (_, intervalEnd) =
+                    OracleTransactions.computeValidityIntervalTime(setup.provider.cardanoInfo)
+                val remaining = SetStateCommand.stalenessRemainingSeconds(
+                  headTs,
+                  intervalEnd.toLong,
+                  setup.params.closureTimeout.toLong
+                )
+                if remaining >= 0 then {
+                    val wait = remaining + StalenessWaitBufferSeconds
+                    Console.log(
+                      s"Auto-reset: oracle not yet stale — waiting ${wait}s for the closure-timeout gate"
+                    )
+                    Thread.sleep(wait * 1000L)
+                } else {
+                    val tip = rpc.getBlockchainInfo().await(30.seconds).blocks
+                    val target = SetStateCommand
+                        .autoResetTargetHeight(tip, depth, config.oracle.startHeight)
+                        .valueOr(err => throw new RuntimeException(err))
+                    val newState = SetStateCommand
+                        .buildReplacementState(rpc, config, target)
+                        .valueOr(err => throw new RuntimeException(err))
+                    val excludeInputs = CommandHelpers.refScriptOutpoints(
+                      config,
+                      setup.sponsorAddress.encode.getOrElse("")
+                    )
+                    OracleTransactions.buildAndSubmitSetStateTransaction(
+                      setup.provider,
+                      setup.hdAccount,
+                      fresh,
+                      referenceScriptUtxo,
+                      setup.script,
+                      newState,
+                      timeout,
+                      excludeInputs
+                    ) match {
+                        case Right(txHash) =>
+                            Console.logSuccess(
+                              s"Auto-reset: oracle reset to height $target | tx: $txHash"
+                            )
+                            notifier.success(
+                              "oracle",
+                              s"Auto-reset: deep reorg recovered — oracle reset to height " +
+                                  s"$target (tip $tip - $depth). Tx: $txHash"
+                            )
+                            // Give the indexer time to surface the new UTxO; the next loop
+                            // iteration's fresh read adopts it.
+                            Thread.sleep(retryInterval * 1000L)
+                        case Left(err) =>
+                            throw new RuntimeException(s"SetState submission: $err")
+                    }
+                }
+            } catch {
+                case ie: InterruptedException => throw ie
+                case ex: Exception =>
+                    Console.logError(
+                      s"Auto-reset attempt failed: ${ex.getMessage} — retrying in ${retryInterval}s"
+                    )
+                    notifier.error("oracle", s"Auto-reset attempt failed: ${ex.getMessage}")
+                    Thread.sleep(retryInterval * 1000L)
+            }
+        }
+        throw new IllegalStateException("unreachable")
     }
 
     def run(config: BinocularConfig): Int = boundary {
@@ -187,6 +327,19 @@ class OracleDaemon(
                         break(1)
                     }
             catch {
+                case e: CommandHelpers.DeepReorgException if config.oracle.autoReset =>
+                    val (utxo, state, mpf) =
+                        performAutoReset(
+                          config,
+                          setup,
+                          rpc,
+                          referenceScriptUtxo,
+                          e,
+                          "startup MPF reconstruction"
+                        )
+                    currentOracleUtxo = utxo
+                    currentChainState = state
+                    mpf
                 // Unrecoverable — let it propagate out of the daemon so the watchtower supervisor
                 // stops the whole process (do-not-restart exit code) rather than restarting us into
                 // the same deep reorg every retry interval.
@@ -571,6 +724,12 @@ class OracleDaemon(
                 // and loop forever).
                 case b: boundary.Break[?] =>
                     throw b
+                case e: CommandHelpers.DeepReorgException if config.oracle.autoReset =>
+                    val (utxo, state, mpf) =
+                        performAutoReset(config, setup, rpc, referenceScriptUtxo, e, "update loop")
+                    currentOracleUtxo = utxo
+                    currentChainState = state
+                    currentMpf = mpf
                 // Unrecoverable — confirmed history orphaned; manual re-init required. Propagate
                 // out of the daemon (rather than break(1)) so the watchtower supervisor stops the
                 // whole process with a do-not-restart exit code, instead of the Supervisor

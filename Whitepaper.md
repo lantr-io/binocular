@@ -1360,8 +1360,16 @@ height `H` (fetching header, difficulty-boundary bits, and 11 trailing timestamp
 the canonical chain — so every block previously provable against the Oracle remains provable and
 the deployment's `start-height` is unchanged.
 
-**Implementation Reference:** See `spend` (SetState branch) in `BitcoinValidator.scala` and
-`SetStateCommand.scala`
+**Automatic recovery** (reference watchtower): with `oracle.auto-reset = true` (default false),
+the watchtower performs this workflow autonomously on deep-reorg detection instead of stopping
+for manual recovery: it waits out the on-chain staleness gate (`closureTimeout`), then submits a
+`SetState` anchored at `tip − N` (`oracle.auto-reset-depth`, defaulting to
+`maturationConfirmations`) and resumes syncing. Requires the watchtower wallet to be the Oracle
+owner; the on-chain trust envelope is unchanged (the same staleness + owner-signature guard
+applies).
+
+**Implementation Reference:** See `spend` (SetState branch) in `BitcoinValidator.scala`,
+`SetStateCommand.scala`, and `performAutoReset` in `OracleDaemon.scala`
 
 ### Parameterized Validator
 

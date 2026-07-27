@@ -30,8 +30,15 @@ case class OracleConfig(
     challengeAging: Int = 12000,
     closureTimeout: Int = 2592000,
     maxBlocksInForkTree: Int = 256,
-    testingMode: Boolean = false
+    testingMode: Boolean = false,
+    autoReset: Boolean = false,
+    autoResetDepth: Option[Int] = None
 ) derives ConfigReader {
+
+    /** Blocks below the Bitcoin tip to anchor an auto-reset at (H = tip - depth). Defaults to
+      * `maturationConfirmations` so the margin tracks the promotion depth.
+      */
+    def effectiveAutoResetDepth: Int = autoResetDepth.getOrElse(maturationConfirmations)
 
     /** Parse txOutRef and ownerPkh into BitcoinValidatorParams.
       *
