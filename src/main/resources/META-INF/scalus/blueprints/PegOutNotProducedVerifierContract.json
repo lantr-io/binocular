@@ -5,7 +5,7 @@
     "version": "1.0.0",
     "compiler": {
       "name": "scalus",
-      "version": "0.18.2"
+      "version": "0.18.2+99-94cc447a-SNAPSHOT"
     },
     "plutusVersion": "v3",
     "license": "Apache-2.0"

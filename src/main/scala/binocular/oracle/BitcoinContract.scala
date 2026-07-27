@@ -17,7 +17,7 @@ import scalus.utils.Hex.toHex
 object BitcoinContract extends Contract {
     given opts: Options = Options.release.copy(
       generateErrorTraces = false,
-      targetProtocolVersion = MajorProtocolVersion.plominPV
+      targetProtocolVersion = MajorProtocolVersion.vanRossemPV
     )
 
     lazy val contract: PlutusV3[Data => Data => Unit] =
