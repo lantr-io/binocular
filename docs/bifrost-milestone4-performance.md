@@ -70,10 +70,12 @@ the two measurements (mainnet parameters in both runs).
 CI runs `sbt "testOnly binocular.*"` on every push; the budget tables appear in the test step log
 under `BitcoinValidatorTest` and `TreasuryMovementValidatorTest`.
 
-- **Before** (Scalus 0.18.2, commit `4f0afbc`):
+- **Before** (Scalus 0.18.2, commit
+  [`4f0afbc`](https://github.com/lantr-io/binocular/commit/4f0afbc)):
   https://github.com/lantr-io/binocular/actions/runs/30261189558
-- **After** (Scalus 0.18.2+99-94cc447a-SNAPSHOT + vanRossemPV, commit `6d1e2ab`):
-  https://github.com/lantr-io/binocular/actions/runs/30261682453
+- **After** (Scalus 0.18.2+99-94cc447a-SNAPSHOT + vanRossemPV, merged to `main`, commit
+  [`6d1e2ab`](https://github.com/lantr-io/binocular/commit/6d1e2ab)):
+  https://github.com/lantr-io/binocular/actions/runs/30263134295
 
 ## Deployment note
 
