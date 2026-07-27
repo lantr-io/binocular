@@ -72,8 +72,8 @@ under `BitcoinValidatorTest` and `TreasuryMovementValidatorTest`.
 
 - **Before** (Scalus 0.18.2, commit `4f0afbc`):
   https://github.com/lantr-io/binocular/actions/runs/30261189558
-- **After** (Scalus 0.18.2+99-94cc447a-SNAPSHOT + vanRossemPV, commit on this branch):
-  link added after the CI run of the upgrade commit completes.
+- **After** (Scalus 0.18.2+99-94cc447a-SNAPSHOT + vanRossemPV, commit `6d1e2ab`):
+  https://github.com/lantr-io/binocular/actions/runs/30261682453
 
 ## Deployment note
 
