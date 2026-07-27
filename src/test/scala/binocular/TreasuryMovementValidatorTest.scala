@@ -15,7 +15,8 @@ import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 import scalus.uplc.builtin.Builtins.integerToByteString
 import scalus.uplc.builtin.{ByteString, Data}
 import scalus.uplc.builtin.Data.toData
-import scalus.uplc.eval.PlutusVM
+import scalus.cardano.ledger.CardanoInfo
+import scalus.uplc.eval.{PlutusVM, Result}
 
 /** CEK-evaluation tests for [[TreasuryMovementValidator]] — the real (non-scaffold) treasury
   * movement Confirm validator.
@@ -692,6 +693,49 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           scriptInfo = SpendingScript(ownRef, Option.Some(confirmedDatum()))
         )
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    // --- budget measurements ---
+
+    // Execution budgets for the three treasury-movement happy paths, printed so they land in the
+    // CI log (Milestone 4 performance evidence). Synthetic ScriptContexts, so only the script
+    // execution budget and ex-unit fee are meaningful here (no full tx fee).
+    test("Treasury movement budgets - mint Genesis, mint Chain, Confirm spend") {
+        val pp = CardanoInfo.mainnet.protocolParams
+        val maxCpu = pp.maxTxExecutionUnits.steps
+        val maxMem = pp.maxTxExecutionUnits.memory
+
+        def measure(name: String, sc: ScriptContext): Unit =
+            program.applyArg(sc.toData).evaluateDebug match
+                case r: Result.Success =>
+                    val exFeeAda = r.budget.fee(pp.executionUnitPrices).value / 1_000_000.0
+                    info(
+                      f"$name%-13s | ${r.budget.steps}%,13d (${r.budget.steps * 100.0 / maxCpu}%5.2f%%) | ${r.budget.memory}%,10d (${r.budget.memory * 100.0 / maxMem}%5.2f%%) | $exFeeAda%.6f ADA"
+                    )
+                    assert(r.budget.steps <= maxCpu && r.budget.memory <= maxMem)
+                case r: Result.Failure =>
+                    fail(s"$name failed: ${r.exception.getMessage}\n${r.logs.mkString("\n")}")
+
+        info("TREASURY MOVEMENT BUDGETS | CPU Steps (% limit) | Memory (% limit) | Ex Fee")
+        measure(
+          "Mint Genesis",
+          mintContext(
+            BigInt(1),
+            genesisRdmr,
+            PList.from(List(configRefInput())),
+            PList.from(List(mintedTmOutput()))
+          )
+        )
+        measure(
+          "Mint Chain",
+          mintContext(
+            BigInt(1),
+            chainRdmr(0),
+            PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32)))),
+            PList.from(List(mintedTmOutput()))
+          )
+        )
+        measure("Confirm spend", scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof)))
     }
 
 }
