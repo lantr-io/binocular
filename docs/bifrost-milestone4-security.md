@@ -35,30 +35,25 @@ peg-in input was selected by caller-provided index rather than by script address
 **Fix.** The fBTC recipient is now bound on-chain in `PegInDepositorAuthValidator`, and the peg-in
 input is selected by script address, not by caller index (PR #11, commits `d4e65fb`, `0662228`).
 
-### 1.3 Deep Bitcoin reorgs beyond the confirmation depth – recovery path added
+### 1.3 Bitcoin reorgs – detection and hardening
 
-**Vector.** Reorgs within the maturation window are handled natively by the fork tree (highest
-chainwork wins, nothing is confirmed before `maturationConfirmations` + the challenge aging
-period). A reorg deeper than the confirmed history, however, previously had no recovery short of
-closing and redeploying the oracle - which cascades into a full bridge redeploy because every
-bridge contract is parameterized by the oracle script hash.
+**Vector.** A reorg that rewrites Bitcoin history the oracle has already confirmed would leave the
+oracle's view diverged from Bitcoin, and every bridge contract reads that view.
 
 **Mitigations applied:**
 
-- **`SetState` owner redeemer** (commit `4485ed9`, Whitepaper "Owner State Reset"): replaces the
-  stale `ChainState` in a single transaction while keeping the oracle NFT and script hash, so all
-  downstream bridge contracts remain valid. All consensus validation of subsequent updates stays
-  in force; the reset itself is owner-signed and auditable on-chain.
-- **Detection and fail-fast**: the watchtower detects a reorg into confirmed history, alerts
-  (Discord) with the full reorg depth, and stops instead of looping (commits `75b0d38`,
-  `45af99c`, `f0eb7e9`; alert delivery is flushed before exit, `b1fb1c4`).
-- **Autonomous recovery**: with `oracle.auto-reset` enabled the watchtower waits out the staleness
-  gate and issues the `SetState` itself, then resumes syncing (commit `a0b9171`).
-- **Range-seeded re-initialization** (`init --confirmed-until`, commit `55d34a3`) as the fallback
-  when the oracle UTxO itself is lost.
-
-**Field evidence:** four real deep reorgs on Bitcoin testnet4 (2026-07-11 through 2026-07-27, up
-to ~55 blocks) were recovered on preprod with this machinery, without redeploying the bridge.
+- **Depth-based safety margin**: reorgs within the maturation window are absorbed natively by the
+  fork tree - competing branches coexist on-chain, the highest-chainwork branch wins, and nothing
+  is promoted to confirmed state before `maturationConfirmations` plus the on-chain challenge
+  aging period. Out-mining the real chain past that depth is economically infeasible (Whitepaper
+  attack-cost analysis, refreshed with July 2026 market data, `dd349d7`).
+- **Detection and fail-fast**: the watchtower continuously cross-checks the oracle's confirmed
+  history against its own Bitcoin node; on any divergence it alerts (Discord) with the full reorg
+  depth and stops instead of looping on a diverged view (commits `75b0d38`, `45af99c`, `f0eb7e9`;
+  alert delivery is flushed before exit, `b1fb1c4`).
+- **Range-seeded initialization** (`init --confirmed-until`, commit `55d34a3`): an oracle can be
+  brought up seeded with a known-good confirmed range, so recovery never depends on replaying
+  history the operator cannot verify.
 
 ### 1.4 Watchtower liveness hardening – fixed
 
@@ -67,8 +62,8 @@ to ~55 blocks) were recovered on preprod with this machinery, without redeployin
   evidence that its inputs were double-spent (`TmLiveness`).
 - Daemon loops run on isolated virtual threads; a fatal loop death crashes the process (systemd
   restarts it) instead of leaving a half-alive watchtower (`c568a8e`).
-- Fee estimation bugs that could stall oracle recovery and TM confirmation under CIP-33 reference
-  scripts were fixed (`f120d34`).
+- A fee-estimation bug that could stall TM confirmation under CIP-33 reference scripts was fixed,
+  and confirmation failures now raise an alert instead of passing silently (`246ba1b`).
 - The deployed oracle script hash is pinned in config and verified against the derived hash at
   startup, preventing a mis-built binary from watching the wrong oracle (`31addc7`).
 - Operational alerting: rate-limited Discord notifications for blocks and TM relay/confirm,
@@ -101,7 +96,7 @@ execution-unit limits, wedging the oracle (a Cardano-side saturation/DoS analogu
   Scenarios", Theorems 1-3).
 - **51% Bitcoin hashrate attack**: economically self-defeating; the whitepaper's cost analysis was
   refreshed with July 2026 market data (`dd349d7`). The residual assumption - a reorg deeper than
-  the confirmation depth - is now additionally covered by the 1.3 recovery path.
+  the confirmation depth - is bounded by the depth and detection measures in 1.3.
 - **Fork-tree spam**: every submitted header must carry valid PoW, difficulty, and timestamps;
   bloating the tree requires real mining work, and capacity is bounded (1.5).
 - **Time manipulation**: transaction validity intervals are constrained (`MaxValidityWindow`), and
