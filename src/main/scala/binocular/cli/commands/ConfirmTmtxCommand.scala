@@ -98,7 +98,10 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         // selection: BlockfrostProvider drops their scriptRef, so the builder misses the Conway
         // ref-script surcharge (-> FeeTooSmallUTxO); spending one would also destroy a ref script.
         val excludeRefScripts =
-            CommandHelpers.refScriptOutpoints(config, hdAccount.baseAddress(network).encode.getOrElse(""))
+            CommandHelpers.refScriptOutpoints(
+              config,
+              hdAccount.baseAddress(network).encode.getOrElse("")
+            )
 
         while true do {
             try {
