@@ -144,12 +144,8 @@ class OracleDaemon(
                     .findOracleUtxo(setup.provider, setup.script.scriptHash)
                     .await(timeout)
                 val freshState = fresh.output.requireInlineDatum.to[ChainState]
-                val recovered =
-                    try
-                        Some(
-                          CommandHelpers.reconstructMpf(rpc, freshState, config.oracle.startHeight)
-                        )
-                    catch { case _: CommandHelpers.DeepReorgException => scala.None }
+                val recovered = CommandHelpers
+                    .autoResetAdoptableMpf(rpc, freshState, config.oracle.startHeight)
                 recovered match {
                     case Some(Right(mpf)) =>
                         Console.logSuccess(
