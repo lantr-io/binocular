@@ -20,14 +20,14 @@ import java.util.concurrent.atomic.AtomicLong
   *   - `newBlock` is deduplicated by height (only strictly-increasing heights notify), then rate-
   *     limited via [[IntervalGate]]: at most one block notification per `throttleIntervalMs`, with
   *     bursts coalesced into a summary (`N blocks — tip H`).
-  *   - `success` is likewise rate-limited; bursts are batched into one message so no TM event is
-  *     lost. Rare successes (idle >= interval) are sent promptly.
+  *   - `success` is NOT throttled — relay/confirm successes are rare, operator-meaningful events (a
+  *     TM relayed to Bitcoin, a TM confirmed on Cardano), so each one posts at once.
   *   - `error` is NOT throttled — it is debounced only against IDENTICAL repeats via
   *     [[ErrorDebounce]] (first + any new error immediate) and carries an optional `@`-mention
   *     ping.
   *
-  * A single daemon [[ScheduledExecutorService]] flushes held block/success summaries once their
-  * window elapses, so a coalesced summary still arrives on time even if events stop coming.
+  * A single daemon [[ScheduledExecutorService]] flushes a held block summary once its window
+  * elapses, so a coalesced summary still arrives on time even if events stop coming.
   *
   * Uses the JDK's built-in [[java.net.http.HttpClient]] — no extra dependencies.
   */
@@ -36,8 +36,7 @@ class DiscordNotifier(
     throttleIntervalMs: Long = 60 * 60 * 1000L,
     errorMentionUserId: Option[String] = None,
     errorDebounceWindowMs: Long = 5 * 60 * 1000L,
-    queueCapacity: Int = 64,
-    maxPendingSuccess: Int = 20
+    queueCapacity: Int = 64
 ) extends Notifier {
 
     private val client =
@@ -80,11 +79,9 @@ class DiscordNotifier(
     private var debounce: ErrorDebounce.State = ErrorDebounce.State.empty
     private var blockGate: IntervalGate.State = IntervalGate.State.empty
     private var pendingBlock: Option[PendingBlock] = scala.None
-    private var successGate: IntervalGate.State = IntervalGate.State.empty
-    private var pendingSuccess: List[(String, String)] = Nil // newest-first
 
-    // Flush held summaries when their window elapses even if events stop. Tick coarsely (bounded to
-    // [1s, 60s]) — a coalesced summary arriving up to a tick late is fine.
+    // Flush a held block summary when its window elapses even if events stop. Tick coarsely
+    // (bounded to [1s, 60s]) — a coalesced summary arriving up to a tick late is fine.
     private val scheduler: ScheduledExecutorService = {
         val tf: ThreadFactory = (r: Runnable) => {
             val t = new Thread(r, "discord-notifier-flush")
@@ -163,27 +160,10 @@ class DiscordNotifier(
         }
     }
 
-    def success(source: String, message: String): Unit = {
-        val toSend = synchronized {
-            val (next, decision) =
-                IntervalGate.offer(successGate, System.currentTimeMillis(), throttleIntervalMs)
-            successGate = next
-            decision match {
-                case IntervalGate.SendNow(_) =>
-                    val batch = pendingSuccess.reverse :+ (source -> message)
-                    pendingSuccess = Nil
-                    Some(DiscordPayload.successBatch(batch))
-                case IntervalGate.Hold =>
-                    // Newest-first; keep only the most recent `maxPendingSuccess` on overflow.
-                    pendingSuccess = ((source -> message) :: pendingSuccess).take(maxPendingSuccess)
-                    scala.None
-            }
-        }
-        toSend.foreach(enqueue)
-    }
+    def success(source: String, message: String): Unit =
+        enqueue(DiscordPayload.success(source, message))
 
-    /** Emit any block/success summaries whose throttle window has elapsed. Runs on the scheduler.
-      */
+    /** Emit a held block summary once its throttle window has elapsed. Runs on the scheduler. */
     private def flushPending(): Unit = {
         val posts = synchronized {
             val now = System.currentTimeMillis()
@@ -202,15 +182,6 @@ class DiscordNotifier(
                       sinceCount = held
                     )
                     pendingBlock = scala.None
-                }
-            }
-
-            val (ns, successHeld) = IntervalGate.flush(successGate, now, throttleIntervalMs)
-            successGate = ns
-            successHeld.foreach { _ =>
-                if pendingSuccess.nonEmpty then {
-                    buf += DiscordPayload.successBatch(pendingSuccess.reverse)
-                    pendingSuccess = Nil
                 }
             }
             buf.toList

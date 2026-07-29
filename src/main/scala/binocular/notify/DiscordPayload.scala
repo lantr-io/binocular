@@ -59,17 +59,6 @@ object DiscordPayload {
     def success(source: String, message: String): String =
         embed(s"✅ [$source]", message, ColorSuccess)
 
-    /** Batch of successes coalesced by the throttle. A single item renders as [[success]]; several
-      * render as one embed listing each `(source, message)` line.
-      */
-    def successBatch(items: List[(String, String)]): String = items match {
-        case Nil                  => embed("✅ Actions", "(none)", ColorSuccess)
-        case (source, msg) :: Nil => success(source, msg)
-        case many =>
-            val body = many.map { case (s, m) => s"• [$s] $m" }.mkString("\n")
-            embed(s"✅ ${many.size} actions", body, ColorSuccess)
-    }
-
     /** A single embed object `{...}` (no `{"embeds":[...]}` wrapper), so callers can compose it
       * with a `content` field (see [[error]]).
       */

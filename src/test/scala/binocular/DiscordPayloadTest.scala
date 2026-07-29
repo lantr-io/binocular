@@ -56,20 +56,6 @@ class DiscordPayloadTest extends AnyFunSuite {
         assert(!blank.contains("content"))
     }
 
-    test("successBatch renders a single item as a plain success, several as one list") {
-        val single = DiscordPayload.successBatch(List("relay" -> "TM relayed"))
-        assert(single.contains("[relay]"))
-        assert(!single.contains("actions"))
-
-        val many = DiscordPayload.successBatch(
-          List("relay" -> "TM relayed", "confirm" -> "TM confirmed")
-        )
-        assert(many.contains("2 actions"))
-        assert(many.contains("• [relay] TM relayed"))
-        assert(many.contains("• [confirm] TM confirmed"))
-        assert(many.contains("\"color\":" + DiscordPayload.ColorSuccess))
-    }
-
     test("success embeds the source label and the green color") {
         val json = DiscordPayload.success("relay", "TM relayed to Bitcoin — btc txid `abc`")
         assert(json.contains("\"color\":" + DiscordPayload.ColorSuccess))
