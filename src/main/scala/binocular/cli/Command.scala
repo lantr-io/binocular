@@ -399,7 +399,7 @@ object CommandHelpers {
       * deep reorg) is reported as `Left` rather than silently producing a wrong proof.
       */
     def rebuildMpfFromTip(
-        rpc: SimpleBitcoinRpc,
+        rpc: BitcoinRpc,
         tipHashLE: ByteString,
         count: Long,
         expectedRoot: ByteString
@@ -799,7 +799,7 @@ object CommandHelpers {
       * steady-state loop.
       */
     def reconstructMpf(
-        rpc: SimpleBitcoinRpc,
+        rpc: BitcoinRpc,
         chainState: ChainState,
         startHeight: Option[Long]
     )(using ExecutionContext): Either[String, OffChainMPF] = {
@@ -852,5 +852,32 @@ object CommandHelpers {
                             )
                     }
             }
+    }
+
+    /** Auto-reset adopt gate: decides whether [[binocular.cli.OracleDaemon]]'s auto-reset can adopt
+      * the on-chain oracle state as-is instead of resetting it.
+      *
+      *   - `Some(Right(mpf))` — state is adoptable; `mpf` is the reconstructed off-chain MPF.
+      *   - `Some(Left(err))` — reconstruction failed for a reason a retry might cure.
+      *   - `None` — the state still commits to orphaned blocks; the caller must reset it.
+      *
+      * The confirmed tip must be canonical-by-height BEFORE any MPF reconstruction is attempted:
+      * [[reconstructMpf]] alone is not a canonicality check — after a shallow orphaning of
+      * confirmed blocks it rebuilds the committed set by hash (bitcoind retains orphan headers) and
+      * verifies it against the oracle's own root, which trivially matches. Adopting such a state
+      * loops the daemon forever: detect deep reorg -> adopt stale state -> detect again.
+      */
+    def autoResetAdoptableMpf(
+        rpc: BitcoinRpc,
+        chainState: ChainState,
+        startHeight: Option[Long]
+    )(using ExecutionContext): Option[Either[String, OffChainMPF]] = {
+        val confirmedHeight = chainState.ctx.height.toLong
+        val confirmedCanonicalHex = rpc.getBlockHash(confirmedHeight.toInt).await(30.seconds)
+        val confirmedCanonical = ByteString.fromArray(confirmedCanonicalHex.hexToBytes.reverse)
+        if chainState.ctx.lastBlockHash != confirmedCanonical then scala.None
+        else
+            try Some(reconstructMpf(rpc, chainState, startHeight))
+            catch { case _: DeepReorgException => scala.None }
     }
 }
