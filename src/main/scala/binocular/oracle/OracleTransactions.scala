@@ -132,12 +132,27 @@ object OracleTransactions {
       *     validator reads `tx.validRange.to` as its notion of "current time", so this is the value
       *     that must flow into `BitcoinValidator.computeUpdate` as `currentTime`. See the extended
       *     rationale in `BitcoinValidator.spend`.
+      *
+      * The window is anchored on the provider's current chain tip slot rather than the local wall
+      * clock, so it stays phase-1-valid even when the local clock and the node's slot clock
+      * disagree (real clock skew, or a devnet whose slot clock is shifted against wall time).
       */
     def computeValidityIntervalTime(
-        cardanoInfo: CardanoInfo,
+        provider: BlockchainProvider,
         targetEndTimeSeconds: Option[BigInt] = None
     ): (Instant, BigInt) = {
-        SlotConfigHelper.computeValidityIntervalTime(cardanoInfo, targetEndTimeSeconds)
+        given ExecutionContext = provider.executionContext
+        // The round-trip case derives everything from the target end time; only the fresh-window
+        // case needs the chain tip as an anchor.
+        val tipSlot = targetEndTimeSeconds match {
+            case Some(_) => None
+            case None    => Some(provider.currentSlot.await(30.seconds))
+        }
+        SlotConfigHelper.computeValidityIntervalTime(
+          provider.cardanoInfo,
+          targetEndTimeSeconds,
+          tipSlot
+        )
     }
 
     /** Apply Bitcoin headers to ChainState to calculate new state. Uses empty MPF proofs - only
@@ -364,7 +379,7 @@ object OracleTransactions {
 
         // Reconstruct the wall-clock validFrom from the previously-computed on-chain end time.
         val (validityInstant, _) =
-            computeValidityIntervalTime(
+            SlotConfigHelper.computeValidityIntervalTime(
               cardanoInfo,
               Some(validityIntervalTimeSeconds)
             )
@@ -407,7 +422,10 @@ object OracleTransactions {
         mpfInsertProofs: ScalusList[ScalusList[ProofStep]]
     ): TxBuilder = {
         val (validityInstant, _) =
-            computeValidityIntervalTime(cardanoInfo, Some(validityIntervalTimeSeconds))
+            SlotConfigHelper.computeValidityIntervalTime(
+              cardanoInfo,
+              Some(validityIntervalTimeSeconds)
+            )
 
         val redeemer = UpdateOracle(blockHeaders, parentPath, mpfInsertProofs)
 
@@ -693,7 +711,7 @@ object OracleTransactions {
         val signer = owner.signerForUtxos
 
         val (validityInstant, _) =
-            computeValidityIntervalTime(cardanoInfo)
+            computeValidityIntervalTime(provider)
 
         val redeemer = OracleAction.CloseOracle
 
@@ -742,7 +760,7 @@ object OracleTransactions {
         val signer = owner.signerForUtxos
         val scriptAddress = Address(network, Credential.ScriptHash(script.scriptHash))
 
-        val (validityInstant, _) = computeValidityIntervalTime(cardanoInfo)
+        val (validityInstant, _) = computeValidityIntervalTime(provider)
         val validToInstant =
             validityInstant.plusMillis(BitcoinValidator.MaxValidityWindow.toLong)
 

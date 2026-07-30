@@ -35,9 +35,12 @@ import cats.syntax.either.*
   */
 class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
 
+    // Share the reused devnet container with BinocularIntegrationTest: a fresh container would
+    // come up at the image-default protocol version 9, which cannot run the oracle script
+    // (findFirstSetBit needs PV10+). The shared container runs at PV10 (protocolMajorVer=10).
     override protected def yaciConfig: YaciConfig = YaciConfig(
-      containerName = "binocular-regtest-yaci-devkit",
-      reuseContainer = false
+      containerName = "binocular-yaci-devkit",
+      reuseContainer = true
     )
 
     // ===== Bitcoind Regtest Manager =====
@@ -166,7 +169,10 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
             bitcoind.generateBlocks(200)
 
             // Phase 2: Start Yaci DevKit
-            val yaciCtx = createYaciContext()
+            val yaciCtx = locally {
+                given ExecutionContext = scala.concurrent.ExecutionContext.global
+                createYaciContext()
+            }
             given ec: ExecutionContext = yaciCtx.provider.executionContext
 
             val rpc = bitcoind.createRpc()
@@ -194,7 +200,14 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
             val params =
                 BitcoinValidatorParams.makeRegtest(txOutRef, testOwner, challengeAging = 60)
 
-            val compiled = BitcoinContract.makeContract(params)
+            // The Yaci DevKit devnet runs below protocol version 11 (vanRossem), which production
+            // pins — retarget the oracle to PV10 (Plomin), the minimum for the findFirstSetBit
+            // builtin the validator uses. The devnet must run at PV10 (protocolMajorVer=10).
+            val compiled = BitcoinContract
+                .makeContract(params)
+                .withOptions(
+                  BitcoinContract.opts.copy(targetProtocolVersion = MajorProtocolVersion.plominPV)
+                )
             val script = compiled.script
             val scriptHash = script.scriptHash
             val scriptAddress = compiled.address(Network.Testnet)
@@ -231,7 +244,7 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
             val refScriptResult = OracleTransactions.deployReferenceScript(
               yaciCtx.provider,
               Party.Alice.account,
-              compiled
+              script
             )
             val referenceScriptUtxo: Utxo = refScriptResult match {
                 case Right((txHash, outputIndex, savedOutput)) =>
@@ -266,7 +279,7 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
                 )
                 val headersList = ScalusList.from(batch.toList)
                 val (_, validityTime) =
-                    OracleTransactions.computeValidityIntervalTime(yaciCtx.provider.cardanoInfo)
+                    OracleTransactions.computeValidityIntervalTime(yaciCtx.provider)
                 val parentPath = currentState.forkTree.findTipPath
 
                 val (newState, mpfProofs, updatedMpf) =
@@ -282,7 +295,7 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
                 val updateResult = OracleTransactions.buildAndSubmitUpdateTransaction(
                   yaciCtx.provider,
                   Party.Alice.account,
-                  compiled,
+                  script,
                   currentOracleUtxo,
                   currentState,
                   newState,
@@ -347,7 +360,7 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
             while {
                 promotionRound += 1
                 val (_, promoteValidityTime) =
-                    OracleTransactions.computeValidityIntervalTime(yaciCtx.provider.cardanoInfo)
+                    OracleTransactions.computeValidityIntervalTime(yaciCtx.provider)
                 val promotePath = currentState.forkTree.findTipPath
 
                 // Find all promotable blocks, take at most 10
@@ -384,7 +397,7 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
                     val result = OracleTransactions.buildAndSubmitUpdateTransaction(
                       yaciCtx.provider,
                       Party.Alice.account,
-                      compiled,
+                      script,
                       currentOracleUtxo,
                       currentState,
                       newState,

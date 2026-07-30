@@ -1,4 +1,4 @@
-val scalusVersion = "0.18.2+99-94cc447a-SNAPSHOT"
+val scalusVersion = "1.0.0-M2"
 
 // Common settings for all projects
 ThisBuild / scalaVersion := "3.3.8"
@@ -159,5 +159,9 @@ lazy val testDependencies = Seq(
 // Integration test dependencies
 lazy val integrationTestDependencies = Seq(
   "com.lihaoyi" %% "os-lib" % "0.11.8" % Test,
-  "org.scalatest" %% "scalatest" % "3.2.19" % Test
+  "org.scalatest" %% "scalatest" % "3.2.19" % Test,
+  // yaci-cardano-test 0.1.0 (via scalus-testkit) pins testcontainers 1.17.6, whose docker-java
+  // requests Docker API v1.32 — dropped by Docker Engine 29+. Force a current version so the
+  // client can negotiate an API version the daemon still serves.
+  "org.testcontainers" % "testcontainers" % "1.21.4" % Test
 )

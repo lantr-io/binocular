@@ -171,7 +171,7 @@ class OracleDaemon(
                 }
                 val headTs = freshState.ctx.timestamps.head.toLong
                 val (_, intervalEnd) =
-                    OracleTransactions.computeValidityIntervalTime(setup.provider.cardanoInfo)
+                    OracleTransactions.computeValidityIntervalTime(setup.provider)
                 val remaining = SetStateCommand.stalenessRemainingSeconds(
                   headTs,
                   intervalEnd.toLong,
@@ -507,7 +507,7 @@ class OracleDaemon(
         while true do {
             try {
                 val (_, validityTime) =
-                    OracleTransactions.computeValidityIntervalTime(setup.provider.cardanoInfo)
+                    OracleTransactions.computeValidityIntervalTime(setup.provider)
 
                 val plan = planner.planUpdate(
                   rpc,

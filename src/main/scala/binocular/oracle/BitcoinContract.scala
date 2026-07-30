@@ -7,7 +7,7 @@ import binocular.watchtower.*
 
 import scalus.*
 import scalus.cardano.blueprint.{Blueprint, Contract, HasTypeDescription, Preamble, Validator}
-import scalus.cardano.ledger.{MajorProtocolVersion, Script}
+import scalus.cardano.ledger.Script
 import scalus.compiler.Options
 import scalus.uplc.PlutusV3
 import scalus.uplc.builtin.Data
@@ -15,10 +15,9 @@ import scalus.uplc.builtin.Data.toData
 import scalus.utils.Hex.toHex
 
 object BitcoinContract extends Contract {
-    given opts: Options = Options.release.copy(
-      generateErrorTraces = false,
-      targetProtocolVersion = MajorProtocolVersion.vanRossemPV
-    )
+    // Options.release targets protocol version 11 (van Rossem) by default since Scalus 1.0.0-M1
+    // and disables error traces.
+    given opts: Options = Options.release
 
     lazy val contract: PlutusV3[Data => Data => Unit] =
         PlutusV3.compile(BitcoinValidator.validate)

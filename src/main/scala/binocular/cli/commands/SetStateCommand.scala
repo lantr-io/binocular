@@ -194,7 +194,7 @@ case class SetStateCommand(height: Long, dryRun: Boolean = false) extends Comman
         }
         val headTs = currentState.ctx.timestamps.head.toLong
         val (_, intervalEndSeconds) =
-            OracleTransactions.computeValidityIntervalTime(setup.provider.cardanoInfo)
+            OracleTransactions.computeValidityIntervalTime(setup.provider)
         val gap = intervalEndSeconds.toLong - headTs
         val limit = setup.params.closureTimeout.toLong
         val remaining =
