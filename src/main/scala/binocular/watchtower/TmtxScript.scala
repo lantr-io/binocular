@@ -1,7 +1,6 @@
 package binocular.watchtower
 
 import binocular.*
-import binocular.bitcoin.*
 import binocular.oracle.*
 
 import binocular.cli.Console

@@ -7,7 +7,6 @@ import scalus.cardano.ledger.{TransactionHash, Utxo}
 import scalus.cardano.node.{BlockchainProvider, TransactionStatus}
 import scalus.cardano.txbuilder.TxBuilder
 import scalus.cardano.wallet.hd.HdAccount
-import scalus.uplc.PlutusV3
 import scalus.uplc.DebugScript
 import scalus.uplc.builtin.Data
 import scalus.utils.await

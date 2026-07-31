@@ -2,7 +2,7 @@ val scalusVersion = "1.0.0"
 
 // Common settings for all projects
 ThisBuild / scalaVersion := "3.3.8"
-ThisBuild / scalacOptions ++= Seq(
+ThisBuild / scalacOptions := Seq(
   "-deprecation",
   "-feature",
   "-Wunused:imports",
@@ -62,10 +62,13 @@ lazy val binocular = (project in file("."))
             s"Pinned ${files.length} blueprint(s) to $pinDir — review the git diff before committing"
           )
       },
+      Compile / mainClass := Some("binocular.main"),
       run / fork := true,
       run / connectInput := true,
       run / javaOptions += "--sun-misc-unsafe-memory-access=allow",
       Test / parallelExecution := false,
+      // Silence "multiple main classes detected" for the test mains; use runMain to pick one
+      Test / mainClass := Some("binocular.utils.BitcoinDataFetcher"),
       Test / testOptions += Tests
           .Argument(TestFrameworks.ScalaTest, "-l", "binocular.ManualTest"),
       Test / javaOptions ++= Seq("-Xmx2g", "--sun-misc-unsafe-memory-access=allow"),

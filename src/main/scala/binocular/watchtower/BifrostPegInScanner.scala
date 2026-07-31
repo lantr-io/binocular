@@ -2,7 +2,6 @@ package binocular.watchtower
 
 import binocular.*
 import binocular.bitcoin.*
-import binocular.oracle.*
 
 import org.apache.pekko.actor.ActorSystem
 

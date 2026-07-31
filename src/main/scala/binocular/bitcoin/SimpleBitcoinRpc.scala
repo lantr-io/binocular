@@ -1,8 +1,6 @@
 package binocular.bitcoin
 
 import binocular.*
-import binocular.oracle.*
-import binocular.watchtower.*
 
 import scala.concurrent.{ExecutionContext, Future}
 import java.net.URI

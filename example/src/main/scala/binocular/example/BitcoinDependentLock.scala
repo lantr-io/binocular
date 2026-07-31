@@ -16,6 +16,7 @@ import cats.implicits.*
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration.*
+import scala.util.boundary, boundary.break
 import scalus.utils.await
 
 /** BitcoinDependentLock - Lock and unlock funds based on Bitcoin transaction proofs
@@ -189,7 +190,7 @@ object BitcoinDependentLockApp {
         0
     }
 
-    def lockFunds(btcTxId: String, blockHash: String, amountLovelace: Long): Int = {
+    def lockFunds(btcTxId: String, blockHash: String, amountLovelace: Long): Int = boundary {
         println("Locking funds with Bitcoin transaction requirement...")
         println()
         println(s"  Bitcoin TX:   $btcTxId")
@@ -202,7 +203,7 @@ object BitcoinDependentLockApp {
             catch {
                 case e: Exception =>
                     System.err.println(s"Error loading config: ${e.getMessage}")
-                    return 1
+                    break(1)
             }
         val cardanoConf = config.cardano
         val walletConf = config.wallet
@@ -211,7 +212,7 @@ object BitcoinDependentLockApp {
 
         val hdAccount = walletConf.createHdAccount().valueOr { err =>
             System.err.println(s"Error creating wallet: $err")
-            return 1
+            break(1)
         }
         val addr = hdAccount
             .baseAddress(cardanoConf.scalusNetwork)
@@ -224,7 +225,7 @@ object BitcoinDependentLockApp {
 
         val provider = cardanoConf.createBlockchainProvider().valueOr { err =>
             System.err.println(s"Error creating backend: $err")
-            return 1
+            break(1)
         }
         println(s"Connected to Cardano backend")
 
@@ -280,7 +281,7 @@ object BitcoinDependentLockApp {
         }
     }
 
-    def unlockFunds(utxo: String): Int = {
+    def unlockFunds(utxo: String): Int = boundary {
         println("Unlocking funds with Oracle-verified proofs...")
         println()
         println(s"  UTxO: $utxo")
@@ -290,7 +291,7 @@ object BitcoinDependentLockApp {
             case Array(hash, idx) => (hash, idx.toInt)
             case _ =>
                 System.err.println("Invalid UTxO format. Use: <txHash>:<outputIndex>")
-                return 1
+                break(1)
         }
 
         val config =
@@ -298,7 +299,7 @@ object BitcoinDependentLockApp {
             catch {
                 case e: Exception =>
                     System.err.println(s"Error loading config: ${e.getMessage}")
-                    return 1
+                    break(1)
             }
         val btcConf = config.bitcoinNode
         val cardanoConf = config.cardano
@@ -309,7 +310,7 @@ object BitcoinDependentLockApp {
 
         val hdAccount = walletConf.createHdAccount().valueOr { err =>
             System.err.println(s"Error creating wallet: $err")
-            return 1
+            break(1)
         }
         val unlockAddr = hdAccount
             .baseAddress(cardanoConf.scalusNetwork)
@@ -322,7 +323,7 @@ object BitcoinDependentLockApp {
 
         val provider = cardanoConf.createBlockchainProvider().valueOr { err =>
             System.err.println(s"Error creating backend: $err")
-            return 1
+            break(1)
         }
         println(s"Connected to Cardano backend")
 
@@ -337,7 +338,7 @@ object BitcoinDependentLockApp {
             .await(30.seconds)
             .valueOr { err =>
                 System.err.println(s"Error fetching UTxOs: $err")
-                return 1
+                break(1)
             }
             .map { case (input, output) => Utxo(input, output) }
             .toList
@@ -350,7 +351,7 @@ object BitcoinDependentLockApp {
                 u
             case None =>
                 System.err.println(s"UTxO not found: $utxo")
-                return 1
+                break(1)
         }
 
         val datum =
@@ -359,7 +360,7 @@ object BitcoinDependentLockApp {
             } catch {
                 case e: Exception =>
                     System.err.println(s"Error parsing TxVerifierDatum: ${e.getMessage}")
-                    return 1
+                    break(1)
             }
 
         println(s"  Expected TX hash:    ${datum.expectedTxHash.reverse.toHex}")
@@ -371,7 +372,7 @@ object BitcoinDependentLockApp {
 
         val params = oracleConf.toBitcoinValidatorParams(btcConf.bitcoinNetwork).valueOr { err =>
             System.err.println(s"Error parsing oracle params: $err")
-            return 1
+            break(1)
         }
         val oracleScriptHash =
             BitcoinContract.makeContract(params).script.scriptHash
@@ -379,7 +380,7 @@ object BitcoinDependentLockApp {
             oracleConf.scriptAddress(cardanoConf.cardanoNetwork, btcConf.bitcoinNetwork).valueOr {
                 err =>
                     System.err.println(s"Error deriving oracle script address: $err")
-                    return 1
+                    break(1)
             }
         val oracleAddress = Address.fromBech32(oracleScriptAddressBech32)
 
@@ -389,7 +390,7 @@ object BitcoinDependentLockApp {
                 .await(30.seconds)
                 .valueOr { err =>
                     System.err.println(s"Error fetching oracle UTxOs: $err")
-                    return 1
+                    break(1)
                 }
                 .map { case (input, output) => Utxo(input, output) }
                 .toList
@@ -406,7 +407,7 @@ object BitcoinDependentLockApp {
                 System.err.println(
                   s"Oracle UTxO with NFT not found at $oracleScriptAddressBech32"
                 )
-                return 1
+                break(1)
         }
 
         val oracleState =
@@ -415,7 +416,7 @@ object BitcoinDependentLockApp {
             } catch {
                 case e: Exception =>
                     System.err.println(s"Error parsing ChainState: ${e.getMessage}")
-                    return 1
+                    break(1)
             }
 
         println(s"  Oracle confirmed height: ${oracleState.ctx.height}")
@@ -439,7 +440,7 @@ object BitcoinDependentLockApp {
                     System.err.println(
                       s"Error fetching block $blockHashHex: ${e.getMessage}"
                     )
-                    return 1
+                    break(1)
             }
 
         println(s"  Block height: ${blockInfo.height}")
@@ -451,7 +452,7 @@ object BitcoinDependentLockApp {
             System.err.println(
               s"Transaction $expectedTxHashHex not found in block $blockHashHex"
             )
-            return 1
+            break(1)
         }
         println(s"  TX index: $txIndex")
 
@@ -475,7 +476,7 @@ object BitcoinDependentLockApp {
                     System.err.println(
                       s"Error fetching block header: ${e.getMessage}"
                     )
-                    return 1
+                    break(1)
             }
 
         val blockHeader = BlockHeader(ByteString.fromHex(blockHeaderHex))
@@ -499,7 +500,7 @@ object BitcoinDependentLockApp {
                         System.err.println(
                           s"  Error: Previous promotions detected but ORACLE_START_HEIGHT not configured."
                         )
-                        return 1
+                        break(1)
                 }
                 println(
                   s"  Rebuilding MPF from blocks $startHeight to ${oracleState.ctx.height}..."
@@ -530,7 +531,7 @@ object BitcoinDependentLockApp {
                             System.err.println(
                               s"  Error rebuilding MPF: ${e.getMessage}"
                             )
-                            return 1
+                            break(1)
                     }
                 if rebuiltMpf.rootHash != oracleState.confirmedBlocksRoot then {
                     System.err.println(
@@ -540,7 +541,7 @@ object BitcoinDependentLockApp {
                       s"  Expected: ${oracleState.confirmedBlocksRoot.toHex}"
                     )
                     System.err.println(s"  Got: ${rebuiltMpf.rootHash.toHex}")
-                    return 1
+                    break(1)
                 }
                 println(s"  MPF rebuilt successfully (${heights.size} blocks)")
                 rebuiltMpf
@@ -557,7 +558,7 @@ object BitcoinDependentLockApp {
                     System.err.println(
                       s"  The block may not yet be confirmed in the Oracle."
                     )
-                    return 1
+                    break(1)
             }
 
         println(s"  Block MPF proof size: ${blockMpfProof.length} steps")

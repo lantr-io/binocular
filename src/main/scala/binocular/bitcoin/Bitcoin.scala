@@ -2,7 +2,6 @@ package binocular.bitcoin
 
 import binocular.*
 import binocular.oracle.*
-import binocular.watchtower.*
 import binocular.bitcoin.BitcoinHelpers.*
 import org.apache.pekko.actor.ActorSystem
 import scalus.cardano.onchain.plutus.{prelude, v1, v3}

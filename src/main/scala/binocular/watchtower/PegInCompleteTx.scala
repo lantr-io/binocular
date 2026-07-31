@@ -172,7 +172,6 @@ object PegInCompleteTx {
         // (MPF root) changes — peg-in.ak checks without_lovelace value + address are unchanged.
         val newCpiDatum = CompletedPegInsMerkleTreeDatum(completedPegInsNewRoot)
 
-        import TwoArgumentPlutusScriptWitness.attached
         import scalus.cardano.txbuilder.{ScriptSource, ThreeArgumentPlutusScriptWitness, TwoArgumentPlutusScriptWitness as TwoArg}
 
         // Reference-script wiring (CIP-33). When the bridge's ref UTxOs are configured, attach the

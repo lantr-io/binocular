@@ -3,7 +3,6 @@ package binocular.cli.commands
 import binocular.*
 import binocular.bitcoin.*
 import binocular.oracle.*
-import binocular.watchtower.*
 import binocular.cli.{Command, CommandHelpers, Console, OracleSetup}
 import scalus.cardano.ledger.{TransactionHash, TransactionInput, Utxo}
 import scalus.cardano.onchain.plutus.v1.PubKeyHash

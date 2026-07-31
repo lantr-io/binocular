@@ -1,8 +1,6 @@
 package binocular.oracle
 
 import binocular.*
-import binocular.bitcoin.*
-import binocular.watchtower.*
 
 import pureconfig.*
 import scalus.cardano.address.{Address, Network}

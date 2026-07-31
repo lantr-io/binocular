@@ -1,8 +1,6 @@
 package binocular.oracle
 
 import binocular.*
-import binocular.bitcoin.*
-import binocular.watchtower.*
 
 import binocular.oracle.BitcoinValidator
 import scalus.cardano.ledger.CardanoInfo

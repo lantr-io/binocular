@@ -2,7 +2,6 @@ package binocular.oracle
 
 import binocular.*
 import binocular.bitcoin.*
-import binocular.watchtower.*
 
 import binocular.oracle.ForkTree.{Blocks, End, Fork}
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry as MPF
@@ -17,7 +16,7 @@ import scalus.uplc.builtin.*
 import scalus.uplc.builtin.Builtins.*
 import scalus.uplc.builtin.ByteString.*
 import scalus.uplc.builtin.Data.{toData, FromData, ToData}
-import scalus.{show as _, *}
+import scalus.*
 import scalus.uplc.PlutusV3
 import scalus.compiler.Options
 

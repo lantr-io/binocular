@@ -1,7 +1,6 @@
 package binocular
 
 import binocular.blueprint.BinocularBlueprint
-import binocular.oracle.BitcoinContract
 import binocular.watchtower.{PegOutNotProducedVerifierContract, PegOutProducedVerifierContract, TmtxScript, TransactionVerifierContract, TreasuryMovementContract}
 
 import org.scalatest.funsuite.AnyFunSuite

@@ -1,8 +1,6 @@
 package binocular
 
-import binocular.bitcoin.*
 import binocular.oracle.*
-import binocular.watchtower.*
 import binocular.blueprint.BinocularBlueprint
 
 import binocular.oracle.ForkTree.*

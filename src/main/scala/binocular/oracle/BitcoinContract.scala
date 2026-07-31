@@ -3,7 +3,6 @@ package binocular.oracle
 import binocular.*
 import binocular.bitcoin.*
 import binocular.blueprint.BinocularBlueprint
-import binocular.watchtower.*
 
 import scalus.*
 import scalus.cardano.blueprint.{Blueprint, Contract, HasTypeDescription, Preamble, Validator}
