@@ -19,6 +19,15 @@ import scalus.uplc.builtin.ByteString
   * compiledCode, which cascades through the config policy into every config-parameterized contract,
   * so all four policy pins moved. The min-json was also brought up to ft's current `compiledCode`
   * for the other validators (it had drifted behind upstream's own regenerated blueprint).
+  *
+  * Refreshed again for the peg-out trie v2 rewrite: the min-json now also carries `peg_out`, and
+  * both peg-out-side validators changed parameter lists — `peg_out_validator` dropped
+  * `oracle_policy_id` (2 params), `completed_peg_outs_merkle_tree_validator` swapped the config NFT
+  * pair for `tm_nft_policy_id` (2 params). `config.config`, `bridged_token` and
+  * `completed_peg_ins_merkle_tree` compiledCode are byte-identical to the previous min-json, so
+  * their three pins did NOT move. `peg_in_validator`'s compiledCode did move — not from a source
+  * change (peg-in.ak is untouched) but because ft regenerated `plutus.json` with a different aiken
+  * build after the last refresh — so its pin moved with it.
   */
 class BifrostContractsTest extends AnyFunSuite {
 
@@ -86,7 +95,24 @@ class BifrostContractsTest extends AnyFunSuite {
         // the old policy are orphaned and must be re-minted under this one.
         val pegIn =
             PegInContract(blueprint, oraclePolicy, configPolicy, configAssetName, tmNftPolicy)
-        assert(hex(pegIn.policyId) == "80126462fdc2e1548c6c1852d0664606a6b9b4c73a3a8534d8e2d8cd")
+        assert(hex(pegIn.policyId) == "633d2a7423e96662ad3a4e525cd8f5529ff80cbf07ae105e2b46ddee")
+    }
+
+    test("peg_out policy (= withdraw hash) is stable for the trie-v2 2-param encoding") {
+        // Trie v2 dropped `oracle_policy_id`: peg_out.ak no longer parses the TM itself, it proves
+        // membership in the completed-peg-outs trie the TM Confirm wrote. Two params now, so the
+        // hash moved and ConfigDatum field 5 must be swapped by a config Update.
+        val pegOut = PegOutContract(blueprint, configPolicy, configAssetName)
+        assert(hex(pegOut.policyId) == "f1e6bbc0057b46d3e285407b80e3afa4d25046d2fdc66a37b35c4df4")
+    }
+
+    test("completed-peg-outs policy is stable for the trie-v2 (tm-policy, one-shot) encoding") {
+        // Trie v2 params: (tm_nft_policy_id, one_shot_input_ref). The TM policy placeholder is the
+        // same fixed 28 bytes used for peg_in above, so this is a regression lock over the CIP-57
+        // encoding, not an on-chain-validated value.
+        val cpo = CompletedPegOutsContract(blueprint, tmNftPolicy, cpiRef)
+        assert(hex(cpo.policyId) == "65bd38e83097a5a3261af50052a1ce0e93befde9aa94f38280143602")
+        assert(CompletedPegOutsContract.assetName == ByteString.fromString("CPO"))
     }
 
     // --- determinism + parameter-sensitivity ---
@@ -105,6 +131,23 @@ class BifrostContractsTest extends AnyFunSuite {
     test("a different index yields a different config policy") {
         val other = ConfigContract(blueprint, configRef.id.hash, BigInt(1), configAssetName)
         assert(other.policyId != configContract.policyId)
+    }
+
+    // The TM script hash is now a completed-peg-outs PARAMETER, so changing the TM validator
+    // orphans the trie: the new policy has no minted "CPO" NFT. This is the migration hazard the
+    // runbook has to sequence, so lock the sensitivity here.
+    test("a different TM policy yields a different completed-peg-outs policy") {
+        val other = CompletedPegOutsContract(
+          blueprint,
+          ByteString.fromHex("22222222222222222222222222222222222222222222222222222222"),
+          cpiRef
+        )
+        assert(other.policyId != CompletedPegOutsContract(blueprint, tmNftPolicy, cpiRef).policyId)
+    }
+
+    test("a different one-shot yields a different completed-peg-outs policy") {
+        val other = CompletedPegOutsContract(blueprint, tmNftPolicy, configRef)
+        assert(other.policyId != CompletedPegOutsContract(blueprint, tmNftPolicy, cpiRef).policyId)
     }
 
     test("completed-peg-ins/outs asset names are the CPI/CPO constants") {

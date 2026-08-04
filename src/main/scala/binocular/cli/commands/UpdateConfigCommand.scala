@@ -23,13 +23,26 @@ import cats.syntax.either.*
   *
   *   - sets/appends field 11 (`initial_btc_treasury_utxo`) — the 36-byte anchor outpoint the FIRST
   *     Treasury Movement must spend (re-runnable: re-anchors an already-updated config);
+  *   - optionally swaps field 3 (`completed_peg_outs_merkle_tree_policy_id`) to the rewritten trie
+  *     validator's policy;
   *   - optionally swaps field 4 (`peg_in_withdraw_script_hash`) to a new peg-in hash (needed when
-  *     the TM validator changes, since peg_in.ak is parameterized by the TM NFT policy).
+  *     the TM validator changes, since peg_in.ak is parameterized by the TM NFT policy);
+  *   - optionally swaps field 5 (`peg_out_withdraw_script_hash`) to the rewritten peg-out
+  *     validator's hash.
+  *
+  * ALL of the above happen in ONE transaction. That is load-bearing for the peg-out trie v2
+  * migration: fields 3, 4 and 5 must flip together, in the same Update that precedes the first use
+  * of the new TM script. A partial swap leaves the TM Confirm reading a field-3 policy whose trie
+  * UTxO no longer exists, or peg-out completion pointed at a withdraw hash with no registered
+  * reward account.
   *
   * The spend is authorized by the config's `update_auth` (field 10) — currently the binocular owner
   * key (`oracle.owner-pkh`), whose signature is required on the tx. The config NFT, address, and
   * non-ADA value are preserved (config.ak enforces this); all other datum fields are carried over
   * verbatim.
+  *
+  * The rewrite works on the RAW field list and never decodes a typed `ConfigDatum`, so it keeps
+  * working against a deployed pre-migration config whose field count differs from the current type.
   *
   * The config script is rebuilt from the bridge blueprint parameterized by the bootstrap one-shot
   * (`bridge.completed-peg-ins-one-shot-ref` — deploy-bridge uses ONE shared one-shot for config,
@@ -38,6 +51,8 @@ import cats.syntax.either.*
 case class UpdateConfigCommand(
     initialBtcTreasuryUtxo: String,
     pegInWithdrawHash: Option[String],
+    completedPegOutsPolicy: Option[String] = None,
+    pegOutWithdrawHash: Option[String] = None,
     dryRun: Boolean = false
 ) extends Command {
 
@@ -62,14 +77,20 @@ case class UpdateConfigCommand(
                     Console.error(s"--initial-btc-treasury-utxo: ${e.getMessage}")
                     break(1)
             }
-        val newPegInHash = pegInWithdrawHash.map { h =>
-            if h.length == 56 && h.forall(c => "0123456789abcdefABCDEF".contains(c)) then
-                ByteString.fromHex(h)
-            else {
-                Console.error(s"--peg-in-withdraw-hash must be 56 hex chars, got '$h'")
-                break(1)
+        // Every swappable field holds a 28-byte script hash; reject anything else up front rather
+        // than writing an undecodable datum that only fails when a validator later reads it.
+        def scriptHashArg(flag: String, value: Option[String]): Option[ByteString] =
+            value.map { h =>
+                if h.length == 56 && h.forall(c => "0123456789abcdefABCDEF".contains(c)) then
+                    ByteString.fromHex(h)
+                else {
+                    Console.error(s"$flag must be 56 hex chars, got '$h'")
+                    break(1)
+                }
             }
-        }
+        val newPegInHash = scriptHashArg("--peg-in-withdraw-hash", pegInWithdrawHash)
+        val newCpoPolicy = scriptHashArg("--completed-peg-outs-policy", completedPegOutsPolicy)
+        val newPegOutHash = scriptHashArg("--peg-out-withdraw-hash", pegOutWithdrawHash)
 
         // Rebuild the config script from the bootstrap one-shot + config NFT asset name.
         val oneShotStr = config.bridge.completedPegInsOneShotRef.trim
@@ -134,7 +155,14 @@ case class UpdateConfigCommand(
                 break(1)
         }
         val newFields =
-            try UpdateConfigCommand.rewriteFields(oldFields, newPegInHash, anchor)
+            try
+                UpdateConfigCommand.rewriteFields(
+                  oldFields,
+                  newCpoPolicy,
+                  newPegInHash,
+                  newPegOutHash,
+                  anchor
+                )
             catch {
                 case e: IllegalArgumentException =>
                     Console.error(e.getMessage); break(1)
@@ -169,7 +197,9 @@ case class UpdateConfigCommand(
         Console.info("old fields", oldFields.size.toString)
         Console.info("new fields", newFields.size.toString)
         Console.info("anchor (field 11)", anchor.toHex)
+        newCpoPolicy.foreach(h => Console.info("new completed-peg-outs policy (field 3)", h.toHex))
         newPegInHash.foreach(h => Console.info("new peg-in hash (field 4)", h.toHex))
+        newPegOutHash.foreach(h => Console.info("new peg-out hash (field 5)", h.toHex))
         Console.info("update_auth pkh", updateAuthPkh.toHex)
         println()
 
@@ -219,17 +249,36 @@ case class UpdateConfigCommand(
 
 object UpdateConfigCommand {
 
-    /** Pure datum rewrite: swap field 4 when a new peg-in hash is given, then set/append field 11
-      * (the treasury anchor). Re-runnable: an 11-field (pre-migration) datum gets the anchor
-      * appended; a 12-field datum gets it replaced (re-anchoring).
+    /** Pure datum rewrite: replace each supplied script hash in place, then set/append field 11
+      * (the treasury anchor).
+      *
+      * Every supplied swap is applied to the SAME field list, so one call — and therefore one
+      * transaction — performs the whole peg-out trie v2 migration (fields 3, 4 and 5 together).
+      *
+      * Operates on raw `Data` fields and never decodes a `ConfigDatum`, so it works against a
+      * deployed pre-migration datum with fewer fields than the current type. Re-runnable: an
+      * 11-field (pre-migration) datum gets the anchor appended; a 12-or-more-field datum gets it
+      * replaced (re-anchoring). Fields beyond 11 are carried over verbatim.
+      *
+      * @param newCpoPolicy
+      *   field 3, `completed_peg_outs_merkle_tree_policy_id`.
+      * @param newPegInHash
+      *   field 4, `peg_in_withdraw_script_hash`.
+      * @param newPegOutHash
+      *   field 5, `peg_out_withdraw_script_hash`.
       */
     def rewriteFields(
         fields: List[Data],
+        newCpoPolicy: Option[ByteString],
         newPegInHash: Option[ByteString],
+        newPegOutHash: Option[ByteString],
         anchor: ByteString
     ): List[Data] = {
         require(fields.size >= 11, s"config datum has ${fields.size} fields, expected >= 11")
-        val swapped = newPegInHash.fold(fields)(h => fields.updated(4, Data.B(h)))
+        val swaps = List(3 -> newCpoPolicy, 4 -> newPegInHash, 5 -> newPegOutHash)
+        val swapped = swaps.foldLeft(fields) { case (fs, (idx, v)) =>
+            v.fold(fs)(h => fs.updated(idx, Data.B(h)))
+        }
         if swapped.size == 11 then swapped :+ Data.B(anchor)
         else swapped.updated(11, Data.B(anchor))
     }

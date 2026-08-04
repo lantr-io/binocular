@@ -107,7 +107,7 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
         // registered reward accounts: the peg_out withdraw validator itself (config[5]) and the
         // real produced verifier (config[7]). The not-produced verifier (config[8]) is only
         // withdrawn from on the Cancel path (out of scope), so it is NOT registered here.
-        val pegOut = PegOutContract(blueprint, oraclePolicyId, configNftPolicy, configNftAsset)
+        val pegOut = PegOutContract(blueprint, configNftPolicy, configNftAsset)
         val pegOutHash = pegOut.policyId
         val pegOutProducedVerifierHash =
             PegOutProducedVerifierContract.pinnedScript.scriptHash

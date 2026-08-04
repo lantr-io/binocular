@@ -10,6 +10,7 @@ import scalus.cardano.address.Address
 import scalus.cardano.ledger.*
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
+import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import scalus.uplc.builtin.{ByteString, Data}
 import scalus.uplc.builtin.Data.toData
 
@@ -33,6 +34,19 @@ import cats.syntax.either.*
   *
   * Unlike the old always-ok scaffold, the datum flip is now only accepted if the Bitcoin
   * confirmation is *proven* against the oracle.
+  *
+  * Since the peg-out trie v2 change the Confirm tx ALSO carries the completed-peg-outs trie update:
+  * it references the Config UTxO (the validator reads the trie policy from field 3), spends the
+  * trie UTxO, and recreates it with the root folded over the TM's `(payment, POR marker)` output
+  * pairs. One [[PegOutTrieStep]] per pair rides in the redeemer.
+  *
+  * The off-chain trie is rebuilt each poll cycle from the `fulfilledPegOuts` of every **Confirmed**
+  * TM record still at the TM address, and the rebuild is accepted only if its root equals the
+  * on-chain trie datum root — see [[CompletedPegOutsTrie.replay]]. That equality is the proof the
+  * replay saw every record: an MPF root is collision-resistant over the whole key/value set, so a
+  * missing or extra entry cannot match. It also means a GARBAGE-COLLECTED Confirmed record whose TM
+  * fulfilled a peg-out breaks confirming until its pairs are restored; the mismatch is reported
+  * with both roots rather than silently producing an invalid proof.
   */
 case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier] = None)
     extends Command {
@@ -91,6 +105,48 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                 )
             else None
 
+        // --- completed-peg-outs trie wiring (rebuilt per cycle; the scripts are fixed) ---
+        // The trie validator takes (TM script hash, one-shot ref). Its hash must equal Config
+        // field 3, which is checked against the live config each cycle.
+        val bridgeBlueprint =
+            try BifrostBlueprint.fromFile(config.bridge.plutusJson)
+            catch {
+                case e: Exception =>
+                    Console.error(
+                      s"Loading bridge blueprint (${config.bridge.plutusJson}): ${e.getMessage}"
+                    )
+                    break(1)
+            }
+        val cpoOneShot = config.bridge.completedPegOutsOneShotRef
+            .map(_.trim)
+            .filter(_.nonEmpty)
+            .flatMap(s =>
+                s.split('#') match {
+                    case Array(h, i) if h.length == 64 && i.toIntOption.isDefined =>
+                        Some(TxOutRef(TxId(ByteString.fromHex(h)), BigInt(i.toInt)))
+                    case _ => None
+                }
+            )
+            .getOrElse {
+                Console.error(
+                  "bridge.completed-peg-outs-one-shot-ref must be TX_HASH#INDEX (the deploy-bridge " +
+                      "one-shot that parameterizes the completed-peg-outs trie validator). Confirm " +
+                      "cannot build the trie spend without it."
+                )
+                break(1)
+            }
+        val trieScript = CompletedPegOutsContract(
+          bridgeBlueprint,
+          ByteString.fromArray(tmScript.scriptHash.bytes),
+          cpoOneShot
+        ).script
+        val trieAssetName = AssetName(CompletedPegOutsContract.assetName)
+        val configNftPolicy = ScriptHash.fromHex(config.bridge.configNftPolicyId)
+        val configNftAsset = AssetName(ByteString.fromHex(config.bridge.configNftAssetName))
+        // The Config UTxO lives at the config policy's own script address (config.ak is both the
+        // one-shot minting policy and the spend validator).
+        val configAddress = Address(network, Credential.ScriptHash(configNftPolicy))
+
         // Operator-declared dead TMs (relay.skip-btc-txids): match on the display (big-endian) btc
         // txid, lower-cased so config casing doesn't matter.
         val skipBtcTxids: Set[String] = config.relay.skipBtcTxids.map(_.toLowerCase).toSet
@@ -107,6 +163,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         Console.info("Oracle policy", oraclePolicyId.toHex)
         Console.info("TM validator", tmScript.scriptHash.toHex)
         Console.info("TM address", tmAddress.encode.getOrElse("?"))
+        Console.info("completed-peg-outs policy", trieScript.scriptHash.toHex)
         Console.separator()
         println()
 
@@ -163,23 +220,66 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                             )
                         else
                             Console.log(s"Found ${unconfirmed.size} Unconfirmed TM UTxO(s)")
-                            for (utxo, unconfirmedDatum) <- unconfirmed do
-                                confirmOne(
-                                  provider,
-                                  hdAccount,
-                                  tmScript,
-                                  tmAddress,
-                                  oracleUtxo,
-                                  obMpf,
-                                  rpc,
-                                  utxo,
-                                  unconfirmedDatum,
-                                  timeout,
-                                  skipBtcTxids,
-                                  processed,
-                                  notifier,
-                                  debugTmScript
-                                )
+                            // Every Confirmed record still at the TM address, as its raw output
+                            // list. This is the replay source for the completed-peg-outs trie.
+                            val confirmedRecords = utxos.toList.flatMap { case (_, out) =>
+                                if !out.value.hasAsset(tmNftPolicy, tmNftAsset) then None
+                                else
+                                    out.inlineDatum
+                                        .flatMap(d => scala.util.Try(d.to[TmDatum]).toOption)
+                                        .collect { case c: TmDatum.Confirmed =>
+                                            c.fulfilledPegOuts.asScala.toSeq
+                                        }
+                            }
+                            loadTrieContext(
+                              provider,
+                              configAddress,
+                              configNftPolicy,
+                              configNftAsset,
+                              trieScript,
+                              trieAssetName,
+                              network,
+                              confirmedRecords,
+                              timeout
+                            ) match {
+                                case Left(err) =>
+                                    Console.logError(
+                                      s"  completed-peg-outs trie unavailable: $err — will retry"
+                                    )
+                                case Right(trieCtx) =>
+                                    // The trie UTxO is a single shared input, so at most ONE TM can
+                                    // be confirmed per tx. After a submitted confirm the trie UTxO
+                                    // is spent and every remaining context is stale, so stop and let
+                                    // the next poll re-read the chain.
+                                    //
+                                    // --dry-run submits nothing, so it previews EVERY pending TM
+                                    // against the same starting trie — each preview shows what that
+                                    // TM would do if it were confirmed next, not the cumulative
+                                    // result of confirming them in sequence.
+                                    var trieSpent = false
+                                    for
+                                        (utxo, unconfirmedDatum) <- unconfirmed
+                                        if !trieSpent
+                                    do
+                                        val submitted = confirmOne(
+                                          provider,
+                                          hdAccount,
+                                          tmScript,
+                                          tmAddress,
+                                          oracleUtxo,
+                                          obMpf,
+                                          rpc,
+                                          utxo,
+                                          unconfirmedDatum,
+                                          trieCtx,
+                                          timeout,
+                                          skipBtcTxids,
+                                          processed,
+                                          notifier,
+                                          debugTmScript
+                                        )
+                                        if submitted then trieSpent = true
+                            }
                 }
 
                 if dryRun then break(0)
@@ -201,7 +301,88 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         0
     }
 
-    /** Build + submit the Confirm tx for one Unconfirmed UTxO (or report why it's not ready). */
+    /** Locate the Config and completed-peg-outs trie UTxOs, and rebuild the off-chain trie.
+      *
+      * The trie policy is taken from Config field 3 (RAW field read, not a typed `ConfigDatum`
+      * decode, so a deployed pre-migration datum with a different field count still works). The
+      * locally derived trie script must hash to that policy, otherwise the config still publishes
+      * the pre-migration trie and the migration Update has not run yet.
+      */
+    private def loadTrieContext(
+        provider: BlockchainProvider,
+        configAddress: Address,
+        configNftPolicy: ScriptHash,
+        configNftAsset: AssetName,
+        trieScript: scalus.cardano.ledger.Script.PlutusV3,
+        trieAssetName: AssetName,
+        network: scalus.cardano.address.Network,
+        confirmedRecords: Seq[Seq[PegOutEntry]],
+        timeout: Duration
+    )(using ExecutionContext): Either[String, ConfirmTmtxCommand.TrieContext] =
+        for {
+            configUtxos <- provider
+                .findUtxos(configAddress)
+                .await(timeout)
+                .left
+                .map(err => s"fetching config UTxOs at $configAddress: $err")
+            configUtxo <- configUtxos.toList
+                .collectFirst {
+                    case (in, out) if out.value.hasAsset(configNftPolicy, configNftAsset) =>
+                        Utxo(in, out)
+                }
+                .toRight(s"no UTxO carrying the config NFT at $configAddress")
+            triePolicyBytes <- configUtxo.output.inlineDatum match {
+                case Some(Data.Constr(0, fields)) =>
+                    fields.asScala.toList.lift(3) match {
+                        case Some(Data.B(p)) => Right(p)
+                        case other           => Left(s"config field 3 is not a byte string: $other")
+                    }
+                case other => Left(s"config datum is not a Constr 0 inline datum: $other")
+            }
+            _ <- Either.cond(
+              triePolicyBytes.toHex == trieScript.scriptHash.toHex,
+              (),
+              s"config field 3 publishes trie policy ${triePolicyBytes.toHex}, but the trie " +
+                  s"validator derived from (TM hash, one-shot) hashes to " +
+                  s"${trieScript.scriptHash.toHex}. Run `update-config " +
+                  s"--completed-peg-outs-policy ${trieScript.scriptHash.toHex}` (together with the " +
+                  "field 4/5 swaps) before confirming under the new TM script."
+            )
+            trieAddress = Address(network, Credential.ScriptHash(trieScript.scriptHash))
+            trieUtxos <- provider
+                .findUtxos(trieAddress)
+                .await(timeout)
+                .left
+                .map(err => s"fetching trie UTxOs at $trieAddress: $err")
+            trieUtxo <- trieUtxos.toList
+                .collectFirst {
+                    case (in, out) if out.value.hasAsset(trieScript.scriptHash, trieAssetName) =>
+                        Utxo(in, out)
+                }
+                .toRight(
+                  s"no UTxO carrying the \"CPO\" NFT at $trieAddress — the trie has not been " +
+                      "bootstrapped under this policy"
+                )
+            onChainRoot <- trieUtxo.output.inlineDatum
+                .flatMap(d => scala.util.Try(d.to[CompletedPegOutsTrieDatum].root).toOption)
+                .toRight("the trie UTxO has no decodable inline root datum")
+            tree <- CompletedPegOutsTrie.replay(confirmedRecords)
+            _ <- Either.cond(
+              tree.rootHash == onChainRoot,
+              (),
+              s"replayed root ${tree.rootHash.toHex} != on-chain root ${onChainRoot.toHex} " +
+                  s"(replayed ${confirmedRecords.size} Confirmed TM record(s)). Some record that " +
+                  "wrote the trie is no longer readable at the TM address — garbage-collected " +
+                  "after its grace period, or carrying a datum this build cannot decode. Confirm " +
+                  "is halted rather than submitting proofs against a trie it cannot reproduce."
+            )
+        } yield ConfirmTmtxCommand.TrieContext(configUtxo, trieUtxo, trieScript, tree)
+
+    /** Build + submit the Confirm tx for one Unconfirmed UTxO (or report why it's not ready).
+      *
+      * Returns `true` only when a Confirm tx was actually submitted, which tells the caller the
+      * shared trie UTxO is now spent and no further TM may be confirmed this cycle.
+      */
     private def confirmOne(
         provider: BlockchainProvider,
         hdAccount: scalus.cardano.wallet.hd.HdAccount,
@@ -212,12 +393,13 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         rpc: SimpleBitcoinRpc,
         utxo: Utxo,
         unconfirmedDatum: TmDatum.Unconfirmed,
+        trieCtx: ConfirmTmtxCommand.TrieContext,
         timeout: Duration,
         skipBtcTxids: Set[String],
         processed: scala.collection.mutable.Map[String, String],
         notifier: Notifier,
         debugTmScript: Option[scalus.cardano.ledger.Script.PlutusV3]
-    )(using ExecutionContext): Unit = {
+    )(using ExecutionContext): Boolean = {
         val signedBtcTx = unconfirmedDatum.signedBtcTx
         val utxoRef = s"${utxo.input.transactionId.toHex}#${utxo.input.index}"
         // Parse the (attacker-placeable) datum bytes defensively: getTxHash/allInputOutpoints/
@@ -248,6 +430,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                     None
             }
 
+        var submitted = false
         parsed.foreach { case (txid, swept, fulfilled, spentViaFederationLeaf) =>
             val displayTxid = txid.reverse.toHex
             Console.log(s"  $utxoRef: TM btc txid=$displayTxid")
@@ -261,6 +444,17 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                 Console.logWarn(s"    $utxoRef: skipped (relay.skip-btc-txids)")
                 processed(utxoRef) = "skip:config"
             else {
+                // The completed-peg-outs trie steps for THIS TM: one per (payment, POR marker)
+                // output pair, in output order, each proven against the intermediate root the
+                // previous step produced. A malformed pair layout or a POR id already recorded
+                // under a different value means the TM can never confirm.
+                //
+                // Computed BEFORE the Bitcoin proof: it is deterministic and free, so a TM that can
+                // never confirm is reported and skipped without a node round-trip.
+                val trieResult = for {
+                    pairs <- CompletedPegOutsTrie.pairsOf(fulfilled.asScala.toSeq)
+                    built <- CompletedPegOutsTrie.buildSteps(trieCtx.tree, pairs)
+                } yield built
 
                 // Proof construction fetches the TM's signed BTC tx from the node. If the node
                 // doesn't know the txid (bitcoind -5), the TM is in neither the mempool nor the
@@ -270,7 +464,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                 // would be retried forever). Only on-chain evidence of a spent input marks it
                 // dead; transport errors and failed liveness checks always stay retryable.
                 // Catch per-UTxO so one bad TM never aborts the whole confirm batch.
-                val proofResult =
+                lazy val proofResult =
                     try TmProofBundle.produce(rpc, obMpf, displayTxid).await(timeout)
                     catch {
                         case t: Throwable if TmLiveness.isTxUnknown(t) =>
@@ -290,27 +484,25 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                               s"BTC tx $displayTxid lookup failed (${t.getMessage}) — will retry"
                             )
                     }
-                proofResult match {
-                    case Left(err) =>
+                (trieResult, proofResult) match {
+                    case (Left(err), _) =>
+                        Console.logError(s"    $utxoRef: unconfirmable TM — $err")
+                        processed(utxoRef) = "skip:trie"
+                    case (_, Left(err)) =>
                         Console.log(s"    not ready: $err")
-                    case Right(tm) =>
+                    case (Right((steps, endTree)), Right(tm)) =>
                         val redeemer: Data = TmConfirmRedeemer(
                           txIndex = BigInt(tm.txIndex),
                           txMerkleProof = ScalusList.from(tm.txInBlockMerklePath.toList),
                           blockMpfProof = tm.mpfHeaderInclusionProof,
                           blockHeader = binocular.oracle.BlockHeader(tm.blockHeader),
-                          // TODO(task 4): build the per-pair trie steps from the TM's POR markers,
-                          // AND make [[TreasuryMovementTx.buildAndSubmitConfirm]] reference the
-                          // Config UTxO and spend + recreate the completed-peg-outs trie UTxO.
-                          //
-                          // Until BOTH land this command confirms NOTHING — not even a zero-peg-out
-                          // TM. The Confirm branch now demands a Config reference input and a spent
-                          // trie UTxO unconditionally, while the builder supplies only the oracle
-                          // reference, so every confirm fails at
-                          // "TM confirm: no config reference input". An empty step list is correct
-                          // for a marker-free TM but is not on its own sufficient.
-                          pegOutSteps = ScalusList.Nil
+                          pegOutSteps = ScalusList.from(steps)
                         ).toData
+                        val trieSpend = TreasuryMovementTx.TrieSpend(
+                          utxo = trieCtx.trieUtxo,
+                          script = trieCtx.trieScript,
+                          newDatum = CompletedPegOutsTrieDatum(endTree.rootHash).toData
+                        )
                         val confirmed: Data =
                             (TmDatum.Confirmed(
                               txid,
@@ -322,6 +514,11 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                               unconfirmedDatum.epoch,
                               unconfirmedDatum.leaderReward
                             ): TmDatum).toData
+
+                        Console.log(
+                          s"    trie: ${steps.size} peg-out step(s), " +
+                              s"root ${trieCtx.tree.rootHash.toHex} -> ${endTree.rootHash.toHex}"
+                        )
 
                         if dryRun then {
                             Console.logSuccess(s"    [dry-run] would confirm  spent=$utxoRef")
@@ -336,12 +533,15 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                               tmAddress,
                               utxo,
                               oracleUtxo,
+                              trieCtx.configUtxo,
+                              trieSpend,
                               redeemer,
                               confirmed,
                               timeout,
                               debugTmScript
                             ) match {
                                 case Right(hash) =>
+                                    submitted = true
                                     Console.logSuccess(s"    TM confirmed  spent=$utxoRef")
                                     confirmSummaryLines(
                                       displayTxid,
@@ -357,11 +557,16 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                                           s"cardano tx `$hash` ($utxoRef)"
                                     )
                                 case Left(err) =>
+                                    // The trie UTxO may or may not have been consumed: a build or
+                                    // submit failure never spends it, and a submitted-then-rejected
+                                    // tx does not either. Treat it as unspent and let the next
+                                    // cycle re-read the chain.
                                     Console.logError(s"    Confirm failed: $err — will retry")
                             }
                 }
             }
         }
+        submitted
     }
 
     /** Max per-entry `pegin=`/`pegout=` lines to emit; a bigger sweep gets a `*_omitted=N` line
@@ -412,4 +617,26 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
             lines += s"confirm-tm pegouts_omitted=${pegouts.size - MaxEntryLines}"
         lines.toList
     }
+}
+
+object ConfirmTmtxCommand {
+
+    /** Everything a Confirm tx needs for the completed-peg-outs trie, resolved once per poll cycle.
+      *
+      * @param configUtxo
+      *   the Config UTxO, added as a reference input; the validator reads the trie policy from its
+      *   field 3.
+      * @param trieUtxo
+      *   the trie UTxO carrying the `"CPO"` NFT. It is SPENT (not referenced) and recreated.
+      * @param trieScript
+      *   the trie validator, needed to spend `trieUtxo`. Its hash equals Config field 3.
+      * @param tree
+      *   the off-chain trie whose root has been verified against `trieUtxo`'s datum.
+      */
+    final case class TrieContext(
+        configUtxo: Utxo,
+        trieUtxo: Utxo,
+        trieScript: scalus.cardano.ledger.Script.PlutusV3,
+        tree: scalus.crypto.trie.MerklePatriciaForestry
+    )
 }

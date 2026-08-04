@@ -26,6 +26,18 @@ import cats.syntax.either.*
   * MPF, satisfying `peg_out.ak::withdraw(CompletePegOut)`. See [[PegOutCompleteTx]] for the tx
   * shape.
   *
+  * STALE (peg-out trie v2, 2026-07): the rewritten `peg-out.ak` no longer accepts the transaction
+  * this command builds. Completion is now a single MPF membership proof, keyed by
+  * `por_id = hash_output_ref(peg_out_input)`, against a completed-peg-outs trie REFERENCE input
+  * that the TM Confirm already wrote — it neither inserts into the trie nor withdraws from the
+  * produced-verifier, and `PegOutDatum` gained `per_pegout_fee`/`created` and lost
+  * `source_chain_treasury_utxo_id`. Everything below still builds the OLD insert-based tx.
+  *
+  * Only the contract-parameter application was corrected here (task 4), so the command compiles and
+  * derives the CURRENT peg_out / completed-peg-outs hashes. Rewriting the tx body itself is a
+  * follow-on: no plan task owns it, and it needs the new `PegOutWithdrawRedeemer` /
+  * `PegOutActionType` mirrors in [[PegOutTypes]] first.
+  *
   * The TM is proved INLINE against the Binocular oracle (block-inclusion + tx-merkle proof via
   * [[TmProofBundle]]) — no Confirmed-TM-UTxO reference. Permissionless except `owner_auth`, which
   * the PegOut was locked with as `CardanoSignature(owner pkh)`; the owner (the sponsor, here)
@@ -104,10 +116,13 @@ case class PegOutCompleteCommand(
             )
         val cpoOneShot = TxOutRef(TxId(cpoRefInput.transactionId), cpoRefInput.index)
 
-        val pegOut = PegOutContract(blueprint, oraclePolicyBS, configNftPolicy, configNftAsset)
+        val pegOut = PegOutContract(blueprint, configNftPolicy, configNftAsset)
         val bridgedToken = BridgedTokenContract(blueprint, configNftPolicy, configNftAsset)
-        val cpoContract =
-            CompletedPegOutsContract(blueprint, configNftPolicy, configNftAsset, cpoOneShot)
+        val cpoContract = CompletedPegOutsContract(
+          blueprint,
+          CommandHelpers.tmNftPolicy(config, oracleScriptHash),
+          cpoOneShot
+        )
         val cpoPolicy = cpoContract.policyId
         val cpoAsset = AssetName(CompletedPegOutsContract.assetName)
         val producedVerifier = PegOutProducedVerifierContract.pinnedScript
@@ -319,7 +334,6 @@ case class PegOutCompleteCommand(
                 Console.info("debug peg_out blueprint", p)
                 PegOutContract(
                   BifrostBlueprint.fromFile(p),
-                  oraclePolicyBS,
                   configNftPolicy,
                   configNftAsset
                 ).script

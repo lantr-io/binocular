@@ -42,6 +42,8 @@ object CliApp {
         case UpdateConfig(
             initialBtcTreasuryUtxo: String,
             pegInWithdrawHash: Option[String],
+            completedPegOutsPolicy: Option[String],
+            pegOutWithdrawHash: Option[String],
             dryRun: Boolean
         )
         case DeployScriptRefs(dryRun: Boolean)
@@ -294,7 +296,7 @@ object CliApp {
         val updateConfigCommand =
             Opts.subcommand(
               "update-config",
-              "Update the deployed Config UTxO in place: set the initial-treasury anchor (field 11) and optionally swap the peg-in withdraw hash (field 4)"
+              "Update the deployed Config UTxO in place: set the initial-treasury anchor (field 11) and optionally swap the script hashes in fields 3, 4 and 5"
             ) {
                 val anchorOpt = Opts.option[String](
                   "initial-btc-treasury-utxo",
@@ -306,7 +308,22 @@ object CliApp {
                       help = "New peg_in withdraw script hash (56 hex) for config field 4"
                     )
                     .orNone
-                (anchorOpt, pegInHashOpt, dryRunFlag).mapN(Cmd.UpdateConfig.apply)
+                val cpoPolicyOpt = Opts
+                    .option[String](
+                      "completed-peg-outs-policy",
+                      help = "New completed-peg-outs trie policy id (56 hex) for config field 3"
+                    )
+                    .orNone
+                val pegOutHashOpt = Opts
+                    .option[String](
+                      "peg-out-withdraw-hash",
+                      help = "New peg_out withdraw script hash (56 hex) for config field 5"
+                    )
+                    .orNone
+                // All four options are applied in ONE Update tx — the trie v2 migration requires
+                // fields 3, 4 and 5 to flip together.
+                (anchorOpt, pegInHashOpt, cpoPolicyOpt, pegOutHashOpt, dryRunFlag)
+                    .mapN(Cmd.UpdateConfig.apply)
             }
 
         val deployScriptRefsCommand =
@@ -514,8 +531,8 @@ object CliApp {
                             PegInRequestCommand(btcTxId, dryRun)
                         case Cmd.DeployBridge(dryRun) =>
                             DeployBridgeCommand(dryRun)
-                        case Cmd.UpdateConfig(anchor, pegInHash, dryRun) =>
-                            UpdateConfigCommand(anchor, pegInHash, dryRun)
+                        case Cmd.UpdateConfig(anchor, pegInHash, cpoPolicy, pegOutHash, dryRun) =>
+                            UpdateConfigCommand(anchor, pegInHash, cpoPolicy, pegOutHash, dryRun)
                         case Cmd.DeployScriptRefs(dryRun) =>
                             DeployScriptRefsCommand(dryRun)
                         case Cmd.RegisterBridgeCreds(dryRun) =>

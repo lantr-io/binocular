@@ -47,6 +47,12 @@ case class BridgeConfig(
     // (not `""`): a peg-in-only bridge (e.g. the synced config) simply omits the key — pureconfig
     // maps a missing key to `None`. The peg-out commands fail fast when a required ref is absent.
     //
+    // REQUIRED BY `confirm-tmtx` since the peg-out trie v2 change (2026-07). Every TM Confirm tx
+    // spends and recreates the completed-peg-outs trie UTxO, so the confirm daemon must rebuild that
+    // validator too — its other parameter is the TM script hash, which confirm already derives.
+    // `confirm-tmtx` (and therefore `watchtower`) exits at startup when this key is missing, because
+    // no TM can be confirmed without the trie spend. A peg-in-only deployment must still set it.
+    //
     // The heavy scripts' CIP-33 reference UTxOs (peg_in, bridged_token, completed_peg_ins, peg_out,
     // completed_peg_outs) are no longer recorded here: deploy-script-refs publishes them to the
     // sponsor wallet, and the completion paths discover them by the `reference_script_hash` each

@@ -23,13 +23,30 @@ import scala.util.chaining.scalaUtilChainingOps
   * UTxO at the same address with the `Confirmed` datum — preserving the value so the TM marker
   * token rides along (the validator enforces this).
   *
-  * INCOMPLETE (TODO task 4): the Confirm branch now ALSO requires a Config reference input (it
-  * reads the completed-peg-outs trie policy from field 3) and requires the trie UTxO to be spent
-  * and recreated with the folded root. This builder supplies neither, so every confirm it builds is
-  * currently rejected at "TM confirm: no config reference input" — for any TM, including one that
-  * fulfills no peg-out. Task 4 adds the Config reference and the trie input/output here.
+  * The Confirm branch also requires a Config reference input (it reads the completed-peg-outs trie
+  * policy from field 3) and requires the completed-peg-outs trie UTxO to be SPENT and recreated at
+  * the same address with the folded root. Both are supplied here from a [[TrieSpend]] the caller
+  * assembles (see `ConfirmTmtxCommand`), so the tx satisfies the trie's own Aiken validator too: it
+  * gates the spend on exactly this `Unconfirmed -> Confirmed` transition.
   */
 object TreasuryMovementTx {
+
+    /** The completed-peg-outs trie parts of a Confirm tx.
+      *
+      * @param utxo
+      *   the trie UTxO to spend, located by the `(field-3 policy, "CPO")` NFT.
+      * @param script
+      *   `completed_peg_outs_merkle_tree_validator` applied to `(TM script hash, one-shot ref)`.
+      *   Its hash MUST equal Config field 3, or the ledger rejects the spend.
+      * @param newDatum
+      *   the recreated trie datum carrying the root folded over this TM's `(payment, marker)`
+      *   pairs.
+      */
+    final case class TrieSpend(
+        utxo: Utxo,
+        script: scalus.cardano.ledger.Script.PlutusV3,
+        newDatum: Data
+    )
 
     /** Build, sign, submit, and await the Confirm tx. Returns the Cardano tx hash on success. */
     def buildAndSubmitConfirm(
@@ -39,6 +56,8 @@ object TreasuryMovementTx {
         tmAddress: Address,
         unconfirmed: Utxo,
         oracle: Utxo,
+        configUtxo: Utxo,
+        trie: TrieSpend,
         redeemer: Data,
         confirmedDatum: Data,
         timeout: Duration,
@@ -50,13 +69,19 @@ object TreasuryMovementTx {
             Console.log("  Building TM Confirm transaction...")
             // Diagnostic: when a trace-compiled twin is supplied (TM_DEBUG_TRACE), register it under
             // the deployed TM hash so Scalus replays a failing eval WITH trace strings.
-            // TODO(task 4): also `.references(config)`, `.spend(trieUtxo, …)` and `.payTo` the trie
-            // address with the folded root. Without them the validator rejects every confirm — see
-            // the object scaladoc.
+            //
+            // The trie redeemer is `Data.unit`: the Aiken trie validator's spend handler ignores
+            // both datum and redeemer and reads only the TM NFT tag transition from the tx.
+            //
+            // The trie output preserves the input's whole value, so the "CPO" NFT and its min-ADA
+            // ride along and the TM validator's `trieOut.address === trieIn.address` check holds.
             val tx = TxBuilder(provider.cardanoInfo)
                 .spend(unconfirmed, redeemer, tmScript)
+                .spend(trie.utxo, Data.unit, trie.script)
                 .references(oracle)
+                .references(configUtxo)
                 .payTo(tmAddress, unconfirmed.output.value, confirmedDatum)
+                .payTo(trie.utxo.output.address, trie.utxo.output.value, trie.newDatum)
                 .pipe(b =>
                     debugTmScript.fold(b)(ds =>
                         b.withDebugScript(tmScript.scriptHash, DebugScript(ds))

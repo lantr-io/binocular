@@ -51,6 +51,12 @@ import cats.syntax.either.*
   * NFT policy, config NFT asset), so its address derives from this deploy's config NFT — no
   * TM-control NFT exists anymore; TM minting is permissionless, gated by chain linkage (see
   * [[TmMintRedeemer]]).
+  *
+  * Derivation ORDER matters (peg-out trie v2, 2026-07). The completed-peg-outs validator is
+  * parameterized by `(tm_nft_policy_id, one_shot_ref)`, so the chain is: one-shot -> config policy
+  * -> TM script hash -> completed-peg-outs policy -> ConfigDatum field 3. The genesis config
+  * therefore publishes the REWRITTEN trie validator's hash, and the trie UTxO it bootstraps is
+  * spendable only inside a TM `Unconfirmed -> Confirmed` transition.
   */
 case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
 
@@ -190,11 +196,14 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
 
         // --- peg-out side (config indices 3 = completed-peg-outs MPF, 5 = peg_out withdraw,
         //     7 = produced verifier, 8 = not-produced verifier placeholder) ---
-        val pegOut = PegOutContract(blueprint, oraclePolicyId, configPolicy, ConfigAssetName)
+        val pegOut = PegOutContract(blueprint, configPolicy, ConfigAssetName)
         val pegOutWithdrawHash = pegOut.policyId
 
-        val cpoContract =
-            CompletedPegOutsContract(blueprint, configPolicy, ConfigAssetName, cpoRef)
+        // Trie v2: the completed-peg-outs validator takes the TM NFT policy, not the config NFT
+        // pair, so it MUST be derived after `tmNftPolicy` above. Its own policy is written into
+        // config field 3 below, which is where the TM validator reads it back at Confirm — the
+        // link closes at runtime, not at compile time, so the two parameterizations do not cycle.
+        val cpoContract = CompletedPegOutsContract(blueprint, tmNftPolicy, cpoRef)
         val cpoPolicy = cpoContract.policyId
         val cpoAssetName = CompletedPegOutsContract.assetName
 

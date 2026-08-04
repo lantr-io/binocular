@@ -161,10 +161,17 @@ object CompletedPegInsContract {
     val assetName: ByteString = ByteString.fromString("CPI")
 }
 
-/** The `peg_out_validator` parameterized with `(oracle_policy_id, config_nft_policy_id,
-  * config_nft_asset_name)`. The script hash is the peg-out withdraw script hash = ConfigDatum index
-  * 5, and the address that `PegOut` UTxOs are locked at. The completion path is a `withdraw`
-  * (`CompletePegOut`); creation is a plain pay-to-this-address output.
+/** The `peg_out_validator` parameterized with `(config_nft_policy_id, config_nft_asset_name)`. The
+  * script hash is the peg-out withdraw script hash = ConfigDatum index 5, and the address that
+  * `PegOut` UTxOs are locked at. The completion path is a `withdraw` (`CompletePegOut`); creation
+  * is a plain pay-to-this-address output.
+  *
+  * The `oracle_policy_id` parameter is GONE (peg-out trie v2, 2026-07): `peg_out.ak` no longer does
+  * its own SPV parse of the Treasury Movement. Which Bitcoin payment settles which peg-out request
+  * is recorded in the completed-peg-outs trie at TM Confirm, so completion is a single MPF
+  * membership proof against a trie reference input and needs no oracle. Dropping the parameter
+  * CHANGES this script's hash, so ConfigDatum field 5 must be swapped by a config Update (see
+  * `update-config --peg-out-withdraw-hash`) before any peg-out completes.
   */
 final case class PegOutContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash
@@ -178,13 +185,11 @@ object PegOutContract {
 
     def apply(
         blueprint: BifrostBlueprint,
-        oraclePolicyId: ByteString,
         configNftPolicyId: ByteString,
         configNftAssetName: ByteString
     ): PegOutContract = {
         val applied = Program
             .fromCborHex(blueprint.compiledCode(ValidatorTitle))
-            .$(Data.B(oraclePolicyId))
             .$(Data.B(configNftPolicyId))
             .$(Data.B(configNftAssetName))
         PegOutContract(Script.PlutusV3(applied.cborByteString))
@@ -192,10 +197,19 @@ object PegOutContract {
 }
 
 /** The `completed_peg_outs_merkle_tree` one-shot NFT policy + state validator: params
-  * `(configNFTPolicyId, configNFTAssetName, one_shot_input_ref)`. policyId = ConfigDatum index 3;
-  * asset name = the constant `"CPO"`. The MPF state UTxO (datum = root, empty `0x00*32` at mint)
-  * lives at this script's address and is spent+recreated on each peg-out completion. Mirrors
-  * [[CompletedPegInsContract]].
+  * `(tm_nft_policy_id, one_shot_input_ref)`. policyId = ConfigDatum index 3; asset name = the
+  * constant `"CPO"`. The MPF state UTxO (datum = root, empty `0x00*32` at mint) lives at this
+  * script's address.
+  *
+  * Trie v2 (2026-07): the first parameter is the TM NFT policy (= the [[TreasuryMovementValidator]]
+  * script hash), NOT the config NFT pair. The trie is now written at TM **Confirm**, keyed by POR
+  * id, so its spend handler gates on a TM `Unconfirmed -> Confirmed` transition in the same tx and
+  * needs the TM NFT policy directly. There is no parameterization cycle: the TM script hash is
+  * computable first (oracle hash + config NFT), and the TM validator finds THIS policy at runtime
+  * through Config field 3.
+  *
+  * Consequence for deploy ordering: the TM script hash must be derived BEFORE this contract, and
+  * the genesis ConfigDatum field 3 must carry the policy this constructor yields.
   */
 final case class CompletedPegOutsContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash
@@ -209,14 +223,12 @@ object CompletedPegOutsContract {
 
     def apply(
         blueprint: BifrostBlueprint,
-        configNftPolicyId: ByteString,
-        configNftAssetName: ByteString,
+        tmNftPolicyId: ByteString,
         oneShotInputRef: TxOutRef
     ): CompletedPegOutsContract = {
         val applied = Program
             .fromCborHex(blueprint.compiledCode(ValidatorTitle))
-            .$(Data.B(configNftPolicyId))
-            .$(Data.B(configNftAssetName))
+            .$(Data.B(tmNftPolicyId))
             .$(oneShotInputRef.toData)
         CompletedPegOutsContract(Script.PlutusV3(applied.cborByteString))
     }

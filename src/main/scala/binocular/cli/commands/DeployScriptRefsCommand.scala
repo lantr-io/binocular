@@ -101,9 +101,8 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
         val bridgedToken = BridgedTokenContract(blueprint, configNftPolicy, configNftAsset)
         val cpi =
             CompletedPegInsContract(blueprint, configNftPolicy, configNftAsset, cpiOneShotRef)
-        val pegOut = PegOutContract(blueprint, oraclePolicyId, configNftPolicy, configNftAsset)
-        val cpo =
-            CompletedPegOutsContract(blueprint, configNftPolicy, configNftAsset, cpoOneShotRef)
+        val pegOut = PegOutContract(blueprint, configNftPolicy, configNftAsset)
+        val cpo = CompletedPegOutsContract(blueprint, tmNftPolicy, cpoOneShotRef)
 
         Console.info("peg_in script hash", pegIn.policyId.toHex)
         Console.info("bridged_token script hash", bridgedToken.policyId.toHex)
