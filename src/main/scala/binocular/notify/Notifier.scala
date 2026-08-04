@@ -11,16 +11,24 @@ package binocular.notify
   */
 trait Notifier {
 
-    /** The oracle's confirmed tip advanced to `height`.
+    /** The oracle advanced: new headers reached the fork tree (and possibly the confirmed tip).
       *
-      * @param tipHash
+      * @param tipHeight
+      *   fork-tree best-tip height — the newest block the oracle has seen (used for dedup/header)
+      * @param confirmedHeight
+      *   confirmed-tip height (lags the fork tip until blocks mature and are promoted)
+      * @param confirmedHash
       *   big-endian (block-explorer) hex of the confirmed tip hash
+      * @param confirmedTimeIso
+      *   ISO-8601 UTC timestamp of the confirmed tip block
       * @param headersAdded
       *   how many headers this update applied (0 when unknown, e.g. an adopted UTxO)
       */
     def newBlock(
-        height: BigInt,
-        tipHash: String,
+        tipHeight: BigInt,
+        confirmedHeight: BigInt,
+        confirmedHash: String,
+        confirmedTimeIso: String,
         headersAdded: Int,
         treeBlocks: Int,
         confirmedBlocks: Int
@@ -65,8 +73,10 @@ object Notifier {
 /** Discards every notification. Used when notifications are disabled or unconfigured. */
 object NoopNotifier extends Notifier {
     def newBlock(
-        height: BigInt,
-        tipHash: String,
+        tipHeight: BigInt,
+        confirmedHeight: BigInt,
+        confirmedHash: String,
+        confirmedTimeIso: String,
         headersAdded: Int,
         treeBlocks: Int,
         confirmedBlocks: Int

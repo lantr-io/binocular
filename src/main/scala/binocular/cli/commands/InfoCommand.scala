@@ -49,6 +49,13 @@ case class InfoCommand() extends Command {
         oracle.toBitcoinValidatorParams(config.bitcoinNode.bitcoinNetwork) match {
             case Right(params) =>
                 val addr = oracle.scriptAddress(cardano.cardanoNetwork, btc.bitcoinNetwork)
+                val derivedHash = BitcoinContract.script(params).scriptHash.toHex
+                val hashStatus = oracle.scriptHash match {
+                    case "" => "(oracle.script-hash not set, pin this value to enable the check)"
+                    case h if h.equalsIgnoreCase(derivedHash) => "(matches oracle.script-hash)"
+                    case h => s"MISMATCH: oracle.script-hash is $h"
+                }
+                println(s"  Script Hash: $derivedHash $hashStatus")
                 println(s"  Script Address: ${addr.getOrElse("(error)")}")
                 println(s"  Maturation Confirmations: ${params.maturationConfirmations}")
                 println(s"  Challenge Aging: ${params.challengeAging}")

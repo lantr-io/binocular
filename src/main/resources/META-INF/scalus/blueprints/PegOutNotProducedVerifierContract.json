@@ -5,7 +5,7 @@
     "version": "1.0.0",
     "compiler": {
       "name": "scalus",
-      "version": "0.18.2"
+      "version": "1.0.0"
     },
     "plutusVersion": "v3",
     "license": "Apache-2.0"
@@ -24,5 +24,8 @@
       "compiledCode": "4b0101003226490101530001",
       "hash": "094b9bad54c9dbc67855d0e2e6b1773b1d7dc5a932782418708af38f"
     }
-  ]
+  ],
+  "scalus": {
+    "scalaVersion": "3.3.8"
+  }
 }

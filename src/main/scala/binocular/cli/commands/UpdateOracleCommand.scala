@@ -367,7 +367,7 @@ case class UpdateOracleCommand(
 
                 val (_, validityTime) =
                     OracleTransactions.computeValidityIntervalTime(
-                      setup.provider.cardanoInfo
+                      setup.provider
                     )
                 // First batch in a reorg uses the reorg parentPath (points to common ancestor);
                 // subsequent batches use the regular tip path (new best chain tip).

@@ -33,6 +33,116 @@ import scala.util.boundary.break
   * Allowed on-chain only when the oracle is stale (same predicate as CloseOracle) and the tx is
   * signed by the owner — see the security argument in the Whitepaper §Owner State Reset.
   */
+object SetStateCommand {
+
+    /** Seconds until the oracle satisfies the on-chain staleness gate (negative = already stale).
+      *
+      * Mirrors the validator's rule: SetState/Close are allowed only when the newest confirmed
+      * timestamp is strictly older than `closureTimeout` relative to the tx validity-interval end,
+      * i.e. `intervalEnd - headTs > closureTimeout`.
+      */
+    def stalenessRemainingSeconds(
+        headTs: Long,
+        intervalEndSeconds: Long,
+        closureTimeout: Long
+    ): Long =
+        headTs + closureTimeout - intervalEndSeconds
+
+    /** Auto-reset anchor height: `tip - depth`, valid only at or above the configured
+      * `oracle.start-height` (the canonical MPF is rebuilt over `start-height..H`).
+      */
+    def autoResetTargetHeight(
+        tip: Long,
+        depth: Int,
+        startHeight: Option[Long]
+    ): Either[String, Long] = {
+        val target = tip - depth
+        startHeight match {
+            case None =>
+                Left(
+                  "auto-reset requires oracle.start-height to be configured (the replacement " +
+                      "confirmed-blocks root is rebuilt over start-height..target)"
+                )
+            case Some(start) if target < start =>
+                Left(
+                  s"auto-reset target height $target (tip $tip - depth $depth) is below the " +
+                      s"configured start-height $start"
+                )
+            case Some(_) => Right(target)
+        }
+    }
+
+    /** Build the SetState replacement [[ChainState]]: the anchor state at `height` with its
+      * confirmed-blocks root rebuilt canonically over `oracle.start-height..height`. Shared by the
+      * CLI command and the daemon's auto-reset recovery.
+      */
+    def buildReplacementState(
+        rpc: SimpleBitcoinRpc,
+        config: BinocularConfig,
+        height: Long
+    )(using ExecutionContext): Either[String, ChainState] = {
+        Console.log(s"Building replacement state anchored at height $height...")
+        val anchorState =
+            try BitcoinChainState.getInitialChainState(rpc, height.toInt).await(60.seconds)
+            catch {
+                case e: Exception =>
+                    return Left(s"Fetching Bitcoin state at $height: ${e.getMessage}")
+            }
+        config.oracle.startHeight match {
+            case Some(start) if start <= height =>
+                Console.log(
+                  s"Rebuilding confirmed-blocks MPF from $start..$height (canonical chain)..."
+                )
+                // Dedicated timeout scaled to the range — the tx timeout (120s) would fail a
+                // mainnet-scale recovery of thousands of sequential getblockhash round-trips.
+                val mpfTimeout = (60 + (height - start + 1) / 5).seconds
+                buildCanonicalMpf(rpc, start, height, mpfTimeout).map { root =>
+                    Console.logSuccess(
+                      s"MPF rebuilt: ${height - start + 1} confirmed blocks, " +
+                          s"root ${root.rootHash.toHex}"
+                    )
+                    anchorState.copy(confirmedBlocksRoot = root.rootHash)
+                }
+            case Some(start) =>
+                Left(
+                  s"Configured start-height $start is above target height $height — pick a " +
+                      "target at or above it"
+                )
+            case scala.None =>
+                Console.warn(
+                  s"No oracle.start-height configured — the new root contains ONLY block $height " +
+                      s"(init semantics). Set start-height = $height in the config afterwards, or " +
+                      "MPF reconstruction will fail on the next promotion."
+                )
+                Right(anchorState)
+        }
+    }
+
+    /** Fold the canonical block hashes `start..end` into a fresh MPF (key = value = LE hash),
+      * mirroring `CommandHelpers.rebuildMpf` but without an expected root (this BUILDS the new
+      * commitment rather than verifying an old one).
+      */
+    private def buildCanonicalMpf(
+        rpc: SimpleBitcoinRpc,
+        start: Long,
+        end: Long,
+        timeout: Duration
+    )(using ExecutionContext): Either[String, OffChainMPF] = {
+        def loop(heights: scala.List[Long], mpf: OffChainMPF): Future[OffChainMPF] =
+            heights match {
+                case scala.Nil => Future.successful(mpf)
+                case h :: tail =>
+                    for {
+                        hashHex <- rpc.getBlockHash(h.toInt)
+                        blockHash = ByteString.fromArray(hashHex.hexToBytes.reverse)
+                        result <- loop(tail, mpf.insert(blockHash, blockHash))
+                    } yield result
+            }
+        Try(loop((start to end).toList, OffChainMPF.empty).await(timeout)).toEither
+            .leftMap(e => s"Rebuilding MPF from $start..$end: ${e.getMessage}")
+    }
+}
+
 case class SetStateCommand(height: Long, dryRun: Boolean = false) extends Command {
 
     override def execute(config: BinocularConfig): Int = {
@@ -84,59 +194,27 @@ case class SetStateCommand(height: Long, dryRun: Boolean = false) extends Comman
         }
         val headTs = currentState.ctx.timestamps.head.toLong
         val (_, intervalEndSeconds) =
-            OracleTransactions.computeValidityIntervalTime(setup.provider.cardanoInfo)
+            OracleTransactions.computeValidityIntervalTime(setup.provider)
         val gap = intervalEndSeconds.toLong - headTs
         val limit = setup.params.closureTimeout.toLong
+        val remaining =
+            SetStateCommand.stalenessRemainingSeconds(headTs, intervalEndSeconds.toLong, limit)
         Console.info(
           "Staleness",
           s"last confirmed ts $headTs (${Instant.ofEpochSecond(headTs)}), " +
               s"age ${gap}s / ${limit}s — ${
-                      if gap > limit then "stale (can reset)" else "fresh (cannot reset)"
+                      if remaining < 0 then "stale (can reset)" else "fresh (cannot reset)"
                   }"
         )
-        if gap <= limit then
+        if remaining >= 0 then
             Console.error(
               "Oracle is not stale. SetState is only allowed once no confirmed-block timestamp " +
                   "is within the closure-timeout window."
             )
             break(1)
 
-        // Replacement state: anchor at `height`, MPF covering start-height..height (canonical).
-        Console.log(s"Building replacement state anchored at height $height...")
-        val anchorState =
-            try BitcoinChainState.getInitialChainState(rpc, height.toInt).await(60.seconds)
-            catch {
-                case e: Exception =>
-                    Console.error(s"Fetching Bitcoin state at $height: ${e.getMessage}"); break(1)
-            }
-        val newState = config.oracle.startHeight match {
-            case Some(start) if start <= height =>
-                Console.log(
-                  s"Rebuilding confirmed-blocks MPF from $start..$height (canonical chain)..."
-                )
-                // Dedicated timeout scaled to the range — the tx timeout (120s) would fail a
-                // mainnet-scale recovery of thousands of sequential getblockhash round-trips.
-                val mpfTimeout = (60 + (height - start + 1) / 5).seconds
-                val root = buildCanonicalMpf(rpc, start, height, mpfTimeout).valueOr { err =>
-                    Console.error(err); break(1)
-                }
-                Console.logSuccess(
-                  s"MPF rebuilt: ${height - start + 1} confirmed blocks, root ${root.rootHash.toHex}"
-                )
-                anchorState.copy(confirmedBlocksRoot = root.rootHash)
-            case Some(start) =>
-                Console.error(
-                  s"Configured start-height $start is above target height $height — pick a " +
-                      "target at or above it"
-                )
-                break(1)
-            case scala.None =>
-                Console.warn(
-                  s"No oracle.start-height configured — the new root contains ONLY block $height " +
-                      s"(init semantics). Set start-height = $height in the config afterwards, or " +
-                      "MPF reconstruction will fail on the next promotion."
-                )
-                anchorState
+        val newState = SetStateCommand.buildReplacementState(rpc, config, height).valueOr { err =>
+            Console.error(err); break(1)
         }
         Console.info("New height", newState.ctx.height)
         Console.info("New tip", newState.ctx.lastBlockHash.toHex)
@@ -189,29 +267,5 @@ case class SetStateCommand(height: Long, dryRun: Boolean = false) extends Comman
                 Console.error(s"Failed to set oracle state: $err")
                 1
         }
-    }
-
-    /** Fold the canonical block hashes `start..end` into a fresh MPF (key = value = LE hash),
-      * mirroring `CommandHelpers.rebuildMpf` but without an expected root (this BUILDS the new
-      * commitment rather than verifying an old one).
-      */
-    private def buildCanonicalMpf(
-        rpc: SimpleBitcoinRpc,
-        start: Long,
-        end: Long,
-        timeout: Duration
-    )(using ExecutionContext): Either[String, OffChainMPF] = {
-        def loop(heights: scala.List[Long], mpf: OffChainMPF): Future[OffChainMPF] =
-            heights match {
-                case scala.Nil => Future.successful(mpf)
-                case h :: tail =>
-                    for {
-                        hashHex <- rpc.getBlockHash(h.toInt)
-                        blockHash = ByteString.fromArray(hashHex.hexToBytes.reverse)
-                        result <- loop(tail, mpf.insert(blockHash, blockHash))
-                    } yield result
-            }
-        Try(loop((start to end).toList, OffChainMPF.empty).await(timeout)).toEither
-            .leftMap(e => s"Rebuilding MPF from $start..$end: ${e.getMessage}")
     }
 }

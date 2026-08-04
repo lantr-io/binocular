@@ -29,10 +29,14 @@ object SlotConfigHelper {
       *   Optional on-chain end-of-interval POSIXTime (seconds). When provided, the function
       *   reconstructs the corresponding `validFrom` slot (target − MaxValidityWindow) and
       *   re-derives the canonical end time. This is the round-trip case: a caller previously
-      *   obtained an end time and now needs the matching wall-clock instant. When `None`, the
-      *   function uses `now − 5 min` as the start anchor to guard against clock skew between the
-      *   local machine and the Cardano node (the validity window itself is `MaxValidityWindow = 10
-      *   min`).
+      *   obtained an end time and now needs the matching wall-clock instant. When `None`, the start
+      *   anchor is `tipSlot − 5 min` if a chain tip slot is given, else `now − 5 min`; the 5-minute
+      *   back-shift guards against clock skew / tip staleness relative to the node (the validity
+      *   window itself is `MaxValidityWindow = 10 min`).
+      * @param tipSlot
+      *   Optional current chain tip slot. When provided (and no `targetEndTimeSeconds`), the
+      *   validity window is anchored on the tip instead of the local wall clock, which keeps the
+      *   window phase-1-valid even when the local clock and the node's slot clock disagree.
       * @return
       *   `(validityInstant, onChainEndTimeInSeconds)` where `validityInstant` is the wall-clock
       *   start of the validity window and `onChainEndTimeInSeconds` is the on-chain reference time
@@ -40,7 +44,8 @@ object SlotConfigHelper {
       */
     def computeValidityIntervalTime(
         cardanoInfo: CardanoInfo,
-        targetEndTimeSeconds: Option[BigInt] = None
+        targetEndTimeSeconds: Option[BigInt] = None,
+        tipSlot: Option[Long] = None
     ): (Instant, BigInt) = {
         val slotConfig = cardanoInfo.slotConfig
         val maxWindowMs = BitcoinValidator.MaxValidityWindow.toLong
@@ -49,9 +54,13 @@ object SlotConfigHelper {
                 // Round-trip: reconstruct the validFrom from a previously-returned end time.
                 endSeconds.toLong * 1000 - maxWindowMs
             case None =>
-                // Subtract 5 minutes to guard against clock skew between local
-                // machine and the Cardano node. The validity window is 10 minutes.
-                Instant.now().toEpochMilli - 300_000L
+                // Subtract 5 minutes to guard against clock skew between the anchor
+                // and the Cardano node. The validity window is 10 minutes.
+                val anchorMs = tipSlot match {
+                    case Some(slot) => slotConfig.slotToTime(slot)
+                    case None       => Instant.now().toEpochMilli
+                }
+                anchorMs - 300_000L
         }
         val startSlot = slotConfig.timeToSlot(startAnchorMs)
         val validityInstant = slotConfig.slotToInstant(startSlot)

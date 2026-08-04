@@ -533,10 +533,10 @@ object BitcoinHelpers {
       * key-path/script-path GATE only, NOT a leaf discriminator.
       *
       * Every Bifrost script leaf is `<timeout> OP_CSV OP_DROP <pubkey> OP_CHECKSIG`
-      * (`build_csv_checksig_script` in heimdall taproot.rs) — the depositor peg-in refund tree
-      * and the treasury federation tree share the exact same shape. Each embeds the FULL x-only key
-      * and spends with a single signature, so both produce exactly 3 witness items: item 0
-      * signature (64 B), item 1 leaf script, item 2 control block (33 + 32*depth bytes; 33 B for a
+      * (`build_csv_checksig_script` in heimdall taproot.rs) — the depositor peg-in refund tree and
+      * the treasury federation tree share the exact same shape. Each embeds the FULL x-only key and
+      * spends with a single signature, so both produce exactly 3 witness items: item 0 signature
+      * (64 B), item 1 leaf script, item 2 control block (33 + 32*depth bytes; 33 B for a
       * single-leaf tree). A key-path spend is 1 item.
       *
       * Count == 3 therefore only distinguishes script-path from key-path — it CANNOT tell the

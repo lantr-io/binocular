@@ -45,4 +45,40 @@ class DiscordNotifierFlushTest extends AnyFunSuite {
         try n.flush(1000) // returns promptly
         finally n.close()
     }
+
+    /** A notifier that records every delivered payload instead of POSTing. */
+    private def recording(payloads: java.util.Queue[String]): DiscordNotifier =
+        new DiscordNotifier(webhookUrl = "http://unused.invalid") {
+            override protected def deliver(payload: String): Unit = {
+                payloads.add(payload)
+                ()
+            }
+        }
+
+    test("success messages are delivered immediately, never throttled") {
+        val payloads = new java.util.concurrent.ConcurrentLinkedQueue[String]()
+        val n = recording(payloads)
+        try {
+            // relay/confirm successes are rare, operator-meaningful events: back-to-back sends
+            // must each go out at once, not be coalesced behind a throttle window.
+            n.success("relay", "TM relayed to Bitcoin")
+            n.success("confirm", "TM confirmed on Cardano")
+            n.flush(5000)
+            assert(payloads.size == 2, s"expected both successes delivered, got ${payloads.size}")
+        } finally n.close()
+    }
+
+    test("block notifications stay throttled: second one inside the window is held") {
+        val payloads = new java.util.concurrent.ConcurrentLinkedQueue[String]()
+        val n = recording(payloads)
+        try {
+            n.newBlock(105, 100, "aa" * 32, "2026-07-29T07:00:00Z", 1, 5, 100)
+            n.newBlock(106, 101, "bb" * 32, "2026-07-29T07:10:00Z", 1, 5, 101)
+            n.flush(5000)
+            assert(
+              payloads.size == 1,
+              s"expected only the first block delivered, got ${payloads.size}"
+            )
+        } finally n.close()
+    }
 }

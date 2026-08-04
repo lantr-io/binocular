@@ -20,14 +20,14 @@ import java.util.concurrent.atomic.AtomicLong
   *   - `newBlock` is deduplicated by height (only strictly-increasing heights notify), then rate-
   *     limited via [[IntervalGate]]: at most one block notification per `throttleIntervalMs`, with
   *     bursts coalesced into a summary (`N blocks — tip H`).
-  *   - `success` is likewise rate-limited; bursts are batched into one message so no TM event is
-  *     lost. Rare successes (idle >= interval) are sent promptly.
+  *   - `success` is NOT throttled — relay/confirm successes are rare, operator-meaningful events (a
+  *     TM relayed to Bitcoin, a TM confirmed on Cardano), so each one posts at once.
   *   - `error` is NOT throttled — it is debounced only against IDENTICAL repeats via
   *     [[ErrorDebounce]] (first + any new error immediate) and carries an optional `@`-mention
   *     ping.
   *
-  * A single daemon [[ScheduledExecutorService]] flushes held block/success summaries once their
-  * window elapses, so a coalesced summary still arrives on time even if events stop coming.
+  * A single daemon [[ScheduledExecutorService]] flushes a held block summary once its window
+  * elapses, so a coalesced summary still arrives on time even if events stop coming.
   *
   * Uses the JDK's built-in [[java.net.http.HttpClient]] — no extra dependencies.
   */
@@ -36,8 +36,7 @@ class DiscordNotifier(
     throttleIntervalMs: Long = 60 * 60 * 1000L,
     errorMentionUserId: Option[String] = None,
     errorDebounceWindowMs: Long = 5 * 60 * 1000L,
-    queueCapacity: Int = 64,
-    maxPendingSuccess: Int = 20
+    queueCapacity: Int = 64
 ) extends Notifier {
 
     private val client =
@@ -66,25 +65,25 @@ class DiscordNotifier(
         )
     }
 
-    /** Latest block held by the throttle (fork-tree fields), sent when its window flushes. */
+    /** Latest block held by the throttle, sent when its window flushes. */
     private final case class PendingBlock(
-        height: BigInt,
-        tipHash: String,
+        tipHeight: BigInt,
+        confirmedHeight: BigInt,
+        confirmedHash: String,
+        confirmedTimeIso: String,
         headersAdded: Int,
         treeBlocks: Int,
         confirmedBlocks: Int
     )
 
     // All of the following are guarded by `this` (synchronized).
-    private var lastHeight: BigInt = BigInt(-1) // newBlock dedup: only strictly-increasing heights
+    private var lastHeight: BigInt = BigInt(-1) // dedup: only strictly-increasing fork-tip heights
     private var debounce: ErrorDebounce.State = ErrorDebounce.State.empty
     private var blockGate: IntervalGate.State = IntervalGate.State.empty
     private var pendingBlock: Option[PendingBlock] = scala.None
-    private var successGate: IntervalGate.State = IntervalGate.State.empty
-    private var pendingSuccess: List[(String, String)] = Nil // newest-first
 
-    // Flush held summaries when their window elapses even if events stop. Tick coarsely (bounded to
-    // [1s, 60s]) — a coalesced summary arriving up to a tick late is fine.
+    // Flush a held block summary when its window elapses even if events stop. Tick coarsely
+    // (bounded to [1s, 60s]) — a coalesced summary arriving up to a tick late is fine.
     private val scheduler: ScheduledExecutorService = {
         val tf: ThreadFactory = (r: Runnable) => {
             val t = new Thread(r, "discord-notifier-flush")
@@ -100,16 +99,18 @@ class DiscordNotifier(
     scheduler.scheduleAtFixedRate(flushTask, flushTickMs, flushTickMs, TimeUnit.MILLISECONDS)
 
     def newBlock(
-        height: BigInt,
-        tipHash: String,
+        tipHeight: BigInt,
+        confirmedHeight: BigInt,
+        confirmedHash: String,
+        confirmedTimeIso: String,
         headersAdded: Int,
         treeBlocks: Int,
         confirmedBlocks: Int
     ): Unit = {
         val toSend = synchronized {
-            if height <= lastHeight then scala.None
+            if tipHeight <= lastHeight then scala.None
             else {
-                lastHeight = height
+                lastHeight = tipHeight
                 val (next, decision) =
                     IntervalGate.offer(blockGate, System.currentTimeMillis(), throttleIntervalMs)
                 blockGate = next
@@ -118,8 +119,10 @@ class DiscordNotifier(
                         pendingBlock = scala.None
                         Some(
                           DiscordPayload.newBlock(
-                            height,
-                            tipHash,
+                            tipHeight,
+                            confirmedHeight,
+                            confirmedHash,
+                            confirmedTimeIso,
                             headersAdded,
                             treeBlocks,
                             confirmedBlocks,
@@ -128,7 +131,15 @@ class DiscordNotifier(
                         )
                     case IntervalGate.Hold =>
                         pendingBlock = Some(
-                          PendingBlock(height, tipHash, headersAdded, treeBlocks, confirmedBlocks)
+                          PendingBlock(
+                            tipHeight,
+                            confirmedHeight,
+                            confirmedHash,
+                            confirmedTimeIso,
+                            headersAdded,
+                            treeBlocks,
+                            confirmedBlocks
+                          )
                         )
                         scala.None
                 }
@@ -160,27 +171,10 @@ class DiscordNotifier(
         }
     }
 
-    def success(source: String, message: String): Unit = {
-        val toSend = synchronized {
-            val (next, decision) =
-                IntervalGate.offer(successGate, System.currentTimeMillis(), throttleIntervalMs)
-            successGate = next
-            decision match {
-                case IntervalGate.SendNow(_) =>
-                    val batch = pendingSuccess.reverse :+ (source -> message)
-                    pendingSuccess = Nil
-                    Some(DiscordPayload.successBatch(batch))
-                case IntervalGate.Hold =>
-                    // Newest-first; keep only the most recent `maxPendingSuccess` on overflow.
-                    pendingSuccess = ((source -> message) :: pendingSuccess).take(maxPendingSuccess)
-                    scala.None
-            }
-        }
-        toSend.foreach(enqueue)
-    }
+    def success(source: String, message: String): Unit =
+        enqueue(DiscordPayload.success(source, message))
 
-    /** Emit any block/success summaries whose throttle window has elapsed. Runs on the scheduler.
-      */
+    /** Emit a held block summary once its throttle window has elapsed. Runs on the scheduler. */
     private def flushPending(): Unit = {
         val posts = synchronized {
             val now = System.currentTimeMillis()
@@ -191,23 +185,16 @@ class DiscordNotifier(
             blockHeld.foreach { held =>
                 pendingBlock.foreach { b =>
                     buf += DiscordPayload.newBlock(
-                      b.height,
-                      b.tipHash,
+                      b.tipHeight,
+                      b.confirmedHeight,
+                      b.confirmedHash,
+                      b.confirmedTimeIso,
                       b.headersAdded,
                       b.treeBlocks,
                       b.confirmedBlocks,
                       sinceCount = held
                     )
                     pendingBlock = scala.None
-                }
-            }
-
-            val (ns, successHeld) = IntervalGate.flush(successGate, now, throttleIntervalMs)
-            successGate = ns
-            successHeld.foreach { _ =>
-                if pendingSuccess.nonEmpty then {
-                    buf += DiscordPayload.successBatch(pendingSuccess.reverse)
-                    pendingSuccess = Nil
                 }
             }
             buf.toList

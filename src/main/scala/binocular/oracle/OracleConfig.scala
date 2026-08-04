@@ -19,6 +19,7 @@ import scala.util.{Failure, Success, Try}
   */
 case class OracleConfig(
     txOutRef: String = "",
+    scriptHash: String = "",
     ownerPkh: String = "",
     startHeight: Option[Long] = None,
     maxHeadersPerTx: Int = 10,
@@ -29,8 +30,15 @@ case class OracleConfig(
     challengeAging: Int = 12000,
     closureTimeout: Int = 2592000,
     maxBlocksInForkTree: Int = 256,
-    testingMode: Boolean = false
+    testingMode: Boolean = false,
+    autoReset: Boolean = false,
+    autoResetDepth: Option[Int] = None
 ) derives ConfigReader {
+
+    /** Blocks below the Bitcoin tip to anchor an auto-reset at (H = tip - depth). Defaults to
+      * `maturationConfirmations` so the margin tracks the promotion depth.
+      */
+    def effectiveAutoResetDepth: Int = autoResetDepth.getOrElse(maturationConfirmations)
 
     /** Parse txOutRef and ownerPkh into BitcoinValidatorParams.
       *
@@ -84,6 +92,29 @@ case class OracleConfig(
         }
     }
 
+    /** Verify the configured `script-hash` matches the hash derived from the oracle params.
+      *
+      * The script hash depends on `tx-out-ref`, `owner-pkh`, the timing/capacity params, the
+      * Bitcoin network flags, and the compiled validator code itself. An empty configured hash
+      * skips the check (bootstrap: run `info` to obtain the derived hash and pin it here).
+      */
+    def verifyScriptHash(
+        bitcoinNetwork: BitcoinNetwork = BitcoinNetwork.Mainnet
+    ): Either[String, Unit] = {
+        if scriptHash.isEmpty then Right(())
+        else
+            toBitcoinValidatorParams(bitcoinNetwork).flatMap { params =>
+                val derived = BitcoinContract.script(params).scriptHash.toHex
+                if derived.equalsIgnoreCase(scriptHash) then Right(())
+                else
+                    Left(
+                      s"Configured oracle.script-hash ($scriptHash) does not match the hash derived from the oracle params ($derived). " +
+                          "Likely causes: the validator code changed, or oracle params (tx-out-ref, owner-pkh, challenge-aging, ...) were edited. " +
+                          "If the derived hash is the intended deployment, update oracle.script-hash."
+                    )
+            }
+    }
+
     /** Validate configuration */
     def validate(): Either[String, Unit] = {
         if txOutRef.isEmpty then Left("oracle.tx-out-ref must be configured. Set ORACLE_TX_OUT_REF")
@@ -116,6 +147,6 @@ case class OracleConfig(
     }
 
     override def toString: String = {
-        s"OracleConfig(txOutRef=$txOutRef, startHeight=$startHeight, maxHeadersPerTx=$maxHeadersPerTx, pollInterval=$pollInterval, retryInterval=$retryInterval, transactionTimeout=$transactionTimeout, maturationConfirmations=$maturationConfirmations, challengeAging=$challengeAging, closureTimeout=$closureTimeout, maxBlocksInForkTree=$maxBlocksInForkTree, testingMode=$testingMode)"
+        s"OracleConfig(txOutRef=$txOutRef, scriptHash=$scriptHash, startHeight=$startHeight, maxHeadersPerTx=$maxHeadersPerTx, pollInterval=$pollInterval, retryInterval=$retryInterval, transactionTimeout=$transactionTimeout, maturationConfirmations=$maturationConfirmations, challengeAging=$challengeAging, closureTimeout=$closureTimeout, maxBlocksInForkTree=$maxBlocksInForkTree, testingMode=$testingMode)"
     }
 }

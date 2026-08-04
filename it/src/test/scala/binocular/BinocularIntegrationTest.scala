@@ -18,7 +18,7 @@ import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 import scalus.testing.integration.YaciTestContext
 import scalus.testing.kit.Party
 import scalus.testing.yaci.{YaciConfig, YaciDevKit}
-import scalus.uplc.CompiledPlutus
+import scalus.uplc.PlutusV3
 import scalus.uplc.builtin.ByteString
 import scalus.uplc.builtin.Data.toData
 import scalus.utils.await
@@ -71,7 +71,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
     /** Submit an oracle update, wait for confirmation, verify on-chain state matches. */
     private def submitOracleUpdate(
         ctx: YaciTestContext,
-        compiled: CompiledPlutus[?],
+        compiled: PlutusV3[?],
         oracleUtxo: Utxo,
         currentState: ChainState,
         newState: ChainState,
@@ -85,7 +85,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         val updateResult = OracleTransactions.buildAndSubmitUpdateTransaction(
           ctx.provider,
           Party.Alice.account,
-          compiled,
+          compiled.script,
           oracleUtxo,
           currentState,
           newState,
@@ -131,13 +131,13 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
 
     private def deployRefScript(
         ctx: YaciTestContext,
-        compiled: CompiledPlutus[?]
+        compiled: PlutusV3[?]
     ): Utxo = {
         given ec: ExecutionContext = ctx.provider.executionContext
         val result = OracleTransactions.deployReferenceScript(
           ctx.provider,
           Party.Alice.account,
-          compiled
+          compiled.script
         )
         val (txHash, outputIndex, savedOutput) = result.valueOr { err =>
             throw new RuntimeException(s"Failed to deploy reference script: $err")
@@ -154,7 +154,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         ctx: YaciTestContext,
         genesisState: ChainState,
         lovelaceAmount: Long = 5_000_000L
-    ): (Utxo, CompiledPlutus[?], BitcoinValidatorParams) = {
+    ): (Utxo, PlutusV3[?], BitcoinValidatorParams) = {
         given ec: ExecutionContext = ctx.provider.executionContext
 
         val aliceUtxos = ctx.provider.findUtxos(ctx.alice.address).await(30.seconds)
@@ -168,7 +168,14 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         val testOwner = PubKeyHash(Party.Alice.addrKeyHash)
         val params = BitcoinValidatorParams.makeMainnet(txOutRef, testOwner, challengeAging = 30)
 
-        val compiled = BitcoinContract.makeContract(params)
+        // The Yaci DevKit devnet runs below protocol version 11 (vanRossem), which production
+        // pins — retarget the oracle to PV10 (Plomin), the minimum for the findFirstSetBit
+        // builtin the validator uses. The devnet must run at PV10 (protocolMajorVer=10).
+        val compiled = BitcoinContract
+            .makeContract(params)
+            .withOptions(
+              BitcoinContract.opts.copy(targetProtocolVersion = MajorProtocolVersion.plominPV)
+            )
         val script = compiled.script
         val scriptHash = script.scriptHash
         val scriptAddress = compiled.address(Network.Testnet)
@@ -202,7 +209,10 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
     // ===== Tests =====
 
     test("sequential single-header oracle updates") {
-        val ctx = createYaciContext()
+        val ctx = locally {
+            given ExecutionContext = scala.concurrent.ExecutionContext.global
+            createYaciContext()
+        }
         given ec: ExecutionContext = ctx.provider.executionContext
 
         val startHeight = 866970
@@ -230,7 +240,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
             val headersList = ScalusList.single(header)
 
             val (_, validityTime) =
-                OracleTransactions.computeValidityIntervalTime(ctx.provider.cardanoInfo)
+                OracleTransactions.computeValidityIntervalTime(ctx.provider)
             val parentPath = currentState.forkTree.findTipPath
             val newState = OracleTransactions.applyHeaders(
               currentState,
@@ -266,7 +276,10 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
     }
 
     test("batch oracle update preserves MPF root") {
-        val ctx = createYaciContext()
+        val ctx = locally {
+            given ExecutionContext = scala.concurrent.ExecutionContext.global
+            createYaciContext()
+        }
         given ec: ExecutionContext = ctx.provider.executionContext
 
         val startHeight = 866970
@@ -296,7 +309,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
         val headersList = ScalusList.from(headers.toList)
 
         val (_, validityTime) =
-            OracleTransactions.computeValidityIntervalTime(ctx.provider.cardanoInfo)
+            OracleTransactions.computeValidityIntervalTime(ctx.provider)
         val parentPath = initialState.forkTree.findTipPath
         val newState = OracleTransactions.applyHeaders(
           initialState,
@@ -338,7 +351,10 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
     }
 
     test("full lifecycle with promotion and proofs") {
-        val ctx = createYaciContext()
+        val ctx = locally {
+            given ExecutionContext = scala.concurrent.ExecutionContext.global
+            createYaciContext()
+        }
         given ec: ExecutionContext = ctx.provider.executionContext
 
         val startHeight = 866970
@@ -371,7 +387,7 @@ class BinocularIntegrationTest extends AnyFunSuite with YaciDevKit {
 
             val headersList = ScalusList.from(batch.toList)
             val validityTime: BigInt =
-                OracleTransactions.computeValidityIntervalTime(ctx.provider.cardanoInfo)._2
+                OracleTransactions.computeValidityIntervalTime(ctx.provider)._2
             val parentPath = currentState.forkTree.findTipPath
 
             val (newState, mpfProofs, updatedMpf) = OracleTransactions.computeUpdateWithProofs(

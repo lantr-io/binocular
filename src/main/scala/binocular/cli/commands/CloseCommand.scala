@@ -66,7 +66,7 @@ case class CloseCommand() extends Command {
             val state = oracleUtxo.output.requireInlineDatum.to[ChainState]
             val headTs = state.ctx.timestamps.head.toLong
             val (_, validityIntervalTimeSeconds) =
-                OracleTransactions.computeValidityIntervalTime(setup.provider.cardanoInfo)
+                OracleTransactions.computeValidityIntervalTime(setup.provider)
             val intervalEnd = validityIntervalTimeSeconds.toLong
             val gap = intervalEnd - headTs
             val limit = setup.params.closureTimeout.toLong

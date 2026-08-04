@@ -1,4 +1,4 @@
-val scalusVersion = "0.18.2"
+val scalusVersion = "1.0.0"
 
 // Common settings for all projects
 ThisBuild / scalaVersion := "3.3.8"
@@ -51,8 +51,11 @@ lazy val binocular = (project in file("."))
           val pinDir = (Compile / resourceDirectory).value / "META-INF" / "scalus" / "blueprints"
           IO.createDirectory(pinDir)
           val genDir = (Compile / resourceManaged).value / "META-INF" / "scalus" / "blueprints"
-          val files = Option(genDir.listFiles()).getOrElse(Array.empty[File])
-              .filter(_.getName.endsWith(".json"))
+          // Recursive: Scalus writes each blueprint under its validator's package path
+          // (blueprints/binocular/oracle/…, blueprints/binocular/watchtower/…), while the pins are
+          // kept flat. A non-recursive listing silently matched nothing here and re-pinning became
+          // a no-op — the stale pin then ships against changed validator sources.
+          val files = (genDir ** "*.json").get()
           require(files.nonEmpty, s"no generated blueprints in $genDir — run the blueprint task first")
           files.foreach(f => IO.copyFile(f, pinDir / f.getName))
           streams.value.log.info(
@@ -159,5 +162,9 @@ lazy val testDependencies = Seq(
 // Integration test dependencies
 lazy val integrationTestDependencies = Seq(
   "com.lihaoyi" %% "os-lib" % "0.11.8" % Test,
-  "org.scalatest" %% "scalatest" % "3.2.19" % Test
+  "org.scalatest" %% "scalatest" % "3.2.19" % Test,
+  // yaci-cardano-test 0.1.0 (via scalus-testkit) pins testcontainers 1.17.6, whose docker-java
+  // requests Docker API v1.32 — dropped by Docker Engine 29+. Force a current version so the
+  // client can negotiate an API version the daemon still serves.
+  "org.testcontainers" % "testcontainers" % "1.21.4" % Test
 )
