@@ -16,7 +16,7 @@ class UpdateConfigCommandTest extends AnyFunSuite {
           newCpoPolicy = None,
           newPegInHash = Some(ByteString.fromHex("ff")),
           newPegOutHash = None,
-          anchor = ByteString.fromHex("ee")
+          anchor = Some(ByteString.fromHex("ee"))
         )
         assert(out.size == 12)
         assert(out(4) == Data.B(ByteString.fromHex("ff")))
@@ -32,7 +32,7 @@ class UpdateConfigCommandTest extends AnyFunSuite {
           None,
           None,
           None,
-          ByteString.fromHex("bb")
+          Some(ByteString.fromHex("bb"))
         )
         assert(out.size == 12)
         assert(out(4) == fields11(4)) // no swap requested
@@ -46,7 +46,7 @@ class UpdateConfigCommandTest extends AnyFunSuite {
               None,
               None,
               None,
-              ByteString.fromHex("bb")
+              Some(ByteString.fromHex("bb"))
             )
         }
     }
@@ -59,7 +59,7 @@ class UpdateConfigCommandTest extends AnyFunSuite {
           newCpoPolicy = Some(ByteString.fromHex("33")),
           newPegInHash = Some(ByteString.fromHex("44")),
           newPegOutHash = Some(ByteString.fromHex("55")),
-          anchor = ByteString.fromHex("ee")
+          anchor = Some(ByteString.fromHex("ee"))
         )
         assert(out.size == 12)
         assert(out(3) == Data.B(ByteString.fromHex("33")))
@@ -76,7 +76,7 @@ class UpdateConfigCommandTest extends AnyFunSuite {
           newCpoPolicy = Some(ByteString.fromHex("33")),
           newPegInHash = None,
           newPegOutHash = None,
-          anchor = ByteString.fromHex("ee")
+          anchor = Some(ByteString.fromHex("ee"))
         )
         assert(out(3) == Data.B(ByteString.fromHex("33")))
         assert(out(4) == fields11(4))
@@ -85,6 +85,34 @@ class UpdateConfigCommandTest extends AnyFunSuite {
 
     // The deployed config carries the 17-field ConfigDatum; the migration Update must not truncate
     // the tunables (#12-16) while swapping the hashes.
+    // Field 11 re-anchors the whole TM chain, so a hash-only migration must not touch it.
+    test("rewriteFields leaves field 11 untouched when no anchor is given") {
+        val twelve = fields11 :+ (Data.B(ByteString.fromHex("aa")): Data)
+        val out = UpdateConfigCommand.rewriteFields(
+          twelve,
+          newCpoPolicy = Some(ByteString.fromHex("33")),
+          newPegInHash = None,
+          newPegOutHash = Some(ByteString.fromHex("55")),
+          anchor = None
+        )
+        assert(out.size == 12)
+        assert(out(3) == Data.B(ByteString.fromHex("33")))
+        assert(out(5) == Data.B(ByteString.fromHex("55")))
+        assert(out(11) == Data.B(ByteString.fromHex("aa"))) // the deployed anchor survives
+    }
+
+    test("rewriteFields does not append field 11 to an 11-field datum when no anchor is given") {
+        val out = UpdateConfigCommand.rewriteFields(
+          fields11,
+          newCpoPolicy = Some(ByteString.fromHex("33")),
+          newPegInHash = None,
+          newPegOutHash = None,
+          anchor = None
+        )
+        assert(out.size == 11)
+        assert(out(3) == Data.B(ByteString.fromHex("33")))
+    }
+
     test("rewriteFields carries fields beyond 11 over verbatim") {
         val seventeen =
             fields11 ++ (11 to 16).map(i => Data.B(ByteString.fromHex(f"$i%02x")): Data).toList
@@ -93,7 +121,7 @@ class UpdateConfigCommandTest extends AnyFunSuite {
           newCpoPolicy = Some(ByteString.fromHex("33")),
           newPegInHash = None,
           newPegOutHash = Some(ByteString.fromHex("55")),
-          anchor = ByteString.fromHex("ee")
+          anchor = Some(ByteString.fromHex("ee"))
         )
         assert(out.size == 17)
         assert(out(11) == Data.B(ByteString.fromHex("ee")))

@@ -102,12 +102,13 @@ case class PegInCompleteCommand(
         val network = setup.network
         val oracleScriptHash = setup.script.scriptHash
 
-        val blueprint =
-            try BifrostBlueprint.fromFile(config.bridge.plutusJson)
+        val (blueprint, blueprintSource) =
+            try BifrostBlueprint.resolve(config.bridge.plutusJson)
             catch {
                 case e: Exception =>
                     Console.error(s"Loading bridge blueprint: ${e.getMessage}"); break(1)
             }
+        Console.info("blueprint", blueprintSource)
 
         // --- bridge config / scripts ---
         val configNftPolicy =

@@ -57,16 +57,13 @@ case class PegInRequestCommand(
         val sponsorAddress = setup.sponsorAddress
         val oraclePolicyId = setup.script.scriptHash
 
-        val blueprint =
-            try BifrostBlueprint.fromFile(config.bridge.plutusJson)
+        val (blueprint, blueprintSource) =
+            try BifrostBlueprint.resolve(config.bridge.plutusJson)
             catch {
                 case e: Exception =>
-                    Console.error(
-                      s"Loading bridge blueprint (${config.bridge.plutusJson}): ${e.getMessage}"
-                    )
-                    Console.error("Set binocular.bridge.plutus-json (or BIFROST_PLUTUS_JSON)")
-                    break(1)
+                    Console.error(s"Loading bridge blueprint: ${e.getMessage}"); break(1)
             }
+        Console.info("blueprint", blueprintSource)
         val pegIn = PegInContract(
           blueprint,
           ByteString.fromArray(oraclePolicyId.bytes),

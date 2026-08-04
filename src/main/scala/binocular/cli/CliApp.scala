@@ -39,8 +39,9 @@ object CliApp {
         case TmScript
         case PegInRequest(btcTxId: String, dryRun: Boolean)
         case DeployBridge(dryRun: Boolean)
+        case BootstrapCompletedPegOuts(oneShotRef: Option[String], dryRun: Boolean)
         case UpdateConfig(
-            initialBtcTreasuryUtxo: String,
+            initialBtcTreasuryUtxo: Option[String],
             pegInWithdrawHash: Option[String],
             completedPegOutsPolicy: Option[String],
             pegOutWithdrawHash: Option[String],
@@ -293,15 +294,33 @@ object CliApp {
                 dryRunFlag.map(Cmd.RegisterBridgeCreds.apply)
             }
 
+        val bootstrapCompletedPegOutsCommand =
+            Opts.subcommand(
+              "bootstrap-completed-peg-outs",
+              "Mint a fresh completed-peg-outs trie against the LIVE bridge (config field 3 migration)"
+            ) {
+                val oneShotOpt = Opts
+                    .option[String](
+                      "one-shot-ref",
+                      help = "Wallet UTxO TX_HASH#INDEX to consume as the one-shot " +
+                          "(default: auto-pick the largest clean pure-ADA UTxO)"
+                    )
+                    .orNone
+                (oneShotOpt, dryRunFlag).mapN(Cmd.BootstrapCompletedPegOuts.apply)
+            }
+
         val updateConfigCommand =
             Opts.subcommand(
               "update-config",
               "Update the deployed Config UTxO in place: set the initial-treasury anchor (field 11) and optionally swap the script hashes in fields 3, 4 and 5"
             ) {
-                val anchorOpt = Opts.option[String](
-                  "initial-btc-treasury-utxo",
-                  help = "Initial Bitcoin treasury outpoint as TXID:VOUT (display txid)"
-                )
+                val anchorOpt = Opts
+                    .option[String](
+                      "initial-btc-treasury-utxo",
+                      help = "Initial Bitcoin treasury outpoint as TXID:VOUT (display txid) for " +
+                          "config field 11. Omit to leave the deployed anchor unchanged."
+                    )
+                    .orNone
                 val pegInHashOpt = Opts
                     .option[String](
                       "peg-in-withdraw-hash",
@@ -450,6 +469,7 @@ object CliApp {
                 tmScriptCommand `orElse`
                 pegInRequestCommand `orElse`
                 deployBridgeCommand `orElse`
+                bootstrapCompletedPegOutsCommand `orElse`
                 updateConfigCommand `orElse`
                 deployScriptRefsCommand `orElse`
                 registerBridgeCredsCommand `orElse`
@@ -531,6 +551,8 @@ object CliApp {
                             PegInRequestCommand(btcTxId, dryRun)
                         case Cmd.DeployBridge(dryRun) =>
                             DeployBridgeCommand(dryRun)
+                        case Cmd.BootstrapCompletedPegOuts(oneShotRef, dryRun) =>
+                            BootstrapCompletedPegOutsCommand(oneShotRef, dryRun)
                         case Cmd.UpdateConfig(anchor, pegInHash, cpoPolicy, pegOutHash, dryRun) =>
                             UpdateConfigCommand(anchor, pegInHash, cpoPolicy, pegOutHash, dryRun)
                         case Cmd.DeployScriptRefs(dryRun) =>

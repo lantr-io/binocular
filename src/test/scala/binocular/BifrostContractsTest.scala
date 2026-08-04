@@ -11,8 +11,13 @@ import scalus.uplc.builtin.ByteString
   * The known-answer cases are REGRESSION LOCKS over the CIP-57 parameter-application encoding
   * (`Data.B` for byte params, `Data.I` for `index0`, the one-shot `OutputReference` as `Data`, and
   * param order). They are re-validated at the next `deploy-bridge` run. They use a trimmed
-  * `plutus.json` (only the referenced validators' `compiledCode`) checked in as a test resource, so
-  * the test runs without the sibling ft-bifrost-bridge checkout.
+  * `plutus.json` (only the referenced validators' `compiledCode`), so the test runs without the
+  * sibling ft-bifrost-bridge checkout.
+  *
+  * That trimmed blueprint now lives in `src/main/resources`, not `src/test/resources`: it is the
+  * runtime DEFAULT source (see `BifrostBlueprint.packaged`) so a deployed image needs no sibling
+  * checkout. These pins are therefore also its freshness guard — any silent edit to the shipped
+  * resource moves a policy id and fails here.
   *
   * Refreshed 2026-07-20 (Route-1 alignment) to the current ft blueprint: the 17-field ConfigDatum
   * (upstream's `initial_btc_treasury_utxo` #11 + our tunables #12-16) changed `config.config`'s
@@ -31,11 +36,8 @@ import scalus.uplc.builtin.ByteString
   */
 class BifrostContractsTest extends AnyFunSuite {
 
-    private val blueprint = BifrostBlueprint.fromString(
-      scala.io.Source
-          .fromInputStream(getClass.getResourceAsStream("/bifrost-plutus-min.json"))
-          .mkString
-    )
+    // The SAME object the runtime falls back to, so these pins lock what a deployed binary uses.
+    private val blueprint = BifrostBlueprint.packaged
 
     // Exact inputs from the live deploy.
     private val oraclePolicy =

@@ -28,11 +28,53 @@ final class BifrostBlueprint(json: ujson.Value) {
 }
 
 object BifrostBlueprint {
+
+    /** Classpath path of the blueprint vendored into binocular's own jar. */
+    val PackagedResource = "/bifrost-plutus-min.json"
+
     def fromFile(path: String): BifrostBlueprint =
         fromString(Files.readString(Paths.get(path)))
 
     def fromString(json: String): BifrostBlueprint =
         new BifrostBlueprint(ujson.read(json))
+
+    /** The blueprint vendored as a jar resource: the `compiledCode` of every ft-bifrost-bridge
+      * validator binocular applies parameters to, copied byte for byte from
+      * `ft-bifrost-bridge/onchain/plutus.json`.
+      *
+      * It exists so nothing at runtime depends on a sibling ft checkout. A Docker image or a
+      * systemd unit has no `../../…/plutus.json`, and the confirm worker must derive the
+      * completed-peg-outs trie validator on every startup — without this it would crash-loop.
+      *
+      * Freshness is guarded by `BifrostContractsTest`: its pinned policy ids are computed from THIS
+      * resource, so any silent drift between it and ft's blueprint breaks the pins.
+      */
+    def packaged: BifrostBlueprint = {
+        val stream = getClass.getResourceAsStream(PackagedResource)
+        if stream == null then
+            throw new IllegalStateException(
+              s"Blueprint resource $PackagedResource not found on the classpath — the jar is built wrong"
+            )
+        try fromString(scala.io.Source.fromInputStream(stream).mkString)
+        finally stream.close()
+    }
+
+    /** Resolve the blueprint to use, preferring an on-disk override.
+      *
+      * `path` is `bridge.plutus-json` (env `BIFROST_PLUTUS_JSON`), whose default points at a
+      * sibling ft checkout. When that file EXISTS it wins, so a developer working on the Aiken
+      * validators sees their edits immediately. When it does not — the normal state of a deployed
+      * image — the [[packaged]] resource is used, and startup succeeds.
+      *
+      * Returns the blueprint and a human-readable description of where it came from, so every
+      * command can log which one it used instead of leaving it ambiguous.
+      */
+    def resolve(path: String): (BifrostBlueprint, String) = {
+        val trimmed = Option(path).map(_.trim).getOrElse("")
+        if trimmed.nonEmpty && Files.isReadable(Paths.get(trimmed)) then
+            (fromFile(trimmed), trimmed)
+        else (packaged, s"packaged $PackagedResource")
+    }
 }
 
 /** The `peg_in_validator` parameterized with its three on-chain params. The script hash is the

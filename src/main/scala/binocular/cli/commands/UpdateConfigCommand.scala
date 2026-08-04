@@ -21,8 +21,10 @@ import cats.syntax.either.*
 /** Update the deployed bridge Config UTxO in place (config.ak `Update` redeemer) — the migration
   * path that avoids redeploying the bridge:
   *
-  *   - sets/appends field 11 (`initial_btc_treasury_utxo`) — the 36-byte anchor outpoint the FIRST
-  *     Treasury Movement must spend (re-runnable: re-anchors an already-updated config);
+  *   - optionally sets/appends field 11 (`initial_btc_treasury_utxo`) — the 36-byte anchor outpoint
+  *     the FIRST Treasury Movement must spend (re-runnable: re-anchors an already-updated config).
+  *     OMIT it to leave the deployed anchor untouched: rewriting field 11 re-anchors the whole TM
+  *     chain, so an unrelated hash swap must not have to restate it;
   *   - optionally swaps field 3 (`completed_peg_outs_merkle_tree_policy_id`) to the rewritten trie
   *     validator's policy;
   *   - optionally swaps field 4 (`peg_in_withdraw_script_hash`) to a new peg-in hash (needed when
@@ -49,7 +51,7 @@ import cats.syntax.either.*
   * cpi and cpo) and the config NFT asset name.
   */
 case class UpdateConfigCommand(
-    initialBtcTreasuryUtxo: String,
+    initialBtcTreasuryUtxo: Option[String],
     pegInWithdrawHash: Option[String],
     completedPegOutsPolicy: Option[String] = None,
     pegOutWithdrawHash: Option[String] = None,
@@ -70,12 +72,18 @@ case class UpdateConfigCommand(
         val provider = setup.provider
         val network = setup.network
 
-        val anchor =
-            try BridgeConfig.outpointFromDisplay(initialBtcTreasuryUtxo.trim)
-            catch {
-                case e: IllegalArgumentException =>
-                    Console.error(s"--initial-btc-treasury-utxo: ${e.getMessage}")
-                    break(1)
+        // The anchor is OPTIONAL. Field 11 is the outpoint the FIRST Treasury Movement must spend,
+        // so rewriting it re-anchors the whole TM chain. Making it mandatory meant every unrelated
+        // update (a hash swap) had to restate it, and a typo would silently re-anchor. Omitted now
+        // means: leave the deployed field 11 exactly as it is.
+        val anchor: Option[ByteString] =
+            initialBtcTreasuryUtxo.map(_.trim).filter(_.nonEmpty).map { s =>
+                try BridgeConfig.outpointFromDisplay(s)
+                catch {
+                    case e: IllegalArgumentException =>
+                        Console.error(s"--initial-btc-treasury-utxo: ${e.getMessage}")
+                        break(1)
+                }
             }
         // Every swappable field holds a 28-byte script hash; reject anything else up front rather
         // than writing an undecodable datum that only fails when a validator later reads it.
@@ -91,6 +99,16 @@ case class UpdateConfigCommand(
         val newPegInHash = scriptHashArg("--peg-in-withdraw-hash", pegInWithdrawHash)
         val newCpoPolicy = scriptHashArg("--completed-peg-outs-policy", completedPegOutsPolicy)
         val newPegOutHash = scriptHashArg("--peg-out-withdraw-hash", pegOutWithdrawHash)
+        // With every option now optional, a bare `update-config` would spend and recreate the config
+        // UTxO with an identical datum — a fee for nothing, and a needless spend of the config NFT.
+        if anchor.isEmpty && newPegInHash.isEmpty && newCpoPolicy.isEmpty && newPegOutHash.isEmpty
+        then {
+            Console.error(
+              "Nothing to update. Pass at least one of --initial-btc-treasury-utxo, " +
+                  "--completed-peg-outs-policy, --peg-in-withdraw-hash, --peg-out-withdraw-hash."
+            )
+            break(1)
+        }
 
         // Rebuild the config script from the bootstrap one-shot + config NFT asset name.
         val oneShotStr = config.bridge.completedPegInsOneShotRef.trim
@@ -103,15 +121,13 @@ case class UpdateConfigCommand(
                 )
                 break(1)
         }
-        val blueprint =
-            try BifrostBlueprint.fromFile(config.bridge.plutusJson)
+        val (blueprint, blueprintSource) =
+            try BifrostBlueprint.resolve(config.bridge.plutusJson)
             catch {
                 case e: Exception =>
-                    Console.error(
-                      s"Loading bridge blueprint (${config.bridge.plutusJson}): ${e.getMessage}"
-                    )
-                    break(1)
+                    Console.error(s"Loading bridge blueprint: ${e.getMessage}"); break(1)
             }
+        Console.info("blueprint", blueprintSource)
         val configNftAssetName = ByteString.fromHex(config.bridge.configNftAssetName)
         val configContract = ConfigContract(
           blueprint,
@@ -196,7 +212,7 @@ case class UpdateConfigCommand(
         )
         Console.info("old fields", oldFields.size.toString)
         Console.info("new fields", newFields.size.toString)
-        Console.info("anchor (field 11)", anchor.toHex)
+        Console.info("anchor (field 11)", anchor.fold("unchanged")(_.toHex))
         newCpoPolicy.foreach(h => Console.info("new completed-peg-outs policy (field 3)", h.toHex))
         newPegInHash.foreach(h => Console.info("new peg-in hash (field 4)", h.toHex))
         newPegOutHash.foreach(h => Console.info("new peg-out hash (field 5)", h.toHex))
@@ -260,6 +276,9 @@ object UpdateConfigCommand {
       * 11-field (pre-migration) datum gets the anchor appended; a 12-or-more-field datum gets it
       * replaced (re-anchoring). Fields beyond 11 are carried over verbatim.
       *
+      * `anchor = None` leaves field 11 exactly as it was, so a hash-only migration cannot re-anchor
+      * the TM chain by accident. On an 11-field datum that means no field 11 is added.
+      *
       * @param newCpoPolicy
       *   field 3, `completed_peg_outs_merkle_tree_policy_id`.
       * @param newPegInHash
@@ -272,14 +291,15 @@ object UpdateConfigCommand {
         newCpoPolicy: Option[ByteString],
         newPegInHash: Option[ByteString],
         newPegOutHash: Option[ByteString],
-        anchor: ByteString
+        anchor: Option[ByteString]
     ): List[Data] = {
         require(fields.size >= 11, s"config datum has ${fields.size} fields, expected >= 11")
         val swaps = List(3 -> newCpoPolicy, 4 -> newPegInHash, 5 -> newPegOutHash)
         val swapped = swaps.foldLeft(fields) { case (fs, (idx, v)) =>
             v.fold(fs)(h => fs.updated(idx, Data.B(h)))
         }
-        if swapped.size == 11 then swapped :+ Data.B(anchor)
-        else swapped.updated(11, Data.B(anchor))
+        anchor.fold(swapped)(a =>
+            if swapped.size == 11 then swapped :+ Data.B(a) else swapped.updated(11, Data.B(a))
+        )
     }
 }

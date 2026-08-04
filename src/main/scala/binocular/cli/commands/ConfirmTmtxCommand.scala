@@ -108,14 +108,14 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         // --- completed-peg-outs trie wiring (rebuilt per cycle; the scripts are fixed) ---
         // The trie validator takes (TM script hash, one-shot ref). Its hash must equal Config
         // field 3, which is checked against the live config each cycle.
-        val bridgeBlueprint =
-            try BifrostBlueprint.fromFile(config.bridge.plutusJson)
+        // Defaults to the blueprint vendored in binocular's own jar, so a Docker image or a
+        // systemd unit with no sibling ft checkout still starts. `bridge.plutus-json` /
+        // BIFROST_PLUTUS_JSON overrides it when the file exists (development).
+        val (bridgeBlueprint, blueprintSource) =
+            try BifrostBlueprint.resolve(config.bridge.plutusJson)
             catch {
                 case e: Exception =>
-                    Console.error(
-                      s"Loading bridge blueprint (${config.bridge.plutusJson}): ${e.getMessage}"
-                    )
-                    break(1)
+                    Console.error(s"Loading bridge blueprint: ${e.getMessage}"); break(1)
             }
         val cpoOneShot = config.bridge.completedPegOutsOneShotRef
             .map(_.trim)
@@ -163,6 +163,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         Console.info("Oracle policy", oraclePolicyId.toHex)
         Console.info("TM validator", tmScript.scriptHash.toHex)
         Console.info("TM address", tmAddress.encode.getOrElse("?"))
+        Console.info("bridge blueprint", blueprintSource)
         Console.info("completed-peg-outs policy", trieScript.scriptHash.toHex)
         Console.separator()
         println()
@@ -243,9 +244,23 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                               timeout
                             ) match {
                                 case Left(err) =>
+                                    // This halts confirming for EVERY TM, indefinitely, and every
+                                    // cause needs an operator (run the migration Update, restore a
+                                    // GC'd record, fix the one-shot ref). So it is paged, not only
+                                    // logged. The notifier debounces repeats, so a stuck watchtower
+                                    // does not spam.
                                     Console.logError(
                                       s"  completed-peg-outs trie unavailable: $err — will retry"
                                     )
+                                    notifier.error(
+                                      "confirm",
+                                      s"completed-peg-outs trie unavailable — TM confirming is " +
+                                          s"HALTED until this is fixed: $err"
+                                    )
+                                    // --dry-run is a preflight check, so a broken trie context must
+                                    // be a non-zero exit: it is exactly the state that says the
+                                    // field-3 migration has not been applied yet.
+                                    if dryRun then break(1)
                                 case Right(trieCtx) =>
                                     // The trie UTxO is a single shared input, so at most ONE TM can
                                     // be confirmed per tx. After a submitted confirm the trie UTxO
@@ -450,7 +465,9 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                 // under a different value means the TM can never confirm.
                 //
                 // Computed BEFORE the Bitcoin proof: it is deterministic and free, so a TM that can
-                // never confirm is reported and skipped without a node round-trip.
+                // never confirm is reported and skipped without a node round-trip. The match below
+                // is NESTED for exactly that reason — a single match on a `(trieResult, proofResult)`
+                // tuple would build the tuple first and defeat the ordering.
                 val trieResult = for {
                     pairs <- CompletedPegOutsTrie.pairsOf(fulfilled.asScala.toSeq)
                     built <- CompletedPegOutsTrie.buildSteps(trieCtx.tree, pairs)
@@ -464,7 +481,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                 // would be retried forever). Only on-chain evidence of a spent input marks it
                 // dead; transport errors and failed liveness checks always stay retryable.
                 // Catch per-UTxO so one bad TM never aborts the whole confirm batch.
-                lazy val proofResult =
+                def proofResult =
                     try TmProofBundle.produce(rpc, obMpf, displayTxid).await(timeout)
                     catch {
                         case t: Throwable if TmLiveness.isTxUnknown(t) =>
@@ -484,85 +501,98 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                               s"BTC tx $displayTxid lookup failed (${t.getMessage}) — will retry"
                             )
                     }
-                (trieResult, proofResult) match {
-                    case (Left(err), _) =>
+                trieResult match {
+                    case Left(err) =>
                         Console.logError(s"    $utxoRef: unconfirmable TM — $err")
                         processed(utxoRef) = "skip:trie"
-                    case (_, Left(err)) =>
-                        Console.log(s"    not ready: $err")
-                    case (Right((steps, endTree)), Right(tm)) =>
-                        val redeemer: Data = TmConfirmRedeemer(
-                          txIndex = BigInt(tm.txIndex),
-                          txMerkleProof = ScalusList.from(tm.txInBlockMerklePath.toList),
-                          blockMpfProof = tm.mpfHeaderInclusionProof,
-                          blockHeader = binocular.oracle.BlockHeader(tm.blockHeader),
-                          pegOutSteps = ScalusList.from(steps)
-                        ).toData
-                        val trieSpend = TreasuryMovementTx.TrieSpend(
-                          utxo = trieCtx.trieUtxo,
-                          script = trieCtx.trieScript,
-                          newDatum = CompletedPegOutsTrieDatum(endTree.rootHash).toData
-                        )
-                        val confirmed: Data =
-                            (TmDatum.Confirmed(
-                              txid,
-                              swept,
-                              fulfilled,
-                              spentViaFederationLeaf,
-                              unconfirmedDatum.creator,
-                              unconfirmedDatum.created,
-                              unconfirmedDatum.epoch,
-                              unconfirmedDatum.leaderReward
-                            ): TmDatum).toData
+                    case Right((steps, endTree)) =>
+                        proofResult match {
+                            case Left(err) =>
+                                Console.log(s"    not ready: $err")
+                            case Right(tm) =>
+                                val redeemer: Data = TmConfirmRedeemer(
+                                  txIndex = BigInt(tm.txIndex),
+                                  txMerkleProof = ScalusList.from(tm.txInBlockMerklePath.toList),
+                                  blockMpfProof = tm.mpfHeaderInclusionProof,
+                                  blockHeader = binocular.oracle.BlockHeader(tm.blockHeader),
+                                  pegOutSteps = ScalusList.from(steps)
+                                ).toData
+                                val trieSpend = TreasuryMovementTx.TrieSpend(
+                                  utxo = trieCtx.trieUtxo,
+                                  script = trieCtx.trieScript,
+                                  newDatum = CompletedPegOutsTrieDatum(endTree.rootHash).toData
+                                )
+                                val confirmed: Data =
+                                    (TmDatum.Confirmed(
+                                      txid,
+                                      swept,
+                                      fulfilled,
+                                      spentViaFederationLeaf,
+                                      unconfirmedDatum.creator,
+                                      unconfirmedDatum.created,
+                                      unconfirmedDatum.epoch,
+                                      unconfirmedDatum.leaderReward
+                                    ): TmDatum).toData
 
-                        Console.log(
-                          s"    trie: ${steps.size} peg-out step(s), " +
-                              s"root ${trieCtx.tree.rootHash.toHex} -> ${endTree.rootHash.toHex}"
-                        )
+                                Console.log(
+                                  s"    trie: ${steps.size} peg-out step(s), " +
+                                      s"root ${trieCtx.tree.rootHash.toHex} -> ${endTree.rootHash.toHex}"
+                                )
 
-                        if dryRun then {
-                            Console.logSuccess(s"    [dry-run] would confirm  spent=$utxoRef")
-                            confirmSummaryLines(displayTxid, tm, swept, fulfilled, cardanoTx = None)
-                                .foreach(l => Console.log(s"    $l"))
-                            processed(utxoRef) = "dry-run"
-                        } else
-                            TreasuryMovementTx.buildAndSubmitConfirm(
-                              provider,
-                              hdAccount,
-                              tmScript,
-                              tmAddress,
-                              utxo,
-                              oracleUtxo,
-                              trieCtx.configUtxo,
-                              trieSpend,
-                              redeemer,
-                              confirmed,
-                              timeout,
-                              debugTmScript
-                            ) match {
-                                case Right(hash) =>
-                                    submitted = true
-                                    Console.logSuccess(s"    TM confirmed  spent=$utxoRef")
+                                if dryRun then {
+                                    Console.logSuccess(
+                                      s"    [dry-run] would confirm  spent=$utxoRef"
+                                    )
                                     confirmSummaryLines(
                                       displayTxid,
                                       tm,
                                       swept,
                                       fulfilled,
-                                      cardanoTx = Some(hash)
-                                    ).foreach(l => Console.log(s"    $l"))
-                                    processed(utxoRef) = hash
-                                    notifier.success(
-                                      "confirm",
-                                      s"TM confirmed on Cardano — btc txid `$displayTxid`, " +
-                                          s"cardano tx `$hash` ($utxoRef)"
+                                      cardanoTx = None
                                     )
-                                case Left(err) =>
-                                    // The trie UTxO may or may not have been consumed: a build or
-                                    // submit failure never spends it, and a submitted-then-rejected
-                                    // tx does not either. Treat it as unspent and let the next
-                                    // cycle re-read the chain.
-                                    Console.logError(s"    Confirm failed: $err — will retry")
-                            }
+                                        .foreach(l => Console.log(s"    $l"))
+                                    processed(utxoRef) = "dry-run"
+                                } else
+                                    TreasuryMovementTx.buildAndSubmitConfirm(
+                                      provider,
+                                      hdAccount,
+                                      tmScript,
+                                      tmAddress,
+                                      utxo,
+                                      oracleUtxo,
+                                      trieCtx.configUtxo,
+                                      trieSpend,
+                                      redeemer,
+                                      confirmed,
+                                      timeout,
+                                      debugTmScript
+                                    ) match {
+                                        case Right(hash) =>
+                                            submitted = true
+                                            Console.logSuccess(s"    TM confirmed  spent=$utxoRef")
+                                            confirmSummaryLines(
+                                              displayTxid,
+                                              tm,
+                                              swept,
+                                              fulfilled,
+                                              cardanoTx = Some(hash)
+                                            ).foreach(l => Console.log(s"    $l"))
+                                            processed(utxoRef) = hash
+                                            notifier.success(
+                                              "confirm",
+                                              s"TM confirmed on Cardano — btc txid `$displayTxid`, " +
+                                                  s"cardano tx `$hash` ($utxoRef)"
+                                            )
+                                        case Left(err) =>
+                                            // The trie UTxO may or may not have been consumed: a build or
+                                            // submit failure never spends it, and a submitted-then-rejected
+                                            // tx does not either. Treat it as unspent and let the next
+                                            // cycle re-read the chain.
+                                            Console.logError(
+                                              s"    Confirm failed: $err — will retry"
+                                            )
+                                    }
+                        }
                 }
             }
         }

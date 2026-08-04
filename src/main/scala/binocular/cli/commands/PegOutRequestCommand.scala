@@ -107,12 +107,13 @@ case class PegOutRequestCommand(
         val sponsorAddress = setup.sponsorAddress
         val oraclePolicyId = ByteString.fromArray(setup.script.scriptHash.bytes)
 
-        val blueprint =
-            try BifrostBlueprint.fromFile(config.bridge.plutusJson)
+        val (blueprint, blueprintSource) =
+            try BifrostBlueprint.resolve(config.bridge.plutusJson)
             catch {
                 case e: Exception =>
                     Console.error(s"Loading bridge blueprint: ${e.getMessage}"); break(1)
             }
+        Console.info("blueprint", blueprintSource)
 
         val configNftPolicy =
             hexBytes("bridge.config-nft-policy-id", config.bridge.configNftPolicyId, Some(56))

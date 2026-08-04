@@ -65,7 +65,7 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
     // Bridged-token asset name.
     private val BridgedTokenAssetName: ByteString = ByteString.fromString("fSAT")
     private val Dummy28: ByteString = ByteString.fromArray(Array.fill[Byte](28)(0))
-    private val EmptyRoot: ByteString = ByteString.fromArray(Array.fill[Byte](32)(0))
+    private val EmptyRoot: ByteString = BridgeBootstrap.EmptyRoot
 
     override def execute(config: BinocularConfig): Int = boundary {
         Console.header("Deploy Bifrost Bridge Contracts (F3)")
@@ -104,15 +104,13 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
                     break(1)
             }
 
-        val blueprint =
-            try BifrostBlueprint.fromFile(config.bridge.plutusJson)
+        val (blueprint, blueprintSource) =
+            try BifrostBlueprint.resolve(config.bridge.plutusJson)
             catch {
                 case e: Exception =>
-                    Console.error(
-                      s"Loading bridge blueprint (${config.bridge.plutusJson}): ${e.getMessage}"
-                    )
-                    break(1)
+                    Console.error(s"Loading bridge blueprint: ${e.getMessage}"); break(1)
             }
+        Console.info("blueprint", blueprintSource)
 
         def refOf(u: Utxo): TxOutRef =
             TxOutRef(TxId(u.input.transactionId), u.input.index)
@@ -139,20 +137,13 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
             CommandHelpers.refScriptOutpoints(config, sponsorAddress.encode.getOrElse("")) ++
                 staleOneShot
 
-        def cleanCandidates(utxos: List[Utxo]): List[Utxo] =
-            utxos
-                .filter(u =>
-                    u.output.value.assets.isEmpty && u.output.value.coin.value >= 5_000_000L
-                )
-                .filterNot(u => excludedInputs.contains(u.input))
-                .sortBy(-_.output.value.coin.value)
-
         val signer = setup.hdAccount.signerForUtxos
 
         // The whole bridge is bootstrapped in ONE tx that spends a single one-shot UTxO. Every
         // protocol NFT policy (config, cpi, cpo, tm-control) is parameterized by that same outref,
         // so they get distinct policy ids while all their mint handlers see the one UTxO consumed.
-        val oneShotUtxo = cleanCandidates(walletUtxos).headOption.getOrElse {
+        // Selection rule shared with `bootstrap-completed-peg-outs`.
+        val oneShotUtxo = BridgeBootstrap.pickOneShot(walletUtxos, excludedInputs).getOrElse {
             Console.error(
               "No clean pure-ADA wallet UTxO (>=5 ADA, excluding reference-script UTxOs) for the " +
                   "bridge one-shot; fund the sponsor wallet"
@@ -310,9 +301,11 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
         val configValue =
             Value.lovelace(2_000_000L) + Value.asset(configContract.policyId, configAsset, 1L)
         val cpiValue = Value.lovelace(2_000_000L) + Value.asset(cpiContract.policyId, cpiAsset, 1L)
-        val cpoValue = Value.lovelace(2_000_000L) + Value.asset(cpoContract.policyId, cpoAsset, 1L)
         val cpiDatum = CompletedPegInsMerkleTreeDatum(EmptyRoot)
-        val cpoDatum = CompletedPegOutsMerkleTreeDatum(EmptyRoot)
+        // Shared with `bootstrap-completed-peg-outs`, so a bridge deployed here and a trie re-minted
+        // during the field-3 migration produce a byte-identical trie output.
+        val (cpoAddress, cpoValue, cpoDatum) =
+            BridgeBootstrap.completedPegOutsOutput(cpoContract, network)
         val bootstrapTx =
             try
                 TxBuilder(provider.cardanoInfo)
@@ -323,7 +316,7 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
                     // config UTxO first (config.ak::mint reads self.outputs[0]).
                     .payTo(configContract.address(network), configValue, configDatum.toData)
                     .payTo(cpiContract.address(network), cpiValue, cpiDatum.toData)
-                    .payTo(cpoContract.address(network), cpoValue, cpoDatum.toData)
+                    .payTo(cpoAddress, cpoValue, cpoDatum)
                     // Register the peg_in / peg_out withdraw reward accounts here (deposit-less
                     // Shelley RegCert, no script execution) so completion txs can withdraw. Both
                     // hashes are fresh per deploy (they derive from this deploy's config policy), so
