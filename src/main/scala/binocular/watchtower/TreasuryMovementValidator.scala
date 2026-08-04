@@ -101,6 +101,41 @@ enum TmDatum derives FromData, ToData {
 @Compile
 object TmDatum
 
+/** One step of the completed-peg-outs trie fold: exactly one per `(payment, marker)` output pair of
+  * the confirmed TM, in Bitcoin output order.
+  *
+  *   - [[Insert]] — the normal case: insert `por_id -> dest_spk ++ amount_le8` into the trie. The
+  *     MPF `insert` proves the key was ABSENT and yields the new root.
+  *   - [[AlreadyPresent]] — tolerance: the key is already in the trie WITH THE SAME VALUE (an SPO
+  *     double-fulfillment bug paid the same PegOutRequest in two TMs). The step verifies membership
+  *     and leaves the root unchanged.
+  *
+  * Why [[AlreadyPresent]] exists: `insert` FAILS on a present key. Without this variant a duplicate
+  * marker would make the TM permanently unconfirmable, and every peg-in that TM swept would be
+  * stranded (peg-in Complete needs a `Confirmed` TM record). Accepting the duplicate is safe: the
+  * value must match byte for byte, so the trie content is unchanged and no peg-out gains a second
+  * completion (peg-out Complete burns the request's whole fBTC locking, once).
+  */
+enum PegOutTrieStep derives FromData, ToData {
+    case Insert(proof: ScalusList[ProofStep])
+    case AlreadyPresent(proof: ScalusList[ProofStep])
+}
+
+@Compile
+object PegOutTrieStep
+
+/** Scalus mirror of `completed-peg-outs-merkle-tree.ak::CompletedPegOutsMerkleTreeDatum` — the MPF
+  * root of the completed peg-outs. Bootstrapped with the empty root (32 zero bytes), then spent and
+  * recreated by every TM Confirm that fulfills at least one peg-out.
+  *
+  * Kept HERE, not in `ConfigTypes.scala`, because this validator is the only writer and the file's
+  * `@Compile` companion is what lets the Confirm branch decode it on-chain.
+  */
+case class CompletedPegOutsTrieDatum(root: ByteString) derives FromData, ToData
+
+@Compile
+object CompletedPegOutsTrieDatum
+
 /** Redeemer for the Confirm transition.
   *
   * @param txIndex
@@ -112,12 +147,16 @@ object TmDatum
   * @param blockHeader
   *   the 80-byte Bitcoin block header (its merkle-root is checked, and it must hash to the
   *   oracle-confirmed block hash).
+  * @param pegOutSteps
+  *   one completed-peg-outs trie step per `(payment, POR marker)` output pair of the TM, in output
+  *   order. A TM that fulfills no peg-out carries an empty list.
   */
 case class TmConfirmRedeemer(
     txIndex: BigInt,
     txMerkleProof: ScalusList[ByteString],
     blockMpfProof: ScalusList[ProofStep],
-    blockHeader: BlockHeader
+    blockHeader: BlockHeader,
+    pegOutSteps: ScalusList[PegOutTrieStep]
 ) derives FromData,
       ToData
 
@@ -159,6 +198,9 @@ enum TmMintRedeemer derives FromData, ToData {
   *      TM identity token rides along), and carries a `Confirmed` datum whose `btcTxid` /
   *      `sweptPegInUtxoIds` / `fulfilledPegOuts` are exactly what the contract parsed out of the
   *      raw TM transaction.
+  *   6. the completed-peg-outs trie UTxO (policy from Config field 3, asset name `"CPO"`) is spent
+  *      and recreated at the same address with the root folded over the TM's `(payment, POR
+  *      marker)` output pairs — see [[foldCompletedPegOuts]].
   *
   * That `signedBtcTx` is the protocol's real Treasury Movement transaction is enforced at MINT time
   * (see [[TmMintRedeemer]]): the minted TM NFT is bound to an `Unconfirmed` output whose embedded
@@ -192,6 +234,85 @@ object TreasuryMovementValidator {
       * BigInt arithmetic — the equivalent Int literal product (30*24*3600*1000) overflows Int32.
       */
     val GcGraceMs: BigInt = BigInt(30) * 24 * 3600 * 1000 // 30 days
+
+    /** First 5 bytes of a POR marker `scriptPubKey`: `OP_RETURN OP_PUSHBYTES_35 "POR"`. The 35-byte
+      * push is `"POR" ++ por_id`, so the whole script is 37 bytes ([[PorMarkerScriptLength]]).
+      *
+      * Why `"POR"` and not the peg-in `"BFR"` prefix: watchtowers detect peg-in deposits by
+      * scanning for `"BFR"`-prefixed OP_RETURN outputs, and a TM pays the treasury address, so a
+      * `"BFR"` marker inside a TM could be misdetected as a deposit.
+      */
+    val PorMarkerPrefix: ByteString = hex"6a23504f52"
+
+    /** Length in bytes of a well-formed POR marker `scriptPubKey` (2 opcodes + 35 payload). */
+    val PorMarkerScriptLength: BigInt = 37
+
+    /** Asset name of the completed-peg-outs trie NFT. Mirrors
+      * `bifrost/constants.ak::completed_peg_outs_root_asset_name`.
+      */
+    val CompletedPegOutsAssetName: ByteString = ByteString.fromString("CPO")
+
+    /** Is this `scriptPubKey` a POR marker? Length AND prefix, so a short script cannot slice past
+      * its end and a 37-byte payment script cannot masquerade as a marker.
+      */
+    def isPorMarker(scriptPubKey: ByteString): Boolean =
+        scriptPubKey.length == PorMarkerScriptLength &&
+            scriptPubKey.slice(0, 5) == PorMarkerPrefix
+
+    /** The 32-byte POR id committed by a marker `scriptPubKey` (assumes [[isPorMarker]]). */
+    def porMarkerId(scriptPubKey: ByteString): ByteString = scriptPubKey.slice(5, 32)
+
+    /** Fold the completed-peg-outs trie root over the TM's `(payment, POR marker)` output pairs.
+      *
+      * `outs` is the TM's parsed output list WITHOUT the leading treasury change output. By the
+      * deterministic TM layout the remainder is `[payment, marker, payment, marker, ...]`: output
+      * `2i+1` pays a peg-out destination, output `2i+2` is that payment's `"POR"` marker. Each pair
+      * consumes exactly one [[PegOutTrieStep]] from `steps`, in the same order.
+      *
+      * The trie key is the marker's POR id; the value is `dest_spk ++ amount_le8` — the payment
+      * output's raw `scriptPubKey` concatenated with its satoshi amount as 8 LITTLE-endian bytes.
+      * `peg-out.ak`'s Complete branch rebuilds exactly this value from the request datum
+      * (`source_chain_destination_address` and `locked − per_pegout_fee`) and proves membership, so
+      * ANY divergence here breaks peg-out completion.
+      *
+      * Fails on: an odd remainder (a payment with no marker), a marker in a payment position, a
+      * non-marker in a marker position, and any step-count mismatch. Such a TM must never be signed
+      * — a signed one is unconfirmable, which is why heimdall's builder is the enforcement point.
+      */
+    def foldCompletedPegOuts(
+        root: MPF,
+        outs: ScalusList[PegOutEntry],
+        steps: ScalusList[PegOutTrieStep]
+    ): MPF = outs match
+        case ScalusList.Nil =>
+            steps match
+                case ScalusList.Nil => root
+                case _              => fail("TM confirm: more trie steps than marker pairs")
+        case ScalusList.Cons(payment, rest1) =>
+            require(
+              !isPorMarker(payment.scriptPubKey),
+              "TM confirm: POR marker in a payment position"
+            )
+            rest1 match
+                case ScalusList.Nil => fail("TM confirm: odd output count after the change output")
+                case ScalusList.Cons(marker, rest2) =>
+                    require(
+                      isPorMarker(marker.scriptPubKey),
+                      "TM confirm: payment output without a POR marker"
+                    )
+                    val key = porMarkerId(marker.scriptPubKey)
+                    val value =
+                        payment.scriptPubKey ++ integerToByteString(false, 8, payment.amount)
+                    steps match
+                        case ScalusList.Nil => fail("TM confirm: missing trie step for a pair")
+                        case ScalusList.Cons(step, moreSteps) =>
+                            val next = step match
+                                case PegOutTrieStep.Insert(proof) => root.insert(key, value, proof)
+                                case PegOutTrieStep.AlreadyPresent(proof) =>
+                                    // Same key AND same value: the root is provably unchanged.
+                                    root.verifyMembership(key, value, proof)
+                                    root
+                            foldCompletedPegOuts(next, rest2, moreSteps)
 
     /** All input outpoints (prev_txid(32) ++ prev_vout(4), 36 bytes each) of a raw Bitcoin tx, in
       * input order. These are the `sweptPegInUtxoIds` of a TM (the old treasury input is included —
@@ -285,6 +406,8 @@ object TreasuryMovementValidator {
 
     def spend(
         oracleScriptHash: ByteString,
+        configNftPolicy: ByteString,
+        configNftName: ByteString,
         datumOpt: Option[Datum],
         tx: TxInfo,
         ownRef: TxOutRef,
@@ -379,6 +502,56 @@ object TreasuryMovementValidator {
                 require(
                   exp === contOut.datum,
                   "Continuing output datum does not match parsed TM Confirmed"
+                )
+
+                // 7. Completed-peg-outs trie update. The TM's Bitcoin outputs after the treasury
+                // change come in (payment, marker) pairs; the marker commits the POR id of the
+                // PegOutRequest that payment fulfills. Fold those pairs into the trie root and
+                // require the continuing trie output to carry the folded root.
+                //
+                // Why here and not in peg-out.ak: the ONLY place the protocol learns which Bitcoin
+                // payment settles which peg-out request is the FROST-signed TM itself. Recording it
+                // at Confirm makes peg-out Complete a single MPF membership proof, with no need to
+                // re-parse the raw TM.
+                //
+                // The trie UTxO must be SPENT here (not referenced): its own Aiken validator
+                // (`completed-peg-outs-merkle-tree.ak`) gates its spend on exactly this transition
+                // — a TM-NFT input with a tag-0 datum plus a TM-NFT output with a tag-1 datum — and
+                // delegates root correctness to this check.
+                val cfgOut = tx.referenceInputs
+                    .find(refIn =>
+                        refIn.resolved.value
+                            .quantityOf(configNftPolicy, configNftName) == BigInt(1)
+                    )
+                    .getOrFail("TM confirm: no config reference input")
+                    .resolved
+                // Config field 3. Read at RUNTIME, not applied as a parameter: the trie script
+                // takes THIS script's hash as its own parameter, so a compile-time link would be a
+                // parameterization cycle.
+                val triePolicy = cfgOut.datum.of[ConfigDatum].completedPegOutsMerkleTreePolicyId
+                val trieIn = tx.inputs
+                    .find(inp =>
+                        inp.resolved.value
+                            .quantityOf(triePolicy, CompletedPegOutsAssetName) == BigInt(1)
+                    )
+                    .getOrFail("TM confirm: completed-peg-outs trie not spent")
+                    .resolved
+                val trieOut = tx.outputs
+                    .find(out =>
+                        out.value.quantityOf(triePolicy, CompletedPegOutsAssetName) == BigInt(1)
+                    )
+                    .getOrFail("TM confirm: no continuing completed-peg-outs output")
+                // The NFT must come back to the same script address, or the next TM could not find
+                // it and the trie would be permanently unspendable.
+                require(trieOut.address === trieIn.address, "TM confirm: trie address changed")
+                // `fulfilled.tail` drops output 0, the treasury change (never a marker). A TM that
+                // fulfills no peg-out has an empty tail and MUST carry an empty step list; its root
+                // is then unchanged, and the trie UTxO simply round-trips.
+                val startRoot = MPF(trieIn.datum.of[CompletedPegOutsTrieDatum].root)
+                val endRoot = foldCompletedPegOuts(startRoot, fulfilled.tail, proof.pegOutSteps)
+                require(
+                  trieOut.datum.of[CompletedPegOutsTrieDatum].root == endRoot.root,
+                  "TM confirm: trie root does not match the folded steps"
                 )
             case TmDatum.Confirmed(_, _, _, _, creator, created, _, _) =>
                 // Garbage collection: after the grace period the CREATOR may reclaim the record's
@@ -529,7 +702,15 @@ object TreasuryMovementValidator {
             case ScriptInfo.MintingScript(ownPolicyId) =>
                 mint(configNftPolicy, configNftName, ownPolicyId, ctx.txInfo, ctx.redeemer)
             case ScriptInfo.SpendingScript(ownRef, datumOpt) =>
-                spend(oracleScriptHash, datumOpt, ctx.txInfo, ownRef, ctx.redeemer)
+                spend(
+                  oracleScriptHash,
+                  configNftPolicy,
+                  configNftName,
+                  datumOpt,
+                  ctx.txInfo,
+                  ownRef,
+                  ctx.redeemer
+                )
             case _ => fail("TM validator: unsupported script purpose")
     }
 }

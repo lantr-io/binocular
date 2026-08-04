@@ -36,6 +36,10 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     private val tmScriptHash = filled(0xab, 28)
     private val configNftPolicy = filled(0xc0, 28)
     private val configNftName = ByteString.fromHex("434f4e464947") // "CONFIG"
+    // The completed-peg-outs trie: policy id published in Config field 3, asset name "CPO", and the
+    // UTxO sits at the trie script's own address (policy id == script hash).
+    private val triePolicy = filled(0xc2, 28)
+    private val cpoName = ByteString.fromString("CPO")
     // The TM UTxO carries the TM NFT (policy = the TM script's own hash — here the stand-in
     // `tmScriptHash` the input/output sit at — empty asset name, qty 1) plus some ADA. The spend
     // validator derives the NFT policy from the UTxO's own address and requires it on the continuing
@@ -51,17 +55,55 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     private def filled(v: Int, n: Int): ByteString =
         ByteString.fromArray(Array.fill[Byte](n)(v.toByte))
 
-    /** A 2-in / 2-out segwit tx (empty witnesses) with known outpoints and outputs. */
-    private val rawTm: ByteString = ByteString.fromHex(
-      "02000000" + "0001" + // version, marker+flag
-          "02" + // 2 inputs
-          ("aa" * 32) + "00000000" + "00" + "ffffffff" + // in0
-          ("bb" * 32) + "01000000" + "00" + "ffffffff" + // in1
-          "02" + // 2 outputs
-          "e803000000000000" + "16" + "0014" + ("11" * 20) + // out0: 1000 sats, P2WPKH
-          "d007000000000000" + "16" + "0014" + ("22" * 20) + // out1: 2000 sats, P2WPKH
-          "00" + "00" + // witnesses: 0 stack items per input
-          "00000000" // locktime
+    // --- raw TM builder -------------------------------------------------------------------------
+    // TM output layout: [0] = treasury change, then one (payment, "POR" marker) PAIR per fulfilled
+    // peg-out. The marker commits the POR id of the PegOutRequest the payment settles.
+
+    private val changeSpk = ByteString.fromHex("0014" + ("11" * 20))
+    private val paySpk1 = ByteString.fromHex("0014" + ("22" * 20))
+    private val paySpk2 = ByteString.fromHex("0014" + ("33" * 20))
+    private val paySpk3 = ByteString.fromHex("0014" + ("44" * 20))
+    private val porId1 = filled(0xd1, 32)
+    private val porId2 = filled(0xd2, 32)
+    private val porId3 = filled(0xd3, 32)
+
+    /** `OP_RETURN OP_PUSHBYTES_35 <tag ++ por_id>` — 37 script bytes. `tag` is "POR" (504f52) for a
+      * genuine marker; the wrong-prefix test passes the peg-in tag "BFR" (424652).
+      */
+    private def markerSpk(porId: ByteString, tag: String = "504f52"): ByteString =
+        ByteString.fromHex("6a23" + tag) ++ porId
+
+    /** A 2-in segwit tx (empty witnesses, fixed outpoints) with the given `(scriptPubKey, sats)`
+      * outputs.
+      */
+    private def rawTxWith(outs: List[(ByteString, BigInt)]): ByteString = {
+        val outsHex = outs.map { case (spk, amt) =>
+            integerToByteString(false, 8, amt).toHex + f"${spk.size}%02x" + spk.toHex
+        }.mkString
+        ByteString.fromHex(
+          "02000000" + "0001" + // version, marker+flag
+              "02" + // 2 inputs
+              ("aa" * 32) + "00000000" + "00" + "ffffffff" + // in0
+              ("bb" * 32) + "01000000" + "00" + "ffffffff" + // in1
+              f"${outs.size}%02x" + outsHex +
+              "00" + "00" + // witnesses: 0 stack items per input
+              "00000000" // locktime
+        )
+    }
+
+    /** The value a fulfilled peg-out records in the trie: `dest_spk ++ amount_le8`. Must match
+      * `peg-out.ak`'s Complete branch byte for byte, or completion breaks.
+      */
+    private def trieValue(spk: ByteString, amount: BigInt): ByteString =
+        spk ++ integerToByteString(false, 8, amount)
+
+    /** The default TM: treasury change + ONE fulfilled peg-out (payment + its POR marker). */
+    private val rawTm: ByteString = rawTxWith(
+      List(
+        (changeSpk, BigInt(1000)),
+        (paySpk1, BigInt(2000)),
+        (markerSpk(porId1), BigInt(0))
+      )
     )
 
     private val txid = BitcoinHelpers.getTxHash(rawTm)
@@ -93,9 +135,70 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     )
     private val expectedFulfilled: PList[PegOutEntry] = PList.from(
       List(
-        PegOutEntry(ByteString.fromHex("0014" + ("11" * 20)), BigInt(1000)),
-        PegOutEntry(ByteString.fromHex("0014" + ("22" * 20)), BigInt(2000))
+        PegOutEntry(changeSpk, BigInt(1000)),
+        PegOutEntry(paySpk1, BigInt(2000)),
+        PegOutEntry(markerSpk(porId1), BigInt(0))
       )
+    )
+
+    // --- completed-peg-outs trie fixtures --------------------------------------------------------
+
+    private val emptyTrie = OffChainMPF.empty
+    private val emptyRoot = emptyTrie.rootHash
+
+    /** Insert-fold `entries` into `start`: returns the matching redeemer steps and the new trie.
+      * Each `Insert` step carries the NON-membership proof taken against the trie state that step
+      * sees, exactly as an honest confirmer would build it.
+      */
+    private def insertSteps(
+        start: OffChainMPF,
+        entries: List[(ByteString, ByteString)]
+    ): (PList[PegOutTrieStep], OffChainMPF) = {
+        var trie = start
+        val steps = entries.map { case (k, v) =>
+            val step: PegOutTrieStep = PegOutTrieStep.Insert(trie.proveNonMembership(k))
+            trie = trie.insert(k, v)
+            step
+        }
+        (PList.from(steps), trie)
+    }
+
+    private val (defaultSteps, defaultTrie) =
+        insertSteps(emptyTrie, List((porId1, trieValue(paySpk1, BigInt(2000)))))
+    private val defaultEndRoot = defaultTrie.rootHash
+
+    private val trieAddress = Address(Credential.ScriptCredential(triePolicy), Option.None)
+
+    private def trieNftValue(policy: ByteString = triePolicy): Value =
+        Value.unsafeFromList(
+          PList(
+            (ByteString.empty, PList((ByteString.empty, BigInt(2_000_000)))),
+            (policy, PList((cpoName, BigInt(1))))
+          )
+        )
+
+    private def trieInput(
+        root: ByteString = emptyRoot,
+        value: Value = trieNftValue()
+    ): TxInInfo = TxInInfo(
+      outRef = TxOutRef(TxId(filled(0x06, 32)), BigInt(0)),
+      resolved = TxOut(
+        address = trieAddress,
+        value = value,
+        datum = OutputDatum.OutputDatum(CompletedPegOutsTrieDatum(root).toData),
+        referenceScript = Option.None
+      )
+    )
+
+    private def trieOutput(
+        root: ByteString,
+        value: Value = trieNftValue(),
+        address: Address = trieAddress
+    ): TxOut = TxOut(
+      address = address,
+      value = value,
+      datum = OutputDatum.OutputDatum(CompletedPegOutsTrieDatum(root).toData),
+      referenceScript = Option.None
     )
 
     private val ownRef = TxOutRef(TxId(filled(0x01, 32)), BigInt(0))
@@ -138,31 +241,109 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
       referenceScript = Option.None
     )
 
-    private def redeemer(proof: PList[ProofStep], txIndex: BigInt = 0): Data =
+    private def redeemer(
+        proof: PList[ProofStep],
+        txIndex: BigInt = 0,
+        pegOutSteps: PList[PegOutTrieStep] = defaultSteps
+    ): Data =
         TmConfirmRedeemer(
           txIndex = txIndex,
           txMerkleProof = PList.Nil,
           blockMpfProof = proof,
-          blockHeader = BlockHeader(blockHeader)
+          blockHeader = BlockHeader(blockHeader),
+          pegOutSteps = pegOutSteps
         ).toData
 
+    /** A Confirm ScriptContext over the default `rawTm` (one fulfilled peg-out). The trie UTxO is
+      * spent (empty root) and recreated with the root after inserting that peg-out, and the Config
+      * reference input publishes `triePolicy` at field 3.
+      */
     private def scriptContext(
         outValue: Value,
         outDatum: Data,
         rdmr: Data,
         oracleRef: TxInInfo = oracleRefInput(),
-        extraOutputs: PList[TxOut] = PList.Nil
+        extraOutputs: List[TxOut] = List.empty,
+        extraInputs: List[TxInInfo] = List(trieInput()),
+        trieOutputs: List[TxOut] = List(trieOutput(defaultEndRoot)),
+        cfgRefs: List[TxInInfo] = List(configRefInput())
     ): ScriptContext =
         ScriptContext(
           txInfo = TxInfo(
-            inputs = PList.from(List(tmInput(tmValue, unconfirmedDatum))),
-            referenceInputs = PList.from(List(oracleRef)),
-            outputs = PList.Cons(confirmedOutput(outValue, outDatum), extraOutputs),
+            inputs = PList.from(tmInput(tmValue, unconfirmedDatum) :: extraInputs),
+            referenceInputs = PList.from(oracleRef :: cfgRefs),
+            outputs = PList.from(
+              (confirmedOutput(outValue, outDatum) :: extraOutputs) ++ trieOutputs
+            ),
             id = TxId(filled(0x00, 32))
           ),
           redeemer = rdmr,
           scriptInfo = SpendingScript(ownRef, Option.Some(unconfirmedDatum))
         )
+
+    /** A Confirm ScriptContext for an ARBITRARY raw TM: derives its txid, wraps it in a single-tx
+      * block, builds the oracle state proving that block, reconstructs the expected `Confirmed`
+      * datum, and wires the trie in/out pair plus the Config reference input.
+      */
+    private def confirmContextFor(
+        rawTx: ByteString,
+        trieInRoot: ByteString,
+        trieOutRoot: ByteString,
+        steps: PList[PegOutTrieStep]
+    ): ScriptContext = {
+        val id = BitcoinHelpers.getTxHash(rawTx)
+        val hdr = ByteString.fromHex("01000000") ++ filled(0x00, 32) ++ id ++
+            ByteString.fromHex("00000000") ++ ByteString.fromHex("ffff7f20") ++
+            ByteString.fromHex("00000000")
+        val bh = BitcoinHelpers.blockHeaderHash(BlockHeader(hdr))
+        val obMpf = OffChainMPF.empty.insert(bh, bh)
+        val oracleRef = TxInInfo(
+          outRef = TxOutRef(TxId(filled(0x02, 32)), BigInt(0)),
+          resolved = TxOut(
+            address = Address(Credential.ScriptCredential(oracleHash), Option.None),
+            value = oracleNft,
+            datum = OutputDatum.OutputDatum(
+              chainState.copy(confirmedBlocksRoot = obMpf.rootHash).toData
+            ),
+            referenceScript = Option.None
+          )
+        )
+        val unconf: Data =
+            (TmDatum.Unconfirmed(
+              rawTx,
+              creatorPkh,
+              createdAt,
+              tmEpoch,
+              tmLeaderReward
+            ): TmDatum).toData
+        val conf: Data = (TmDatum.Confirmed(
+          id,
+          TreasuryMovementValidator.allInputOutpoints(rawTx),
+          TreasuryMovementValidator.allOutputs(rawTx),
+          false,
+          creatorPkh,
+          createdAt,
+          tmEpoch,
+          tmLeaderReward
+        ): TmDatum).toData
+        val rdmr: Data = TmConfirmRedeemer(
+          txIndex = 0,
+          txMerkleProof = PList.Nil,
+          blockMpfProof = obMpf.proveMembership(bh),
+          blockHeader = BlockHeader(hdr),
+          pegOutSteps = steps
+        ).toData
+        ScriptContext(
+          txInfo = TxInfo(
+            inputs = PList.from(List(tmInput(tmValue, unconf), trieInput(trieInRoot))),
+            referenceInputs = PList.from(List(oracleRef, configRefInput())),
+            outputs = PList.from(List(confirmedOutput(tmValue, conf), trieOutput(trieOutRoot))),
+            id = TxId(filled(0x00, 32))
+          ),
+          redeemer = rdmr,
+          scriptInfo = SpendingScript(ownRef, Option.Some(unconf))
+        )
+    }
 
     private lazy val compiled =
         TreasuryMovementContract.contract(oracleHash, configNftPolicy, configNftName)
@@ -173,32 +354,52 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     // The anchor outpoint = in0 of rawTm: aa*32 ++ 00000000 (txid internal order ++ vout LE).
     private val anchorOutpoint = ByteString.fromHex(("aa" * 32) + "00000000")
 
-    /** A minimal 12-field config datum: only field 11 (initial_btc_treasury_utxo) matters here. */
-    private def configDatum(anchor: ByteString): Data =
-        Data.Constr(
-          0,
-          PList(
-            Data.B(ByteString.empty),
-            Data.B(ByteString.empty),
-            Data.B(ByteString.empty),
-            Data.B(ByteString.empty),
-            Data.B(ByteString.empty),
-            Data.B(ByteString.empty),
-            Data.B(ByteString.empty),
-            Data.B(ByteString.empty),
-            Data.B(ByteString.empty),
-            Data.I(0),
-            Data.Constr(1, PList.empty),
-            Data.B(anchor)
-          )
-        )
+    /** The real 17-field [[ConfigDatum]] mirror. The Confirm path reads field 3
+      * (`completed_peg_outs_merkle_tree_policy_id`); the mint path reads field 11
+      * (`initial_btc_treasury_utxo`). The rest are inert here.
+      */
+    private def configDatum(
+        anchor: ByteString,
+        cpoPolicy: ByteString = triePolicy
+    ): Data = ConfigDatum(
+      bridgedTokenPolicyId = ByteString.empty,
+      bridgedTokenAssetName = ByteString.empty,
+      completedPegInsMerkleTreePolicyId = ByteString.empty,
+      completedPegOutsMerkleTreePolicyId = cpoPolicy,
+      pegInWithdrawScriptHash = ByteString.empty,
+      pegOutWithdrawScriptHash = ByteString.empty,
+      pegInCloseVerifierScriptHash = ByteString.empty,
+      legitTmAndPegOutProducedVerifierScriptHash = ByteString.empty,
+      legitTmAndPegOutNotProducedVerifierScriptHash = ByteString.empty,
+      minStake = BigInt(0),
+      updateAuth = Option.None,
+      initialBtcTreasuryUtxo = anchor,
+      feeRateSatPerVb = BigInt(1),
+      perPegoutFee = BigInt(0),
+      minPegOutFbtc = BigInt(0),
+      leaderReward = BigInt(0),
+      schedule = ScheduleParams(
+        dkgR1Deadline = BigInt(0),
+        dkgR2Deadline = BigInt(0),
+        updateYDeadline = BigInt(0),
+        tmBatchInterval = BigInt(0),
+        signR1Window = BigInt(0),
+        signR2Window = BigInt(0),
+        leaderSlotT = BigInt(0),
+        tmRecoveryWindow = BigInt(0),
+        finalTmCutoff = BigInt(0),
+        stabilityWindow = BigInt(0)
+      )
+    ).toData
 
     /** The Config reference UTxO carrying the config NFT + a config datum with the anchor at field
-      *   11. `withNft=false` simulates a forged config UTxO (right datum, no genuine NFT).
+      * 11 and the completed-peg-outs trie policy at field 3. `withNft=false` simulates a forged
+      * config UTxO (right datum, no genuine NFT).
       */
     private def configRefInput(
         anchor: ByteString = anchorOutpoint,
-        withNft: Boolean = true
+        withNft: Boolean = true,
+        cpoPolicy: ByteString = triePolicy
     ): TxInInfo = TxInInfo(
       outRef = TxOutRef(TxId(filled(0x03, 32)), BigInt(0)),
       resolved = TxOut(
@@ -207,7 +408,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
             if withNft then
                 Value.unsafeFromList(PList((configNftPolicy, PList((configNftName, BigInt(1))))))
             else Value.lovelace(2_000_000),
-        datum = OutputDatum.OutputDatum(configDatum(anchor)),
+        datum = OutputDatum.OutputDatum(configDatum(anchor, cpoPolicy)),
         referenceScript = Option.None
       )
     )
@@ -587,8 +788,9 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     test("tampered Confirmed datum (wrong peg-out amount) fails") {
         val wrongFulfilled = PList.from(
           List(
-            PegOutEntry(ByteString.fromHex("0014" + ("11" * 20)), BigInt(999)), // tampered
-            PegOutEntry(ByteString.fromHex("0014" + ("22" * 20)), BigInt(2000))
+            PegOutEntry(changeSpk, BigInt(999)), // tampered
+            PegOutEntry(paySpk1, BigInt(2000)),
+            PegOutEntry(markerSpk(porId1), BigInt(0))
           )
         )
         val sc =
@@ -651,8 +853,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           tmValue,
           confirmedDatum(),
           redeemer(mpfProof),
-          extraOutputs =
-              PList.from(List(confirmedOutput(Value.lovelace(2_000_000), confirmedDatum())))
+          extraOutputs = List(confirmedOutput(Value.lovelace(2_000_000), confirmedDatum()))
         )
         val result = program.applyArg(sc.toData).evaluateDebug
         assert(result.isSuccess, s"Expected success, got: $result")
@@ -661,20 +862,11 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     test("a first TM-address output without the NFT fails (decoy ordering)") {
         // If a decoy without the NFT comes FIRST, the NFT-preservation check fails - the prover
         // cannot demote the genuine continuing output to a later position.
-        val decoyFirst = ScriptContext(
-          txInfo = TxInfo(
-            inputs = PList.from(List(tmInput(tmValue, unconfirmedDatum))),
-            referenceInputs = PList.from(List(oracleRefInput())),
-            outputs = PList.from(
-              List(
-                confirmedOutput(Value.lovelace(2_000_000), confirmedDatum()),
-                confirmedOutput(tmValue, confirmedDatum())
-              )
-            ),
-            id = TxId(filled(0x00, 32))
-          ),
-          redeemer = redeemer(mpfProof),
-          scriptInfo = SpendingScript(ownRef, Option.Some(unconfirmedDatum))
+        val decoyFirst = scriptContext(
+          Value.lovelace(2_000_000),
+          confirmedDatum(),
+          redeemer(mpfProof),
+          extraOutputs = List(confirmedOutput(tmValue, confirmedDatum()))
         )
         assert(!program.applyArg(decoyFirst.toData).evaluateDebug.isSuccess)
     }
@@ -687,7 +879,8 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           txIndex = 0,
           txMerkleProof = PList.Nil,
           blockMpfProof = mpfProof,
-          blockHeader = BlockHeader(tamperedHeader)
+          blockHeader = BlockHeader(tamperedHeader),
+          pegOutSteps = defaultSteps
         ).toData
         val sc = scriptContext(tmValue, confirmedDatum(), rdmr)
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
@@ -729,15 +922,12 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           datum = OutputDatum.OutputDatum(fabricated),
           referenceScript = Option.None
         )
-        val sc = ScriptContext(
-          txInfo = TxInfo(
-            inputs = PList.from(List(tmInput(tmValue, unconfirmedDatum), secondInput)),
-            referenceInputs = PList.from(List(oracleRefInput())),
-            outputs = PList.from(List(confirmedOutput(tmValue, confirmedDatum()), escapedOutput)),
-            id = TxId(filled(0x00, 32))
-          ),
-          redeemer = redeemer(mpfProof),
-          scriptInfo = SpendingScript(ownRef, Option.Some(unconfirmedDatum))
+        val sc = scriptContext(
+          tmValue,
+          confirmedDatum(),
+          redeemer(mpfProof),
+          extraOutputs = List(escapedOutput),
+          extraInputs = List(secondInput, trieInput())
         )
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
@@ -781,6 +971,266 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
 
+    // --- completed-peg-outs trie fold ---
+
+    test("trie fold: one fulfilled peg-out inserts (por_id -> dest_spk ++ amount_le8)") {
+        // The default fixture IS the 1-peg-out case. Assert the fold moved the root (a stale root
+        // would make this test pass vacuously) and that the value is the exact bytes peg-out.ak
+        // rebuilds on Complete.
+        assert(defaultEndRoot != emptyRoot)
+        assert(
+          trieValue(paySpk1, BigInt(2000)) ==
+              (paySpk1 ++ ByteString.fromHex("d007000000000000"))
+        )
+        val sc = scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof))
+        val result = program.applyArg(sc.toData).evaluateDebug
+        assert(result.isSuccess, s"Expected success, got: $result")
+    }
+
+    test("trie fold: three fulfilled peg-outs fold in output order") {
+        val raw = rawTxWith(
+          List(
+            (changeSpk, BigInt(1000)),
+            (paySpk1, BigInt(2000)),
+            (markerSpk(porId1), BigInt(0)),
+            (paySpk2, BigInt(3000)),
+            (markerSpk(porId2), BigInt(0)),
+            (paySpk3, BigInt(4000)),
+            (markerSpk(porId3), BigInt(0))
+          )
+        )
+        val (steps, endTrie) = insertSteps(
+          emptyTrie,
+          List(
+            (porId1, trieValue(paySpk1, BigInt(2000))),
+            (porId2, trieValue(paySpk2, BigInt(3000))),
+            (porId3, trieValue(paySpk3, BigInt(4000)))
+          )
+        )
+        val sc = confirmContextFor(raw, emptyRoot, endTrie.rootHash, steps)
+        val result = program.applyArg(sc.toData).evaluateDebug
+        assert(result.isSuccess, s"Expected success, got: $result")
+    }
+
+    test("trie fold: a TM with no peg-outs leaves the root unchanged") {
+        // Change output only. No pairs, so no steps, and the trie UTxO round-trips untouched. A
+        // non-empty starting root proves the root is carried through, not reset.
+        val raw = rawTxWith(List((changeSpk, BigInt(1000))))
+        val sc = confirmContextFor(raw, defaultEndRoot, defaultEndRoot, PList.Nil)
+        val result = program.applyArg(sc.toData).evaluateDebug
+        assert(result.isSuccess, s"Expected success, got: $result")
+    }
+
+    test("trie fold: a zero-peg-out TM may not change the root") {
+        val raw = rawTxWith(List((changeSpk, BigInt(1000))))
+        val sc = confirmContextFor(raw, emptyRoot, defaultEndRoot, PList.Nil)
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("trie fold: AlreadyPresent accepts a duplicate marker with the SAME value") {
+        // SPO double-fulfillment tolerance: a second TM re-paying the same PegOutRequest must still
+        // confirm, or every peg-in that TM swept is stranded. The root is unchanged.
+        val value1 = trieValue(paySpk1, BigInt(2000))
+        val preTrie = emptyTrie.insert(porId1, value1)
+        val steps: PList[PegOutTrieStep] =
+            PList.from(List(PegOutTrieStep.AlreadyPresent(preTrie.proveMembership(porId1))))
+        val sc = confirmContextFor(rawTm, preTrie.rootHash, preTrie.rootHash, steps)
+        val result = program.applyArg(sc.toData).evaluateDebug
+        assert(result.isSuccess, s"Expected success, got: $result")
+    }
+
+    test("trie fold: AlreadyPresent with a DIFFERENT stored value fails") {
+        // The tolerance is exact-value only. If the trie already maps this POR id to some other
+        // payment, accepting would silently rewrite history — membership verification rejects it.
+        val preTrie = emptyTrie.insert(porId1, trieValue(paySpk1, BigInt(999)))
+        val steps: PList[PegOutTrieStep] =
+            PList.from(List(PegOutTrieStep.AlreadyPresent(preTrie.proveMembership(porId1))))
+        val sc = confirmContextFor(rawTm, preTrie.rootHash, preTrie.rootHash, steps)
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("trie fold: Insert over an already-present key fails") {
+        // `insert` proves ABSENCE; a duplicate must use AlreadyPresent, never Insert.
+        val preTrie = emptyTrie.insert(porId1, trieValue(paySpk1, BigInt(2000)))
+        val steps: PList[PegOutTrieStep] =
+            PList.from(List(PegOutTrieStep.Insert(preTrie.proveMembership(porId1))))
+        val sc = confirmContextFor(rawTm, preTrie.rootHash, preTrie.rootHash, steps)
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("trie fold: a continuing output with the wrong final root fails") {
+        val sc = scriptContext(
+          tmValue,
+          confirmedDatum(),
+          redeemer(mpfProof),
+          trieOutputs = List(trieOutput(filled(0x5a, 32)))
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("trie fold: an unchanged root on a 1-peg-out TM fails") {
+        val sc = scriptContext(
+          tmValue,
+          confirmedDatum(),
+          redeemer(mpfProof),
+          trieOutputs = List(trieOutput(emptyRoot))
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("trie fold: not spending the trie UTxO fails") {
+        val sc =
+            scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof), extraInputs = List.empty)
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("trie fold: no continuing trie output fails") {
+        val sc =
+            scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof), trieOutputs = List.empty)
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("trie fold: a forged trie NFT policy is not accepted") {
+        // A CPO-named token under a policy the Config does not publish is invisible to the
+        // validator, so the genuine trie UTxO is simply missing.
+        val forged = filled(0xc9, 28)
+        val sc = scriptContext(
+          tmValue,
+          confirmedDatum(),
+          redeemer(mpfProof),
+          extraInputs = List(trieInput(value = trieNftValue(forged))),
+          trieOutputs = List(trieOutput(defaultEndRoot, value = trieNftValue(forged)))
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("trie fold: moving the trie NFT to a different address fails") {
+        val sc = scriptContext(
+          tmValue,
+          confirmedDatum(),
+          redeemer(mpfProof),
+          trieOutputs = List(
+            trieOutput(
+              defaultEndRoot,
+              address = Address(Credential.ScriptCredential(filled(0x99, 28)), Option.None)
+            )
+          )
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("trie fold: a missing config reference input fails") {
+        val sc =
+            scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof), cfgRefs = List.empty)
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("trie fold: a config UTxO without the config NFT is ignored") {
+        val sc = scriptContext(
+          tmValue,
+          confirmedDatum(),
+          redeemer(mpfProof),
+          cfgRefs = List(configRefInput(withNft = false))
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("trie fold: a config publishing a different trie policy fails") {
+        // Config field 3 is the ONLY authority on which UTxO is the trie. Point it elsewhere and
+        // the trie input the tx actually spends is no longer found.
+        val sc = scriptContext(
+          tmValue,
+          confirmedDatum(),
+          redeemer(mpfProof),
+          cfgRefs = List(configRefInput(cpoPolicy = filled(0xc8, 28)))
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("trie fold: an odd output count after the change output fails") {
+        // A payment with no marker: the protocol would have no way to know which request it settles.
+        val raw = rawTxWith(List((changeSpk, BigInt(1000)), (paySpk1, BigInt(2000))))
+        val (steps, endTrie) =
+            insertSteps(emptyTrie, List((porId1, trieValue(paySpk1, BigInt(2000)))))
+        val sc = confirmContextFor(raw, emptyRoot, endTrie.rootHash, steps)
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("trie fold: a marker with the peg-in \"BFR\" prefix fails") {
+        // Right length, right OP_RETURN push, wrong tag. Only "POR" commits a peg-out id.
+        val raw = rawTxWith(
+          List(
+            (changeSpk, BigInt(1000)),
+            (paySpk1, BigInt(2000)),
+            (markerSpk(porId1, tag = "424652"), BigInt(0)) // "BFR"
+          )
+        )
+        val (steps, endTrie) =
+            insertSteps(emptyTrie, List((porId1, trieValue(paySpk1, BigInt(2000)))))
+        val sc = confirmContextFor(raw, emptyRoot, endTrie.rootHash, steps)
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("trie fold: a marker sitting in the payment position fails") {
+        // Swapped pair. Without the payment-position check a marker's own script+0 sats could be
+        // recorded as a fulfilled payment.
+        val raw = rawTxWith(
+          List(
+            (changeSpk, BigInt(1000)),
+            (markerSpk(porId1), BigInt(0)),
+            (paySpk1, BigInt(2000))
+          )
+        )
+        val (steps, endTrie) =
+            insertSteps(emptyTrie, List((porId1, trieValue(paySpk1, BigInt(2000)))))
+        val sc = confirmContextFor(raw, emptyRoot, endTrie.rootHash, steps)
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("trie fold: fewer steps than marker pairs fails") {
+        val sc = scriptContext(
+          tmValue,
+          confirmedDatum(),
+          redeemer(mpfProof, pegOutSteps = PList.Nil)
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("trie fold: more steps than marker pairs fails") {
+        val raw = rawTxWith(List((changeSpk, BigInt(1000))))
+        val (steps, endTrie) =
+            insertSteps(emptyTrie, List((porId1, trieValue(paySpk1, BigInt(2000)))))
+        val sc = confirmContextFor(raw, emptyRoot, endTrie.rootHash, steps)
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("trie fold: a wrong trie value (tampered amount) cannot be inserted") {
+        // The confirmer builds the steps, but not the value: the validator derives it from the TM's
+        // own payment output, so a step proving a different value yields a different root.
+        val (steps, endTrie) =
+            insertSteps(emptyTrie, List((porId1, trieValue(paySpk1, BigInt(1999)))))
+        val sc = confirmContextFor(rawTm, emptyRoot, endTrie.rootHash, steps)
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("trie fold: a wrong POR id key cannot be inserted") {
+        val (steps, endTrie) =
+            insertSteps(emptyTrie, List((porId2, trieValue(paySpk1, BigInt(2000)))))
+        val sc = confirmContextFor(rawTm, emptyRoot, endTrie.rootHash, steps)
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("marker recognition: length and prefix are both required") {
+        assert(TreasuryMovementValidator.isPorMarker(markerSpk(porId1)))
+        assert(TreasuryMovementValidator.porMarkerId(markerSpk(porId1)) == porId1)
+        // Wrong tag.
+        assert(!TreasuryMovementValidator.isPorMarker(markerSpk(porId1, tag = "424652")))
+        // Right prefix, wrong length (truncated payload).
+        assert(!TreasuryMovementValidator.isPorMarker(markerSpk(porId1).slice(0, 36)))
+        // A 37-byte payment script must not be mistaken for a marker.
+        assert(!TreasuryMovementValidator.isPorMarker(filled(0x51, 37)))
+    }
+
     // --- budget measurements ---
 
     // Execution budgets for the three treasury-movement happy paths, printed so they land in the
@@ -822,6 +1272,33 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           )
         )
         measure("Confirm spend", scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof)))
+        // Batch sizing evidence: the trie fold adds one MPF insert (proof walk + two blake2b_256)
+        // per fulfilled peg-out, so the Confirm cost grows with the batch. Measure a 0-peg-out and
+        // an 8-peg-out TM to bracket it.
+        measure(
+          "Confirm 0 pegout",
+          confirmContextFor(
+            rawTxWith(List((changeSpk, BigInt(1000)))),
+            defaultEndRoot,
+            defaultEndRoot,
+            PList.Nil
+          )
+        )
+        val batch = List.range(0, 8).map { i =>
+            val spk = ByteString.fromHex("0014" + (f"$i%02x" * 20))
+            val id = filled(0xe0 + i, 32)
+            (id, spk, BigInt(1000 + i))
+        }
+        val batchRaw = rawTxWith(
+          (changeSpk, BigInt(1000)) ::
+              batch.flatMap((id, spk, amt) => List((spk, amt), (markerSpk(id), BigInt(0))))
+        )
+        val (batchSteps, batchTrie) =
+            insertSteps(emptyTrie, batch.map((id, spk, amt) => (id, trieValue(spk, amt))))
+        measure(
+          "Confirm 8 pegout",
+          confirmContextFor(batchRaw, emptyRoot, batchTrie.rootHash, batchSteps)
+        )
     }
 
 }

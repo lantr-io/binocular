@@ -298,7 +298,12 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                           txIndex = BigInt(tm.txIndex),
                           txMerkleProof = ScalusList.from(tm.txInBlockMerklePath.toList),
                           blockMpfProof = tm.mpfHeaderInclusionProof,
-                          blockHeader = binocular.oracle.BlockHeader(tm.blockHeader)
+                          blockHeader = binocular.oracle.BlockHeader(tm.blockHeader),
+                          // TODO(task 4): build the per-pair trie steps from the TM's POR markers
+                          // and add the completed-peg-outs trie input/output to the confirm tx.
+                          // Empty here, so only marker-free TMs (zero peg-outs) can be confirmed
+                          // by this command until that lands.
+                          pegOutSteps = ScalusList.Nil
                         ).toData
                         val confirmed: Data =
                             (TmDatum.Confirmed(

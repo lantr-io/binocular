@@ -33,6 +33,21 @@ class BinocularBlueprintTest extends AnyFunSuite {
         }
     }
 
+    test("the pinned TM blueprint is in sync with the compiled validator") {
+        // The pins under src/main/resources are what the RUNTIME (and every deploy) loads;
+        // generation is skipped by default, so a validator edit does not move them. Without this
+        // check a stale pin ships silently: the confirm-path tests below evaluate the freshly
+        // compiled `.contract`, and the one test that does load the pin only asserts that it
+        // ACCEPTS a valid confirm — which an older, less strict TM script also does. Compare the
+        // hashes directly. If this fails, run `sbt blueprintPin` and commit the diff.
+        val pinned = BinocularBlueprint.program("TreasuryMovementContract")
+        val compiled = TreasuryMovementContract.parameterized.program
+        assert(
+          pinned.cborByteString == compiled.cborByteString,
+          "pinned TreasuryMovementContract blueprint is stale — run `sbt blueprintPin`"
+        )
+    }
+
     test("TM script derivation is deterministic and parameter-sensitive") {
         val a = ByteString.fromArray(Array.fill(28)(1: Byte))
         val b = ByteString.fromArray(Array.fill(28)(2: Byte))
