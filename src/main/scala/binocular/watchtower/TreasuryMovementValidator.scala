@@ -115,6 +115,14 @@ object TmDatum
   * stranded (peg-in Complete needs a `Confirmed` TM record). Accepting the duplicate is safe: the
   * value must match byte for byte, so the trie content is unchanged and no peg-out gains a second
   * completion (peg-out Complete burns the request's whole fBTC locking, once).
+  *
+  * RESIDUAL, NOT FIXED HERE: the tolerance covers only a SAME-value duplicate. If a quorum signs a
+  * TM whose marker repeats a POR id already in the trie under a DIFFERENT payment or amount, then
+  * neither step works — `Insert` fails on the present key and `AlreadyPresent` fails membership —
+  * so that TM is permanently unconfirmable and its swept peg-ins are stranded. Widening the rule to
+  * accept a value rewrite is NOT an option: it would let a later TM overwrite the record a peg-out
+  * Complete proves against. The defence is off-chain: heimdall MUST NOT emit a marker for a POR id
+  * already in the trie (the trie-dedup filter, task 5).
   */
 enum PegOutTrieStep derives FromData, ToData {
     case Insert(proof: ScalusList[ProofStep])
@@ -244,8 +252,16 @@ object TreasuryMovementValidator {
       */
     val PorMarkerPrefix: ByteString = hex"6a23504f52"
 
-    /** Length in bytes of a well-formed POR marker `scriptPubKey` (2 opcodes + 35 payload). */
-    val PorMarkerScriptLength: BigInt = 37
+    /** Length of [[PorMarkerPrefix]]: `OP_RETURN`(1) + `OP_PUSHBYTES_35`(1) + `"POR"`(3). Also the
+      * offset at which the POR id starts.
+      */
+    val PorMarkerPrefixLength: BigInt = 5
+
+    /** Length of the POR id a marker commits: a 32-byte blake2b/sha2 digest. */
+    val PorIdLength: BigInt = 32
+
+    /** Length in bytes of a well-formed POR marker `scriptPubKey` = prefix(5) + POR id(32) = 37. */
+    val PorMarkerScriptLength: BigInt = PorMarkerPrefixLength + PorIdLength
 
     /** Asset name of the completed-peg-outs trie NFT. Mirrors
       * `bifrost/constants.ak::completed_peg_outs_root_asset_name`.
@@ -257,10 +273,13 @@ object TreasuryMovementValidator {
       */
     def isPorMarker(scriptPubKey: ByteString): Boolean =
         scriptPubKey.length == PorMarkerScriptLength &&
-            scriptPubKey.slice(0, 5) == PorMarkerPrefix
+            scriptPubKey.slice(0, PorMarkerPrefixLength) == PorMarkerPrefix
 
-    /** The 32-byte POR id committed by a marker `scriptPubKey` (assumes [[isPorMarker]]). */
-    def porMarkerId(scriptPubKey: ByteString): ByteString = scriptPubKey.slice(5, 32)
+    /** The 32-byte POR id committed by a marker `scriptPubKey`: the payload after the prefix, i.e.
+      * bytes [5, 37). Assumes [[isPorMarker]].
+      */
+    def porMarkerId(scriptPubKey: ByteString): ByteString =
+        scriptPubKey.slice(PorMarkerPrefixLength, PorIdLength)
 
     /** Fold the completed-peg-outs trie root over the TM's `(payment, POR marker)` output pairs.
       *

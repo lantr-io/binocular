@@ -351,6 +351,39 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     // The TM NFT policy id == this script's own hash.
     private lazy val tmPolicy: ByteString = ByteString.fromArray(compiled.script.scriptHash.bytes)
 
+    // The trace-instrumented twin: IDENTICAL validator source compiled with
+    // generateErrorTraces = true. The release compile strips trace strings, so a rejection there
+    // reports only "Error evaluated" with no clue WHICH check failed. Rejection tests re-run the
+    // same script context through this twin to pin the reason — see [[assertRejects]].
+    private lazy val debugProgram =
+        TreasuryMovementDebugContract.parameterized
+            .apply(oracleHash)
+            .apply(configNftPolicy)
+            .apply(configNftName)
+            .program
+            .deBruijnedProgram
+
+    /** Assert the DEPLOYED script rejects `sc`, and that it rejects it for `reason` (matched
+      * against the trace log of the debug twin).
+      *
+      * Why the second half matters: several rejection fixtures are multi-cause. A malformed marker
+      * pair, for example, also leaves the trie root unequal to the continuing output's, so a plain
+      * `!isSuccess` would still pass if the marker check were deleted outright. Pinning the message
+      * makes each test fail for its own reason.
+      */
+    private def assertRejects(sc: ScriptContext, reason: String): Unit = {
+        val ctx = sc.toData
+        assert(!program.applyArg(ctx).evaluateDebug.isSuccess, "expected the script to reject")
+        debugProgram.applyArg(ctx).evaluateDebug match
+            case _: Result.Success =>
+                fail("the trace twin ACCEPTED a context the release script rejected")
+            case r: Result.Failure =>
+                assert(
+                  r.logs.exists(_.contains(reason)),
+                  s"expected failure reason '$reason', got: ${r.logs.mkString(" | ")}"
+                )
+    }
+
     // The anchor outpoint = in0 of rawTm: aa*32 ++ 00000000 (txid internal order ++ vout LE).
     private val anchorOutpoint = ByteString.fromHex(("aa" * 32) + "00000000")
 
@@ -1024,7 +1057,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     test("trie fold: a zero-peg-out TM may not change the root") {
         val raw = rawTxWith(List((changeSpk, BigInt(1000))))
         val sc = confirmContextFor(raw, emptyRoot, defaultEndRoot, PList.Nil)
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM confirm: trie root does not match the folded steps")
     }
 
     test("trie fold: AlreadyPresent accepts a duplicate marker with the SAME value") {
@@ -1046,7 +1079,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         val steps: PList[PegOutTrieStep] =
             PList.from(List(PegOutTrieStep.AlreadyPresent(preTrie.proveMembership(porId1))))
         val sc = confirmContextFor(rawTm, preTrie.rootHash, preTrie.rootHash, steps)
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "Membership verification failed")
     }
 
     test("trie fold: Insert over an already-present key fails") {
@@ -1055,7 +1088,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         val steps: PList[PegOutTrieStep] =
             PList.from(List(PegOutTrieStep.Insert(preTrie.proveMembership(porId1))))
         val sc = confirmContextFor(rawTm, preTrie.rootHash, preTrie.rootHash, steps)
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "Invalid proof or element exists")
     }
 
     test("trie fold: a continuing output with the wrong final root fails") {
@@ -1065,7 +1098,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           redeemer(mpfProof),
           trieOutputs = List(trieOutput(filled(0x5a, 32)))
         )
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM confirm: trie root does not match the folded steps")
     }
 
     test("trie fold: an unchanged root on a 1-peg-out TM fails") {
@@ -1075,19 +1108,19 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           redeemer(mpfProof),
           trieOutputs = List(trieOutput(emptyRoot))
         )
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM confirm: trie root does not match the folded steps")
     }
 
     test("trie fold: not spending the trie UTxO fails") {
         val sc =
             scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof), extraInputs = List.empty)
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM confirm: completed-peg-outs trie not spent")
     }
 
     test("trie fold: no continuing trie output fails") {
         val sc =
             scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof), trieOutputs = List.empty)
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM confirm: no continuing completed-peg-outs output")
     }
 
     test("trie fold: a forged trie NFT policy is not accepted") {
@@ -1101,7 +1134,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           extraInputs = List(trieInput(value = trieNftValue(forged))),
           trieOutputs = List(trieOutput(defaultEndRoot, value = trieNftValue(forged)))
         )
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM confirm: completed-peg-outs trie not spent")
     }
 
     test("trie fold: moving the trie NFT to a different address fails") {
@@ -1116,13 +1149,13 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
             )
           )
         )
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM confirm: trie address changed")
     }
 
     test("trie fold: a missing config reference input fails") {
         val sc =
             scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof), cfgRefs = List.empty)
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM confirm: no config reference input")
     }
 
     test("trie fold: a config UTxO without the config NFT is ignored") {
@@ -1132,7 +1165,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           redeemer(mpfProof),
           cfgRefs = List(configRefInput(withNft = false))
         )
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM confirm: no config reference input")
     }
 
     test("trie fold: a config publishing a different trie policy fails") {
@@ -1144,7 +1177,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           redeemer(mpfProof),
           cfgRefs = List(configRefInput(cpoPolicy = filled(0xc8, 28)))
         )
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM confirm: completed-peg-outs trie not spent")
     }
 
     test("trie fold: an odd output count after the change output fails") {
@@ -1153,7 +1186,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         val (steps, endTrie) =
             insertSteps(emptyTrie, List((porId1, trieValue(paySpk1, BigInt(2000)))))
         val sc = confirmContextFor(raw, emptyRoot, endTrie.rootHash, steps)
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM confirm: odd output count after the change output")
     }
 
     test("trie fold: a marker with the peg-in \"BFR\" prefix fails") {
@@ -1168,7 +1201,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         val (steps, endTrie) =
             insertSteps(emptyTrie, List((porId1, trieValue(paySpk1, BigInt(2000)))))
         val sc = confirmContextFor(raw, emptyRoot, endTrie.rootHash, steps)
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM confirm: payment output without a POR marker")
     }
 
     test("trie fold: a marker sitting in the payment position fails") {
@@ -1184,7 +1217,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         val (steps, endTrie) =
             insertSteps(emptyTrie, List((porId1, trieValue(paySpk1, BigInt(2000)))))
         val sc = confirmContextFor(raw, emptyRoot, endTrie.rootHash, steps)
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM confirm: POR marker in a payment position")
     }
 
     test("trie fold: fewer steps than marker pairs fails") {
@@ -1193,7 +1226,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           confirmedDatum(),
           redeemer(mpfProof, pegOutSteps = PList.Nil)
         )
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM confirm: missing trie step for a pair")
     }
 
     test("trie fold: more steps than marker pairs fails") {
@@ -1201,7 +1234,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         val (steps, endTrie) =
             insertSteps(emptyTrie, List((porId1, trieValue(paySpk1, BigInt(2000)))))
         val sc = confirmContextFor(raw, emptyRoot, endTrie.rootHash, steps)
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM confirm: more trie steps than marker pairs")
     }
 
     test("trie fold: a wrong trie value (tampered amount) cannot be inserted") {
@@ -1210,14 +1243,14 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         val (steps, endTrie) =
             insertSteps(emptyTrie, List((porId1, trieValue(paySpk1, BigInt(1999)))))
         val sc = confirmContextFor(rawTm, emptyRoot, endTrie.rootHash, steps)
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM confirm: trie root does not match the folded steps")
     }
 
     test("trie fold: a wrong POR id key cannot be inserted") {
         val (steps, endTrie) =
             insertSteps(emptyTrie, List((porId2, trieValue(paySpk1, BigInt(2000)))))
         val sc = confirmContextFor(rawTm, emptyRoot, endTrie.rootHash, steps)
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM confirm: trie root does not match the folded steps")
     }
 
     test("marker recognition: length and prefix are both required") {

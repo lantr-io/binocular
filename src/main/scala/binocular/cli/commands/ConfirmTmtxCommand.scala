@@ -299,10 +299,16 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                           txMerkleProof = ScalusList.from(tm.txInBlockMerklePath.toList),
                           blockMpfProof = tm.mpfHeaderInclusionProof,
                           blockHeader = binocular.oracle.BlockHeader(tm.blockHeader),
-                          // TODO(task 4): build the per-pair trie steps from the TM's POR markers
-                          // and add the completed-peg-outs trie input/output to the confirm tx.
-                          // Empty here, so only marker-free TMs (zero peg-outs) can be confirmed
-                          // by this command until that lands.
+                          // TODO(task 4): build the per-pair trie steps from the TM's POR markers,
+                          // AND make [[TreasuryMovementTx.buildAndSubmitConfirm]] reference the
+                          // Config UTxO and spend + recreate the completed-peg-outs trie UTxO.
+                          //
+                          // Until BOTH land this command confirms NOTHING — not even a zero-peg-out
+                          // TM. The Confirm branch now demands a Config reference input and a spent
+                          // trie UTxO unconditionally, while the builder supplies only the oracle
+                          // reference, so every confirm fails at
+                          // "TM confirm: no config reference input". An empty step list is correct
+                          // for a marker-free TM but is not on its own sufficient.
                           pegOutSteps = ScalusList.Nil
                         ).toData
                         val confirmed: Data =
