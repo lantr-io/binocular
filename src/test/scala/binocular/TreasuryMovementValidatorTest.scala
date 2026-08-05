@@ -181,10 +181,17 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         root: ByteString,
         value: Value = trieNftValue(),
         address: Address = trieAddress
+    ): TxOut = trieOutputWithDatum(CompletedPegOutsTrieDatum(root).toData, value, address)
+
+    /** A continuing trie output carrying an ARBITRARY datum — for the malformed-datum tests. */
+    private def trieOutputWithDatum(
+        datum: Data,
+        value: Value = trieNftValue(),
+        address: Address = trieAddress
     ): TxOut = TxOut(
       address = address,
       value = value,
-      datum = OutputDatum.OutputDatum(CompletedPegOutsTrieDatum(root).toData),
+      datum = OutputDatum.OutputDatum(datum),
       referenceScript = Option.None
     )
 
@@ -1081,7 +1088,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           List((changeSpk, BigInt(1000)), (commitmentSpk(emptyRoot), BigInt(0)))
         )
         val sc = confirmContextFor(raw, emptyRoot, defaultEndRoot)
-        assertRejects(sc, "TM confirm: trie root does not match the committed root")
+        assertRejects(sc, "TM confirm: trie datum is not the canonical committed root")
     }
 
     test("root commitment: a TM with no commitment output cannot be confirmed") {
@@ -1157,7 +1164,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           redeemer(mpfProof),
           trieOutputs = List(trieOutput(filled(0x5a, 32)))
         )
-        assertRejects(sc, "TM confirm: trie root does not match the committed root")
+        assertRejects(sc, "TM confirm: trie datum is not the canonical committed root")
     }
 
     test("root commitment: keeping the old root on a 1-peg-out TM fails") {
@@ -1167,7 +1174,27 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           redeemer(mpfProof),
           trieOutputs = List(trieOutput(emptyRoot))
         )
-        assertRejects(sc, "TM confirm: trie root does not match the committed root")
+        assertRejects(sc, "TM confirm: trie datum is not the canonical committed root")
+    }
+
+    test("root commitment: a trie datum with the right root but a wrong SHAPE fails") {
+        // Confirming is permissionless, so the trie datum's shape is attacker-chosen. On-chain
+        // `FromData` is an erased retag — field access is a lazy projection with no tag or arity
+        // check — so comparing only field 0 would accept both of these and leave a datum the
+        // protocol never describes at the trie address for every downstream reader to trip over.
+        // The whole-`OutputDatum` comparison rejects them.
+        val correctRoot = Data.B(defaultEndRoot)
+        val extraField = Data.Constr(0, PList.from(List(correctRoot, Data.I(BigInt(7)))))
+        val wrongTag = Data.Constr(5, PList.from(List(correctRoot)))
+        for bad <- List(extraField, wrongTag) do {
+            val sc = scriptContext(
+              tmValue,
+              confirmedDatum(),
+              redeemer(mpfProof),
+              trieOutputs = List(trieOutputWithDatum(bad))
+            )
+            assertRejects(sc, "TM confirm: trie datum is not the canonical committed root")
+        }
     }
 
     test("root commitment: not spending the trie UTxO fails") {

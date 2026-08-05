@@ -285,23 +285,14 @@ object TreasuryMovementValidator {
       * honesty that already custodies the treasury — every co-signer recomputes the expected root
       * from its own trie before signing, so a leader proposing a wrong root fails quorum.
       */
-    def committedRoot(outs: ScalusList[PegOutEntry]): ByteString = {
-        def loop(rest: ScalusList[PegOutEntry], found: Option[ByteString]): Option[ByteString] =
-            rest match
-                case ScalusList.Nil => found
-                case ScalusList.Cons(out, tail) =>
-                    val spk = out.scriptPubKey
-                    if isRootCommitment(spk) then
-                        found match
-                            case Option.Some(_) => fail("TM confirm: multiple root commitments")
-                            case Option.None =>
-                                loop(
-                                  tail,
-                                  Option.Some(spk.slice(RootCommitmentPrefixLength, RootLength))
-                                )
-                    else loop(tail, found)
-        loop(outs, Option.None).getOrFail("TM confirm: missing root commitment")
-    }
+    def committedRoot(outs: ScalusList[PegOutEntry]): ByteString =
+        // `filter` then match, NOT `find`: `find` stops at the first commitment and would silently
+        // accept a TM carrying a second one.
+        outs.filter(out => isRootCommitment(out.scriptPubKey)) match
+            case ScalusList.Cons(only, ScalusList.Nil) =>
+                only.scriptPubKey.slice(RootCommitmentPrefixLength, RootLength)
+            case ScalusList.Nil => fail("TM confirm: missing root commitment")
+            case _              => fail("TM confirm: multiple root commitments")
 
     /** All input outpoints (prev_txid(32) ++ prev_vout(4), 36 bytes each) of a raw Bitcoin tx, in
       * input order. These are the `sweptPegInUtxoIds` of a TM (the old treasury input is included —
@@ -544,10 +535,23 @@ object TreasuryMovementValidator {
                 // The attested root, taken from the TM's single "CPOR1" output. A TM that fulfills
                 // no peg-out commits the UNCHANGED root, so the trie UTxO round-trips with the same
                 // datum — but the commitment output is still mandatory.
+                //
+                // EXACT datum equality, not `trieOut.datum.of[CompletedPegOutsTrieDatum].root ==
+                // newRoot`. On-chain `FromData` is an erased retag: field access is a lazy
+                // projection with no constructor-tag or arity check, so a root-only comparison would
+                // also accept `Constr 5 [root, junk]` at the trie address. Confirming is
+                // permissionless, so that shape is attacker-chosen, and every downstream reader
+                // (the Aiken trie validator, peg-out Complete, reconstruction tooling) would then
+                // have to cope with a datum the protocol never describes. Rebuilding the expected
+                // datum and comparing the whole `OutputDatum` pins the tag, the arity, and
+                // inline-ness in one check — the same discipline as the `exp === contOut.datum`
+                // check on the TM record above.
                 val newRoot = committedRoot(fulfilled)
+                val expTrieDatum =
+                    OutputDatum.OutputDatum(CompletedPegOutsTrieDatum(newRoot).toData)
                 require(
-                  trieOut.datum.of[CompletedPegOutsTrieDatum].root == newRoot,
-                  "TM confirm: trie root does not match the committed root"
+                  expTrieDatum === trieOut.datum,
+                  "TM confirm: trie datum is not the canonical committed root"
                 )
             case TmDatum.Confirmed(_, _, _, _, creator, created, _, _) =>
                 // Garbage collection: after the grace period the CREATOR may reclaim the record's
