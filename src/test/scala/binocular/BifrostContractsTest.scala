@@ -104,8 +104,15 @@ class BifrostContractsTest extends AnyFunSuite {
         // Trie v2 dropped `oracle_policy_id`: peg_out.ak no longer parses the TM itself, it proves
         // membership in the completed-peg-outs trie the TM Confirm wrote. Two params now, so the
         // hash moved and ConfigDatum field 5 must be swapped by a config Update.
+        //
+        // Moved again for rev 5.1 (2026-08): the min-json's `peg_out` compiledCode was refreshed to
+        // ft's current build, in which Complete dropped its `owner_auth` check (permissionless
+        // cleanup), the datum became 4 fields, and the withdraw redeemer gained
+        // `completed_peg_outs_ref_input_index`. The POR sweeper builds against exactly these bytes —
+        // [[PegOutCompleteCekTest]] runs them — so the stale copy would have made every completion
+        // fail on-chain. No other validator's compiledCode changed, so no other pin moved.
         val pegOut = PegOutContract(blueprint, configPolicy, configAssetName)
-        assert(hex(pegOut.policyId) == "f1e6bbc0057b46d3e285407b80e3afa4d25046d2fdc66a37b35c4df4")
+        assert(hex(pegOut.policyId) == "9539e0183a7ad1a94d1bdcff624812ab6b49fe3748adfbce893d3a61")
     }
 
     test("completed-peg-outs policy is stable for the trie-v2 (tm-policy, one-shot) encoding") {
