@@ -38,14 +38,15 @@ object PegOutEntry
   *   - [[Unconfirmed]] — created when the signed Bitcoin TM is posted to Cardano. Carries the full
   *     segwit-serialized `signedBtcTx` (the bytes watchtowers relay to Bitcoin), the poster's
   *     `creator` key hash, `created` (POSIX ms, must equal the posting tx's validity upper bound —
-  *     see the mint branch), and the N7 fields `epoch` (the Cardano epoch this TM belongs to) and
-  *     `leaderReward` (the reward amount, a copy of the Config `leader_reward` tunable at post).
-  *     Constr tag 0, `[signed_btc_tx, creator, created, epoch, leader_reward]` — the shape
-  *     heimdall's `publish.rs` and binocular's `create-tmtx` post. N7 note: `epoch`/`leaderReward`
-  *     are carried here but NOT yet enforced on-chain — the leader_reward pin against the Config
-  *     and the reward payout land with N9 (see [[2026-07-21-n9-leader-reward-attribution]] in
-  *     internal-docs); `tm_sequence` is deliberately NOT a datum field (off-chain signing counter,
-  *     spec §Cardano submission and leader reward).
+  *     see the mint branch), the N7 fields `epoch` (the Cardano epoch this TM belongs to) and
+  *     `leaderReward` (the reward amount, a copy of the Config `leader_reward` tunable at post),
+  *     and the rev-5.1 data-availability hint `fulfilledPorOutpoints`. Constr tag 0,
+  *     `[signed_btc_tx, creator, created, epoch, leader_reward, fulfilled_por_outpoints]` — the
+  *     shape heimdall's `publish.rs` and binocular's `create-tmtx` post. N7 note:
+  *     `epoch`/`leaderReward` are carried here but NOT yet enforced on-chain — the leader_reward
+  *     pin against the Config and the reward payout land with N9 (see
+  *     [[2026-07-21-n9-leader-reward-attribution]] in internal-docs); `tm_sequence` is deliberately
+  *     NOT a datum field (off-chain signing counter, spec §Cardano submission and leader reward).
   *   - [[Confirmed]] — produced by the Confirm transition once the TM is Binocular-confirmed. Holds
   *     the `btcTxid`, the list of swept peg-in outpoints (`sweptPegInUtxoIds`, 36-byte
   *     prev_txid++vout each), the `fulfilledPegOuts`, the N10b `spentViaFederationLeaf` flag, and
@@ -82,7 +83,30 @@ enum TmDatum derives FromData, ToData {
         creator: PubKeyHash,
         created: PosixTime,
         epoch: BigInt,
-        leaderReward: BigInt
+        leaderReward: BigInt,
+        /** Rev-5.1 data-availability HINT: the Cardano outpoints of the PegOutRequests this TM
+          * fulfills, 36 bytes each (Cardano tx hash (32) ++ output index as 4 little-endian bytes).
+          *
+          * UNVERIFIED. Neither `mint` nor `spend` reads a single byte of it: the FROST-signed
+          * `"CPOR1"` root commitment inside `signedBtcTx` is the sole integrity anchor for the
+          * completed-peg-outs trie. Posting a TM is permissionless, so a hostile poster can garble
+          * this list; that costs the protocol nothing.
+          *
+          * What it is for: rebuilding the completed-peg-outs trie from chain data alone (cold
+          * start, recovery, a new SPO). Reconstruction reads it from the SPENT `Unconfirmed`
+          * output's inline datum, which stays in Cardano history forever and is indexable by
+          * address alone (Kupo indexes datums of spent outputs; it does not index tx metadata —
+          * which is why the hint is a datum field). With the hint, reconstruction resolves each
+          * outpoint to its POR datum and inserts the entry directly; without it, the fallback is to
+          * match the TM's payment outputs against the PegOutRequests open at that time and search
+          * assignments until the running root equals that TM's committed root. The committed root
+          * turns reconstruction from trust into search-and-check either way.
+          *
+          * [[Confirmed]] deliberately does NOT carry it: the Unconfirmed record is the permanent
+          * source, and keeping `Confirmed` at 8 fields leaves `peg_in.ak`,
+          * `treasury.ak::FederationReset`, and heimdall's Confirmed parser untouched.
+          */
+        fulfilledPorOutpoints: ScalusList[ByteString]
     )
     case Confirmed(
         btcTxid: ByteString,
@@ -101,40 +125,10 @@ enum TmDatum derives FromData, ToData {
 @Compile
 object TmDatum
 
-/** One step of the completed-peg-outs trie fold: exactly one per `(payment, marker)` output pair of
-  * the confirmed TM, in Bitcoin output order.
-  *
-  *   - [[Insert]] — the normal case: insert `por_id -> dest_spk ++ amount_le8` into the trie. The
-  *     MPF `insert` proves the key was ABSENT and yields the new root.
-  *   - [[AlreadyPresent]] — tolerance: the key is already in the trie WITH THE SAME VALUE (an SPO
-  *     double-fulfillment bug paid the same PegOutRequest in two TMs). The step verifies membership
-  *     and leaves the root unchanged.
-  *
-  * Why [[AlreadyPresent]] exists: `insert` FAILS on a present key. Without this variant a duplicate
-  * marker would make the TM permanently unconfirmable, and every peg-in that TM swept would be
-  * stranded (peg-in Complete needs a `Confirmed` TM record). Accepting the duplicate is safe: the
-  * value must match byte for byte, so the trie content is unchanged and no peg-out gains a second
-  * completion (peg-out Complete burns the request's whole fBTC locking, once).
-  *
-  * RESIDUAL, NOT FIXED HERE: the tolerance covers only a SAME-value duplicate. If a quorum signs a
-  * TM whose marker repeats a POR id already in the trie under a DIFFERENT payment or amount, then
-  * neither step works — `Insert` fails on the present key and `AlreadyPresent` fails membership —
-  * so that TM is permanently unconfirmable and its swept peg-ins are stranded. Widening the rule to
-  * accept a value rewrite is NOT an option: it would let a later TM overwrite the record a peg-out
-  * Complete proves against. The defence is off-chain: heimdall MUST NOT emit a marker for a POR id
-  * already in the trie (the trie-dedup filter, task 5).
-  */
-enum PegOutTrieStep derives FromData, ToData {
-    case Insert(proof: ScalusList[ProofStep])
-    case AlreadyPresent(proof: ScalusList[ProofStep])
-}
-
-@Compile
-object PegOutTrieStep
-
 /** Scalus mirror of `completed-peg-outs-merkle-tree.ak::CompletedPegOutsMerkleTreeDatum` — the MPF
   * root of the completed peg-outs. Bootstrapped with the empty root (32 zero bytes), then spent and
-  * recreated by every TM Confirm that fulfills at least one peg-out.
+  * recreated by EVERY TM Confirm, which copies the root the FROST quorum attested in that TM's
+  * `"CPOR1"` commitment output (a TM that fulfills no peg-out re-commits the unchanged root).
   *
   * Kept HERE, not in `ConfigTypes.scala`, because this validator is the only writer and the file's
   * `@Compile` companion is what lets the Confirm branch decode it on-chain.
@@ -155,16 +149,12 @@ object CompletedPegOutsTrieDatum
   * @param blockHeader
   *   the 80-byte Bitcoin block header (its merkle-root is checked, and it must hash to the
   *   oracle-confirmed block hash).
-  * @param pegOutSteps
-  *   one completed-peg-outs trie step per `(payment, POR marker)` output pair of the TM, in output
-  *   order. A TM that fulfills no peg-out carries an empty list.
   */
 case class TmConfirmRedeemer(
     txIndex: BigInt,
     txMerkleProof: ScalusList[ByteString],
     blockMpfProof: ScalusList[ProofStep],
-    blockHeader: BlockHeader,
-    pegOutSteps: ScalusList[PegOutTrieStep]
+    blockHeader: BlockHeader
 ) derives FromData,
       ToData
 
@@ -207,8 +197,8 @@ enum TmMintRedeemer derives FromData, ToData {
   *      `sweptPegInUtxoIds` / `fulfilledPegOuts` are exactly what the contract parsed out of the
   *      raw TM transaction.
   *   6. the completed-peg-outs trie UTxO (policy from Config field 3, asset name `"CPO"`) is spent
-  *      and recreated at the same address with the root folded over the TM's `(payment, POR
-  *      marker)` output pairs — see [[foldCompletedPegOuts]].
+  *      and recreated at the same address, carrying the root the TM's single `"CPOR1"` commitment
+  *      output attests — see [[committedRoot]].
   *
   * That `signedBtcTx` is the protocol's real Treasury Movement transaction is enforced at MINT time
   * (see [[TmMintRedeemer]]): the minted TM NFT is bound to an `Unconfirmed` output whose embedded
@@ -243,95 +233,75 @@ object TreasuryMovementValidator {
       */
     val GcGraceMs: BigInt = BigInt(30) * 24 * 3600 * 1000 // 30 days
 
-    /** First 5 bytes of a POR marker `scriptPubKey`: `OP_RETURN OP_PUSHBYTES_35 "POR"`. The 35-byte
-      * push is `"POR" ++ por_id`, so the whole script is 37 bytes ([[PorMarkerScriptLength]]).
+    /** First 7 bytes of a completed-peg-outs root commitment `scriptPubKey`:
+      * `OP_RETURN OP_PUSHBYTES_37 "CPOR1"`. The 37-byte push is `"CPOR1" ++ new_root`, so the whole
+      * script is 39 bytes ([[RootCommitmentScriptLength]]).
       *
-      * Why `"POR"` and not the peg-in `"BFR"` prefix: watchtowers detect peg-in deposits by
+      * Why `"CPOR1"` and not the peg-in `"BFR"` prefix: watchtowers detect peg-in deposits by
       * scanning for `"BFR"`-prefixed OP_RETURN outputs, and a TM pays the treasury address, so a
-      * `"BFR"` marker inside a TM could be misdetected as a deposit.
+      * `"BFR"`-tagged output inside a TM could be misdetected as a deposit. The trailing `1` is a
+      * format version, so a future commitment layout gets its own tag.
       */
-    val PorMarkerPrefix: ByteString = hex"6a23504f52"
+    val RootCommitmentPrefix: ByteString = hex"6a2543504f5231"
 
-    /** Length of [[PorMarkerPrefix]]: `OP_RETURN`(1) + `OP_PUSHBYTES_35`(1) + `"POR"`(3). Also the
-      * offset at which the POR id starts.
+    /** Length of [[RootCommitmentPrefix]]: `OP_RETURN`(1) + `OP_PUSHBYTES_37`(1) + `"CPOR1"`(5).
+      * Also the offset at which the committed root starts.
       */
-    val PorMarkerPrefixLength: BigInt = 5
+    val RootCommitmentPrefixLength: BigInt = 7
 
-    /** Length of the POR id a marker commits: a 32-byte blake2b/sha2 digest. */
-    val PorIdLength: BigInt = 32
+    /** Length of the committed completed-peg-outs MPF root. */
+    val RootLength: BigInt = 32
 
-    /** Length in bytes of a well-formed POR marker `scriptPubKey` = prefix(5) + POR id(32) = 37. */
-    val PorMarkerScriptLength: BigInt = PorMarkerPrefixLength + PorIdLength
+    /** Length in bytes of a well-formed root commitment `scriptPubKey` = prefix(7) + root(32) = 39.
+      */
+    val RootCommitmentScriptLength: BigInt = RootCommitmentPrefixLength + RootLength
 
     /** Asset name of the completed-peg-outs trie NFT. Mirrors
       * `bifrost/constants.ak::completed_peg_outs_root_asset_name`.
       */
     val CompletedPegOutsAssetName: ByteString = ByteString.fromString("CPO")
 
-    /** Is this `scriptPubKey` a POR marker? Length AND prefix, so a short script cannot slice past
-      * its end and a 37-byte payment script cannot masquerade as a marker.
+    /** Is this `scriptPubKey` a completed-peg-outs root commitment? Length AND prefix, so a short
+      * script cannot slice past its end and a 39-byte payment script cannot masquerade as one.
       */
-    def isPorMarker(scriptPubKey: ByteString): Boolean =
-        scriptPubKey.length == PorMarkerScriptLength &&
-            scriptPubKey.slice(0, PorMarkerPrefixLength) == PorMarkerPrefix
+    def isRootCommitment(scriptPubKey: ByteString): Boolean =
+        scriptPubKey.length == RootCommitmentScriptLength &&
+            scriptPubKey.slice(0, RootCommitmentPrefixLength) == RootCommitmentPrefix
 
-    /** The 32-byte POR id committed by a marker `scriptPubKey`: the payload after the prefix, i.e.
-      * bytes [5, 37). Assumes [[isPorMarker]].
+    /** The completed-peg-outs MPF root the TM's outputs attest: the 32 bytes after the prefix of
+      * its single [[isRootCommitment]] output, i.e. bytes [7, 39) of that `scriptPubKey`.
+      *
+      * `outs` is the TM's FULL parsed output list, treasury change included. The commitment may sit
+      * at any position (heimdall emits it last).
+      *
+      * EXACTLY ONE commitment output is required. Zero fails: every TM must state the trie root
+      * that holds after it, including a TM that fulfills no peg-out (which re-commits the unchanged
+      * root), so the trie root is pinned by an unbroken chain of quorum attestations. Two or more
+      * fail because the validator would otherwise have to choose, and a permissionless confirmer
+      * would make that choice.
+      *
+      * The root is ATTESTED, not verified: it is whatever the FROST quorum signed into the TM. This
+      * validator only copies it into the trie UTxO. Root correctness rests on the same quorum
+      * honesty that already custodies the treasury — every co-signer recomputes the expected root
+      * from its own trie before signing, so a leader proposing a wrong root fails quorum.
       */
-    def porMarkerId(scriptPubKey: ByteString): ByteString =
-        scriptPubKey.slice(PorMarkerPrefixLength, PorIdLength)
-
-    /** Fold the completed-peg-outs trie root over the TM's `(payment, POR marker)` output pairs.
-      *
-      * `outs` is the TM's parsed output list WITHOUT the leading treasury change output. By the
-      * deterministic TM layout the remainder is `[payment, marker, payment, marker, ...]`: output
-      * `2i+1` pays a peg-out destination, output `2i+2` is that payment's `"POR"` marker. Each pair
-      * consumes exactly one [[PegOutTrieStep]] from `steps`, in the same order.
-      *
-      * The trie key is the marker's POR id; the value is `dest_spk ++ amount_le8` — the payment
-      * output's raw `scriptPubKey` concatenated with its satoshi amount as 8 LITTLE-endian bytes.
-      * `peg-out.ak`'s Complete branch rebuilds exactly this value from the request datum
-      * (`source_chain_destination_address` and `locked − per_pegout_fee`) and proves membership, so
-      * ANY divergence here breaks peg-out completion.
-      *
-      * Fails on: an odd remainder (a payment with no marker), a marker in a payment position, a
-      * non-marker in a marker position, and any step-count mismatch. Such a TM must never be signed
-      * — a signed one is unconfirmable, which is why heimdall's builder is the enforcement point.
-      */
-    def foldCompletedPegOuts(
-        root: MPF,
-        outs: ScalusList[PegOutEntry],
-        steps: ScalusList[PegOutTrieStep]
-    ): MPF = outs match
-        case ScalusList.Nil =>
-            steps match
-                case ScalusList.Nil => root
-                case _              => fail("TM confirm: more trie steps than marker pairs")
-        case ScalusList.Cons(payment, rest1) =>
-            require(
-              !isPorMarker(payment.scriptPubKey),
-              "TM confirm: POR marker in a payment position"
-            )
-            rest1 match
-                case ScalusList.Nil => fail("TM confirm: odd output count after the change output")
-                case ScalusList.Cons(marker, rest2) =>
-                    require(
-                      isPorMarker(marker.scriptPubKey),
-                      "TM confirm: payment output without a POR marker"
-                    )
-                    val key = porMarkerId(marker.scriptPubKey)
-                    val value =
-                        payment.scriptPubKey ++ integerToByteString(false, 8, payment.amount)
-                    steps match
-                        case ScalusList.Nil => fail("TM confirm: missing trie step for a pair")
-                        case ScalusList.Cons(step, moreSteps) =>
-                            val next = step match
-                                case PegOutTrieStep.Insert(proof) => root.insert(key, value, proof)
-                                case PegOutTrieStep.AlreadyPresent(proof) =>
-                                    // Same key AND same value: the root is provably unchanged.
-                                    root.verifyMembership(key, value, proof)
-                                    root
-                            foldCompletedPegOuts(next, rest2, moreSteps)
+    def committedRoot(outs: ScalusList[PegOutEntry]): ByteString = {
+        def loop(rest: ScalusList[PegOutEntry], found: Option[ByteString]): Option[ByteString] =
+            rest match
+                case ScalusList.Nil => found
+                case ScalusList.Cons(out, tail) =>
+                    val spk = out.scriptPubKey
+                    if isRootCommitment(spk) then
+                        found match
+                            case Option.Some(_) => fail("TM confirm: multiple root commitments")
+                            case Option.None =>
+                                loop(
+                                  tail,
+                                  Option.Some(spk.slice(RootCommitmentPrefixLength, RootLength))
+                                )
+                    else loop(tail, found)
+        loop(outs, Option.None).getOrFail("TM confirm: missing root commitment")
+    }
 
     /** All input outpoints (prev_txid(32) ++ prev_vout(4), 36 bytes each) of a raw Bitcoin tx, in
       * input order. These are the `sweptPegInUtxoIds` of a TM (the old treasury input is included —
@@ -435,7 +405,9 @@ object TreasuryMovementValidator {
         val datum = datumOpt.getOrFail("Missing TM datum").to[TmDatum]
         // Only the Unconfirmed -> Confirmed transition is a legal spend.
         datum match
-            case TmDatum.Unconfirmed(signedBtcTx, creator, created, epoch, leaderReward) =>
+            // `fulfilledPorOutpoints` is the rev-5.1 DA hint: decoded positionally, never read. See
+            // the TmDatum scaladoc for why nothing on-chain validates it.
+            case TmDatum.Unconfirmed(signedBtcTx, creator, created, epoch, leaderReward, _) =>
                 val proof = redeemer.to[TmConfirmRedeemer]
 
                 // 1. Recompute the txid from the witness-stripped serialization — never trust the caller.
@@ -523,15 +495,21 @@ object TreasuryMovementValidator {
                   "Continuing output datum does not match parsed TM Confirmed"
                 )
 
-                // 7. Completed-peg-outs trie update. The TM's Bitcoin outputs after the treasury
-                // change come in (payment, marker) pairs; the marker commits the POR id of the
-                // PegOutRequest that payment fulfills. Fold those pairs into the trie root and
-                // require the continuing trie output to carry the folded root.
+                // 7. Completed-peg-outs trie update. The TM carries exactly one "CPOR1" OP_RETURN
+                // output committing the trie root that holds AFTER it. Copy that root into the
+                // continuing trie output.
                 //
                 // Why here and not in peg-out.ak: the ONLY place the protocol learns which Bitcoin
                 // payment settles which peg-out request is the FROST-signed TM itself. Recording it
                 // at Confirm makes peg-out Complete a single MPF membership proof, with no need to
                 // re-parse the raw TM.
+                //
+                // Why a copy and not an on-chain fold: the root is committed INSIDE the bytes the
+                // quorum signed, so it is a quorum attestation exactly like the payments themselves.
+                // Re-deriving it on-chain from per-peg-out markers (the previous design) cost ~46 vB
+                // of Bitcoin per peg-out and an MPF insert per peg-out in the Confirm budget, and
+                // bought no trust the quorum did not already hold: it never proved a payment settles
+                // the request its marker names. See the design note "rev 5.1".
                 //
                 // The trie UTxO must be SPENT here (not referenced): its own Aiken validator
                 // (`completed-peg-outs-merkle-tree.ak`) gates its spend on exactly this transition
@@ -563,14 +541,13 @@ object TreasuryMovementValidator {
                 // The NFT must come back to the same script address, or the next TM could not find
                 // it and the trie would be permanently unspendable.
                 require(trieOut.address === trieIn.address, "TM confirm: trie address changed")
-                // `fulfilled.tail` drops output 0, the treasury change (never a marker). A TM that
-                // fulfills no peg-out has an empty tail and MUST carry an empty step list; its root
-                // is then unchanged, and the trie UTxO simply round-trips.
-                val startRoot = MPF(trieIn.datum.of[CompletedPegOutsTrieDatum].root)
-                val endRoot = foldCompletedPegOuts(startRoot, fulfilled.tail, proof.pegOutSteps)
+                // The attested root, taken from the TM's single "CPOR1" output. A TM that fulfills
+                // no peg-out commits the UNCHANGED root, so the trie UTxO round-trips with the same
+                // datum — but the commitment output is still mandatory.
+                val newRoot = committedRoot(fulfilled)
                 require(
-                  trieOut.datum.of[CompletedPegOutsTrieDatum].root == endRoot.root,
-                  "TM confirm: trie root does not match the folded steps"
+                  trieOut.datum.of[CompletedPegOutsTrieDatum].root == newRoot,
+                  "TM confirm: trie root does not match the committed root"
                 )
             case TmDatum.Confirmed(_, _, _, _, creator, created, _, _) =>
                 // Garbage collection: after the grace period the CREATOR may reclaim the record's
@@ -623,7 +600,9 @@ object TreasuryMovementValidator {
             case Credential.ScriptCredential(h) if h == ownPolicyId => ()
             case _ => fail("TM mint: NFT output not at own script address")
         val signedBtcTx = tmOut.datum.of[TmDatum] match
-            case TmDatum.Unconfirmed(rawTx, _, created, _, _) =>
+            // The 6th field (`fulfilledPorOutpoints`) is decoded positionally and IGNORED — the mint
+            // validates nothing about the DA hint. See the TmDatum scaladoc.
+            case TmDatum.Unconfirmed(rawTx, _, created, _, _, _) =>
                 val txHappenedBefore = tx.validRange.to.finiteOrFail(
                   "TM mint: validity range upper bound must be finite"
                 )

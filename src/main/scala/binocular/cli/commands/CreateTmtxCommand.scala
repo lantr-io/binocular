@@ -96,8 +96,9 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
         Console.separator()
         println()
 
-        // Build the Unconfirmed datum: Constr 0 [signed_btc_tx, creator, created] — matches
-        // heimdall publish.rs and what TreasuryMovementValidator expects to spend. creator =
+        // Build the Unconfirmed datum: Constr 0
+        // [signed_btc_tx, creator, created, epoch, leader_reward, fulfilled_por_outpoints] —
+        // matches heimdall publish.rs and what TreasuryMovementValidator expects to spend. creator =
         // the sponsor payment key (it may GC the Confirmed record after the grace period);
         // created = now (the real TM mint policy anchors it to the tx validity interval).
         val btcTxBytes = ByteString.fromHex(btcTxHex)
@@ -116,6 +117,10 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
         // is the Cardano epoch this TM belongs to — heimdall's `publish.rs` sets the real value; this
         // manual scaffold leaves it 0 (the validator carries epoch but does not enforce it in N7).
         val leaderReward = BigInt(config.bridge.leaderRewardLovelace)
+        // Field 5 is the rev-5.1 DA hint `fulfilled_por_outpoints` (36-byte Cardano outpoints of the
+        // PegOutRequests the TM fulfills). EMPTY here: this scaffold posts an operator-supplied raw
+        // BTC tx that settles no PegOutRequest. Nothing on-chain reads the field — it only helps
+        // reconstruction skip its search fallback — so an empty list costs the scaffold nothing.
         val datum = Data.Constr(
           0,
           ScalusList(
@@ -123,7 +128,8 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
             Data.B(creatorPkh),
             Data.I(createdMs),
             Data.I(BigInt(0)),
-            Data.I(leaderReward)
+            Data.I(leaderReward),
+            Data.List(ScalusList.Nil)
           )
         )
 

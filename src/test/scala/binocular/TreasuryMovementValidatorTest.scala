@@ -56,8 +56,9 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         ByteString.fromArray(Array.fill[Byte](n)(v.toByte))
 
     // --- raw TM builder -------------------------------------------------------------------------
-    // TM output layout: [0] = treasury change, then one (payment, "POR" marker) PAIR per fulfilled
-    // peg-out. The marker commits the POR id of the PegOutRequest the payment settles.
+    // TM output layout: [0] = treasury change, [1..m] = peg-out payments, [m+1] = the ONE "CPOR1"
+    // root commitment. The commitment holds the completed-peg-outs trie root that must hold after
+    // this TM; the FROST quorum signed it, and Confirm copies it into the trie UTxO.
 
     private val changeSpk = ByteString.fromHex("0014" + ("11" * 20))
     private val paySpk1 = ByteString.fromHex("0014" + ("22" * 20))
@@ -67,11 +68,11 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     private val porId2 = filled(0xd2, 32)
     private val porId3 = filled(0xd3, 32)
 
-    /** `OP_RETURN OP_PUSHBYTES_35 <tag ++ por_id>` — 37 script bytes. `tag` is "POR" (504f52) for a
-      * genuine marker; the wrong-prefix test passes the peg-in tag "BFR" (424652).
+    /** `OP_RETURN OP_PUSHBYTES_37 <tag ++ root>` — 39 script bytes. `tag` is "CPOR1" (43504f5231)
+      * for a genuine commitment; the wrong-prefix test passes "CPOR2" (43504f5232).
       */
-    private def markerSpk(porId: ByteString, tag: String = "504f52"): ByteString =
-        ByteString.fromHex("6a23" + tag) ++ porId
+    private def commitmentSpk(root: ByteString, tag: String = "43504f5231"): ByteString =
+        ByteString.fromHex("6a25" + tag) ++ root
 
     /** A 2-in segwit tx (empty witnesses, fixed outpoints) with the given `(scriptPubKey, sats)`
       * outputs.
@@ -93,16 +94,26 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
 
     /** The value a fulfilled peg-out records in the trie: `dest_spk ++ amount_le8`. Must match
       * `peg-out.ak`'s Complete branch byte for byte, or completion breaks.
+      *
+      * The validator no longer derives this — it is heimdall's job — but the fixtures build the
+      * committed roots from real entries, so the roots the tests move between are realistic.
       */
     private def trieValue(spk: ByteString, amount: BigInt): ByteString =
         spk ++ integerToByteString(false, 8, amount)
 
-    /** The default TM: treasury change + ONE fulfilled peg-out (payment + its POR marker). */
+    private val emptyTrie = OffChainMPF.empty
+    private val emptyRoot = emptyTrie.rootHash
+
+    /** The trie after the default TM's single peg-out: the root its commitment output attests. */
+    private val defaultTrie = emptyTrie.insert(porId1, trieValue(paySpk1, BigInt(2000)))
+    private val defaultEndRoot = defaultTrie.rootHash
+
+    /** The default TM: treasury change + ONE fulfilled peg-out payment + the root commitment. */
     private val rawTm: ByteString = rawTxWith(
       List(
         (changeSpk, BigInt(1000)),
         (paySpk1, BigInt(2000)),
-        (markerSpk(porId1), BigInt(0))
+        (commitmentSpk(defaultEndRoot), BigInt(0))
       )
     )
 
@@ -137,35 +148,11 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
       List(
         PegOutEntry(changeSpk, BigInt(1000)),
         PegOutEntry(paySpk1, BigInt(2000)),
-        PegOutEntry(markerSpk(porId1), BigInt(0))
+        PegOutEntry(commitmentSpk(defaultEndRoot), BigInt(0))
       )
     )
 
     // --- completed-peg-outs trie fixtures --------------------------------------------------------
-
-    private val emptyTrie = OffChainMPF.empty
-    private val emptyRoot = emptyTrie.rootHash
-
-    /** Insert-fold `entries` into `start`: returns the matching redeemer steps and the new trie.
-      * Each `Insert` step carries the NON-membership proof taken against the trie state that step
-      * sees, exactly as an honest confirmer would build it.
-      */
-    private def insertSteps(
-        start: OffChainMPF,
-        entries: List[(ByteString, ByteString)]
-    ): (PList[PegOutTrieStep], OffChainMPF) = {
-        var trie = start
-        val steps = entries.map { case (k, v) =>
-            val step: PegOutTrieStep = PegOutTrieStep.Insert(trie.proveNonMembership(k))
-            trie = trie.insert(k, v)
-            step
-        }
-        (PList.from(steps), trie)
-    }
-
-    private val (defaultSteps, defaultTrie) =
-        insertSteps(emptyTrie, List((porId1, trieValue(paySpk1, BigInt(2000)))))
-    private val defaultEndRoot = defaultTrie.rootHash
 
     private val trieAddress = Address(Credential.ScriptCredential(triePolicy), Option.None)
 
@@ -207,8 +194,21 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     // N7 datum fields — carried through Confirm, not yet enforced on-chain (pin lands with N9).
     private val tmEpoch: BigInt = BigInt(42)
     private val tmLeaderReward: BigInt = BigInt(2_000_000)
-    private val unconfirmedDatum: Data =
-        (TmDatum.Unconfirmed(rawTm, creatorPkh, createdAt, tmEpoch, tmLeaderReward): TmDatum).toData
+    // Rev-5.1 DA hint: 36-byte Cardano outpoints of the PegOutRequests this TM fulfills. NOTHING
+    // on-chain reads it, so the default fixture carries a non-empty one — every happy-path test then
+    // doubles as evidence that mint and confirm ignore its content.
+    private val porOutpointHint: PList[ByteString] =
+        PList.from(List(filled(0x31, 32) ++ ByteString.fromHex("00000000")))
+    private def unconfirmedDatumWith(hint: PList[ByteString]): Data =
+        (TmDatum.Unconfirmed(
+          rawTm,
+          creatorPkh,
+          createdAt,
+          tmEpoch,
+          tmLeaderReward,
+          hint
+        ): TmDatum).toData
+    private val unconfirmedDatum: Data = unconfirmedDatumWith(porOutpointHint)
 
     private def tmInput(value: Value, datum: Data) = TxInInfo(
       outRef = ownRef,
@@ -243,20 +243,18 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
 
     private def redeemer(
         proof: PList[ProofStep],
-        txIndex: BigInt = 0,
-        pegOutSteps: PList[PegOutTrieStep] = defaultSteps
+        txIndex: BigInt = 0
     ): Data =
         TmConfirmRedeemer(
           txIndex = txIndex,
           txMerkleProof = PList.Nil,
           blockMpfProof = proof,
-          blockHeader = BlockHeader(blockHeader),
-          pegOutSteps = pegOutSteps
+          blockHeader = BlockHeader(blockHeader)
         ).toData
 
     /** A Confirm ScriptContext over the default `rawTm` (one fulfilled peg-out). The trie UTxO is
-      * spent (empty root) and recreated with the root after inserting that peg-out, and the Config
-      * reference input publishes `triePolicy` at field 3.
+      * spent (empty root) and recreated with the root that TM's commitment output attests, and the
+      * Config reference input publishes `triePolicy` at field 3.
       */
     private def scriptContext(
         outValue: Value,
@@ -266,11 +264,12 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         extraOutputs: List[TxOut] = List.empty,
         extraInputs: List[TxInInfo] = List(trieInput()),
         trieOutputs: List[TxOut] = List(trieOutput(defaultEndRoot)),
-        cfgRefs: List[TxInInfo] = List(configRefInput())
+        cfgRefs: List[TxInInfo] = List(configRefInput()),
+        tmDatum: Data = unconfirmedDatum
     ): ScriptContext =
         ScriptContext(
           txInfo = TxInfo(
-            inputs = PList.from(tmInput(tmValue, unconfirmedDatum) :: extraInputs),
+            inputs = PList.from(tmInput(tmValue, tmDatum) :: extraInputs),
             referenceInputs = PList.from(oracleRef :: cfgRefs),
             outputs = PList.from(
               (confirmedOutput(outValue, outDatum) :: extraOutputs) ++ trieOutputs
@@ -278,7 +277,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
             id = TxId(filled(0x00, 32))
           ),
           redeemer = rdmr,
-          scriptInfo = SpendingScript(ownRef, Option.Some(unconfirmedDatum))
+          scriptInfo = SpendingScript(ownRef, Option.Some(tmDatum))
         )
 
     /** A Confirm ScriptContext for an ARBITRARY raw TM: derives its txid, wraps it in a single-tx
@@ -288,8 +287,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     private def confirmContextFor(
         rawTx: ByteString,
         trieInRoot: ByteString,
-        trieOutRoot: ByteString,
-        steps: PList[PegOutTrieStep]
+        trieOutRoot: ByteString
     ): ScriptContext = {
         val id = BitcoinHelpers.getTxHash(rawTx)
         val hdr = ByteString.fromHex("01000000") ++ filled(0x00, 32) ++ id ++
@@ -314,7 +312,8 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
               creatorPkh,
               createdAt,
               tmEpoch,
-              tmLeaderReward
+              tmLeaderReward,
+              porOutpointHint
             ): TmDatum).toData
         val conf: Data = (TmDatum.Confirmed(
           id,
@@ -330,8 +329,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           txIndex = 0,
           txMerkleProof = PList.Nil,
           blockMpfProof = obMpf.proveMembership(bh),
-          blockHeader = BlockHeader(hdr),
-          pegOutSteps = steps
+          blockHeader = BlockHeader(hdr)
         ).toData
         ScriptContext(
           txInfo = TxInfo(
@@ -758,10 +756,21 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     }
 
     test("TmDatum / redeemer Data round-trip") {
+        // The 6-field Unconfirmed: the DA hint is the appended field 5 and survives the round trip
+        // even though no validator reads it.
         assert(
           unconfirmedDatum.to[TmDatum] == TmDatum
-              .Unconfirmed(rawTm, creatorPkh, createdAt, tmEpoch, tmLeaderReward)
+              .Unconfirmed(rawTm, creatorPkh, createdAt, tmEpoch, tmLeaderReward, porOutpointHint)
         )
+        unconfirmedDatum match
+            case Data.Constr(0, fields) =>
+                val positional = fields.asScala.toList
+                assert(positional.size == 6, "Unconfirmed must encode as 6 positional fields")
+                positional(5) match
+                    case Data.List(items) =>
+                        assert(items.asScala.toList == List(Data.B(porOutpointHint.head)))
+                    case other => fail(s"field 5 must be a Data list, got: $other")
+            case other => fail(s"Unconfirmed must encode as Constr 0, got: $other")
         val conf: TmDatum =
             TmDatum.Confirmed(
               txid,
@@ -823,7 +832,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           List(
             PegOutEntry(changeSpk, BigInt(999)), // tampered
             PegOutEntry(paySpk1, BigInt(2000)),
-            PegOutEntry(markerSpk(porId1), BigInt(0))
+            PegOutEntry(commitmentSpk(defaultEndRoot), BigInt(0))
           )
         )
         val sc =
@@ -912,8 +921,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           txIndex = 0,
           txMerkleProof = PList.Nil,
           blockMpfProof = mpfProof,
-          blockHeader = BlockHeader(tamperedHeader),
-          pegOutSteps = defaultSteps
+          blockHeader = BlockHeader(tamperedHeader)
         ).toData
         val sc = scriptContext(tmValue, confirmedDatum(), rdmr)
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
@@ -1004,12 +1012,12 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
 
-    // --- completed-peg-outs trie fold ---
+    // --- completed-peg-outs root commitment ---
 
-    test("trie fold: one fulfilled peg-out inserts (por_id -> dest_spk ++ amount_le8)") {
-        // The default fixture IS the 1-peg-out case. Assert the fold moved the root (a stale root
-        // would make this test pass vacuously) and that the value is the exact bytes peg-out.ak
-        // rebuilds on Complete.
+    test("root commitment: the attested root is copied into the trie output") {
+        // The default fixture IS the 1-peg-out case. Assert the root actually MOVES (a fixture that
+        // committed the starting root would pass vacuously) and that the entry the root stands for
+        // is the exact bytes peg-out.ak rebuilds on Complete.
         assert(defaultEndRoot != emptyRoot)
         assert(
           trieValue(paySpk1, BigInt(2000)) ==
@@ -1020,110 +1028,161 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         assert(result.isSuccess, s"Expected success, got: $result")
     }
 
-    test("trie fold: three fulfilled peg-outs fold in output order") {
+    test("root commitment: three peg-out payments and one commitment succeed") {
+        // Confirm is O(1) in the batch size now: the payments are inert to this validator, only the
+        // single commitment output matters.
+        val committed = emptyTrie
+            .insert(porId1, trieValue(paySpk1, BigInt(2000)))
+            .insert(porId2, trieValue(paySpk2, BigInt(3000)))
+            .insert(porId3, trieValue(paySpk3, BigInt(4000)))
+            .rootHash
         val raw = rawTxWith(
           List(
             (changeSpk, BigInt(1000)),
             (paySpk1, BigInt(2000)),
-            (markerSpk(porId1), BigInt(0)),
             (paySpk2, BigInt(3000)),
-            (markerSpk(porId2), BigInt(0)),
             (paySpk3, BigInt(4000)),
-            (markerSpk(porId3), BigInt(0))
+            (commitmentSpk(committed), BigInt(0))
           )
         )
-        val (steps, endTrie) = insertSteps(
-          emptyTrie,
+        val sc = confirmContextFor(raw, emptyRoot, committed)
+        val result = program.applyArg(sc.toData).evaluateDebug
+        assert(result.isSuccess, s"Expected success, got: $result")
+    }
+
+    test("root commitment: the commitment may sit anywhere in the output list") {
+        // heimdall emits it last, but nothing on-chain depends on the position: the scan covers
+        // every output, output 0 included.
+        val raw = rawTxWith(
           List(
-            (porId1, trieValue(paySpk1, BigInt(2000))),
-            (porId2, trieValue(paySpk2, BigInt(3000))),
-            (porId3, trieValue(paySpk3, BigInt(4000)))
+            (changeSpk, BigInt(1000)),
+            (commitmentSpk(defaultEndRoot), BigInt(0)),
+            (paySpk1, BigInt(2000))
           )
         )
-        val sc = confirmContextFor(raw, emptyRoot, endTrie.rootHash, steps)
+        val sc = confirmContextFor(raw, emptyRoot, defaultEndRoot)
         val result = program.applyArg(sc.toData).evaluateDebug
         assert(result.isSuccess, s"Expected success, got: $result")
     }
 
-    test("trie fold: a TM with no peg-outs leaves the root unchanged") {
-        // Change output only. No pairs, so no steps, and the trie UTxO round-trips untouched. A
-        // non-empty starting root proves the root is carried through, not reset.
-        val raw = rawTxWith(List((changeSpk, BigInt(1000))))
-        val sc = confirmContextFor(raw, defaultEndRoot, defaultEndRoot, PList.Nil)
+    test("root commitment: a zero-peg-out TM re-commits the unchanged root") {
+        // Change output + commitment only. A non-empty starting root proves the root is carried
+        // through, not reset.
+        val raw = rawTxWith(
+          List((changeSpk, BigInt(1000)), (commitmentSpk(defaultEndRoot), BigInt(0)))
+        )
+        val sc = confirmContextFor(raw, defaultEndRoot, defaultEndRoot)
         val result = program.applyArg(sc.toData).evaluateDebug
         assert(result.isSuccess, s"Expected success, got: $result")
     }
 
-    test("trie fold: a zero-peg-out TM may not change the root") {
-        val raw = rawTxWith(List((changeSpk, BigInt(1000))))
-        val sc = confirmContextFor(raw, emptyRoot, defaultEndRoot, PList.Nil)
-        assertRejects(sc, "TM confirm: trie root does not match the folded steps")
+    test("root commitment: a zero-peg-out TM may not change the root") {
+        val raw = rawTxWith(
+          List((changeSpk, BigInt(1000)), (commitmentSpk(emptyRoot), BigInt(0)))
+        )
+        val sc = confirmContextFor(raw, emptyRoot, defaultEndRoot)
+        assertRejects(sc, "TM confirm: trie root does not match the committed root")
     }
 
-    test("trie fold: AlreadyPresent accepts a duplicate marker with the SAME value") {
-        // SPO double-fulfillment tolerance: a second TM re-paying the same PegOutRequest must still
-        // confirm, or every peg-in that TM swept is stranded. The root is unchanged.
-        val value1 = trieValue(paySpk1, BigInt(2000))
-        val preTrie = emptyTrie.insert(porId1, value1)
-        val steps: PList[PegOutTrieStep] =
-            PList.from(List(PegOutTrieStep.AlreadyPresent(preTrie.proveMembership(porId1))))
-        val sc = confirmContextFor(rawTm, preTrie.rootHash, preTrie.rootHash, steps)
-        val result = program.applyArg(sc.toData).evaluateDebug
-        assert(result.isSuccess, s"Expected success, got: $result")
+    test("root commitment: a TM with no commitment output cannot be confirmed") {
+        // Not a tolerated case: without a commitment the trie root would be whatever the confirmer
+        // chose. Every TM must state the root that holds after it, peg-outs or none.
+        val raw = rawTxWith(List((changeSpk, BigInt(1000)), (paySpk1, BigInt(2000))))
+        val sc = confirmContextFor(raw, emptyRoot, emptyRoot)
+        assertRejects(sc, "TM confirm: missing root commitment")
     }
 
-    test("trie fold: AlreadyPresent with a DIFFERENT stored value fails") {
-        // The tolerance is exact-value only. If the trie already maps this POR id to some other
-        // payment, accepting would silently rewrite history — membership verification rejects it.
-        val preTrie = emptyTrie.insert(porId1, trieValue(paySpk1, BigInt(999)))
-        val steps: PList[PegOutTrieStep] =
-            PList.from(List(PegOutTrieStep.AlreadyPresent(preTrie.proveMembership(porId1))))
-        val sc = confirmContextFor(rawTm, preTrie.rootHash, preTrie.rootHash, steps)
-        assertRejects(sc, "Membership verification failed")
+    test("root commitment: two commitment outputs fail") {
+        // The validator must never have to choose which root to copy — a permissionless confirmer
+        // would make that choice by ordering the outputs.
+        val raw = rawTxWith(
+          List(
+            (changeSpk, BigInt(1000)),
+            (paySpk1, BigInt(2000)),
+            (commitmentSpk(defaultEndRoot), BigInt(0)),
+            (commitmentSpk(emptyRoot), BigInt(0))
+          )
+        )
+        val sc = confirmContextFor(raw, emptyRoot, defaultEndRoot)
+        assertRejects(sc, "TM confirm: multiple root commitments")
     }
 
-    test("trie fold: Insert over an already-present key fails") {
-        // `insert` proves ABSENCE; a duplicate must use AlreadyPresent, never Insert.
-        val preTrie = emptyTrie.insert(porId1, trieValue(paySpk1, BigInt(2000)))
-        val steps: PList[PegOutTrieStep] =
-            PList.from(List(PegOutTrieStep.Insert(preTrie.proveMembership(porId1))))
-        val sc = confirmContextFor(rawTm, preTrie.rootHash, preTrie.rootHash, steps)
-        assertRejects(sc, "Invalid proof or element exists")
+    test("root commitment: two commitments of the SAME root still fail") {
+        // No "harmless duplicate" tolerance: one output, always. Duplicates mean the signer built
+        // something the protocol does not describe.
+        val raw = rawTxWith(
+          List(
+            (changeSpk, BigInt(1000)),
+            (commitmentSpk(defaultEndRoot), BigInt(0)),
+            (commitmentSpk(defaultEndRoot), BigInt(0))
+          )
+        )
+        val sc = confirmContextFor(raw, emptyRoot, defaultEndRoot)
+        assertRejects(sc, "TM confirm: multiple root commitments")
     }
 
-    test("trie fold: a continuing output with the wrong final root fails") {
+    test("root commitment: a wrong prefix (\"CPOR2\") is not a commitment") {
+        // Right length, right OP_RETURN push, wrong tag. Only "CPOR1" commits a trie root, so the
+        // TM reads as having none.
+        val raw = rawTxWith(
+          List(
+            (changeSpk, BigInt(1000)),
+            (paySpk1, BigInt(2000)),
+            (commitmentSpk(defaultEndRoot, tag = "43504f5232"), BigInt(0))
+          )
+        )
+        val sc = confirmContextFor(raw, emptyRoot, defaultEndRoot)
+        assertRejects(sc, "TM confirm: missing root commitment")
+    }
+
+    test("root commitment: a right-prefix output of the wrong length is not a commitment") {
+        // 38 bytes instead of 39. Without the length check the slice would read past the payload
+        // and a truncated push would attest a root nobody signed.
+        val short = commitmentSpk(defaultEndRoot).slice(0, 38)
+        val raw = rawTxWith(
+          List(
+            (changeSpk, BigInt(1000)),
+            (paySpk1, BigInt(2000)),
+            (short, BigInt(0))
+          )
+        )
+        val sc = confirmContextFor(raw, emptyRoot, defaultEndRoot)
+        assertRejects(sc, "TM confirm: missing root commitment")
+    }
+
+    test("root commitment: a continuing output with a root the TM did not commit fails") {
         val sc = scriptContext(
           tmValue,
           confirmedDatum(),
           redeemer(mpfProof),
           trieOutputs = List(trieOutput(filled(0x5a, 32)))
         )
-        assertRejects(sc, "TM confirm: trie root does not match the folded steps")
+        assertRejects(sc, "TM confirm: trie root does not match the committed root")
     }
 
-    test("trie fold: an unchanged root on a 1-peg-out TM fails") {
+    test("root commitment: keeping the old root on a 1-peg-out TM fails") {
         val sc = scriptContext(
           tmValue,
           confirmedDatum(),
           redeemer(mpfProof),
           trieOutputs = List(trieOutput(emptyRoot))
         )
-        assertRejects(sc, "TM confirm: trie root does not match the folded steps")
+        assertRejects(sc, "TM confirm: trie root does not match the committed root")
     }
 
-    test("trie fold: not spending the trie UTxO fails") {
+    test("root commitment: not spending the trie UTxO fails") {
         val sc =
             scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof), extraInputs = List.empty)
         assertRejects(sc, "TM confirm: completed-peg-outs trie not spent")
     }
 
-    test("trie fold: no continuing trie output fails") {
+    test("root commitment: no continuing trie output fails") {
         val sc =
             scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof), trieOutputs = List.empty)
         assertRejects(sc, "TM confirm: no continuing completed-peg-outs output")
     }
 
-    test("trie fold: a forged trie NFT policy is not accepted") {
+    test("root commitment: a forged trie NFT policy is not accepted") {
         // A CPO-named token under a policy the Config does not publish is invisible to the
         // validator, so the genuine trie UTxO is simply missing.
         val forged = filled(0xc9, 28)
@@ -1137,7 +1196,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         assertRejects(sc, "TM confirm: completed-peg-outs trie not spent")
     }
 
-    test("trie fold: moving the trie NFT to a different address fails") {
+    test("root commitment: moving the trie NFT to a different address fails") {
         val sc = scriptContext(
           tmValue,
           confirmedDatum(),
@@ -1152,13 +1211,13 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         assertRejects(sc, "TM confirm: trie address changed")
     }
 
-    test("trie fold: a missing config reference input fails") {
+    test("root commitment: a missing config reference input fails") {
         val sc =
             scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof), cfgRefs = List.empty)
         assertRejects(sc, "TM confirm: no config reference input")
     }
 
-    test("trie fold: a config UTxO without the config NFT is ignored") {
+    test("root commitment: a config UTxO without the config NFT is ignored") {
         val sc = scriptContext(
           tmValue,
           confirmedDatum(),
@@ -1168,7 +1227,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         assertRejects(sc, "TM confirm: no config reference input")
     }
 
-    test("trie fold: a config publishing a different trie policy fails") {
+    test("root commitment: a config publishing a different trie policy fails") {
         // Config field 3 is the ONLY authority on which UTxO is the trie. Point it elsewhere and
         // the trie input the tx actually spends is no longer found.
         val sc = scriptContext(
@@ -1180,88 +1239,85 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         assertRejects(sc, "TM confirm: completed-peg-outs trie not spent")
     }
 
-    test("trie fold: an odd output count after the change output fails") {
-        // A payment with no marker: the protocol would have no way to know which request it settles.
-        val raw = rawTxWith(List((changeSpk, BigInt(1000)), (paySpk1, BigInt(2000))))
-        val (steps, endTrie) =
-            insertSteps(emptyTrie, List((porId1, trieValue(paySpk1, BigInt(2000)))))
-        val sc = confirmContextFor(raw, emptyRoot, endTrie.rootHash, steps)
-        assertRejects(sc, "TM confirm: odd output count after the change output")
-    }
-
-    test("trie fold: a marker with the peg-in \"BFR\" prefix fails") {
-        // Right length, right OP_RETURN push, wrong tag. Only "POR" commits a peg-out id.
-        val raw = rawTxWith(
-          List(
-            (changeSpk, BigInt(1000)),
-            (paySpk1, BigInt(2000)),
-            (markerSpk(porId1, tag = "424652"), BigInt(0)) // "BFR"
-          )
+    test("commitment recognition: length and prefix are both required") {
+        val spk = commitmentSpk(defaultEndRoot)
+        assert(spk.size == 39)
+        assert(TreasuryMovementValidator.isRootCommitment(spk))
+        assert(
+          TreasuryMovementValidator.committedRoot(
+            PList.from(List(PegOutEntry(changeSpk, BigInt(1)), PegOutEntry(spk, BigInt(0))))
+          ) == defaultEndRoot
         )
-        val (steps, endTrie) =
-            insertSteps(emptyTrie, List((porId1, trieValue(paySpk1, BigInt(2000)))))
-        val sc = confirmContextFor(raw, emptyRoot, endTrie.rootHash, steps)
-        assertRejects(sc, "TM confirm: payment output without a POR marker")
-    }
-
-    test("trie fold: a marker sitting in the payment position fails") {
-        // Swapped pair. Without the payment-position check a marker's own script+0 sats could be
-        // recorded as a fulfilled payment.
-        val raw = rawTxWith(
-          List(
-            (changeSpk, BigInt(1000)),
-            (markerSpk(porId1), BigInt(0)),
-            (paySpk1, BigInt(2000))
-          )
-        )
-        val (steps, endTrie) =
-            insertSteps(emptyTrie, List((porId1, trieValue(paySpk1, BigInt(2000)))))
-        val sc = confirmContextFor(raw, emptyRoot, endTrie.rootHash, steps)
-        assertRejects(sc, "TM confirm: POR marker in a payment position")
-    }
-
-    test("trie fold: fewer steps than marker pairs fails") {
-        val sc = scriptContext(
-          tmValue,
-          confirmedDatum(),
-          redeemer(mpfProof, pegOutSteps = PList.Nil)
-        )
-        assertRejects(sc, "TM confirm: missing trie step for a pair")
-    }
-
-    test("trie fold: more steps than marker pairs fails") {
-        val raw = rawTxWith(List((changeSpk, BigInt(1000))))
-        val (steps, endTrie) =
-            insertSteps(emptyTrie, List((porId1, trieValue(paySpk1, BigInt(2000)))))
-        val sc = confirmContextFor(raw, emptyRoot, endTrie.rootHash, steps)
-        assertRejects(sc, "TM confirm: more trie steps than marker pairs")
-    }
-
-    test("trie fold: a wrong trie value (tampered amount) cannot be inserted") {
-        // The confirmer builds the steps, but not the value: the validator derives it from the TM's
-        // own payment output, so a step proving a different value yields a different root.
-        val (steps, endTrie) =
-            insertSteps(emptyTrie, List((porId1, trieValue(paySpk1, BigInt(1999)))))
-        val sc = confirmContextFor(rawTm, emptyRoot, endTrie.rootHash, steps)
-        assertRejects(sc, "TM confirm: trie root does not match the folded steps")
-    }
-
-    test("trie fold: a wrong POR id key cannot be inserted") {
-        val (steps, endTrie) =
-            insertSteps(emptyTrie, List((porId2, trieValue(paySpk1, BigInt(2000)))))
-        val sc = confirmContextFor(rawTm, emptyRoot, endTrie.rootHash, steps)
-        assertRejects(sc, "TM confirm: trie root does not match the folded steps")
-    }
-
-    test("marker recognition: length and prefix are both required") {
-        assert(TreasuryMovementValidator.isPorMarker(markerSpk(porId1)))
-        assert(TreasuryMovementValidator.porMarkerId(markerSpk(porId1)) == porId1)
         // Wrong tag.
-        assert(!TreasuryMovementValidator.isPorMarker(markerSpk(porId1, tag = "424652")))
+        assert(
+          !TreasuryMovementValidator.isRootCommitment(
+            commitmentSpk(defaultEndRoot, tag = "43504f5232")
+          )
+        )
         // Right prefix, wrong length (truncated payload).
-        assert(!TreasuryMovementValidator.isPorMarker(markerSpk(porId1).slice(0, 36)))
-        // A 37-byte payment script must not be mistaken for a marker.
-        assert(!TreasuryMovementValidator.isPorMarker(filled(0x51, 37)))
+        assert(!TreasuryMovementValidator.isRootCommitment(spk.slice(0, 38)))
+        // A 39-byte payment script must not be mistaken for a commitment.
+        assert(!TreasuryMovementValidator.isRootCommitment(filled(0x51, 39)))
+    }
+
+    // --- the DA hint is decoded and ignored ---
+
+    test("DA hint: confirm accepts any hint content, and never copies it into Confirmed") {
+        // The hint is UNVERIFIED. Three Unconfirmed records differing only in the hint must all
+        // confirm to the SAME Confirmed datum (which has no hint field at all).
+        val hints = List(
+          PList.Nil,
+          porOutpointHint,
+          PList.from(List(filled(0xff, 36), filled(0x00, 36), filled(0xab, 36)))
+        )
+        for hint <- hints do {
+            val datum = unconfirmedDatumWith(hint)
+            val sc = scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof), tmDatum = datum)
+            val result = program.applyArg(sc.toData).evaluateDebug
+            assert(result.isSuccess, s"Expected success for hint $hint, got: $result")
+        }
+    }
+
+    test("DA hint: mint accepts a garbled hint (nothing on-chain validates it)") {
+        // A permissionless poster controls the hint. Junk in it must not block the mint — the
+        // committed root, not the hint, is what reconstruction verifies against.
+        val garbled = PList.from(List(ByteString.fromHex("00"), filled(0x99, 200)))
+        val sc = mintContext(
+          BigInt(1),
+          genesisRdmr,
+          PList.from(List(configRefInput())),
+          PList.from(List(mintedTmOutput(datum = unconfirmedDatumWith(garbled))))
+        )
+        val result = program.applyArg(sc.toData).evaluateDebug
+        assert(result.isSuccess, s"Expected success, got: $result")
+    }
+
+    test("DA hint: a 5-field Unconfirmed datum still confirms (the field is never projected)") {
+        // Observed behaviour, pinned deliberately. Scalus lowers the pattern match to per-index
+        // field projections and nothing in `spend` or `mint` touches index 5, so a datum that stops
+        // at `leaderReward` — a pre-rev-5.1 poster, or a truncated one — is never rejected for its
+        // arity. That follows from "the hint is unverified": the Confirmed datum the validator
+        // reconstructs does not contain it, so there is nothing to be wrong about.
+        //
+        // If a future check ever reads `fulfilledPorOutpoints`, this test flips, and that is the
+        // point: the change must be a decision, not a side effect. NOTE the Aiken mirror
+        // `treasury-movement.ak` is stricter — `expect` there validates the exact arity — but no
+        // Aiken validator decodes the Unconfirmed constructor today.
+        val short = Data.Constr(
+          0,
+          PList.from(
+            List(
+              Data.B(rawTm),
+              Data.B(creatorPkh.hash),
+              Data.I(createdAt),
+              Data.I(tmEpoch),
+              Data.I(tmLeaderReward)
+            )
+          )
+        )
+        val sc = scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof), tmDatum = short)
+        val result = program.applyArg(sc.toData).evaluateDebug
+        assert(result.isSuccess, s"Expected success, got: $result")
     }
 
     // --- budget measurements ---
@@ -1305,16 +1361,18 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           )
         )
         measure("Confirm spend", scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof)))
-        // Batch sizing evidence: the trie fold adds one MPF insert (proof walk + two blake2b_256)
-        // per fulfilled peg-out, so the Confirm cost grows with the batch. Measure a 0-peg-out and
-        // an 8-peg-out TM to bracket it.
+        // Batch sizing evidence. Confirm no longer folds anything: the root is copied from ONE
+        // commitment output whatever the batch size, so the only cost that grows with the batch is
+        // parsing the extra outputs into `fulfilledPegOuts`. Measure a 0-peg-out and an 8-peg-out TM
+        // to show the gap (the marker-fold design paid one MPF insert per peg-out here).
         measure(
           "Confirm 0 pegout",
           confirmContextFor(
-            rawTxWith(List((changeSpk, BigInt(1000)))),
+            rawTxWith(
+              List((changeSpk, BigInt(1000)), (commitmentSpk(defaultEndRoot), BigInt(0)))
+            ),
             defaultEndRoot,
-            defaultEndRoot,
-            PList.Nil
+            defaultEndRoot
           )
         )
         val batch = List.range(0, 8).map { i =>
@@ -1322,16 +1380,14 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
             val id = filled(0xe0 + i, 32)
             (id, spk, BigInt(1000 + i))
         }
+        val batchRoot = batch
+            .foldLeft(emptyTrie)((t, e) => t.insert(e._1, trieValue(e._2, e._3)))
+            .rootHash
         val batchRaw = rawTxWith(
-          (changeSpk, BigInt(1000)) ::
-              batch.flatMap((id, spk, amt) => List((spk, amt), (markerSpk(id), BigInt(0))))
+          ((changeSpk, BigInt(1000)) :: batch.map((_, spk, amt) => (spk, amt)))
+              :+ (commitmentSpk(batchRoot), BigInt(0))
         )
-        val (batchSteps, batchTrie) =
-            insertSteps(emptyTrie, batch.map((id, spk, amt) => (id, trieValue(spk, amt))))
-        measure(
-          "Confirm 8 pegout",
-          confirmContextFor(batchRaw, emptyRoot, batchTrie.rootHash, batchSteps)
-        )
+        measure("Confirm 8 pegout", confirmContextFor(batchRaw, emptyRoot, batchRoot))
     }
 
 }

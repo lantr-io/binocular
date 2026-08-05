@@ -25,9 +25,10 @@ import scala.util.chaining.scalaUtilChainingOps
   *
   * The Confirm branch also requires a Config reference input (it reads the completed-peg-outs trie
   * policy from field 3) and requires the completed-peg-outs trie UTxO to be SPENT and recreated at
-  * the same address with the folded root. Both are supplied here from a [[TrieSpend]] the caller
-  * assembles (see `ConfirmTmtxCommand`), so the tx satisfies the trie's own Aiken validator too: it
-  * gates the spend on exactly this `Unconfirmed -> Confirmed` transition.
+  * the same address carrying the root the TM's `"CPOR1"` output attests. Both are supplied here
+  * from a [[TrieSpend]] the caller assembles (see `ConfirmTmtxCommand`), so the tx satisfies the
+  * trie's own Aiken validator too: it gates the spend on exactly this `Unconfirmed -> Confirmed`
+  * transition.
   */
 object TreasuryMovementTx {
 
@@ -39,8 +40,7 @@ object TreasuryMovementTx {
       *   `completed_peg_outs_merkle_tree_validator` applied to `(TM script hash, one-shot ref)`.
       *   Its hash MUST equal Config field 3, or the ledger rejects the spend.
       * @param newDatum
-      *   the recreated trie datum carrying the root folded over this TM's `(payment, marker)`
-      *   pairs.
+      *   the recreated trie datum carrying the root this TM's `"CPOR1"` commitment output attests.
       */
     final case class TrieSpend(
         utxo: Utxo,
