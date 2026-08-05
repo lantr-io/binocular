@@ -16,9 +16,9 @@ import scala.util.Try
   * the Scala mirror of heimdall's `src/cardano/cpo_trie.rs::reconstruct`, and it keeps that
   * implementation's invariants deliberately:
   *
-  *   1. NO SILENT SKIPS at the TM address. An output there whose datum cannot be read is a hard
-  *      error, because an unreadable `Confirmed` record would drop a whole movement's entries while
-  *      the result still looked complete.
+  *   1. NO SILENT SKIPS at the TM address. An output there whose datum EXISTS but cannot be read is
+  *      a hard error, because an unreadable `Confirmed` record would drop a whole movement's
+  *      entries while the result still looked complete.
   *   1. PER-TM ROOT ASSERTION. After each confirmed TM the running root MUST equal the root that TM
   *      committed in its `"CPOR1"` output. A mismatch names the offending TM instead of surfacing
   *      later as an unexplained wrong root.
@@ -29,10 +29,20 @@ import scala.util.Try
   *      Only this catches a replay that stopped early — the per-TM assertion has no later TM to
   *      fail against at the tip.
   *
-  * The asymmetry between the two addresses is intentional. An unreadable output at the PEG-OUT
-  * address is skipped: that address is permissionlessly payable, so erroring would let one junk
-  * UTxO block every reconstruction forever, and a missing request cannot shrink the trie silently —
-  * it makes some TM fail its root assertion by name.
+  * Invariant 1 turns on a THREE-way reading of a datum, not a two-way one. An output carrying NO
+  * datum at all is skipped even at the TM address: every TM record, `Unconfirmed` and `Confirmed`
+  * alike, is created with an inline datum, so a datum-less output provably is not one. Only a datum
+  * that exists and cannot be READ is fatal. Both addresses are permissionlessly payable, so
+  * treating "no datum" as fatal let a single junk payment block every reconstruction forever —
+  * which is a denial of service, not a safety property.
+  *
+  * DIVERGENCE (2026-08): heimdall's `reconstruct` still treats any absent datum as fatal. The
+  * relaxation is being routed to heimdall and the spec; until it lands, a junk datum-less payment
+  * to the TM address stops heimdall's reconstruction and not binocular's.
+  *
+  * The asymmetry between the two addresses is intentional. An UNREADABLE output at the PEG-OUT
+  * address is skipped rather than fatal, because a missing request cannot shrink the trie silently
+  * — it makes some TM fail its root assertion by name.
   *
   * The committed root is what converts every step from trust into search-and-check: a garbled hint
   * cannot corrupt the result, only make reconstruction slower.
@@ -83,17 +93,21 @@ object CpoReconstruction {
             (porId, CompletedPegOutsTrie.trieValue(PegOutEntry(scriptPubKey, netSat)))
     }
 
-    /** Reconstruct the mirror. `log` receives one progress line per phase. */
+    /** Reconstruct the mirror. `log` receives one progress line per phase.
+      *
+      * The error carries [[HistoryError.transient]], so the caller can tell "the backend was busy"
+      * from "the chain and this trie disagree". Only the latter justifies latching a halt.
+      */
     def reconstruct(
         source: CpoHistorySource,
         cfg: Config,
         log: String => Unit = _ => ()
-    ): Either[String, CpoTrieMirror] = {
+    ): Either[HistoryError, CpoTrieMirror] = {
         log(s"cpo reconstruction backend: ${source.backend}")
         for {
             tmOutputs <- source.addressHistory(cfg.tmAddress)
             _ = log(s"cpo reconstruction: ${tmOutputs.size} output(s) ever at the TM address")
-            scanned <- scanTmAddress(tmOutputs, cfg.tmAddress)
+            scanned <- scanTmAddress(tmOutputs, cfg.tmAddress).left.map(HistoryError.permanent)
             (confirmed, hints) = scanned
             ordered = chainOrder(confirmed)
             porOutputs <- source.addressHistory(cfg.pegOutAddress)
@@ -102,8 +116,8 @@ object CpoReconstruction {
               s"cpo reconstruction: ${ordered.size} confirmed TM(s), " +
                   s"${history.size} peg-out request(s) in history"
             )
-            mirror <- replay(ordered, hints, history, log)
-            _ <- crossCheck(mirror, cfg.onChainRoot, log)
+            mirror <- replay(ordered, hints, history, log).left.map(HistoryError.permanent)
+            _ <- crossCheck(mirror, cfg.onChainRoot, log).left.map(HistoryError.permanent)
         } yield mirror
     }
 
@@ -123,12 +137,22 @@ object CpoReconstruction {
         while error.isEmpty && it.hasNext do {
             val out = it.next()
             out.inlineDatum match {
-                case None =>
+                // No datum AT ALL: provably not a TM record, because every TM record — Unconfirmed
+                // and Confirmed alike — is created with an inline datum. The TM address is
+                // permissionlessly payable, so a bare payment to it is ordinary junk and skipping it
+                // costs nothing. Conflating this with the unresolvable case below let ONE junk UTxO
+                // block every reconstruction forever.
+                case None if out.unresolvedDatum.isEmpty => ()
+                case None                                =>
+                    // A datum EXISTS and could not be read. This one might be a Confirmed record,
+                    // and dropping a Confirmed record yields a trie that silently omits a whole
+                    // movement while still looking complete — and if it is the tip, nothing
+                    // downstream notices. So: stop.
                     error = Some(
-                      s"cannot resolve the datum of ${out.ref} at the TM address $tmAddress — " +
-                          "refusing to reconstruct with an unexplained gap: if that output is a " +
-                          "Confirmed TM record, skipping it yields a trie that silently omits a " +
-                          "movement"
+                      s"cannot resolve the datum of ${out.ref} at the TM address $tmAddress " +
+                          s"(${out.unresolvedDatum.getOrElse("unknown reason")}) — refusing to " +
+                          "reconstruct with an unexplained gap: if that output is a Confirmed TM " +
+                          "record, skipping it yields a trie that silently omits a movement"
                     )
                 case Some(datum) =>
                     parseConfirmed(datum) match {

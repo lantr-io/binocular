@@ -41,7 +41,7 @@ class CpoReconstructionTest extends AnyFunSuite {
     private final class FakeHistory(byAddress: Map[String, Seq[ChainOutput]])
         extends CpoHistorySource {
         override def backend: String = "fake"
-        override def addressHistory(address: String): Either[String, Seq[ChainOutput]] =
+        override def addressHistory(address: String): Either[HistoryError, Seq[ChainOutput]] =
             Right(byAddress.getOrElse(address, Seq.empty))
     }
 
@@ -176,7 +176,7 @@ class CpoReconstructionTest extends AnyFunSuite {
     test("hints reconstruct the trie and the running root matches every TM") {
         val m = CpoReconstruction
             .reconstruct(history(honestTmOutputs), cfg(Some(root2)))
-            .fold(e => fail(e), identity)
+            .fold(e => fail(e.message), identity)
         assert(m.root == root2)
         assert(m.size == 2)
     }
@@ -187,7 +187,7 @@ class CpoReconstructionTest extends AnyFunSuite {
         val noHints = honestTmOutputs.take(2)
         val m = CpoReconstruction
             .reconstruct(history(noHints), cfg(Some(root2)))
-            .fold(e => fail(e), identity)
+            .fold(e => fail(e.message), identity)
         assert(m.root == root2)
     }
 
@@ -197,7 +197,7 @@ class CpoReconstructionTest extends AnyFunSuite {
         val hostile = unconfirmedOutput(tm1, Seq(hintOf(por2)), 0xe3)
         val m = CpoReconstruction
             .reconstruct(history(honestTmOutputs :+ hostile), cfg(Some(root2)))
-            .fold(e => fail(e), identity)
+            .fold(e => fail(e.message), identity)
         assert(m.root == root2)
     }
 
@@ -210,26 +210,76 @@ class CpoReconstructionTest extends AnyFunSuite {
         )
         val m = CpoReconstruction
             .reconstruct(history(garbled), cfg(Some(root2)))
-            .fold(e => fail(e), identity)
+            .fold(e => fail(e.message), identity)
         assert(m.root == root2)
     }
 
-    test("an unreadable output at the TM address is a HARD error") {
+    test("an output at the TM address whose datum cannot be READ is a HARD error") {
         // It could be a Confirmed record, and dropping one yields a trie that silently omits a whole
         // movement while still looking complete.
-        val withGap = honestTmOutputs :+ ChainOutput(filled(0xff, 32), 0, None, Map.empty)
+        val withGap = honestTmOutputs :+ ChainOutput(
+          filled(0xff, 32),
+          0,
+          None,
+          Map.empty,
+          unresolvedDatum = Some("datum hash has no resolvable preimage on this backend")
+        )
         val err = CpoReconstruction
             .reconstruct(history(withGap), cfg(Some(root2)))
             .swap
             .getOrElse(fail("expected a hard error"))
-        assert(err.contains("cannot resolve the datum"))
+        assert(err.message.contains("cannot resolve the datum"))
+        assert(!err.transient, "an unexplained gap is an integrity failure, not a retryable one")
+    }
+
+    test("an output at the TM address with NO datum at all is skipped") {
+        // Both bridge addresses are permissionlessly payable, so anyone can pay ADA to the TM
+        // address with no datum. Every TM record carries an inline datum, so such an output provably
+        // is not one — treating it as a gap let a single junk payment block reconstruction forever.
+        val withJunk = honestTmOutputs :+ ChainOutput(filled(0xff, 32), 0, None, Map.empty)
+        val m = CpoReconstruction
+            .reconstruct(history(withJunk), cfg(Some(root2)))
+            .fold(e => fail(e.message), identity)
+        assert(m.root == root2)
+    }
+
+    test("a peg-out request whose datum cannot be read is skipped, not fatal") {
+        // The asymmetry with the TM address: a missing request cannot shrink the trie silently, it
+        // makes some TM fail its root assertion by name. Erroring here would hand anyone a denial of
+        // service against reconstruction.
+        val unreadable = por1.copy(
+          inlineDatum = None,
+          unresolvedDatum = Some("datum hash has no resolvable preimage on this backend")
+        )
+        val src = new FakeHistory(
+          Map(tmAddress -> honestTmOutputs, pegOutAddress -> Seq(unreadable, por1, por2))
+        )
+        val m = CpoReconstruction
+            .reconstruct(src, cfg(Some(root2)))
+            .fold(e => fail(e.message), identity)
+        assert(m.root == root2)
+    }
+
+    test("a transient source failure is passed through as transient") {
+        // The caller must be able to tell "the backend was busy" from "the chain disagrees": only
+        // the second may latch a permanent halt.
+        val flaky = new CpoHistorySource {
+            override def backend: String = "flaky"
+            override def addressHistory(a: String): Either[HistoryError, Seq[ChainOutput]] =
+                Left(HistoryError.transient("HTTP 429"))
+        }
+        val err = CpoReconstruction
+            .reconstruct(flaky, cfg(Some(root2)))
+            .swap
+            .getOrElse(fail("expected a failure"))
+        assert(err.transient)
     }
 
     test("junk with a resolvable datum at the TM address is ignored, not an error") {
         val junk = ChainOutput(filled(0xfe, 32), 0, Some(Data.I(BigInt(1))), Map.empty)
         val m = CpoReconstruction
             .reconstruct(history(honestTmOutputs :+ junk), cfg(Some(root2)))
-            .fold(e => fail(e), identity)
+            .fold(e => fail(e.message), identity)
         assert(m.root == root2)
     }
 
@@ -241,7 +291,7 @@ class CpoReconstructionTest extends AnyFunSuite {
             .reconstruct(orphanHistory, cfg(Some(root2)))
             .swap
             .getOrElse(fail("expected an unreconstructable TM"))
-        assert(err.contains(BitcoinHelpers.getTxHash(tm2).reverse.toHex))
+        assert(err.message.contains(BitcoinHelpers.getTxHash(tm2).reverse.toHex))
     }
 
     test("a reconstructed root that the chain disagrees with is REFUSED") {
@@ -249,7 +299,7 @@ class CpoReconstructionTest extends AnyFunSuite {
             .reconstruct(history(honestTmOutputs), cfg(Some(filled(0x00, 32))))
             .swap
             .getOrElse(fail("expected a cross-check failure"))
-        assert(err.contains("refusing to use a trie the chain disagrees with"))
+        assert(err.message.contains("refusing to use a trie the chain disagrees with"))
     }
 
     test("no on-chain root supplied warns instead of cross-checking") {
@@ -260,7 +310,7 @@ class CpoReconstructionTest extends AnyFunSuite {
               cfg(None),
               line => if line.contains("WARNING") then warned = true
             )
-            .fold(e => fail(e), identity)
+            .fold(e => fail(e.message), identity)
         assert(m.root == root2)
         assert(warned)
     }
@@ -280,7 +330,7 @@ class CpoReconstructionTest extends AnyFunSuite {
         val duplicated = honestTmOutputs :+ confirmedOutput(tm2, 2)
         val m = CpoReconstruction
             .reconstruct(history(duplicated), cfg(Some(root2)))
-            .fold(e => fail(e), identity)
+            .fold(e => fail(e.message), identity)
         assert(m.size == 2)
     }
 

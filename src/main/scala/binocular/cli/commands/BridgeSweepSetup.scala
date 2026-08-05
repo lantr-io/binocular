@@ -111,13 +111,20 @@ object BridgeSweepSetup {
                 .toRight("the trie UTxO has no decodable inline root datum")
         } yield TrieContext(configUtxo, trieUtxo, trieScript, onChainRoot)
 
-    /** Assemble the POR sweeper's fixed context: the two scripts a Complete transaction runs, their
+    /** Assemble the POR sweeper: the two scripts a Complete transaction runs, a resolver for their
       * CIP-33 reference UTxOs, the trie mirror's state directory, and the chain-history backend
       * used for cold-start reconstruction.
       *
       * Nothing here reads the deployed Config — the derived hashes are checked against it on every
       * sweep instead, so a watchtower started before the migration Update still boots, still
       * confirms, and starts sweeping by itself once field 5 is swapped.
+      *
+      * NOTHING HERE TOUCHES THE NETWORK. Every value is derived from the blueprint and the local
+      * config, so the only way to fail is a malformed config value — which no amount of retrying
+      * fixes. Reference-script discovery, the one part that does need the network, is deferred into
+      * `resolveScriptRefs` and re-run on every sweep: doing it once at startup turned a transient
+      * provider error into a process-lifetime loss of sweeping, and left a reference script
+      * deployed later unused forever.
       *
       * Returns Left when the sweeper cannot be built at all. The watchtower degrades to
       * confirming-without-sweeping rather than refusing to start: cleanup is not on the bridge's
@@ -140,28 +147,6 @@ object BridgeSweepSetup {
         val configNftAssetBs = configNftAsset.bytes
         val pegOut = PegOutContract(blueprint, configNftPolicyBs, configNftAssetBs)
         val bridgedToken = BridgedTokenContract(blueprint, configNftPolicyBs, configNftAssetBs)
-        val sponsorAddress = hdAccount.baseAddress(network)
-        val refByHash =
-            CommandHelpers.refScriptUtxosByHash(config, sponsorAddress.encode.getOrElse(""))
-        // The provider drops `scriptRef` when listing UTxOs, so a reference UTxO fetched back has to
-        // be re-enriched with the script it carries or TxBuilder cannot attach it.
-        def refUtxo(script: Script.PlutusV3): Option[Utxo] =
-            refByHash.get(script.scriptHash).flatMap { in =>
-                provider.findUtxo(in).await(timeout).toOption.map { u =>
-                    val enriched = u.output match {
-                        case b: TransactionOutput.Babbage =>
-                            b.copy(scriptRef = Some(ScriptRef(script)))
-                        case s: TransactionOutput.Shelley =>
-                            TransactionOutput.Babbage(
-                              s.address,
-                              s.value,
-                              datumOption = None,
-                              scriptRef = Some(ScriptRef(script))
-                            )
-                    }
-                    Utxo(u.input, enriched)
-                }
-            }
         val ctx = PorSweeper.Context(
           network = network,
           tmAddress = tmAddress,
@@ -170,10 +155,8 @@ object BridgeSweepSetup {
           bridgedTokenScript = bridgedToken.script,
           bridgedTokenPolicy = bridgedToken.policyId,
           bridgedTokenAsset = AssetName(ByteString.fromHex(config.bridge.bridgedTokenAssetName)),
-          scriptRefs = PegOutCompleteTx.ScriptRefs(
-            pegOut = refUtxo(pegOut.script),
-            bridgedToken = refUtxo(bridgedToken.script)
-          )
+          resolveScriptRefs = () =>
+              resolveScriptRefs(config, provider, hdAccount, network, pegOut, bridgedToken, timeout)
         )
         val stateDir = CpoTrieMirror.resolveStateDir(config.bridge.stateDir)
         // A missing history backend is NOT fatal: the mirror advances from confirm hints alone in
@@ -190,4 +173,48 @@ object BridgeSweepSetup {
         Console.info("POR sweeper", s"peg_out ${pegOut.policyId.toHex}, state $stateDir")
         new PorSweeper(provider, hdAccount, ctx, stateDir, history, notifier, dryRun, timeout)
     }.toEither.left.map(e => s"${e.getClass.getSimpleName}: ${e.getMessage}")
+
+    /** Discover the CIP-33 reference UTxOs for `peg_out` and `bridged_token` in the sponsor wallet.
+      *
+      * Best-effort by design: a missing reference just means the script is inlined in the witness
+      * set, which costs transaction size and nothing else. Never throws — a discovery failure must
+      * not cost the completion itself.
+      */
+    private def resolveScriptRefs(
+        config: BinocularConfig,
+        provider: BlockchainProvider,
+        hdAccount: HdAccount,
+        network: Network,
+        pegOut: PegOutContract,
+        bridgedToken: BridgedTokenContract,
+        timeout: Duration
+    )(using ExecutionContext): PegOutCompleteTx.ScriptRefs =
+        Try {
+            val sponsorAddress = hdAccount.baseAddress(network)
+            val refByHash =
+                CommandHelpers.refScriptUtxosByHash(config, sponsorAddress.encode.getOrElse(""))
+            // The provider drops `scriptRef` when listing UTxOs, so a reference UTxO fetched back
+            // has to be re-enriched with the script it carries or TxBuilder cannot attach it.
+            def refUtxo(script: Script.PlutusV3): Option[Utxo] =
+                refByHash.get(script.scriptHash).flatMap { in =>
+                    provider.findUtxo(in).await(timeout).toOption.map { u =>
+                        val enriched = u.output match {
+                            case b: TransactionOutput.Babbage =>
+                                b.copy(scriptRef = Some(ScriptRef(script)))
+                            case s: TransactionOutput.Shelley =>
+                                TransactionOutput.Babbage(
+                                  s.address,
+                                  s.value,
+                                  datumOption = None,
+                                  scriptRef = Some(ScriptRef(script))
+                                )
+                        }
+                        Utxo(u.input, enriched)
+                    }
+                }
+            PegOutCompleteTx.ScriptRefs(
+              pegOut = refUtxo(pegOut.script),
+              bridgedToken = refUtxo(bridgedToken.script)
+            )
+        }.getOrElse(PegOutCompleteTx.ScriptRefs(None, None))
 }

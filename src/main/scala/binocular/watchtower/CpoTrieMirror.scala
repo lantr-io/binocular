@@ -9,6 +9,37 @@ import scalus.uplc.builtin.Data.toData
 
 import java.nio.file.{Files, Path, Paths, StandardCopyOption}
 
+/** Atomic JSON state files, shared by the trie mirror and the pending-hint queue.
+  *
+  * Atomicity is not decoration here: both files are rewritten on every confirm, and a torn one is
+  * read back at the next start as a truncated trie whose root matches nothing — the exact state
+  * that halts sweeping. Temp file + `ATOMIC_MOVE` makes a reader see either the old file or the new
+  * one.
+  */
+object JsonState {
+
+    def write(target: Path, json: ujson.Value): Either[String, Unit] =
+        try {
+            val dir = target.getParent
+            Files.createDirectories(dir)
+            val tmp = Files.createTempFile(dir, s"${target.getFileName}-", ".tmp")
+            Files.write(tmp, ujson.write(json, indent = 2).getBytes("UTF-8"))
+            Files.move(
+              tmp,
+              target,
+              StandardCopyOption.REPLACE_EXISTING,
+              StandardCopyOption.ATOMIC_MOVE
+            )
+            Right(())
+        } catch {
+            case e: Exception => Left(s"writing $target: ${e.getMessage}")
+        }
+
+    def read(source: Path): Either[String, ujson.Value] =
+        try Right(ujson.read(Files.readString(source)))
+        catch { case e: Exception => Left(s"reading $source: ${e.getMessage}") }
+}
+
 /** The watchtower's local mirror of the completed-peg-outs (CPO) trie.
   *
   * The on-chain artifact is only a 32-byte root. To build the membership proof `peg-out.ak`'s
@@ -47,7 +78,10 @@ final class CpoTrieMirror private (
     /** The trie value recorded for `porId` (`dest_spk ++ amount_le8`), if any. */
     def valueOf(porId: ByteString): Option[ByteString] = byKey.get(porId.toHex).map(_._2)
 
-    /** Every recorded entry, in insertion order. The state file's content. */
+    /** Every recorded entry, in no particular order — the backing map is unordered, and the trie
+      * root is a function of the entry SET, so nothing downstream may depend on the order. It is
+      * what the state file stores.
+      */
     def entries: Seq[(ByteString, ByteString)] = byKey.valuesIterator.toSeq
 
     /** The membership proof `peg-out.ak` verifies with `mpf.has(root, por_id, value, proof)`.
@@ -109,31 +143,18 @@ final class CpoTrieMirror private (
       * back at the next start as a trie with a missing tail, whose root matches nothing.
       */
     def save(stateDir: Path): Either[String, Unit] =
-        try {
-            Files.createDirectories(stateDir)
-            val json = ujson.Obj(
-              "version" -> ujson.Num(CpoTrieMirror.StateVersion),
-              "root" -> ujson.Str(root.toHex),
-              "entries" -> ujson.Arr(
-                entries.map { case (k, v) =>
-                    ujson.Obj("por_id" -> ujson.Str(k.toHex), "value" -> ujson.Str(v.toHex))
-                }*
-              )
+        JsonState.write(
+          CpoTrieMirror.stateFile(stateDir),
+          ujson.Obj(
+            "version" -> ujson.Num(CpoTrieMirror.StateVersion),
+            "root" -> ujson.Str(root.toHex),
+            "entries" -> ujson.Arr(
+              entries.map { case (k, v) =>
+                  ujson.Obj("por_id" -> ujson.Str(k.toHex), "value" -> ujson.Str(v.toHex))
+              }*
             )
-            val target = CpoTrieMirror.stateFile(stateDir)
-            val tmp = Files.createTempFile(stateDir, "cpo-trie-", ".tmp")
-            Files.write(tmp, ujson.write(json, indent = 2).getBytes("UTF-8"))
-            Files.move(
-              tmp,
-              target,
-              StandardCopyOption.REPLACE_EXISTING,
-              StandardCopyOption.ATOMIC_MOVE
-            )
-            Right(())
-        } catch {
-            case e: Exception =>
-                Left(s"writing ${CpoTrieMirror.stateFile(stateDir)}: ${e.getMessage}")
-        }
+          )
+        )
 
     override def toString: String = s"CpoTrieMirror(root=${root.toHex}, entries=$size)"
 }
@@ -203,7 +224,7 @@ object CpoTrieMirror {
         if !Files.isReadable(file) then Right(None)
         else
             try {
-                val json = ujson.read(Files.readString(file))
+                val json = JsonState.read(file).fold(e => throw new RuntimeException(e), identity)
                 val version = json.obj.get("version").map(_.num.toInt).getOrElse(-1)
                 if version != StateVersion then
                     Left(

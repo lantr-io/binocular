@@ -10,7 +10,7 @@ import scalus.cardano.wallet.hd.HdAccount
 import scalus.uplc.builtin.{Builtins, ByteString, Data}
 import scalus.utils.await
 
-import java.nio.file.Path
+import java.nio.file.{Files, Path}
 import scala.collection.mutable
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.Duration
@@ -38,11 +38,23 @@ import scala.util.Try
   * free: right after our own confirm is submitted the singleton still holds the old root, the
   * mirror matches it, and there is simply nothing to catch up to until the transaction lands.
   *
-  * ==Why the mirror root is HARD-verified==
+  * ==Why the mirror root is HARD-verified, and when that halts anything==
   * A mirror whose entry set is wrong produces membership proofs `peg-out.ak` rejects. Submitting
   * them burns fees and, worse, hides the divergence behind a stream of script failures. So a mirror
-  * that cannot be reconciled with the on-chain root halts sweeping and pages the operator instead.
-  * Confirming is NOT halted: peg-out cleanup is not on the critical path of the bridge.
+  * that PROVABLY cannot be reconciled with the on-chain root halts sweeping and pages the operator.
+  *
+  * A halt is reserved for that. A backend that timed out, rate-limited us, or was briefly
+  * unreachable is reported and retried on the next tick, because it says nothing about the trie —
+  * latching there would trade a seconds-long outage for a process-lifetime one. The distinction is
+  * carried by [[HistoryError.transient]] rather than inferred from the message.
+  *
+  * Confirming is NOT halted either way: peg-out cleanup is not on the critical path of the bridge.
+  *
+  * ==What survives a restart==
+  * The trie mirror AND the pending hint queue are persisted in the state directory. The queue
+  * matters as much as the mirror: a process that dies between a Confirm and the next catch-up would
+  * otherwise lose the hints that explain the new on-chain root and fall back to a full two-address
+  * reconstruction.
   *
   * ==Why completions are submitted sequentially==
   * They are independent ON-CHAIN — the trie is a reference input and each transaction spends one
@@ -50,7 +62,9 @@ import scala.util.Try
   * draws its fee and collateral from the same sponsor wallet, and parallel builders would select
   * the same wallet UTxO and lose all but one to `ValueNotConserved`/`BadInputsUTxO`. Sequential
   * submission removes the only contention that actually exists, and per-request error isolation
-  * keeps a failure from stopping the rest.
+  * keeps a failure from stopping the rest. A submitted completion is also suppressed until it
+  * settles: its request stays listed at the peg-out address until then, so without that the next
+  * poll rebuilds the same transaction and logs its inevitable failure.
   */
 final class PorSweeper(
     provider: BlockchainProvider,
@@ -68,15 +82,32 @@ final class PorSweeper(
     /** `None` until the first sweep loads or reconstructs it. */
     private var mirror: Option[CpoTrieMirror] = None
 
-    /** Set once the mirror cannot be reconciled with the chain. Sweeping stays off until an
-      * operator intervenes (the process restart that follows a fixed state directory clears it).
+    /** Set once the mirror is provably irreconcilable with the chain. Sweeping stays off until an
+      * operator intervenes; a process restart on a fixed state directory clears it.
+      *
+      * ONLY an integrity failure latches here. A backend that timed out or rate-limited us is
+      * reported and retried on the next tick, because latching on one HTTP 429 would disable
+      * peg-out cleanup for the rest of the process's life over a condition that fixes itself in
+      * seconds.
       */
-    private var halted: Boolean = false
+    private var haltReason: Option[String] = None
 
     /** Hints recorded at confirm, oldest first, each already resolved to trie entries. */
     private val pending = mutable.Queue.empty[PendingTm]
 
-    def isHalted: Boolean = halted
+    /** POR ref -> the wall-clock ms after which an unsettled completion may be rebuilt.
+      *
+      * A submitted completion does not remove its request from the peg-out address until it
+      * settles, so without this the next poll (seconds later) rebuilds the same transaction and
+      * logs its inevitable failure. The entry expires so a transaction that was dropped from the
+      * mempool is eventually retried rather than abandoned.
+      */
+    private val inFlight = mutable.Map.empty[String, Long]
+
+    /** True once the state directory has been read; see [[ensureLoaded]]. */
+    private var loaded: Boolean = false
+
+    def isHalted: Boolean = haltReason.isDefined
 
     /** True while a confirmed TM's hints have not yet been folded into the mirror. */
     def hasPending: Boolean = pending.nonEmpty
@@ -111,7 +142,9 @@ final class PorSweeper(
               s"    sweeper: ${hintOutpoints.size - entries.size} of ${hintOutpoints.size} hinted " +
                   "peg-out outpoint(s) could not be resolved — catch-up may need reconstruction"
             )
+        ensureLoaded().left.foreach(e => Console.logWarn(s"    sweeper: $e"))
         pending.enqueue(PendingTm(btcTxidDisplay, attestedRoot, entries))
+        persistPending()
     }
 
     /** Catch the mirror up to `trieUtxo`'s root, then complete every completable request.
@@ -119,31 +152,41 @@ final class PorSweeper(
       * `configUtxo` and `trieUtxo` are the LIVE reference inputs, re-read by the caller each cycle.
       */
     def sweep(configUtxo: Utxo, trieUtxo: Utxo, only: Option[String] = None): Unit = {
-        if halted then Console.logWarn("    sweeper: HALTED (trie mirror unreconciled) — skipping")
-        else
-            verifyAgainstConfig(configUtxo, ctx) match {
-                // A deployment/migration state, not a defect: the deployed Config still publishes
-                // other scripts than the ones derived here, so any completion we built would be
-                // rejected. Report and skip; confirming is unaffected, and the next config Update
-                // fixes it without a restart.
-                case Left(err) =>
-                    Console.logWarn(s"    sweeper: not sweeping — $err")
-                case Right(()) => sweepVerified(configUtxo, trieUtxo, only)
-            }
+        haltReason match {
+            case Some(why) => Console.logWarn(s"    sweeper: HALTED — skipping. $why")
+            case None      => sweepUnhalted(configUtxo, trieUtxo, only)
+        }
     }
+
+    private def sweepUnhalted(configUtxo: Utxo, trieUtxo: Utxo, only: Option[String]): Unit =
+        verifyAgainstConfig(configUtxo, ctx) match {
+            // A deployment/migration state, not a defect: the deployed Config still publishes other
+            // scripts than the ones derived here, so any completion we built would be rejected.
+            // Report and skip; confirming is unaffected, and the next config Update fixes it with no
+            // restart.
+            case Left(err) => Console.logWarn(s"    sweeper: not sweeping — $err")
+            case Right(()) => sweepVerified(configUtxo, trieUtxo, only)
+        }
 
     private def sweepVerified(configUtxo: Utxo, trieUtxo: Utxo, only: Option[String]): Unit =
         onChainRoot(trieUtxo) match {
             case Left(err) => Console.logError(s"    sweeper: $err")
             case Right(root) =>
                 catchUp(root) match {
+                    // Transient: the backend was busy or unreachable. It says nothing about the
+                    // trie, so the next tick simply tries again. Latching here would trade a
+                    // seconds-long outage for a process-lifetime one.
+                    case Left(err) if err.transient =>
+                        Console.logWarn(
+                          s"    sweeper: catch-up deferred (transient) — ${err.message}"
+                        )
                     case Left(err) =>
-                        halted = true
-                        Console.logError(s"    sweeper: HALTING — $err")
+                        haltReason = Some(err.message)
+                        Console.logError(s"    sweeper: HALTING — ${err.message}")
                         notifier.error(
                           "sweeper",
                           s"peg-out sweeping HALTED: the local completed-peg-outs mirror " +
-                              s"cannot be reconciled with the on-chain root. $err"
+                              s"cannot be reconciled with the on-chain root. ${err.message}"
                         )
                     case Right(m) =>
                         mirror = Some(m)
@@ -156,13 +199,22 @@ final class PorSweeper(
                 }
         }
 
-    /** The mirror, advanced until its root equals `target`. */
-    private def catchUp(target: ByteString): Either[String, CpoTrieMirror] =
-        ensureMirror().flatMap { start =>
+    /** The mirror, advanced until its root equals `target`.
+      *
+      * The queued hints are folded WITHOUT being consumed, and dropped only once the catch-up they
+      * belong to has succeeded. A failure part-way through must leave the queue exactly as it found
+      * it: consuming first would mean a transient backend error costs the cheap path back and
+      * forces the next attempt into a full reconstruction.
+      */
+    private def catchUp(target: ByteString): Either[HistoryError, CpoTrieMirror] =
+        ensureLoaded().left.map(HistoryError.permanent).flatMap { start =>
+            val queued = pending.toIndexedSeq
             var current = start
+            var consumed = 0
             var error: Option[String] = None
-            while error.isEmpty && current.root != target && pending.nonEmpty do {
-                val tm = pending.dequeue()
+            while error.isEmpty && current.root != target && consumed < queued.size do {
+                val tm = queued(consumed)
+                consumed += 1
                 current.applied(tm.entries) match {
                     case Right(next) =>
                         if next.root == tm.attestedRoot then {
@@ -181,8 +233,13 @@ final class PorSweeper(
                 }
             }
             error match {
-                case Some(err)                      => recover(target, err)
-                case None if current.root == target => Right(current)
+                case Some(err) => recover(target, err)
+                case None if current.root == target =>
+                    if consumed > 0 then {
+                        pending.remove(0, consumed)
+                        persistPending()
+                    }
+                    Right(current)
                 case None =>
                     recover(
                       target,
@@ -192,44 +249,111 @@ final class PorSweeper(
             }
         }
 
-    /** Rebuild the mirror from chain history when the recorded hints cannot explain `target`. */
-    private def recover(target: ByteString, why: String): Either[String, CpoTrieMirror] =
+    /** Rebuild the mirror from chain history when the recorded hints cannot explain `target`.
+      *
+      * A TRANSIENT failure is passed through as transient, so the caller waits instead of latching.
+      * The pending queue is cleared only once reconstruction SUCCEEDS: the hints are the cheap path
+      * back, and discarding them before knowing the expensive path worked would guarantee a full
+      * reconstruction on the next attempt too.
+      */
+    private def recover(target: ByteString, why: String): Either[HistoryError, CpoTrieMirror] =
         historySource match {
             case None =>
-                Left(s"$why, and no chain-history backend is configured to reconstruct from")
+                Left(
+                  HistoryError.permanent(
+                    s"$why, and no chain-history backend is configured to reconstruct from"
+                  )
+                )
             case Some(source) =>
                 Console.logWarn(s"    sweeper: reconstructing the trie mirror — $why")
-                pending.clear()
-                CpoReconstruction
-                    .reconstruct(source, reconstructConfig(target), s => Console.log(s"    $s"))
-                    .left
-                    .map(err => s"$why; reconstruction also failed: $err")
+                reconstructConfig(target) match {
+                    case Left(err) => Left(HistoryError.permanent(err))
+                    case Right(cfg) =>
+                        CpoReconstruction.reconstruct(
+                          source,
+                          cfg,
+                          s => Console.log(s"    $s")
+                        ) match {
+                            case Right(m) =>
+                                pending.clear()
+                                persistPending()
+                                Right(m)
+                            case Left(err) =>
+                                Left(
+                                  HistoryError(
+                                    s"$why; reconstruction also failed: ${err.message}",
+                                    err.transient
+                                  )
+                                )
+                        }
+                }
         }
 
-    private def reconstructConfig(target: ByteString) = CpoReconstruction.Config(
-      tmAddress = ctx.tmAddress.encode.getOrElse(""),
-      pegOutAddress = ctx.pegOutAddress.encode.getOrElse(""),
-      fbtcPolicyHex = ctx.bridgedTokenPolicy.toHex,
-      fbtcAssetNameHex = ctx.bridgedTokenAsset.bytes.toHex,
-      onChainRoot = Some(target)
-    )
+    /** The reconstruction inputs, or the reason they cannot be formed.
+      *
+      * The bech32 encodings are checked rather than defaulted: an address that will not encode used
+      * to become the empty string, which the backend answers with an EMPTY history — and an empty
+      * history reconstructs a confidently empty trie. Fail loudly instead.
+      */
+    private def reconstructConfig(target: ByteString): Either[String, CpoReconstruction.Config] =
+        for {
+            tm <- ctx.tmAddress.encode.toEither.left
+                .map(e => s"the TM address does not encode to bech32: ${e.getMessage}")
+            por <- ctx.pegOutAddress.encode.toEither.left
+                .map(e => s"the peg-out address does not encode to bech32: ${e.getMessage}")
+        } yield CpoReconstruction.Config(
+          tmAddress = tm,
+          pegOutAddress = por,
+          fbtcPolicyHex = ctx.bridgedTokenPolicy.toHex,
+          fbtcAssetNameHex = ctx.bridgedTokenAsset.bytes.toHex,
+          onChainRoot = Some(target)
+        )
 
-    /** Load the persisted mirror, or start from the empty one (which catch-up then reconciles). */
-    private def ensureMirror(): Either[String, CpoTrieMirror] = mirror match {
-        case Some(m) => Right(m)
-        case None =>
-            CpoTrieMirror.load(stateDir).map {
-                case Some(m) =>
-                    Console.log(
-                      s"    sweeper: loaded trie mirror ${m.root.toHex} (${m.size} entries) from " +
-                          s"${CpoTrieMirror.stateFile(stateDir)}"
-                    )
-                    m
-                case None =>
-                    Console.log("    sweeper: no persisted trie mirror — starting from empty")
-                    CpoTrieMirror.empty
+    /** Read the state directory once: the persisted mirror and the pending hint queue.
+      *
+      * Both are read together because they are one logical checkpoint. The queue matters as much as
+      * the mirror: a restart between a Confirm and the next catch-up would otherwise drop the hints
+      * that explain the new on-chain root, forcing a full two-address reconstruction (or, when the
+      * backend is unavailable, no catch-up at all).
+      */
+    private def ensureLoaded(): Either[String, CpoTrieMirror] =
+        if loaded then Right(mirror.getOrElse(CpoTrieMirror.empty))
+        else
+            CpoTrieMirror.load(stateDir).map { persisted =>
+                loaded = true
+                val m = persisted match {
+                    case Some(found) =>
+                        Console.log(
+                          s"    sweeper: loaded trie mirror ${found.root.toHex} " +
+                              s"(${found.size} entries) from ${CpoTrieMirror.stateFile(stateDir)}"
+                        )
+                        found
+                    case None =>
+                        Console.log("    sweeper: no persisted trie mirror — starting from empty")
+                        CpoTrieMirror.empty
+                }
+                mirror = Some(m)
+                // Hints are unverified either way — every batch is checked against its TM's attested
+                // root before it is folded in — so a stale or unreadable queue costs a reconstruction
+                // at worst, never correctness. Hence a warning, not a failure.
+                PendingTm.load(stateDir) match {
+                    case Right(restored) =>
+                        if restored.nonEmpty then {
+                            pending.enqueueAll(restored)
+                            Console.log(
+                              s"    sweeper: restored ${restored.size} pending TM hint(s)"
+                            )
+                        }
+                    case Left(err) => Console.logWarn(s"    sweeper: pending hints: $err")
+                }
+                m
             }
-    }
+
+    private def persistPending(): Unit =
+        PendingTm
+            .save(stateDir, pending.toSeq)
+            .left
+            .foreach(e => Console.logWarn(s"    sweeper: persisting pending hints: $e"))
 
     /** Build and submit one Complete transaction per completable request. */
     private def completeAll(
@@ -250,15 +374,38 @@ final class PorSweeper(
             .foreach(s => Console.logWarn(s"    sweeper: ${s.ref} skipped — ${s.reason}"))
         // `only` restricts the SUBMISSION set, never the mirror catch-up above: the manual command
         // must leave the mirror in exactly the state an automatic sweep would.
-        val ready = only.fold(all)(ref => all.filter(_.ref == ref))
+        val selected = only.fold(all)(ref => all.filter(_.ref == ref))
+        // Drop anything already submitted and not yet settled. Its request is still listed at the
+        // peg-out address until the completion is on-chain, so without this every poll rebuilds the
+        // same transaction and logs its inevitable failure at error level.
+        val now = System.currentTimeMillis()
+        inFlight.filterInPlace((_, deadline) => deadline > now)
+        val ready = selected.filterNot(c => inFlight.contains(c.ref))
+        if selected.size > ready.size then
+            Console.log(
+              s"    sweeper: ${selected.size - ready.size} completion(s) still in flight — waiting"
+            )
         if ready.isEmpty then
-            if utxos.nonEmpty then
+            if utxos.nonEmpty && selected.isEmpty then
                 Console.log(
                   s"    sweeper: no completable peg-out request (${utxos.size} at address)"
                 )
         else {
             Console.log(s"    sweeper: ${ready.size} completable peg-out request(s)")
-            ready.foreach(c => completeOne(c, m, configUtxo, trieUtxo))
+            // Resolved ONCE per sweep, not once per process: a reference script deployed after
+            // startup is picked up on the next sweep, and a discovery failure only costs this sweep
+            // the smaller transaction, never the completion itself.
+            val scriptRefs =
+                try ctx.resolveScriptRefs()
+                catch {
+                    case e: Exception =>
+                        Console.logWarn(
+                          s"    sweeper: reference-script discovery failed (${e.getMessage}) — " +
+                              "inlining the scripts this sweep"
+                        )
+                        PegOutCompleteTx.ScriptRefs(None, None)
+                }
+            ready.foreach(c => completeOne(c, m, configUtxo, trieUtxo, scriptRefs))
         }
     }
 
@@ -267,7 +414,8 @@ final class PorSweeper(
         c: Completable,
         m: CpoTrieMirror,
         configUtxo: Utxo,
-        trieUtxo: Utxo
+        trieUtxo: Utxo,
+        scriptRefs: PegOutCompleteTx.ScriptRefs
     ): Unit = {
         val ref = c.ref
         m.proveMembership(c.porId) match {
@@ -285,7 +433,7 @@ final class PorSweeper(
                           sponsor = hdAccount,
                           scripts =
                               PegOutCompleteTx.Scripts(ctx.pegOutScript, ctx.bridgedTokenScript),
-                          scriptRefs = ctx.scriptRefs,
+                          scriptRefs = scriptRefs,
                           inputs = PegOutCompleteTx.Inputs(c.utxo, configUtxo, trieUtxo),
                           membershipProof = proof,
                           lockedFbtc = c.locked,
@@ -296,6 +444,7 @@ final class PorSweeper(
                         .await(timeout)
                     OracleTransactions.submitTx(provider, tx, timeout) match {
                         case Right(hash) =>
+                            inFlight(ref) = System.currentTimeMillis() + InFlightTtlMs
                             Console.logSuccess(
                               s"    sweeper: completed $ref  burn=${c.locked} sat  cardano_tx=$hash"
                             )
@@ -325,7 +474,19 @@ final class PorSweeper(
 
 object PorSweeper {
 
-    /** Everything the sweeper needs that does not change while the process runs. */
+    /** How long a submitted completion is left alone before it may be rebuilt: 10 minutes, an order
+      * of magnitude above Cardano's settlement time, so a normal completion always disappears from
+      * the peg-out address first and a mempool-dropped one is still retried the same hour.
+      */
+    val InFlightTtlMs: Long = 10 * 60 * 1000L
+
+    /** Everything the sweeper needs that does not change while the process runs.
+      *
+      * `resolveScriptRefs` is a FUNCTION, not a value: CIP-33 reference UTxOs are discovered over
+      * the network, so resolving them once at startup made a transient failure permanent and left a
+      * reference script deployed later unused forever. It is called per sweep and may return
+      * `ScriptRefs(None, None)`, which simply inlines the scripts in the witness set.
+      */
     final case class Context(
         network: Network,
         tmAddress: Address,
@@ -334,15 +495,84 @@ object PorSweeper {
         bridgedTokenScript: Script.PlutusV3,
         bridgedTokenPolicy: ScriptHash,
         bridgedTokenAsset: AssetName,
-        scriptRefs: PegOutCompleteTx.ScriptRefs
+        resolveScriptRefs: () => PegOutCompleteTx.ScriptRefs
     )
 
     /** A confirmed TM whose hinted entries have not yet been folded into the mirror. */
-    private final case class PendingTm(
+    final case class PendingTm(
         btcTxidDisplay: String,
         attestedRoot: ByteString,
         entries: Seq[(ByteString, ByteString)]
     )
+
+    /** Persistence for the pending hint queue.
+      *
+      * A sibling of the trie mirror rather than a field inside it: the mirror is a verified
+      * artifact (its root is checked against its own entries on load) while the queue is unverified
+      * attacker-influenced input, and mixing the two would let a bad hint make the mirror
+      * unreadable.
+      */
+    object PendingTm {
+
+        val FileName = "cpo-pending.json"
+
+        val Version = 1
+
+        def file(stateDir: Path): Path = stateDir.resolve(FileName)
+
+        def save(stateDir: Path, queue: Seq[PendingTm]): Either[String, Unit] =
+            JsonState.write(
+              file(stateDir),
+              ujson.Obj(
+                "version" -> ujson.Num(Version),
+                "pending" -> ujson.Arr(
+                  queue.map { tm =>
+                      ujson.Obj(
+                        "btc_txid" -> ujson.Str(tm.btcTxidDisplay),
+                        "attested_root" -> ujson.Str(tm.attestedRoot.toHex),
+                        "entries" -> ujson.Arr(
+                          tm.entries.map { case (k, v) =>
+                              ujson.Obj(
+                                "por_id" -> ujson.Str(k.toHex),
+                                "value" -> ujson.Str(v.toHex)
+                              )
+                          }*
+                        )
+                      )
+                  }*
+                )
+              )
+            )
+
+        /** Restore the queue. An absent file is an empty queue, not an error. */
+        def load(stateDir: Path): Either[String, Seq[PendingTm]] = {
+            val path = file(stateDir)
+            if !Files.isReadable(path) then Right(Seq.empty)
+            else
+                JsonState.read(path).flatMap { json =>
+                    try {
+                        val version = json.obj.get("version").map(_.num.toInt).getOrElse(-1)
+                        if version != Version then
+                            Left(s"$path has state version $version, expected $Version — ignoring")
+                        else
+                            Right(
+                              json("pending").arr.toSeq.map { tm =>
+                                  PendingTm(
+                                    btcTxidDisplay = tm("btc_txid").str,
+                                    attestedRoot = ByteString.fromHex(tm("attested_root").str),
+                                    entries = tm("entries").arr.toSeq.map { e =>
+                                        (
+                                          ByteString.fromHex(e("por_id").str),
+                                          ByteString.fromHex(e("value").str)
+                                        )
+                                    }
+                                  )
+                              }
+                            )
+                    } catch { case e: Exception => Left(s"$path is unreadable: ${e.getMessage}") }
+                }
+        }
+    }
 
     /** A request the mirror says is paid, with everything the builder needs. */
     final case class Completable(utxo: Utxo, porId: ByteString, locked: Long) {

@@ -9,6 +9,8 @@ import scalus.cardano.onchain.plutus.prelude.List as PList
 import scalus.uplc.builtin.{ByteString, Data}
 import scalus.uplc.builtin.Data.toData
 
+import java.nio.file.Files
+
 /** Tests for the sweeper's PURE decisions: which peg-out requests a sweep submits a Complete for,
   * and whether the derived scripts match the deployed Config.
   *
@@ -49,7 +51,7 @@ class PorSweeperTest extends AnyFunSuite {
       bridgedTokenScript = bridgedToken.script,
       bridgedTokenPolicy = bridgedToken.policyId,
       bridgedTokenAsset = bridgedTokenAsset,
-      scriptRefs = PegOutCompleteTx.ScriptRefs(None, None)
+      resolveScriptRefs = () => PegOutCompleteTx.ScriptRefs(None, None)
     )
 
     private def porDatum(fee: Long, dest: ByteString = destSpk): Data = PegOutDatum(
@@ -213,5 +215,61 @@ class PorSweeperTest extends AnyFunSuite {
           )
         )
         assert(PorSweeper.verifyAgainstConfig(u, ctx).isLeft)
+    }
+
+    // --- pending hint persistence ---------------------------------------------------------------
+
+    /** The queue must survive a restart. Without it, a process that dies between a Confirm and the
+      * next catch-up loses the hints that explain the new on-chain root, and the sweeper falls back
+      * to a full two-address reconstruction — or, when the backend is unavailable, to no catch-up
+      * at all.
+      */
+    private def tempDir() = Files.createTempDirectory("por-sweeper-test")
+
+    private def pendingTm(seed: Int, entries: Int): PorSweeper.PendingTm = PorSweeper.PendingTm(
+      btcTxidDisplay = f"$seed%02x" * 32,
+      attestedRoot = ByteString.fromArray(Array.fill[Byte](32)((seed + 1).toByte)),
+      entries = (0 until entries).map { i =>
+          (
+            ByteString.fromArray(Array.fill[Byte](32)((seed + i).toByte)),
+            CompletedPegOutsTrie.trieValue(PegOutEntry(destSpk, BigInt(1000 + i)))
+          )
+      }
+    )
+
+    test("the pending hint queue round-trips through the state directory") {
+        val dir = tempDir()
+        val queue = Seq(pendingTm(0x10, 2), pendingTm(0x20, 0))
+        assert(PorSweeper.PendingTm.save(dir, queue) == Right(()))
+        assert(PorSweeper.PendingTm.load(dir) == Right(queue))
+    }
+
+    test("an absent pending file is an empty queue, not an error") {
+        assert(PorSweeper.PendingTm.load(tempDir()) == Right(Seq.empty))
+    }
+
+    test("a pending file from an unknown version is ignored rather than trusted") {
+        val dir = tempDir()
+        PorSweeper.PendingTm.save(dir, Seq(pendingTm(0x30, 1)))
+        val file = PorSweeper.PendingTm.file(dir)
+        val json = ujson.read(Files.readString(file))
+        json("version") = ujson.Num(PorSweeper.PendingTm.Version + 1)
+        Files.write(file, ujson.write(json).getBytes("UTF-8"))
+        assert(PorSweeper.PendingTm.load(dir).isLeft)
+    }
+
+    test("an unreadable pending file is reported, not thrown") {
+        // Hints are unverified either way — each batch is checked against its TM's attested root
+        // before it is folded in — so a bad queue costs a reconstruction, never correctness.
+        val dir = tempDir()
+        Files.write(PorSweeper.PendingTm.file(dir), "not json".getBytes("UTF-8"))
+        assert(PorSweeper.PendingTm.load(dir).isLeft)
+    }
+
+    test("saving an empty queue clears a previously persisted one") {
+        val dir = tempDir()
+        PorSweeper.PendingTm.save(dir, Seq(pendingTm(0x40, 1)))
+        PorSweeper.PendingTm.save(dir, Seq.empty)
+        assert(PorSweeper.PendingTm.load(dir) == Right(Seq.empty))
     }
 }

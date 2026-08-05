@@ -4,12 +4,40 @@ import binocular.oracle.{CardanoConfig, CardanoNetwork}
 import scalus.cardano.node.BlockfrostProvider
 import scalus.uplc.builtin.{ByteString, Data}
 
+/** Why a chain-history read failed, and whether trying again can fix it.
+  *
+  * The distinction is load-bearing rather than cosmetic. [[PorSweeper]] latches a permanent halt on
+  * a failure it cannot explain, because continuing would mean submitting membership proofs the
+  * ledger rejects. Latching on a rate-limit response instead would disable peg-out cleanup for the
+  * rest of the process's life over one HTTP 429 — so a source MUST say which kind of failure it
+  * hit, and only a `transient = false` failure is allowed to latch.
+  */
+final case class HistoryError(message: String, transient: Boolean) {
+    override def toString: String = if transient then s"$message (transient)" else message
+}
+
+object HistoryError {
+    def permanent(message: String): HistoryError = HistoryError(message, transient = false)
+    def transient(message: String): HistoryError = HistoryError(message, transient = true)
+}
+
 /** One output that has EVER existed at a bridge address — spent or unspent.
   *
   * Reconstruction is built on history, not on current state: the Confirm transition spends the
   * `Unconfirmed` TM record that carries the data-availability hint, and completion spends the
   * peg-out request whose datum defines the trie entry. Both are gone from the UTxO set by the time
   * anyone needs to read them, and both remain in transaction history forever.
+  *
+  * @param inlineDatum
+  *   the resolved inline datum, when there is one.
+  * @param unresolvedDatum
+  *   set when the output HAS a datum that could not be read (a datum hash the backend did not
+  *   resolve, or inline bytes that failed to decode), carrying the reason.
+  *
+  * `inlineDatum = None, unresolvedDatum = None` therefore means the output provably carries NO
+  * datum. Reconstruction relies on the three-way distinction: a TM record always carries an inline
+  * datum, so a datum-less output at the TM address cannot be one and is safely skipped, while an
+  * unreadable one might be a `Confirmed` record and must stop everything.
   *
   * @param assets
   *   quantity by Blockfrost `unit` (`lovelace`, or `policyHex ++ assetNameHex`).
@@ -18,7 +46,8 @@ final case class ChainOutput(
     txHash: ByteString,
     outputIndex: Long,
     inlineDatum: Option[Data],
-    assets: Map[String, BigInt]
+    assets: Map[String, BigInt],
+    unresolvedDatum: Option[String] = None
 ) {
     def ref: String = s"${txHash.toHex}#$outputIndex"
 
@@ -37,7 +66,7 @@ final case class ChainOutput(
 trait CpoHistorySource {
 
     /** Every output ever created at `addressBech32`, spent ones included. */
-    def addressHistory(addressBech32: String): Either[String, Seq[ChainOutput]]
+    def addressHistory(addressBech32: String): Either[HistoryError, Seq[ChainOutput]]
 
     /** Human-readable backend name for the log line that opens a reconstruction. */
     def backend: String
@@ -55,42 +84,94 @@ trait CpoHistorySource {
   *
   * Outputs are filtered to `addressBech32` here, so a transaction that merely SPENDS a bridge
   * output contributes nothing — its own outputs live at other addresses.
+  *
+  * ==Retries==
+  * A cold-start reconstruction issues one request per transaction at two addresses, which is
+  * exactly the shape that trips a hosted Blockfrost project's rate limit. Retryable statuses (429
+  * and 5xx) and transport exceptions are retried with exponential backoff before the call gives up,
+  * and what it gives up with is a TRANSIENT [[HistoryError]] so the caller waits rather than
+  * latching.
   */
-final class BlockfrostCpoHistory(baseUrl: String, projectId: String, pageSize: Int = 100)
-    extends CpoHistorySource {
+final class BlockfrostCpoHistory(
+    baseUrl: String,
+    projectId: String,
+    pageSize: Int = 100,
+    maxAttempts: Int = 5,
+    baseBackoffMs: Long = 500L,
+    sleep: Long => Unit = ms => Thread.sleep(ms)
+) extends CpoHistorySource {
 
     override def backend: String = s"blockfrost ($baseUrl)"
 
     private val client = java.net.http.HttpClient.newHttpClient()
 
-    private def get(path: String): Either[String, ujson.Value] =
-        try {
-            val req = java.net.http.HttpRequest
-                .newBuilder()
-                .uri(java.net.URI.create(s"$baseUrl$path"))
-                .header("project_id", projectId)
-                .GET()
-                .build()
-            val resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString())
-            resp.statusCode() match {
-                // 404 on an address history means "no transactions", which is a legitimate empty
-                // answer (a freshly deployed bridge). Every other non-200 is an error: silently
-                // treating it as empty would reconstruct a confidently short trie.
-                case 200 => Right(ujson.read(resp.body()))
-                case 404 => Right(ujson.Arr())
-                case code =>
-                    Left(s"GET $path returned HTTP $code: ${resp.body().take(200)}")
+    /** One HTTP GET, retried while the failure looks retryable.
+      *
+      * Backoff is exponential from `baseBackoffMs` (0.5s, 1s, 2s, 4s by default). It is a plain
+      * sleep because reconstruction already runs on the confirm loop's thread and has nothing else
+      * to do meanwhile.
+      */
+    private def get(path: String): Either[HistoryError, ujson.Value] = {
+        def attempt(n: Int): Either[HistoryError, ujson.Value] = {
+            val outcome =
+                try {
+                    val req = java.net.http.HttpRequest
+                        .newBuilder()
+                        .uri(java.net.URI.create(s"$baseUrl$path"))
+                        .header("project_id", projectId)
+                        .GET()
+                        .build()
+                    val resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString())
+                    resp.statusCode() match {
+                        // 404 on an address history means "no transactions", which is a legitimate
+                        // empty answer (a freshly deployed bridge). Every other non-200 is an error:
+                        // silently treating it as empty would reconstruct a confidently short trie.
+                        case 200 => Right(ujson.read(resp.body()))
+                        case 404 => Right(ujson.Arr())
+                        case code if BlockfrostCpoHistory.isRetryable(code) =>
+                            Left(
+                              HistoryError.transient(
+                                s"GET $path returned HTTP $code: ${resp.body().take(200)}"
+                              )
+                            )
+                        case code =>
+                            // 400/403/... are configuration or protocol faults (a bad project id, an
+                            // address this backend refuses). Retrying cannot fix them.
+                            Left(
+                              HistoryError.permanent(
+                                s"GET $path returned HTTP $code: ${resp.body().take(200)}"
+                              )
+                            )
+                    }
+                } catch {
+                    // Every transport-level failure is transient by nature: a socket timeout, a
+                    // reset connection, DNS during a blip. None of them says anything about the
+                    // chain.
+                    case e: Exception =>
+                        Left(HistoryError.transient(s"GET $path failed: ${e.getMessage}"))
+                }
+            outcome match {
+                case Left(err) if err.transient && n < maxAttempts =>
+                    sleep(baseBackoffMs * (1L << (n - 1)))
+                    attempt(n + 1)
+                case Left(err) if err.transient =>
+                    Left(
+                      HistoryError.transient(
+                        s"${err.message} — gave up after $maxAttempts attempts"
+                      )
+                    )
+                case other => other
             }
-        } catch {
-            case e: Exception => Left(s"GET $path failed: ${e.getMessage}")
         }
+        attempt(1)
+    }
 
-    override def addressHistory(addressBech32: String): Either[String, Seq[ChainOutput]] = {
-        def txPage(page: Int): Either[String, Seq[String]] =
+    override def addressHistory(addressBech32: String): Either[HistoryError, Seq[ChainOutput]] = {
+        def txPage(page: Int): Either[HistoryError, Seq[String]] =
             get(s"/addresses/$addressBech32/transactions?count=$pageSize&page=$page&order=asc")
                 .map(_.arr.toSeq.map(_("tx_hash").str))
 
-        def allTxs(page: Int, acc: Vector[String]): Either[String, Vector[String]] =
+        def allTxs(page: Int, acc: Vector[String]): Either[HistoryError, Vector[String]] =
             txPage(page) match {
                 case Left(err)                             => Left(err)
                 case Right(items) if items.size < pageSize => Right(acc ++ items)
@@ -110,52 +191,58 @@ final class BlockfrostCpoHistory(baseUrl: String, projectId: String, pageSize: I
     private def outputsOf(
         txHash: String,
         addressBech32: String
-    ): Either[String, Seq[ChainOutput]] =
-        get(s"/txs/$txHash/utxos").flatMap { json =>
+    ): Either[HistoryError, Seq[ChainOutput]] =
+        get(s"/txs/$txHash/utxos").map { json =>
             val outputs = json.obj.get("outputs").map(_.arr.toSeq).getOrElse(Seq.empty)
-            val mine = outputs.filter(_("address").str == addressBech32)
-            val decoded = mine.map(o => BlockfrostCpoHistory.parseOutput(txHash, o))
-            decoded
-                .collectFirst { case Left(err) => Left(s"tx $txHash: $err") }
-                .getOrElse(Right(decoded.collect { case Right(out) => out }))
+            outputs
+                .filter(_("address").str == addressBech32)
+                .map(o => BlockfrostCpoHistory.parseOutput(txHash, o))
         }
 }
 
 object BlockfrostCpoHistory {
 
+    /** HTTP statuses worth trying again: rate limiting and any server-side fault. */
+    def isRetryable(status: Int): Boolean = status == 429 || status == 408 || status >= 500
+
     /** Decode one Blockfrost output JSON object into a [[ChainOutput]].
       *
-      * A PRESENT-but-undecodable `inline_datum` is an error, not a silent `None`: the caller treats
-      * a missing datum at the TM address as a hard failure precisely so a Confirmed record can
-      * never be dropped unnoticed, and turning a decode failure into `None` would route around
-      * that.
+      * Never fails. A datum that is present but unreadable becomes `unresolvedDatum`, and the
+      * ALGORITHM decides what that means: fatal at the TM address (it might be a `Confirmed`
+      * record), skippable at the permissionlessly-payable peg-out address. Deciding here instead
+      * would force both addresses to share one policy.
       */
-    def parseOutput(txHash: String, o: ujson.Value): Either[String, ChainOutput] = {
-        val datum = o.obj.get("inline_datum") match {
+    def parseOutput(txHash: String, o: ujson.Value): ChainOutput = {
+        val index = o("output_index").num.toLong
+        val (inline, unresolved) = o.obj.get("inline_datum") match {
             case Some(ujson.Str(hex)) =>
-                try Right(Some(Data.fromCbor(ByteString.fromHex(hex))))
+                try (Some(Data.fromCbor(ByteString.fromHex(hex))), None)
                 catch {
                     case e: Exception =>
-                        Left(
-                          s"output ${o("output_index").num.toInt}: inline datum: ${e.getMessage}"
-                        )
+                        (None, Some(s"inline datum did not decode: ${e.getMessage}"))
                 }
-            case _ => Right(None)
+            case _ =>
+                // A `data_hash` with no `inline_datum` is a datum the backend did not witness the
+                // preimage of. The output HAS a datum; we just cannot read it.
+                o.obj.get("data_hash") match {
+                    case Some(ujson.Str(h)) =>
+                        (None, Some(s"datum hash $h has no resolvable preimage on this backend"))
+                    case _ => (None, None)
+                }
         }
-        datum.map { d =>
-            val assets = o.obj
-                .get("amount")
-                .map(_.arr.toSeq)
-                .getOrElse(Seq.empty)
-                .map(a => a("unit").str.toLowerCase -> BigInt(a("quantity").str))
-                .toMap
-            ChainOutput(
-              txHash = ByteString.fromHex(txHash),
-              outputIndex = o("output_index").num.toLong,
-              inlineDatum = d,
-              assets = assets
-            )
-        }
+        val assets = o.obj
+            .get("amount")
+            .map(_.arr.toSeq)
+            .getOrElse(Seq.empty)
+            .map(a => a("unit").str.toLowerCase -> BigInt(a("quantity").str))
+            .toMap
+        ChainOutput(
+          txHash = ByteString.fromHex(txHash),
+          outputIndex = index,
+          inlineDatum = inline,
+          assets = assets,
+          unresolvedDatum = unresolved
+        )
     }
 
     /** The Blockfrost-compatible base URL for a [[CardanoConfig]], or the reason there is none.

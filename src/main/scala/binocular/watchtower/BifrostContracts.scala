@@ -46,8 +46,21 @@ object BifrostBlueprint {
       * systemd unit has no `../../…/plutus.json`, and the confirm worker must derive the
       * completed-peg-outs trie validator on every startup — without this it would crash-loop.
       *
-      * Freshness is guarded by `BifrostContractsTest`: its pinned policy ids are computed from THIS
-      * resource, so any silent drift between it and ft's blueprint breaks the pins.
+      * ==Freshness is NOT guarded by the policy-id pins==
+      * `BifrostContractsTest`'s pins are computed from THIS resource, so they lock the resource
+      * against ITSELF: they catch an accidental edit here, and they say nothing whatsoever about
+      * whether it still matches ft's `plutus.json`. That belief is exactly how a stale `peg_out`
+      * survived a validator rewrite (2026-08) — the pins stayed green while every completion
+      * binocular built would have been rejected on-chain.
+      *
+      * Two things do guard it, and both must be kept:
+      *   - `BifrostBlueprintSourceTest` diffs this resource against a sibling ft checkout's
+      *     `plutus.json` when one is present, and skips when it is not (CI has no ft checkout).
+      *   - The CEK suites (`PegOutCompleteCekTest`) EVALUATE these bytes, so a validator whose
+      *     semantics moved fails on behaviour rather than on a hash.
+      *
+      * Refresh with a straight copy of the `compiledCode` fields from ft's `plutus.json`, then move
+      * the affected pins in the same commit.
       */
     def packaged: BifrostBlueprint = {
         val stream = getClass.getResourceAsStream(PackagedResource)
