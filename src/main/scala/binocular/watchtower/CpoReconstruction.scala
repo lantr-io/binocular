@@ -36,9 +36,9 @@ import scala.util.Try
   * treating "no datum" as fatal let a single junk payment block every reconstruction forever —
   * which is a denial of service, not a safety property.
   *
-  * DIVERGENCE (2026-08): heimdall's `reconstruct` still treats any absent datum as fatal. The
-  * relaxation is being routed to heimdall and the spec; until it lands, a junk datum-less payment
-  * to the TM address stops heimdall's reconstruction and not binocular's.
+  * heimdall's `cpo_trie.rs::reconstruct` applies the identical rule (landed 2026-08 in `84688ff`),
+  * and the spec records it as normative, so the two implementations agree on which outputs a
+  * reconstruction may skip.
   *
   * The asymmetry between the two addresses is intentional. An UNREADABLE output at the PEG-OUT
   * address is skipped rather than fatal, because a missing request cannot shrink the trie silently
