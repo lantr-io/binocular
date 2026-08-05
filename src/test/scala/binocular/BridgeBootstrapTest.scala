@@ -63,7 +63,7 @@ class BridgeBootstrapTest extends AnyFunSuite {
         assert(CompletedPegOutsContract.assetName == ByteString.fromString("CPO"))
     }
 
-    test("the bootstrap datum is the empty-root CompletedPegOutsMerkleTreeDatum") {
+    test("the bootstrap datum is the empty-root CompletedPegOutsTrieDatum") {
         val (_, _, datum) = BridgeBootstrap.completedPegOutsOutput(contract, network)
         assert(
           datum == Data.Constr(

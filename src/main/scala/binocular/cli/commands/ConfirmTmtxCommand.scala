@@ -140,6 +140,37 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         val trieAssetName = AssetName(CompletedPegOutsContract.assetName)
         val configNftPolicy = ScriptHash.fromHex(config.bridge.configNftPolicyId)
         val configNftAsset = AssetName(ByteString.fromHex(config.bridge.configNftAssetName))
+
+        // --- POR sweeper (rev 5.2): chain peg-out Complete after Confirm ---
+        // Built once; its scripts are fixed for the life of the process, and it is checked against
+        // the live Config on every sweep. A construction failure disables SWEEPING only — confirming
+        // a TM must never depend on the cleanup path.
+        val sweeper: Option[PorSweeper] =
+            if !config.bridge.porSweeper then {
+                Console.info("POR sweeper", "disabled (bridge.por-sweeper = false)")
+                None
+            } else
+                BridgeSweepSetup.buildPorSweeper(
+                  config,
+                  provider,
+                  hdAccount,
+                  bridgeBlueprint,
+                  configNftPolicy,
+                  configNftAsset,
+                  tmAddress,
+                  network,
+                  notifier,
+                  dryRun,
+                  timeout
+                ) match {
+                    case Right(s) => Some(s)
+                    case Left(err) =>
+                        Console.logWarn(s"POR sweeper disabled: $err")
+                        None
+                }
+        // 0 so the first cycle always sweeps: that is what makes `--dry-run` a real preflight of the
+        // completion path (script hashes, reward account, trie mirror) and not just of confirming.
+        var lastSweepMs = 0L
         // The Config UTxO lives at the config policy's own script address (config.ak is both the
         // one-shot minting policy and the spend validator).
         val configAddress = Address(network, Credential.ScriptHash(configNftPolicy))
@@ -218,7 +249,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                             )
                         else
                             Console.log(s"Found ${unconfirmed.size} Unconfirmed TM UTxO(s)")
-                            loadTrieContext(
+                            BridgeSweepSetup.loadTrieContext(
                               provider,
                               configAddress,
                               configNftPolicy,
@@ -276,10 +307,47 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                                           skipBtcTxids,
                                           processed,
                                           notifier,
-                                          debugTmScript
+                                          debugTmScript,
+                                          sweeper
                                         )
                                         if submitted then trieSpent = true
                             }
+                }
+
+                // --- chain peg-out Complete after Confirm ---
+                // Runs OUTSIDE the confirm branch, and re-reads the trie context, because the
+                // Confirm just submitted spent the trie UTxO: the sweeper references the RECREATED
+                // singleton, which is only visible once that transaction settles. Until then the
+                // mirror already matches the on-chain root and the sweep is a cheap no-op.
+                sweeper.foreach { s =>
+                    val idleDue =
+                        System.currentTimeMillis() - lastSweepMs >=
+                            config.bridge.porSweepIntervalSeconds * 1000L
+                    if (s.hasPending || idleDue) && !s.isHalted then {
+                        lastSweepMs = System.currentTimeMillis()
+                        // Contained: peg-out cleanup must never cost a confirm cycle. Without this
+                        // guard a sweeper throw would land in the outer handler, page as a confirm
+                        // error, and sleep the retry interval before the next TM is even looked at.
+                        try
+                            BridgeSweepSetup.loadTrieContext(
+                              provider,
+                              configAddress,
+                              configNftPolicy,
+                              configNftAsset,
+                              trieScript,
+                              trieAssetName,
+                              network,
+                              timeout
+                            ) match {
+                                case Right(ctx) => s.sweep(ctx.configUtxo, ctx.trieUtxo)
+                                case Left(err) =>
+                                    Console.logWarn(s"  sweeper: trie context unavailable: $err")
+                            }
+                        catch {
+                            case e: Exception =>
+                                Console.logError(s"  sweeper: sweep failed: ${e.getMessage}")
+                        }
+                    }
                 }
 
                 if dryRun then break(0)
@@ -301,76 +369,6 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         0
     }
 
-    /** Locate the Config and completed-peg-outs trie UTxOs.
-      *
-      * The trie policy is taken from Config field 3 (RAW field read, not a typed `ConfigDatum`
-      * decode, so a deployed pre-migration datum with a different field count still works). The
-      * locally derived trie script must hash to that policy, otherwise the config still publishes
-      * the pre-migration trie and the migration Update has not run yet.
-      *
-      * No trie replay happens here any more: the root written by a Confirm comes from the TM's own
-      * attested commitment, so this command never needs to reproduce the trie CONTENT. The current
-      * on-chain root is still read, purely so the log can show the transition.
-      */
-    private def loadTrieContext(
-        provider: BlockchainProvider,
-        configAddress: Address,
-        configNftPolicy: ScriptHash,
-        configNftAsset: AssetName,
-        trieScript: scalus.cardano.ledger.Script.PlutusV3,
-        trieAssetName: AssetName,
-        network: scalus.cardano.address.Network,
-        timeout: Duration
-    )(using ExecutionContext): Either[String, ConfirmTmtxCommand.TrieContext] =
-        for {
-            configUtxos <- provider
-                .findUtxos(configAddress)
-                .await(timeout)
-                .left
-                .map(err => s"fetching config UTxOs at $configAddress: $err")
-            configUtxo <- configUtxos.toList
-                .collectFirst {
-                    case (in, out) if out.value.hasAsset(configNftPolicy, configNftAsset) =>
-                        Utxo(in, out)
-                }
-                .toRight(s"no UTxO carrying the config NFT at $configAddress")
-            triePolicyBytes <- configUtxo.output.inlineDatum match {
-                case Some(Data.Constr(0, fields)) =>
-                    fields.asScala.toList.lift(3) match {
-                        case Some(Data.B(p)) => Right(p)
-                        case other           => Left(s"config field 3 is not a byte string: $other")
-                    }
-                case other => Left(s"config datum is not a Constr 0 inline datum: $other")
-            }
-            _ <- Either.cond(
-              triePolicyBytes.toHex == trieScript.scriptHash.toHex,
-              (),
-              s"config field 3 publishes trie policy ${triePolicyBytes.toHex}, but the trie " +
-                  s"validator derived from (TM hash, one-shot) hashes to " +
-                  s"${trieScript.scriptHash.toHex}. Run `update-config " +
-                  s"--completed-peg-outs-policy ${trieScript.scriptHash.toHex}` (together with the " +
-                  "field 4/5 swaps) before confirming under the new TM script."
-            )
-            trieAddress = Address(network, Credential.ScriptHash(trieScript.scriptHash))
-            trieUtxos <- provider
-                .findUtxos(trieAddress)
-                .await(timeout)
-                .left
-                .map(err => s"fetching trie UTxOs at $trieAddress: $err")
-            trieUtxo <- trieUtxos.toList
-                .collectFirst {
-                    case (in, out) if out.value.hasAsset(trieScript.scriptHash, trieAssetName) =>
-                        Utxo(in, out)
-                }
-                .toRight(
-                  s"no UTxO carrying the \"CPO\" NFT at $trieAddress — the trie has not been " +
-                      "bootstrapped under this policy"
-                )
-            onChainRoot <- trieUtxo.output.inlineDatum
-                .flatMap(d => scala.util.Try(d.to[CompletedPegOutsTrieDatum].root).toOption)
-                .toRight("the trie UTxO has no decodable inline root datum")
-        } yield ConfirmTmtxCommand.TrieContext(configUtxo, trieUtxo, trieScript, onChainRoot)
-
     /** Build + submit the Confirm tx for one Unconfirmed UTxO (or report why it's not ready).
       *
       * Returns `true` only when a Confirm tx was actually submitted, which tells the caller the
@@ -386,12 +384,13 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         rpc: SimpleBitcoinRpc,
         utxo: Utxo,
         unconfirmedDatum: TmDatum.Unconfirmed,
-        trieCtx: ConfirmTmtxCommand.TrieContext,
+        trieCtx: BridgeSweepSetup.TrieContext,
         timeout: Duration,
         skipBtcTxids: Set[String],
         processed: scala.collection.mutable.Map[String, String],
         notifier: Notifier,
-        debugTmScript: Option[scalus.cardano.ledger.Script.PlutusV3]
+        debugTmScript: Option[scalus.cardano.ledger.Script.PlutusV3],
+        sweeper: Option[PorSweeper]
     )(using ExecutionContext): Boolean = {
         val signedBtcTx = unconfirmedDatum.signedBtcTx
         val utxoRef = s"${utxo.input.transactionId.toHex}#${utxo.input.index}"
@@ -556,6 +555,17 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                                               s"TM confirmed on Cardano — btc txid `$displayTxid`, " +
                                                   s"cardano tx `$hash` ($utxoRef)"
                                             )
+                                            // Hand the sweeper this TM's data-availability hint
+                                            // NOW, while the requests it names are still unspent:
+                                            // that is the only moment their datums are readable
+                                            // from current state rather than from history.
+                                            sweeper.foreach(
+                                              _.recordConfirmed(
+                                                displayTxid,
+                                                newRoot,
+                                                unconfirmedDatum.fulfilledPorOutpoints.asScala.toSeq
+                                              )
+                                            )
                                         case Left(err) =>
                                             // The trie UTxO may or may not have been consumed: a build or
                                             // submit failure never spends it, and a submitted-then-rejected
@@ -620,27 +630,4 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
             lines += s"confirm-tm pegouts_omitted=${pegouts.size - MaxEntryLines}"
         lines.toList
     }
-}
-
-object ConfirmTmtxCommand {
-
-    /** Everything a Confirm tx needs for the completed-peg-outs trie, resolved once per poll cycle.
-      *
-      * @param configUtxo
-      *   the Config UTxO, added as a reference input; the validator reads the trie policy from its
-      *   field 3.
-      * @param trieUtxo
-      *   the trie UTxO carrying the `"CPO"` NFT. It is SPENT (not referenced) and recreated.
-      * @param trieScript
-      *   the trie validator, needed to spend `trieUtxo`. Its hash equals Config field 3.
-      * @param currentRoot
-      *   the root in `trieUtxo`'s datum. Diagnostic only: the Confirm writes the root the TM
-      *   attests, whatever this one is.
-      */
-    final case class TrieContext(
-        configUtxo: Utxo,
-        trieUtxo: Utxo,
-        trieScript: scalus.cardano.ledger.Script.PlutusV3,
-        currentRoot: ByteString
-    )
 }

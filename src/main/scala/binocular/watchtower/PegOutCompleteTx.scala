@@ -1,73 +1,59 @@
 package binocular.watchtower
 
 import scalus.cardano.address.{StakeAddress, StakePayload}
-import scalus.cardano.ledger.{AssetName, Coin, PlutusScript, ScriptHash, Transaction, Utxo, Value}
+import scalus.cardano.ledger.{AssetName, Coin, PlutusScript, ScriptHash, Transaction, Utxo}
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
-import scalus.cardano.txbuilder.{ScriptSource, ThreeArgumentPlutusScriptWitness, TwoArgumentPlutusScriptWitness as TwoArg, TxBuilder}
+import scalus.cardano.txbuilder.{Datum, ScriptSource, ThreeArgumentPlutusScriptWitness, TwoArgumentPlutusScriptWitness as TwoArg, TxBuilder}
 import scalus.cardano.wallet.hd.HdAccount
-import scalus.uplc.builtin.{ByteString, Data}
+import scalus.uplc.builtin.Data
 import scalus.uplc.builtin.Data.toData
-import scalus.uplc.DebugScript
 
 import scala.concurrent.{ExecutionContext, Future}
-import scala.util.chaining.scalaUtilChainingOps
 
-/** Builds the P5 peg-out completion tx — burns the locked fBTC and records the peg-out in the
-  * completed-peg-outs MPF, satisfying `peg_out.ak::withdraw(CompletePegOut)`.
+/** Builds the peg-out **Complete** transaction — permissionless cleanup of a PAID PegOutRequest.
   *
-  * Unlike peg-in completion (which references a Confirmed TM UTxO), peg-out completion proves the TM
-  * INLINE against the Binocular oracle: the `InputCompletePegOut` carries the block header + its MPF
-  * inclusion proof in `confirmed_blocks_root`, plus the raw TM tx + its tx-merkle proof. There is no
-  * depositor Schnorr — `owner_auth` is satisfied by the owner's signature (the sponsor, here).
+  * Since spec rev 5.1 completion carries no authorization and no Bitcoin proof. A confirmed Treasury
+  * Movement already paid the destination and its FROST-attested root, copied into the on-chain CPO
+  * singleton at Confirm, already binds this request to that payment. All Complete does is prove
+  * membership and burn the fBTC the request locked. Whoever does it keeps the request's MIN_ADA —
+  * the cleanup incentive that stops PegOutRequest state from accumulating.
   *
   * ==Shape==
-  *   - Spend: the PegOut UTxO (peg_out script — its `spend` handler only requires a withdrawal from
-  *     the same script hash; redeemer ignored) and the completed-peg-outs MPF UTxO.
-  *   - References: config-NFT UTxO + Binocular oracle UTxO.
-  *   - Mint: `-peg_out_amount` fBTC (burn). `bridged_token.ak` reads the ConfigDatum and enforces
-  *     the burn against the peg_out `CompletePegOut` withdrawal directly (Variant B – no separate
-  *     mint checker).
-  *   - Withdrawals (0 ADA): `peg_out` → [[PegOutWithdrawRedeemer]] `CompletePegOut`; the
-  *     produced-verifier ([[PegOutProducedVerifier]]) → the bare `List<Data>` redeemer it + peg_out.ak
-  *     both read.
-  *   - Outputs: the updated completed-peg-outs UTxO (same value+address, new MPF root); change →
-  *     sponsor (carrying the burned PegOut UTxO's freed MIN_ADA).
+  *   - Spend: the PegOutRequest UTxO. `peg_out.ak`'s `spend` handler only requires a withdrawal from
+  *     its own script hash, so its redeemer is ignored (`Data.unit`).
+  *   - References: the Config UTxO and the CPO singleton. BOTH are referenced, never spent — which
+  *     is what makes completion transactions independent of each other.
+  *   - Mint: `-locked` fBTC. `bridged_token.ak` allows a burn whenever the peg-out withdraw script
+  *     runs; `peg_out.ak` is what pins the amount to ALL of the locked tokens.
+  *   - Withdrawal (0 ADA) from the `peg_out` reward account, carrying
+  *     [[PegOutWithdrawRedeemer]]`(configRefIdx, cpoRefIdx, CompletePegOut(proof))`. The reward
+  *     account must be registered (`register-bridge-creds`).
+  *   - Outputs: change to the sponsor, which is where the freed MIN_ADA (and any stray tokens the
+  *     request held) ends up.
   *
-  * ==Index redeemers== mirror [[PegInCompleteTx]]: `self.redeemers` is ordered
-  * `(RedeemerTag ordinal, purpose-index)` — Spend(0) inputs (sorted), then Mint(1) policies, then
-  * Reward(3) withdrawals (sorted by reward account). So a reward redeemer's flat index =
-  * `#scriptSpends + #mintPolicies + (its position in the sorted withdrawals)`.
+  * ==ONE request per transaction== `peg_out.ak`'s withdraw handler does
+  * `expect [peg_out_input] = list.filter(inputs, at own credential)`, so a transaction carrying two
+  * PegOutRequest inputs traps. Batching is therefore impossible by construction, not by choice.
+  *
+  * ==Redeemer indices== point into `reference_inputs`, not `inputs` — `utils.safe_list_at` is
+  * applied to `self.reference_inputs` on both reads. They are resolved from the ASSEMBLED
+  * transaction (delayed redeemer builders) because the ledger sorts both sets canonically, so the
+  * position is not known until the builder has finished balancing.
   */
 object PegOutCompleteTx {
 
-    /** The four Plutus scripts that run in the completion tx. */
-    final case class Scripts(
-        pegOut: PlutusScript,
-        completedPegOuts: PlutusScript,
-        bridgedToken: PlutusScript,
-        producedVerifier: PlutusScript
-    )
+    /** The two Plutus scripts that run: `peg_out` (spend + withdraw) and `bridged_token` (burn). */
+    final case class Scripts(pegOut: PlutusScript, bridgedToken: PlutusScript)
 
-    /** The pre-existing UTxOs the tx spends (`pegOut`, `completedPegOuts`) / references (`config`,
-      * `oracle`).
+    /** CIP-33 reference-script UTxOs. `None` inlines the script in the witness set — viable for
+      * these two, but a reference keeps the transaction small enough to stay cheap.
       */
-    final case class Inputs(
-        pegOut: Utxo,
-        completedPegOuts: Utxo,
-        config: Utxo,
-        oracle: Utxo
-    )
+    final case class ScriptRefs(pegOut: Option[Utxo], bridgedToken: Option[Utxo])
 
-    /** CIP-33 reference-script UTxOs for the heavy scripts. `None` → inline in the witness set. The
-      * produced verifier is small and always inlined.
-      */
-    final case class ScriptRefs(
-        pegOut: Option[Utxo],
-        completedPegOuts: Option[Utxo],
-        bridgedToken: Option[Utxo]
-    )
+    /** `pegOut` is SPENT; `config` and `completedPegOuts` are REFERENCED. */
+    final case class Inputs(pegOut: Utxo, config: Utxo, completedPegOuts: Utxo)
 
     def build(
         provider: BlockchainProvider,
@@ -75,157 +61,77 @@ object PegOutCompleteTx {
         scripts: Scripts,
         scriptRefs: ScriptRefs,
         inputs: Inputs,
-        pegOutInfo: InputCompletePegOut,
-        completedPegOutsInclusionProof: ScalusList[ProofStep],
-        completedPegOutsNewRoot: ByteString,
-        // The produced-verifier withdrawal redeemer — the bare list both peg_out.ak (via
-        // un_list_data) and PegOutProducedVerifier read:
-        // [treasury_utxo_id, destination, peg_out_utxo_id, peg_out_amount, raw_tx].
-        verifierRedeemer: Data,
-        pegOutAmount: Long,
+        membershipProof: ScalusList[ProofStep],
+        // ALL of the fBTC the request locked. `peg_out.ak` requires the mint to be exactly its
+        // negation, so this is never a partial burn.
+        lockedFbtc: Long,
         bridgedTokenPolicy: ScriptHash,
         bridgedTokenAsset: AssetName,
-        completedPegOutsPolicy: ScriptHash,
-        completedPegOutsAsset: AssetName,
-        pegOutHash: ScriptHash,
-        producedVerifierHash: ScriptHash,
-        // Diagnostic only: a verbose-trace-compiled peg_out PlutusScript (same params, different
-        // hash) registered under `pegOutHash` so scalus's replayWithDiagnostics emits per-condition
-        // `?` traces when the deployed (release) peg_out returns false.
-        debugPegOut: Option[PlutusScript] = None
+        pegOutHash: ScriptHash
     )(using ExecutionContext): Future[Transaction] = {
         val network = provider.cardanoInfo.network
         val signer = sponsor.signerForUtxos
         val sponsorAddress = sponsor.baseAddress(network)
 
-        def stake(h: ScriptHash): StakeAddress = StakeAddress(network, StakePayload.Script(h))
+        def refIndex(tx: Transaction, u: Utxo): BigInt =
+            BigInt(tx.body.value.referenceInputs.toIndexedSeq.indexOf(u.input))
 
-        // --- index helpers over the assembled tx (see object doc) ---
-        def inputsSorted(tx: Transaction) = tx.body.value.inputs.toIndexedSeq
-        def refsSorted(tx: Transaction) = tx.body.value.referenceInputs.toIndexedSeq
-        def outputs(tx: Transaction) = tx.body.value.outputs
-
-        def inputIndex(tx: Transaction, u: Utxo): BigInt =
-            BigInt(inputsSorted(tx).indexOf(u.input))
-        def configRefIndex(tx: Transaction): BigInt =
-            BigInt(refsSorted(tx).indexOf(inputs.config.input))
-        def cpoOutputIndex(tx: Transaction): BigInt =
-            BigInt(
-              outputs(tx).indexWhere(
-                _.value.value.hasAsset(completedPegOutsPolicy, completedPegOutsAsset)
-              )
-            )
-
-        // Reward redeemer flat index = #scriptSpends + #mintPolicies + position in sorted withdrawals.
-        def scriptSpends(tx: Transaction): Int =
-            Seq(inputs.pegOut.input, inputs.completedPegOuts.input).count(inputsSorted(tx).contains)
-        def mintPolicies(tx: Transaction): Int =
-            tx.body.value.mint.map(_.assets.size).getOrElse(0)
-        def withdrawalPos(tx: Transaction, h: ScriptHash): Int =
-            tx.body.value.withdrawals
-                .map(_.withdrawals.keys.toIndexedSeq.indexWhere(_.address == stake(h)))
-                .getOrElse(-1)
-        def rewardRedeemerIndex(tx: Transaction, h: ScriptHash): BigInt =
-            BigInt(scriptSpends(tx) + mintPolicies(tx) + withdrawalPos(tx, h))
-
-        // --- redeemers (delayed: indices depend on the assembled tx) ---
-        val pegOutWithdrawRedeemer: Transaction => Data = tx => {
-            val action = PegOutActionType.CompletePegOut(
-              pegOutInfo = pegOutInfo,
-              completedPegOutsInputIndex = inputIndex(tx, inputs.completedPegOuts),
-              completedPegOutsOutputIndex = cpoOutputIndex(tx),
-              addedPegOutToCompletedPegOutsInclusionProof = completedPegOutsInclusionProof,
-              tmtilaspopvshWithdrawRedeemerIndex = rewardRedeemerIndex(tx, producedVerifierHash)
-            )
-            PegOutWithdrawRedeemer(configRefIndex(tx), action).toData
-        }
-
-        val completedPegOutsSpendRedeemer: Transaction => Data = tx =>
-            CompletedPegOutsSpendRedeemer(
-              configRefInputIndex = configRefIndex(tx),
-              pegOutWithdrawRedeemerIndex = rewardRedeemerIndex(tx, pegOutHash)
+        val pegOutWithdrawRedeemer: Transaction => Data = tx =>
+            PegOutWithdrawRedeemer(
+              configRefInputIndex = refIndex(tx, inputs.config),
+              completedPegOutsRefInputIndex = refIndex(tx, inputs.completedPegOuts),
+              actionType = PegOutActionType.CompletePegOut(membershipProof)
             ).toData
 
-        // bridged_token reads the ConfigDatum and enforces the burn against the peg_out
-        // CompletePegOut withdrawal directly (Variant B – no separate mint checker).
         val bridgedTokenMintRedeemer: Transaction => Data = tx =>
-            BridgedTokenMintRedeemer(configRefInputIndex = configRefIndex(tx)).toData
-
-        // --- output: the updated completed-peg-outs UTxO (same value + address, new MPF root) ---
-        val newCpoDatum = CompletedPegOutsMerkleTreeDatum(completedPegOutsNewRoot)
+            BridgedTokenMintRedeemer(configRefInputIndex = refIndex(tx, inputs.config)).toData
 
         import ScriptSource.{PlutusScriptAttached, PlutusScriptValue}
-        def spendSource(useRef: Boolean, script: PlutusScript): ScriptSource[PlutusScript] =
+        def source(useRef: Boolean, script: PlutusScript): ScriptSource[PlutusScript] =
             if useRef then PlutusScriptAttached else PlutusScriptValue(script)
 
-        val extraRefs: Seq[Utxo] =
-            Seq(scriptRefs.pegOut, scriptRefs.completedPegOuts, scriptRefs.bridgedToken).flatten
-
-        // Both spent UTxOs carry inline datums on-chain → DatumInlined.
         val pegOutSpendWitness = ThreeArgumentPlutusScriptWitness(
-          scriptSource = spendSource(scriptRefs.pegOut.isDefined, scripts.pegOut),
+          scriptSource = source(scriptRefs.pegOut.isDefined, scripts.pegOut),
           redeemer = Data.unit,
-          datum = scalus.cardano.txbuilder.Datum.DatumInlined
-        )
-        val cpoSpendWitness = ThreeArgumentPlutusScriptWitness(
-          scriptSource =
-              spendSource(scriptRefs.completedPegOuts.isDefined, scripts.completedPegOuts),
-          redeemerBuilder = completedPegOutsSpendRedeemer,
-          datum = scalus.cardano.txbuilder.Datum.DatumInlined
+          datum = Datum.DatumInlined
         )
         val pegOutWithdrawWitness: TwoArg = TwoArg(
-          scriptSource = spendSource(scriptRefs.pegOut.isDefined, scripts.pegOut),
+          scriptSource = source(scriptRefs.pegOut.isDefined, scripts.pegOut),
           redeemerBuilder = pegOutWithdrawRedeemer
         )
-        // The produced verifier is small — always inlined in the witness set (no ref UTxO needed).
-        val producedVerifierWitness: TwoArg = TwoArg(
-          scriptSource = PlutusScriptValue(scripts.producedVerifier),
-          redeemer = verifierRedeemer
-        )
 
-        // `.references(...)` MUST precede any PlutusScriptAttached / `.mint(policyId, ...)` /
-        // `.withdrawRewards(... attached)` — TxBuilder verifies each AttachedScript has a ref
-        // already attached. Same ordering rule as PegInCompleteTx.
-        val baseBuilder = (Seq(inputs.config, inputs.oracle) ++ extraRefs) match {
-            case head +: tail =>
-                TxBuilder(provider.cardanoInfo)
-                    .references(head, tail*)
-                    .spend(inputs.pegOut, pegOutSpendWitness)
-                    .spend(inputs.completedPegOuts, cpoSpendWitness)
-            case Seq() =>
-                throw new IllegalStateException("config + oracle refs must be present")
-        }
+        // `.references(...)` MUST precede any PlutusScriptAttached witness / `.mint(policyId, …)`:
+        // TxBuilder verifies each attached script already has its reference input. Same ordering
+        // rule as PegInCompleteTx.
+        val refs = Seq(inputs.config, inputs.completedPegOuts) ++
+            Seq(scriptRefs.pegOut, scriptRefs.bridgedToken).flatten
+        val base = TxBuilder(provider.cardanoInfo)
+            .references(refs.head, refs.tail*)
+            .spend(inputs.pegOut, pegOutSpendWitness)
 
-        // Burn -pegOutAmount fBTC. policyId-based overload uses PlutusScriptAttached (needs the ref);
-        // script-based overload inlines.
         val withBurn =
             if scriptRefs.bridgedToken.isDefined then
-                baseBuilder.mint(
+                base.mint(
                   bridgedTokenPolicy,
-                  Map(bridgedTokenAsset -> -pegOutAmount),
+                  Map(bridgedTokenAsset -> -lockedFbtc),
                   bridgedTokenMintRedeemer
                 )
             else
-                baseBuilder.mint(
+                base.mint(
                   scripts.bridgedToken,
-                  Map(bridgedTokenAsset -> -pegOutAmount),
+                  Map(bridgedTokenAsset -> -lockedFbtc),
                   bridgedTokenMintRedeemer
                 )
 
+        // No `requireSignatures`: completion is permissionless since rev 5.1. `owner_auth` gates
+        // Cancel only, and adding a required signer here would make the sweeper unable to complete
+        // any request but its own.
         withBurn
-            .withdrawRewards(stake(pegOutHash), Coin.zero, pegOutWithdrawWitness)
-            .withdrawRewards(stake(producedVerifierHash), Coin.zero, producedVerifierWitness)
-            // owner_auth = CardanoSignature(owner pkh); peg_out.ak checks the pkh is in the tx's
-            // signatories (= required signers). The PegOut was locked with owner = sponsor pkh, so
-            // require + sign with it. (If a peg-out used a different owner, only that key could
-            // complete it.)
-            .requireSignatures(Set(sponsor.paymentKeyHash))
-            .payTo(
-              inputs.completedPegOuts.output.address,
-              inputs.completedPegOuts.output.value,
-              newCpoDatum.toData
+            .withdrawRewards(
+              StakeAddress(network, StakePayload.Script(pegOutHash)),
+              Coin.zero,
+              pegOutWithdrawWitness
             )
-            .pipe(b => debugPegOut.fold(b)(ds => b.withDebugScript(pegOutHash, DebugScript(ds))))
             .complete(provider, sponsorAddress)
             .map(_.sign(signer).transaction)
     }

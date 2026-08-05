@@ -66,9 +66,7 @@ object CliApp {
             dryRun: Boolean
         )
         case PegOutComplete(
-            pegOut: String,
-            tm: String,
-            priorPegouts: List[String],
+            pegOut: Option[String],
             dryRun: Boolean
         )
 
@@ -430,22 +428,16 @@ object CliApp {
         val pegOutCompleteCommand =
             Opts.subcommand(
               "peg-out-complete",
-              "Complete a peg-out: burn the locked fBTC and record it in the completed-peg-outs MPF"
+              "Complete PAID peg-out requests: burn the locked fBTC against a membership proof and keep the MIN_ADA (permissionless)"
             ) {
-                val pegOutOpt = Opts.option[String]("pegout", "PegOut UTxO (TX_HASH#INDEX)")
-                val tmOpt =
-                    Opts.option[String](
-                      "tm",
-                      "Treasury Movement BTC txid that paid the peg-out (64 hex)"
+                val pegOutOpt = Opts
+                    .option[String](
+                      "pegout",
+                      "Complete only this PegOutRequest UTxO (TX_HASH#INDEX); default: every " +
+                          "completable request at the peg-out address"
                     )
-                val priorOpt = Opts
-                    .options[String](
-                      "prior-pegout",
-                      "peg_out_utxo_id of an earlier completion (repeatable, insertion order)"
-                    )
-                    .map(_.toList)
-                    .withDefault(Nil)
-                (pegOutOpt, tmOpt, priorOpt, dryRunFlag).mapN(Cmd.PegOutComplete.apply)
+                    .orNone
+                (pegOutOpt, dryRunFlag).mapN(Cmd.PegOutComplete.apply)
             }
 
         val subcommands =
@@ -584,8 +576,8 @@ object CliApp {
                               ownerPkh,
                               dryRun = dryRun
                             )
-                        case Cmd.PegOutComplete(pegOut, tm, priorPegouts, dryRun) =>
-                            PegOutCompleteCommand(pegOut, tm, priorPegouts, dryRun)
+                        case Cmd.PegOutComplete(pegOut, dryRun) =>
+                            PegOutCompleteCommand(pegOut, dryRun)
                         case Cmd.Version =>
                             return 0 // unreachable: handled above
                     }

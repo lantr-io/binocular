@@ -39,7 +39,7 @@ object BridgeBootstrap {
         val asset = AssetName(CompletedPegOutsContract.assetName)
         val value = Value.lovelace(BootstrapLovelace) +
             Value.asset(contract.policyId, asset, 1L)
-        (contract.address(network), value, CompletedPegOutsMerkleTreeDatum(EmptyRoot).toData)
+        (contract.address(network), value, CompletedPegOutsTrieDatum(EmptyRoot).toData)
     }
 
     /** Pick the one-shot UTxO a bootstrap mint consumes.

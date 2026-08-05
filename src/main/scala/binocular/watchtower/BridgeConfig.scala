@@ -58,7 +58,21 @@ case class BridgeConfig(
     // sponsor wallet, and the completion paths discover them by the `reference_script_hash` each
     // carries (see CommandHelpers.refScriptUtxosByHash). A script hash not found on-chain falls back
     // to inlining the script in the witness set (only viable for small txs).
-    completedPegOutsOneShotRef: Option[String] = None
+    completedPegOutsOneShotRef: Option[String] = None,
+    // --- POR sweeper (spec rev 5.2) ---
+    // Chain peg-out Complete after TM Confirm: after each confirmed TM the watchtower burns the
+    // locked fBTC of every PAID PegOutRequest and keeps its MIN_ADA. ON by default — completion is
+    // permissionless cleanup that pays for itself, and without it paid requests accumulate forever.
+    // Turn it off only to run a watchtower that confirms but never spends on completions.
+    porSweeper: Boolean = true,
+    // Seconds between sweeps when nothing was confirmed. A sweep runs IMMEDIATELY after a confirm
+    // (that is the whole point of chaining); this interval only governs the idle path, which exists
+    // to pick up requests paid by a TM another party confirmed.
+    porSweepIntervalSeconds: Int = 300,
+    // Directory holding the persistent completed-peg-outs trie mirror (`cpo-trie.json`). Losing it
+    // is not fatal — the sweeper reconstructs from chain history — but reconstruction reads the full
+    // history of two addresses, so it should live on durable storage. `~` is expanded.
+    stateDir: String = ".binocular"
 ) derives ConfigReader
 
 object BridgeConfig {

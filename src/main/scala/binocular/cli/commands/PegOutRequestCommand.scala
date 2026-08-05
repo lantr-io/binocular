@@ -140,10 +140,19 @@ case class PegOutRequestCommand(
                 .map(hexBytes("--owner-pkh", _, Some(56)))
                 .getOrElse(ByteString.fromArray(setup.hdAccount.paymentKeyHash.bytes))
 
+        // rev-5.1 datum: 4 fields. `per_pegout_fee` is PINNED here from the operator's configured
+        // Config-field-13 value — `peg_out.ak`'s Complete branch binds the trie value against THIS
+        // field, so a later fee Update can never strand an existing request. `created` gates Cancel
+        // at `created + 30 d`.
+        //
+        // NOT REFRESHED BEYOND THIS (out of scope, see task 11): `--treasury-outpoint` is now
+        // vestigial — the SPO batcher decides which TM pays a request at build time — and the fee
+        // should be read from the live Config UTxO rather than from local config.
         val datum = PegOutDatum(
           ownerAuth = AuthorizationMethod.CardanoSignature(ownerHash),
           sourceChainDestinationAddress = destinationSpk,
-          sourceChainTreasuryUtxoId = treasuryUtxoId
+          perPegoutFee = BigInt(config.bridge.perPegoutFeeSat),
+          created = BigInt(System.currentTimeMillis())
         )
 
         Console.info("Oracle policy", oraclePolicyId.toHex)
