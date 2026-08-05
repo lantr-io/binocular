@@ -74,6 +74,10 @@ object TxVerifierRedeemer
   *
   * This ensures the transaction actually exists in the Bitcoin blockchain as attested by the
   * Oracle.
+  *
+  * Not part of the bridge: no bridge command or watchtower path builds a transaction against it.
+  * Its only consumers are the `example` subproject's `BitcoinDependentLock` (a reference
+  * integration for third parties) and its own blueprint pin.
   */
 @Compile
 object TransactionVerifierValidator {

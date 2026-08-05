@@ -287,7 +287,7 @@ object CliApp {
         val registerBridgeCredsCommand =
             Opts.subcommand(
               "register-bridge-creds",
-              "Register the 3 withdraw reward credentials (peg_in, owner_auth, legit_TM_verifier)"
+              "Register the peg_in and peg_out withdraw reward credentials (config fields 4 and 5)"
             ) {
                 dryRunFlag.map(Cmd.RegisterBridgeCreds.apply)
             }

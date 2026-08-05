@@ -40,17 +40,16 @@ import cats.syntax.either.*
   *
   * Config layout (12 fields): index 0/1 (bridged-token policy + asset), 2/3 (completed-peg-ins /
   * completed-peg-outs MPF policies), 4/5 (peg_in / peg_out withdraw), 6 (peg-in close verifier,
-  * Dummy28 placeholder), 7 (real BTC-tx-parsing produced verifier,
-  * [[PegOutProducedVerifierContract]]), 8 (not-produced placeholder,
-  * [[PegOutNotProducedVerifierContract]] – `Cancel`/refund is out of scope), 9 (min_stake), 10
-  * (`update_auth` – the binocular owner key `oracle.owner-pkh`, which may Update/Retire the config
-  * per config.ak's spend handler) and 11 (`initial_btc_treasury_utxo` – the 36-byte anchor outpoint
-  * the FIRST Treasury Movement must spend, from `bridge.initial-btc-treasury-utxo`). Minting a new
-  * config NFT changes the bridged-token policy, so re-mint under this config. The cpi/cpo NFT asset
-  * names are the constants "CPI"/"CPO". The TM validator is parameterized by (oracle hash, config
-  * NFT policy, config NFT asset), so its address derives from this deploy's config NFT — no
-  * TM-control NFT exists anymore; TM minting is permissionless, gated by chain linkage (see
-  * [[TmMintRedeemer]]).
+  * Dummy28 placeholder), 7 ([[PegOutProducedVerifierContract]]) and 8
+  * ([[PegOutNotProducedVerifierContract]]) – both RETIRED under rev 5.1 and never invoked on-chain,
+  * populated only because the datum shape kept the slots, 9 (min_stake), 10 (`update_auth` – the
+  * binocular owner key `oracle.owner-pkh`, which may Update/Retire the config per config.ak's spend
+  * handler) and 11 (`initial_btc_treasury_utxo` – the 36-byte anchor outpoint the FIRST Treasury
+  * Movement must spend, from `bridge.initial-btc-treasury-utxo`). Minting a new config NFT changes
+  * the bridged-token policy, so re-mint under this config. The cpi/cpo NFT asset names are the
+  * constants "CPI"/"CPO". The TM validator is parameterized by (oracle hash, config NFT policy,
+  * config NFT asset), so its address derives from this deploy's config NFT — no TM-control NFT
+  * exists anymore; TM minting is permissionless, gated by chain linkage (see [[TmMintRedeemer]]).
   *
   * Derivation ORDER matters (peg-out trie v2, 2026-07). The completed-peg-outs validator is
   * parameterized by `(tm_nft_policy_id, one_shot_ref)`, so the chain is: one-shot -> config policy
@@ -320,10 +319,10 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
                     // Register the peg_in / peg_out withdraw reward accounts here (deposit-less
                     // Shelley RegCert, no script execution) so completion txs can withdraw. Both
                     // hashes are fresh per deploy (they derive from this deploy's config policy), so
-                    // this is always a first-time registration - safe in an atomic tx. The
-                    // produced-verifier account is NOT registered here: its hash is constant across
-                    // deploys, so on a redeploy it is already registered and would fail the whole tx;
-                    // `register-bridge-creds` (idempotent) handles it before peg-out completion.
+                    // this is always a first-time registration - safe in an atomic tx. These two are
+                    // the ONLY reward accounts the protocol uses: the config[7]/config[8] verifiers
+                    // are retired under rev 5.1 and never withdrawn from. `register-bridge-creds`
+                    // (idempotent) re-runs the same two registrations if this tx is ever partial.
                     .registerStake(StakeAddress(network, StakePayload.Script(pegIn.policyId)))
                     .registerStake(StakeAddress(network, StakePayload.Script(pegOut.policyId)))
                     .complete(provider, sponsorAddress)
@@ -369,11 +368,12 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
           s"${configRef.id.hash.toHex}#${configRef.idx}"
         )
         Console.info("peg-out-withdraw-hash", pegOutWithdrawHash.toHex)
+        // Printed for datum inspection only - config[7] is a retired slot with no reward account.
         Console.info("peg-out-produced-verifier-hash", pegOutProducedVerifierHash.toHex)
         Console.info(
           "next",
-          "peg_in/peg_out reward accounts registered in the bootstrap tx; run " +
-              "`register-bridge-creds` to register the produced verifier before peg-out completion"
+          "peg_in/peg_out reward accounts registered in the bootstrap tx (the only two the " +
+              "protocol uses); re-run `register-bridge-creds` only if that tx was partial"
         )
         Console.info("tm-nft-policy", tmNftPolicy.toHex)
         Console.separator()

@@ -21,16 +21,19 @@ import cats.syntax.either.*
 /** Register the reward (stake) credentials of the bridge withdraw scripts the completion txs use,
   * so Conway will accept their 0-ADA withdrawals.
   *
-  * Peg-in: `withdraw(CompletePegIn)` runs ONE rewarding script – `peg_in` itself (the
-  * stake-validator delegation pattern: the PIR + completed-peg-ins spends require a withdrawal from
-  * the peg_in script). The `bridged_token` policy reads the ConfigDatum and enforces the mint
-  * against this same withdrawal directly (Variant B – no separate mint checker).
+  * Exactly TWO reward accounts exist under spec rev 5.1, and both are registered here:
+  *   - `peg_in` (config[4]) – `withdraw(CompletePegIn)` runs it as the single rewarding script (the
+  *     stake-validator delegation pattern: the PIR + completed-peg-ins spends require a withdrawal
+  *     from the peg_in script). The `bridged_token` policy reads the ConfigDatum and enforces the
+  *     mint against this same withdrawal directly (Variant B – no separate mint checker).
+  *   - `peg_out` (config[5]) – `withdraw(CompletePegOut)` runs it as the single rewarding script,
+  *     and the PegOutRequest spend delegates to it.
   *
-  * Peg-out: `withdraw(CompletePegOut)` runs TWO rewarding scripts – the `peg_out` validator itself
-  * (the completed-peg-outs spend delegates to it) and the real `peg_out_produced_verifier`
-  * (config[7]), which `peg_out.ak` invokes via `validate_withdraw`. Both reward accounts are
-  * registered here. The not-produced verifier (config[8]) is only withdrawn from on the Cancel path
-  * (out of scope), so it is intentionally left unregistered.
+  * Nothing else is registered. The produced verifier (config[7]) and the not-produced verifier
+  * (config[8]) are RETIRED under the attested-root scheme: the rewritten `peg_out.ak` proves
+  * payment against the quorum-attested completed-peg-outs trie root and never delegates to either,
+  * so neither is ever withdrawn from and neither needs a reward account. `deploy-bridge` still
+  * writes their hashes into the config datum only because the datum shape kept those slots.
   *
   * Conway rejects a withdrawal whose reward account is not registered, and certificates validate
   * against the *pre-transaction* ledger state, so registration must happen in an earlier tx – it
@@ -41,12 +44,11 @@ import cats.syntax.either.*
   * purpose. (Same approach as ft-bifrost-bridge's offchain spo-demo
   * `registerBanWithdrawCredential`.)
   *
-  * Run after the bridge config + the (re-minted) peg_in policy are fixed. Each credential is
-  * registered in its OWN tx and an already-registered one is skipped (not fatal): the
-  * config-derived peg_in/peg_out hashes are fresh per deploy, but the produced verifier is a
-  * parameterless script whose hash is constant across deploys, so on a redeploy it is already
-  * registered while the others are not – per-cred txs let the fresh ones through regardless. The
-  * command is therefore safe to re-run. It does NOT touch the config / completed-peg-ins /
+  * Run after the bridge config + the (re-minted) peg_in policy are fixed. `deploy-bridge` already
+  * registers both accounts inside its bootstrap tx, so this command is the idempotent repair path:
+  * each credential is registered in its OWN tx and an already-registered one is skipped (not
+  * fatal), so a partially-registered deployment converges instead of failing wholesale. The command
+  * is therefore safe to re-run. It does NOT touch the config / completed-peg-ins /
   * completed-peg-outs / fBTC NFTs.
   */
 case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
@@ -101,19 +103,17 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
         )
         val pegInHash = pegIn.policyId
 
-        // Peg-out completion (`peg_out.ak::CompletePegOut`) withdraws from TWO scripts that need
-        // registered reward accounts: the peg_out withdraw validator itself (config[5]) and the
-        // real produced verifier (config[7]). The not-produced verifier (config[8]) is only
-        // withdrawn from on the Cancel path (out of scope), so it is NOT registered here.
+        // Peg-out completion (`peg_out.ak::CompletePegOut`) withdraws from exactly ONE script: the
+        // peg_out withdraw validator itself (config[5]). The produced verifier (config[7]) and the
+        // not-produced verifier (config[8]) are retired under the rev-5.1 attested-root scheme –
+        // `peg_out.ak` proves payment against the quorum-attested completed-peg-outs trie root and
+        // delegates to neither – so neither is ever withdrawn from and neither is registered.
         val pegOut = PegOutContract(blueprint, configNftPolicy, configNftAsset)
         val pegOutHash = pegOut.policyId
-        val pegOutProducedVerifierHash =
-            PegOutProducedVerifierContract.pinnedScript.scriptHash
 
         val creds: List[(String, ScriptHash)] = List(
           "peg_in" -> pegInHash,
-          "peg_out" -> pegOutHash,
-          "peg_out_produced_verifier" -> pegOutProducedVerifierHash
+          "peg_out" -> pegOutHash
         )
 
         Console.info("Oracle policy", oraclePolicyId.toHex)
@@ -128,13 +128,13 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
             break(0)
         }
 
-        // Register each credential in its OWN tx, tolerating an already-registered one. The peg_in
-        // and peg_out hashes are config-derived (fresh per deploy), but the produced verifier is a
-        // parameterless script whose hash is CONSTANT across every deploy – so on any redeploy it is
-        // already registered. A single atomic multi-RegCert tx would then be rejected wholesale,
-        // leaving the fresh peg_in/peg_out creds unregistered. Per-cred txs let each one that is not
-        // yet registered succeed independently. Registering an already-registered credential fails
-        // at build or submit; we treat that as "already done" and continue.
+        // Register each credential in its OWN tx, tolerating an already-registered one. Both hashes
+        // are config-derived (fresh per deploy) and `deploy-bridge` normally registers them in its
+        // bootstrap tx, so the usual outcome here is "both already registered". A single atomic
+        // multi-RegCert tx would then be rejected wholesale, leaving a genuinely missing credential
+        // unregistered. Per-cred txs let each one that is not yet registered succeed independently.
+        // Registering an already-registered credential fails at build or submit; we treat that as
+        // "already done" and continue.
         val signer = setup.hdAccount.signerForUtxos
         val registered = scala.collection.mutable.ListBuffer.empty[String]
         val skipped = scala.collection.mutable.ListBuffer.empty[String]

@@ -449,8 +449,16 @@ object TreasuryMovementValidator {
                   "TM NFT not preserved on the continuing output"
                 )
 
-                // 6. Ensure it's the real TM transaction by checking the presence of the TM input and output using address from Treasury State UTxO (reference input by NFT)
-                // TODO:
+                // 6. "Is this the real TM record?" is settled above, and no longer the way the old
+                // checklist framed it (look the TM address up in a Treasury State reference UTxO).
+                // There is no Treasury State UTxO: this script's address is fixed by its three
+                // applied parameters, so the TM input is authenticated by the spend purpose itself
+                // (`findOwnInput(ownRef)`), the TM NFT policy IS this script's own hash (spend and
+                // mint share it), `tmInputCount == 1` bounds the tx to one TM record, and the
+                // continuing output must carry that NFT back. The `signedBtcTx` those checks
+                // authenticate was in turn bound to the NFT at mint time (`validateMinting`), which
+                // also chained it to the previous Confirmed record or to the config's
+                // `initial_btc_treasury_utxo`. Nothing further is needed here.
 
                 val swept = allInputOutpoints(signedBtcTx)
                 val fulfilled = allOutputs(signedBtcTx)

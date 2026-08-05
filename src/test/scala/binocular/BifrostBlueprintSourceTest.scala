@@ -2,12 +2,30 @@ package binocular
 
 import binocular.watchtower.*
 
+import com.typesafe.config.ConfigFactory
 import org.scalatest.funsuite.AnyFunSuite
 import java.nio.file.{Files, Path, Paths}
+import java.security.MessageDigest
 
 /** The confirm worker derives the completed-peg-outs trie validator on every startup, so it must be
   * able to load the ft-bifrost-bridge blueprint with NO sibling checkout on disk — a Docker image
   * and a systemd unit have none, and a failure there is a crash-loop, not a warning.
+  *
+  * ==Residual gap (read before trusting this suite)==
+  * `src/main/resources/bifrost-plutus-min.json` is vendored BY HAND from another repository, and
+  * binocular's CI has no ft-bifrost-bridge checkout. Cross-repo drift is therefore caught only:
+  *   1. on a developer machine that has a sibling ft checkout;
+  *   2. in any CI job that sets `BIFROST_PLUTUS_JSON` (where a missing file is a failure, not a
+  *      skip — an operator who asked for the check must get it);
+  *   3. indirectly, by `src/test/resources/ft-blueprint-pin.conf`, when someone re-vendors the
+  *      resource without refreshing the recorded digests.
+  *
+  * Case 3 is the only one that runs unconditionally, and it detects a careless re-vendor, not a
+  * stale one: an ft build that moves ahead while nobody touches the vendored copy stays invisible
+  * here. Closing that would need binocular's CI to check out ft, which is a separate repository
+  * whose access credentials cannot be verified from this side, so `.github/workflows/ci.yml`
+  * deliberately does NOT do it. Anyone wiring up such a job should set `BIFROST_PLUTUS_JSON` and
+  * let case 2 do the work.
   */
 class BifrostBlueprintSourceTest extends AnyFunSuite {
 
@@ -19,6 +37,25 @@ class BifrostBlueprintSourceTest extends AnyFunSuite {
       "bitcoin/peg_in.peg_in_validator.mint",
       "bitcoin/peg_out.peg_out_validator.withdraw"
     )
+
+    private val PinFile = "src/test/resources/ft-blueprint-pin.conf"
+
+    private lazy val pinRecord = ConfigFactory.parseResources("ft-blueprint-pin.conf")
+
+    private def recordedPlutusJsonSha: String = pinRecord.getString("plutus-json-sha256")
+
+    /** Looked up through the `ConfigObject` map, not by path: the titles contain dots. */
+    private def recordedCompiledCodeSha(title: String): String = {
+        val obj = pinRecord.getObject("compiled-code-sha256")
+        val v = obj.get(title)
+        assert(v != null, s"$PinFile has no compiled-code-sha256 entry for $title")
+        v.unwrapped.toString
+    }
+
+    private def sha256(bytes: Array[Byte]): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes).map("%02x".format(_)).mkString
+
+    private def sha256(s: String): String = sha256(s.getBytes("US-ASCII"))
 
     test("the packaged blueprint resource is on the classpath") {
         assert(BifrostBlueprint.packaged != null)
@@ -55,15 +92,55 @@ class BifrostBlueprintSourceTest extends AnyFunSuite {
         } finally Files.deleteIfExists(tmp)
     }
 
-    /** Candidate locations of a sibling ft-bifrost-bridge checkout's blueprint, most explicit
-      * first.
+    /** Where to find an ft checkout's blueprint, and what it means when there is none.
+      *
+      *   - `Right(path)` — compare against this file.
+      *   - `Left(Some(msg))` — `BIFROST_PLUTUS_JSON` is set but unreadable. That is an operator
+      *     asking for the cross-repo check and not getting it, so it MUST fail. Falling through to
+      *     a sibling path here would answer a question nobody asked.
+      *   - `Left(None)` — nothing to compare against; cancel. CI and release builds have no
+      *     checkout, and the vendored resource exists precisely so they do not need one.
       */
-    private def ftBlueprint: Option[Path] =
-        (sys.env.get("BIFROST_PLUTUS_JSON").toList ++ List(
-          "../ft-bifrost-bridge/onchain/plutus.json",
-          "../../ft-bifrost-bridge/onchain/plutus.json",
-          "../../FluidTokens/ft-bifrost-bridge/onchain/plutus.json"
-        )).map(Paths.get(_)).find(Files.isReadable)
+    private def ftBlueprint: Either[Option[String], Path] =
+        sys.env.get("BIFROST_PLUTUS_JSON").map(_.trim).filter(_.nonEmpty) match {
+            case Some(raw) =>
+                val p = Paths.get(raw)
+                if Files.isReadable(p) then Right(p)
+                else
+                    Left(
+                      Some(
+                        s"BIFROST_PLUTUS_JSON=$raw is set but no readable file is there. The " +
+                            "cross-repo blueprint check was requested and cannot run — point the " +
+                            "variable at an ft-bifrost-bridge onchain/plutus.json or unset it."
+                      )
+                    )
+            case None =>
+                List(
+                  "../ft-bifrost-bridge/onchain/plutus.json",
+                  "../../ft-bifrost-bridge/onchain/plutus.json",
+                  "../../FluidTokens/ft-bifrost-bridge/onchain/plutus.json"
+                ).map(Paths.get(_)).find(Files.isReadable).toRight(None)
+        }
+
+    private val NoCheckout =
+        "no ft-bifrost-bridge checkout found (set BIFROST_PLUTUS_JSON to enable this check)"
+
+    /** The one cross-repo guard that needs no ft checkout.
+      *
+      * It cannot see ft moving ahead of us — only a re-vendor that forgot the record. That is worth
+      * having anyway: re-vendoring is exactly when the pins in `BifrostContractsTest` must move
+      * too, and this test refuses to let the resource change quietly.
+      */
+    test("the vendored blueprint matches the digests recorded in ft-blueprint-pin.conf") {
+        val packaged = BifrostBlueprint.packaged
+        val drifted =
+            titles.filter(t => sha256(packaged.compiledCode(t)) != recordedCompiledCodeSha(t))
+        assert(
+          drifted.isEmpty,
+          s"the vendored blueprint changed without updating $PinFile — re-vendor from ft and " +
+              s"refresh the record in the same commit. Drifted: ${drifted.mkString(", ")}"
+        )
+    }
 
     /** The freshness guard the policy-id pins are NOT.
       *
@@ -71,17 +148,12 @@ class BifrostBlueprintSourceTest extends AnyFunSuite {
       * copy that has fallen behind ft keeps them green while every transaction built against it is
       * rejected on-chain. That is not hypothetical — it is how a stale `peg_out` survived the
       * rev-5.1 validator rewrite.
-      *
-      * Skipped (not failed) when no ft checkout is present: CI and release builds have none, and
-      * the vendored resource exists precisely so they do not need one.
       */
     test("the vendored blueprint matches a sibling ft checkout, when one is present") {
         ftBlueprint match {
-            case None =>
-                cancel(
-                  "no ft-bifrost-bridge checkout found (set BIFROST_PLUTUS_JSON to enable this check)"
-                )
-            case Some(path) =>
+            case Left(Some(msg)) => fail(msg)
+            case Left(None)      => cancel(NoCheckout)
+            case Right(path) =>
                 val ft = BifrostBlueprint.fromFile(path.toString)
                 val packaged = BifrostBlueprint.packaged
                 val stale = titles.filter(t => ft.compiledCode(t) != packaged.compiledCode(t))
@@ -91,6 +163,40 @@ class BifrostBlueprintSourceTest extends AnyFunSuite {
                       s"${stale.mkString(", ")}. Copy the compiledCode across and move the " +
                       "affected pins in BifrostContractsTest in the same commit."
                 )
+        }
+    }
+
+    /** Whole-file identity, not just the six tracked validators.
+      *
+      * The test above only compares `compiledCode`, so an ft rebuild that changes a schema, a
+      * title, or a validator binocular does not use slips past it. Pinning the file digest makes
+      * every ft regeneration a visible, deliberate refresh of the record.
+      */
+    test("ft's plutus.json is the exact file the vendored blueprint was cut from") {
+        ftBlueprint match {
+            case Left(Some(msg)) => fail(msg)
+            case Left(None)      => cancel(NoCheckout)
+            case Right(path) =>
+                val actual = sha256(Files.readAllBytes(path))
+                if actual != recordedPlutusJsonSha then {
+                    val ft = BifrostBlueprint.fromFile(path.toString)
+                    val packaged = BifrostBlueprint.packaged
+                    val drifted = titles.filter(t => ft.compiledCode(t) != packaged.compiledCode(t))
+                    if drifted.isEmpty then
+                        fail(
+                          s"ft's plutus.json was regenerated but no tracked validator changed — " +
+                              s"refresh plutus-json-sha256 in $PinFile (recorded " +
+                              s"$recordedPlutusJsonSha, $path is now $actual)"
+                        )
+                    else
+                        fail(
+                          s"ft's plutus.json changed and these tracked validators drifted: " +
+                              s"${drifted.mkString(", ")}. Re-vendor " +
+                              s"src/main/resources/bifrost-plutus-min.json from $path, refresh " +
+                              s"$PinFile, and move the pins in BifrostContractsTest in the same " +
+                              "commit."
+                        )
+                }
         }
     }
 }

@@ -12,19 +12,32 @@ import scalus.uplc.PlutusV3
 import scalus.uplc.builtin.*
 import scalus.uplc.builtin.Builtins.*
 
-/** The `legit_treasury_movement_and_peg_out_produced_verifier` – config[7].
+/** The `legit_treasury_movement_and_peg_out_produced_verifier` – config[7]. **RETIRED under spec
+  * rev 5.1. Nothing on-chain invokes it.**
   *
-  * `peg_out.ak::CompletePegOut` mandatorily delegates to this script via
-  * `stake_validator.validate_withdraw`: it finds the withdrawal whose credential is this script's
-  * hash, runs this validator, and reads the withdrawal's redeemer. `peg_out.ak` then cross-checks
+  * The rewritten `peg_out.ak` proves a peg-out was paid by a membership proof against the
+  * quorum-attested completed-peg-outs trie root – the root the FROST quorum committed inside the TM
+  * bytes and that `TreasuryMovementValidator`'s Confirm branch copies into the CPO singleton. It
+  * delegates to no verifier, so this script is never withdrawn from, has no reward account
+  * (`register-bridge-creds` does not register it), and never runs.
+  *
+  * It survives only because `deploy-bridge` still writes its hash into ConfigDatum field 7: the
+  * datum shape kept the slot, and a slot must hold a real, distinct script hash. Deleting the file
+  * would change what that field contains. Its blueprint is pinned and its hash is stable across
+  * deploys; that is the whole of its remaining job.
+  *
+  * ==Pre-rev-5.1 scheme (historical)==
+  * `peg_out.ak::CompletePegOut` used to delegate to this script via
+  * `stake_validator.validate_withdraw`: it found the withdrawal whose credential is this script's
+  * hash, ran this validator, and read the withdrawal's redeemer. `peg_out.ak` then cross-checked
   * those redeemer fields equal the PegOutDatum (treasury utxo id, destination address), the
-  * `peg_out_utxo_id`, the locked-fBTC quantity, and the raw TM tx. So the redeemer is the trust
-  * anchor – THIS validator must independently prove, from the raw TM bytes, that the TM both
+  * `peg_out_utxo_id`, the locked-fBTC quantity, and the raw TM tx. So the redeemer was the trust
+  * anchor – THIS validator had to independently prove, from the raw TM bytes, that the TM both
   *   1. **spends** the treasury outpoint named in the redeemer, and
   *   2. **produces** an output paying the peg-out destination scriptPubKey the peg-out amount.
   *
-  * The redeemer is a bare Plutus `List<Data>` (built by us in the peg-out-complete tx and read by
-  * both `peg_out.ak` via `un_list_data` and here):
+  * The redeemer was a bare Plutus `List<Data>` (built in the peg-out-complete tx and read by both
+  * `peg_out.ak` via `un_list_data` and here):
   * {{{
   *   [ source_chain_treasury_utxo_id : B
   *   , source_chain_destination_address : B   // raw Bitcoin scriptPubKey
@@ -34,10 +47,10 @@ import scalus.uplc.builtin.Builtins.*
   *   , .. ]
   * }}}
   *
-  * Note (demo, [[per_pegout_fee]] = 0): the on-chain check is the clean equality
-  * `btc_output_value == peg_out_amount`. heimdall must build the TM with `per_pegout_fee = 0` so
+  * Note (demo, [[per_pegout_fee]] = 0): the on-chain check was the clean equality
+  * `btc_output_value == peg_out_amount`. heimdall had to build the TM with `per_pegout_fee = 0` so
   * the paid satoshis equal the fBTC quantity exactly; a non-zero fee would require this verifier to
-  * subtract a fee it cannot trust. The TM's *Bitcoin confirmation* is proven by `peg_out.ak`
+  * subtract a fee it cannot trust. The TM's *Bitcoin confirmation* was proven by `peg_out.ak`
   * against the Binocular oracle – not re-checked here.
   *
   * The raw TM tx is walked exactly ONCE (inputs then outputs, in a single forward pass) rather than
@@ -148,11 +161,15 @@ object PegOutProducedVerifierContract extends Contract {
         )
 }
 
-/** The `legit_treasury_movement_and_peg_out_not_produced_verifier` – config[8]. Only invoked by the
-  * `peg_out.ak::Cancel` (refund) branch, which is out of scope this iteration. It needs a valid,
-  * distinct script hash in the config datum but is never withdrawn from on the happy path, so it
-  * has no reward account and is intentionally unsatisfiable until the refund path is built.
-  * `fail`ing is safe: it cleanly disables `Cancel`.
+/** The `legit_treasury_movement_and_peg_out_not_produced_verifier` – config[8]. **RETIRED under
+  * spec rev 5.1, like its produced counterpart above. Nothing on-chain invokes it.**
+  *
+  * The rewritten `peg_out.ak` delegates to no verifier on any branch, so this script is never
+  * withdrawn from and has no reward account. It exists so `deploy-bridge` can put a valid, distinct
+  * script hash in ConfigDatum field 8, a slot the datum shape kept.
+  *
+  * Historically it was the `peg_out.ak::Cancel` (refund) delegate, left `fail`ing because the
+  * refund path was out of scope; that cleanly disabled `Cancel`.
   */
 @Compile
 object PegOutNotProducedVerifier {
