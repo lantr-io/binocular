@@ -68,3 +68,14 @@ polling heartbeat only when it changes. `-o cat` strips journald's own metadata 
 - **No wallet coordination.** The three loops run independently and share the sponsor wallet; if the
   oracle-update and confirm loops briefly pick the same UTxO, the losing tx fails and is retried by
   that loop. This is expected and self-healing.
+- **The POR sweeper spends, and earns.** After each TM Confirm the confirm loop completes every PAID
+  PegOutRequest: it burns the locked fBTC against a membership proof and keeps the request's
+  MIN_ADA. That is the protocol's cleanup incentive, and it is on by default
+  (`bridge.por-sweeper = false` turns it off). Each completion is a separate transaction, submitted
+  one at a time so they do not race each other for wallet UTxOs.
+- **The sweeper keeps state.** `bridge.state-dir` (default `.binocular`, relative to the service's
+  working directory) holds `cpo-trie.json`, the local mirror of the completed-peg-outs trie. Losing
+  it is recoverable — the sweeper rebuilds it from chain history — but reconstruction reads the full
+  transaction history of two addresses, so put it on durable storage. Grep the log for
+  `sweeper: HALTING` : that means the mirror could not be reconciled with the on-chain root and no
+  completion will be submitted until an operator looks. Confirming is unaffected.
