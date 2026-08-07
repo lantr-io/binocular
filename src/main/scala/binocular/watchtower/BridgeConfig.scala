@@ -35,9 +35,16 @@ case class BridgeConfig(
     // byte order internally). The FIRST Treasury Movement must spend this outpoint; every
     // subsequent TM chains from the previous Confirmed TM record.
     initialBtcTreasuryUtxo: String = "",
+    // The DKG candidate-set stake threshold written into config field 9 at deploy (lovelace): a
+    // pool's epoch-snapshot active_stake must reach it to register / enter the candidate set.
+    // Read off-chain only (heimdall's register_spo R2 gate). 0 = no threshold, which is what every
+    // bridge deployed before this key existed carries — raise it with `update-config --min-stake`
+    // rather than by editing each SPO's own config, or the operators disagree about who is eligible.
+    minStakeLovelace: Long = 0L,
     // Operational-parameter tunables written into config fields 12–15 at deploy (off-chain
     // consensus anchors; the schedule #16 uses spec devnet defaults, replaced wholesale by a
-    // governance Update). See ConfigDatum #12–16.
+    // governance Update). All five are governance-updatable in place — `update-config --fee-rate`
+    // et al — which is how the bridge tracks the Bitcoin fee market. See ConfigDatum #12–16.
     feeRateSatPerVb: Long = 1L,
     perPegoutFeeSat: Long = 1000L,
     minPegOutSat: Long = 10000L,

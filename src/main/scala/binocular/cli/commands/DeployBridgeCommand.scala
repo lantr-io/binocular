@@ -232,7 +232,7 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
           pegInCloseVerifierScriptHash = Dummy28,
           legitTmAndPegOutProducedVerifierScriptHash = pegOutProducedVerifierHash,
           legitTmAndPegOutNotProducedVerifierScriptHash = pegOutNotProducedVerifierHash,
-          minStake = BigInt(0),
+          minStake = BigInt(config.bridge.minStakeLovelace),
           // Governance: the binocular owner key (oracle.owner-pkh) may Update/Retire
           // the config (progressive decentralization rotates this via a later update).
           updateAuth = POption.Some(
