@@ -45,6 +45,7 @@ object CliApp {
             pegInWithdrawHash: Option[String],
             completedPegOutsPolicy: Option[String],
             pegOutWithdrawHash: Option[String],
+            params: binocular.cli.commands.UpdateConfigCommand.ParamEdits,
             dryRun: Boolean
         )
         case DeployScriptRefs(dryRun: Boolean)
@@ -310,7 +311,9 @@ object CliApp {
         val updateConfigCommand =
             Opts.subcommand(
               "update-config",
-              "Update the deployed Config UTxO in place: set the initial-treasury anchor (field 11) and optionally swap the script hashes in fields 3, 4 and 5"
+              "Update the deployed Config UTxO in place (governance): the operational parameters " +
+                  "(min-stake #9, fee-rate/fees/schedule #12-16), the initial-treasury anchor " +
+                  "(#11), the script hashes in fields 3, 4 and 5. Only what you name changes"
             ) {
                 val anchorOpt = Opts
                     .option[String](
@@ -337,9 +340,72 @@ object CliApp {
                       help = "New peg_out withdraw script hash (56 hex) for config field 5"
                     )
                     .orNone
-                // All four options are applied in ONE Update tx — the trie v2 migration requires
-                // fields 3, 4 and 5 to flip together.
-                (anchorOpt, pegInHashOpt, cpoPolicyOpt, pegOutHashOpt, dryRunFlag)
+                // The operational parameters. Every SPO's TM builder reads #12-#14 at its batch
+                // snapshot slot, so these edits change the bytes every heimdall builds.
+                val minStakeOpt = Opts
+                    .option[Long](
+                      "min-stake",
+                      help = "config #9: DKG candidate-set stake threshold (lovelace)"
+                    )
+                    .orNone
+                val feeRateOpt = Opts
+                    .option[Long](
+                      "fee-rate",
+                      help = "config #12: exact Bitcoin miner fee rate for TM construction (sat/vB)"
+                    )
+                    .orNone
+                val perPegoutFeeOpt = Opts
+                    .option[Long](
+                      "per-pegout-fee",
+                      help = "config #13: floor for a peg-out's datum-pinned fee (satoshi)"
+                    )
+                    .orNone
+                val minPegOutOpt = Opts
+                    .option[Long](
+                      "min-peg-out",
+                      help = "config #14: minimum fBTC a peg-out may lock (satoshi)"
+                    )
+                    .orNone
+                val leaderRewardOpt = Opts
+                    .option[Long](
+                      "leader-reward",
+                      help = "config #15: TM poster's reward (lovelace)"
+                    )
+                    .orNone
+                val scheduleOpt: Opts[Map[String, BigInt]] = Opts
+                    .options[String](
+                      "schedule",
+                      help = "config #16: patch one schedule slot, NAME=VALUE (repeatable). " +
+                          UpdateConfigCommand.ScheduleFields.mkString(", ")
+                    )
+                    .orEmpty
+                    // A misspelled slot name is a usage error, not a crash: decline reports it
+                    // alongside the rest of the help.
+                    .mapValidated(args =>
+                        UpdateConfigCommand.ParamEdits
+                            .parseSchedule(args)
+                            .fold(cats.data.Validated.invalidNel, cats.data.Validated.validNel)
+                    )
+                val paramsOpt: Opts[UpdateConfigCommand.ParamEdits] = (
+                  minStakeOpt,
+                  feeRateOpt,
+                  perPegoutFeeOpt,
+                  minPegOutOpt,
+                  leaderRewardOpt,
+                  scheduleOpt
+                ).mapN { (minStake, feeRate, perPegoutFee, minPegOut, leaderReward, schedule) =>
+                    UpdateConfigCommand.ParamEdits(
+                      minStake = minStake.map(BigInt.apply),
+                      feeRateSatPerVb = feeRate.map(BigInt.apply),
+                      perPegoutFee = perPegoutFee.map(BigInt.apply),
+                      minPegOutFbtc = minPegOut.map(BigInt.apply),
+                      leaderReward = leaderReward.map(BigInt.apply),
+                      schedule = schedule
+                    )
+                }
+                // Every option is applied in ONE Update tx — the trie v2 migration requires
+                // fields 3, 4 and 5 to flip together, and a params update is one signed act.
+                (anchorOpt, pegInHashOpt, cpoPolicyOpt, pegOutHashOpt, paramsOpt, dryRunFlag)
                     .mapN(Cmd.UpdateConfig.apply)
             }
 
@@ -545,8 +611,22 @@ object CliApp {
                             DeployBridgeCommand(dryRun)
                         case Cmd.BootstrapCompletedPegOuts(oneShotRef, dryRun) =>
                             BootstrapCompletedPegOutsCommand(oneShotRef, dryRun)
-                        case Cmd.UpdateConfig(anchor, pegInHash, cpoPolicy, pegOutHash, dryRun) =>
-                            UpdateConfigCommand(anchor, pegInHash, cpoPolicy, pegOutHash, dryRun)
+                        case Cmd.UpdateConfig(
+                              anchor,
+                              pegInHash,
+                              cpoPolicy,
+                              pegOutHash,
+                              params,
+                              dryRun
+                            ) =>
+                            UpdateConfigCommand(
+                              anchor,
+                              pegInHash,
+                              cpoPolicy,
+                              pegOutHash,
+                              params,
+                              dryRun
+                            )
                         case Cmd.DeployScriptRefs(dryRun) =>
                             DeployScriptRefsCommand(dryRun)
                         case Cmd.RegisterBridgeCreds(dryRun) =>

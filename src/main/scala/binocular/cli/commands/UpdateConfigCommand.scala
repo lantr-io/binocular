@@ -30,7 +30,16 @@ import cats.syntax.either.*
   *   - optionally swaps field 4 (`peg_in_withdraw_script_hash`) to a new peg-in hash (needed when
   *     the TM validator changes, since peg_in.ak is parameterized by the TM NFT policy);
   *   - optionally swaps field 5 (`peg_out_withdraw_script_hash`) to the rewritten peg-out
-  *     validator's hash.
+  *     validator's hash;
+  *   - optionally sets the **operational parameters** — `--min-stake` (field 9) and `--fee-rate` /
+  *     `--per-pegout-fee` / `--min-peg-out` / `--leader-reward` / `--schedule` (fields 12–16, spec
+  *     §Operational parameters). No on-chain validator reads a current value; they are off-chain
+  *     consensus anchors, so this command IS the governance mechanism for them. In particular the
+  *     fee rate is how the bridge tracks the Bitcoin fee market (spec §Stuck-TM recovery: a
+  *     fee-update Config Update, then rebuild the same frozen batch at the new rate). Every SPO's
+  *     TM builder reads them at its batch snapshot slot, so an update here changes the bytes every
+  *     heimdall builds — deliberately, and for all of them at once. It takes effect from the next
+  *     batch, never retroactively; the schedule (#16) from the next epoch boundary.
   *
   * ALL of the above happen in ONE transaction. That is load-bearing for the peg-out trie v2
   * migration: fields 3, 4 and 5 must flip together, in the same Update that precedes the first use
@@ -55,6 +64,7 @@ case class UpdateConfigCommand(
     pegInWithdrawHash: Option[String],
     completedPegOutsPolicy: Option[String] = None,
     pegOutWithdrawHash: Option[String] = None,
+    params: UpdateConfigCommand.ParamEdits = UpdateConfigCommand.ParamEdits.none,
     dryRun: Boolean = false
 ) extends Command {
 
@@ -102,10 +112,13 @@ case class UpdateConfigCommand(
         // With every option now optional, a bare `update-config` would spend and recreate the config
         // UTxO with an identical datum — a fee for nothing, and a needless spend of the config NFT.
         if anchor.isEmpty && newPegInHash.isEmpty && newCpoPolicy.isEmpty && newPegOutHash.isEmpty
+            && params.isEmpty
         then {
             Console.error(
               "Nothing to update. Pass at least one of --initial-btc-treasury-utxo, " +
-                  "--completed-peg-outs-policy, --peg-in-withdraw-hash, --peg-out-withdraw-hash."
+                  "--completed-peg-outs-policy, --peg-in-withdraw-hash, --peg-out-withdraw-hash, " +
+                  "--min-stake, --fee-rate, --per-pegout-fee, --min-peg-out, --leader-reward, " +
+                  "--schedule."
             )
             break(1)
         }
@@ -177,7 +190,8 @@ case class UpdateConfigCommand(
                   newCpoPolicy,
                   newPegInHash,
                   newPegOutHash,
-                  anchor
+                  anchor,
+                  params
                 )
             catch {
                 case e: IllegalArgumentException =>
@@ -217,6 +231,11 @@ case class UpdateConfigCommand(
         newPegInHash.foreach(h => Console.info("new peg-in hash (field 4)", h.toHex))
         newPegOutHash.foreach(h => Console.info("new peg-out hash (field 5)", h.toHex))
         Console.info("update_auth pkh", updateAuthPkh.toHex)
+        // Every changed field, old -> new. The operational parameters are consensus inputs for
+        // every SPO's TM builder, so an accidental edit is worth seeing before it is signed.
+        UpdateConfigCommand.diff(oldFields, newFields).foreach { case (idx, name, before, after) =>
+            Console.info(s"field $idx ($name)", s"$before -> $after")
+        }
         println()
 
         if dryRun then {
@@ -285,21 +304,164 @@ object UpdateConfigCommand {
       *   field 4, `peg_in_withdraw_script_hash`.
       * @param newPegOutHash
       *   field 5, `peg_out_withdraw_script_hash`.
+      * @param params
+      *   the governed operational parameters: field 9 and fields 12-16. Each is optional and
+      *   overwrites only the field it names. Editing 12-16 requires a datum that already carries
+      *   them (17 fields): `config.config`'s genesis path full-casts the datum, so a partial append
+      *   is a datum no reader accepts, and inventing values for the fields the operator did not
+      *   name is not governance. Redeploy (deploy-bridge writes all 17) instead.
       */
     def rewriteFields(
         fields: List[Data],
         newCpoPolicy: Option[ByteString],
         newPegInHash: Option[ByteString],
         newPegOutHash: Option[ByteString],
-        anchor: Option[ByteString]
+        anchor: Option[ByteString],
+        params: ParamEdits = ParamEdits.none
     ): List[Data] = {
         require(fields.size >= 11, s"config datum has ${fields.size} fields, expected >= 11")
+        require(
+          !params.touchesTunables || fields.size >= FieldsWithTunables,
+          s"config datum has ${fields.size} fields — the operational parameters are #12-#16, " +
+              s"which only exist on a $FieldsWithTunables-field datum. Redeploy the bridge " +
+              "(deploy-bridge writes all of them) rather than appending half a record here"
+        )
         val swaps = List(3 -> newCpoPolicy, 4 -> newPegInHash, 5 -> newPegOutHash)
         val swapped = swaps.foldLeft(fields) { case (fs, (idx, v)) =>
             v.fold(fs)(h => fs.updated(idx, Data.B(h)))
         }
-        anchor.fold(swapped)(a =>
+        val anchored = anchor.fold(swapped)(a =>
             if swapped.size == 11 then swapped :+ Data.B(a) else swapped.updated(11, Data.B(a))
         )
+        val withScalars = List(
+          9 -> params.minStake,
+          12 -> params.feeRateSatPerVb,
+          13 -> params.perPegoutFee,
+          14 -> params.minPegOutFbtc,
+          15 -> params.leaderReward
+        ).foldLeft(anchored) { case (fs, (idx, v)) => v.fold(fs)(x => fs.updated(idx, Data.I(x))) }
+        if params.schedule.isEmpty then withScalars
+        else withScalars.updated(16, patchSchedule(withScalars(16), params.schedule))
+    }
+
+    /** Field count of a Config datum carrying the operational-parameter append (#12-#16). */
+    val FieldsWithTunables = 17
+
+    /** `ScheduleParams` field names, in record order — the `--schedule name=value` keys and the
+      * positions inside the nested Constr at config #16.
+      */
+    val ScheduleFields: List[String] = List(
+      "dkg_r1_deadline",
+      "dkg_r2_deadline",
+      "update_y_deadline",
+      "tm_batch_interval",
+      "sign_r1_window",
+      "sign_r2_window",
+      "leader_slot_t",
+      "tm_recovery_window",
+      "final_tm_cutoff",
+      "stability_window"
+    )
+
+    /** Config datum field names, for the change report. */
+    private val FieldNames: Vector[String] = Vector(
+      "bridged_token_policy_id",
+      "bridged_token_asset_name",
+      "completed_peg_ins_policy_id",
+      "completed_peg_outs_policy_id",
+      "peg_in_withdraw_script_hash",
+      "peg_out_withdraw_script_hash",
+      "peg_in_close_verifier_script_hash",
+      "tm_and_peg_out_produced_verifier_hash",
+      "tm_and_peg_out_not_produced_verifier_hash",
+      "min_stake",
+      "update_auth",
+      "initial_btc_treasury_utxo",
+      "fee_rate_sat_per_vb",
+      "per_pegout_fee",
+      "min_peg_out_fbtc",
+      "leader_reward",
+      "schedule"
+    )
+
+    /** The governed parameter edits (config #9 and #12-#16). All optional: `None` means "carry the
+      * deployed value over". `schedule` patches individual `ScheduleParams` fields by name, leaving
+      * the rest of the nested record untouched.
+      */
+    case class ParamEdits(
+        minStake: Option[BigInt] = None,
+        feeRateSatPerVb: Option[BigInt] = None,
+        perPegoutFee: Option[BigInt] = None,
+        minPegOutFbtc: Option[BigInt] = None,
+        leaderReward: Option[BigInt] = None,
+        schedule: Map[String, BigInt] = Map.empty
+    ) {
+        def isEmpty: Boolean = minStake.isEmpty && !touchesTunables
+
+        /** Whether any of #12-#16 is edited — the fields that only exist post-append. */
+        def touchesTunables: Boolean =
+            feeRateSatPerVb.nonEmpty || perPegoutFee.nonEmpty || minPegOutFbtc.nonEmpty ||
+                leaderReward.nonEmpty || schedule.nonEmpty
+    }
+
+    object ParamEdits {
+        val none: ParamEdits = ParamEdits()
+
+        /** Parse repeated `--schedule name=value` arguments against [[ScheduleFields]]. */
+        def parseSchedule(args: List[String]): Either[String, Map[String, BigInt]] =
+            args.foldLeft[Either[String, Map[String, BigInt]]](Right(Map.empty)) { (acc, arg) =>
+                acc.flatMap { m =>
+                    arg.split('=') match {
+                        case Array(name, value) if ScheduleFields.contains(name.trim) =>
+                            value.trim.toLongOption match {
+                                case Some(v) if v >= 0 => Right(m + (name.trim -> BigInt(v)))
+                                case _ => Left(s"--schedule $arg: value must be a non-negative Int")
+                            }
+                        case Array(name, _) =>
+                            Left(
+                              s"--schedule $arg: unknown field '${name.trim}'. Known: " +
+                                  ScheduleFields.mkString(", ")
+                            )
+                        case _ => Left(s"--schedule $arg: expected name=value")
+                    }
+                }
+            }
+    }
+
+    /** Overwrite the named fields of a `ScheduleParams` Constr, keeping the other nine. */
+    private def patchSchedule(current: Data, edits: Map[String, BigInt]): Data = current match {
+        case Data.Constr(0, args) =>
+            val slots = args.asScala.toList
+            require(
+              slots.size == ScheduleFields.size,
+              s"config #16 (schedule) has ${slots.size} fields, expected ${ScheduleFields.size}"
+            )
+            val patched = ScheduleFields.zip(slots).map { case (name, old) =>
+                edits.get(name).fold(old)(v => Data.I(v))
+            }
+            Data.Constr(0, PList.from(patched))
+        case other =>
+            throw new IllegalArgumentException(
+              s"config #16 (schedule) is not a Constr 0 record: $other"
+            )
+    }
+
+    /** `(index, field name, old, new)` for every field the rewrite changed. */
+    def diff(oldFields: List[Data], newFields: List[Data]): List[(Int, String, String, String)] = {
+        val name = (i: Int) => FieldNames.lift(i).getOrElse(s"#$i")
+        newFields.zipWithIndex.flatMap { case (after, i) =>
+            oldFields.lift(i) match {
+                case Some(before) if before == after => None
+                case Some(before) => Some((i, name(i), render(before), render(after)))
+                case None         => Some((i, name(i), "(absent)", render(after)))
+            }
+        }
+    }
+
+    private def render(d: Data): String = d match {
+        case Data.I(v)          => v.toString
+        case Data.B(b)          => b.toHex
+        case Data.Constr(0, xs) => xs.asScala.toList.map(render).mkString("[", ", ", "]")
+        case other              => other.toString
     }
 }
