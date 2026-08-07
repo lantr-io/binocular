@@ -8,7 +8,7 @@ import java.net.http.HttpRequest.BodyPublishers
 import java.net.http.HttpResponse.BodyHandlers
 import java.time.Duration
 import java.util.concurrent.*
-import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
 
 /** Posts notifications to a Discord channel via an incoming webhook.
   *
@@ -43,6 +43,18 @@ class DiscordNotifier(
         HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build()
 
     private val dropped = new AtomicLong(0)
+
+    /** Posts accepted but not yet delivered — queued OR running.
+      *
+      * `flush` cannot ask the executor this. A task handed to a freshly created worker is in
+      * NEITHER `getQueue` (below core size `execute` hands off directly, so it never enters the
+      * queue) nor `getActiveCount` (a worker still starting up has not locked in on its task yet),
+      * so both counters can read zero while a post is in flight. `flush` would then return and its
+      * caller — `System.exit` after an unrecoverable deep reorg — would kill the very alert the
+      * flush existed to deliver. Incremented before the task is submitted and decremented after
+      * delivery returns, this counter has no such gap.
+      */
+    private val inFlight = new AtomicInteger(0)
 
     private val executor: ThreadPoolExecutor = {
         val threadFactory: ThreadFactory = (r: Runnable) => {
@@ -202,16 +214,20 @@ class DiscordNotifier(
         posts.foreach(enqueue)
     }
 
-    /** Block until the post queue drains (no queued and no in-flight post) or `timeoutMs` elapses.
+    /** Block until every accepted post has been delivered, or `timeoutMs` elapses.
+      *
       * Called before the process exits on an unrecoverable deep reorg so the enqueued alert is
-      * actually delivered rather than killed mid-flight by `System.exit`.
+      * actually delivered rather than killed mid-flight by `System.exit` — so "outstanding" must
+      * mean "not yet delivered", not "visible to the executor's counters". See [[inFlight]] for the
+      * window those counters cannot express.
       */
     override def flush(timeoutMs: Long): Unit = {
         val deadline = System.currentTimeMillis() + math.max(0L, timeoutMs)
-        while (executor.getQueue.size() > 0 || executor.getActiveCount > 0) &&
-            System.currentTimeMillis() < deadline
-        do Thread.sleep(25)
+        while inFlight.get() > 0 && System.currentTimeMillis() < deadline do Thread.sleep(25)
     }
+
+    /** Posts accepted but not yet delivered, for diagnostics/tests. */
+    def pendingDeliveries: Int = inFlight.get()
 
     override def close(): Unit = {
         scheduler.shutdownNow()
@@ -222,9 +238,22 @@ class DiscordNotifier(
     /** Dropped-post count (queue overflow), for diagnostics/tests. */
     def droppedCount: Long = dropped.get()
 
-    private def enqueue(payload: String): Unit =
-        try executor.execute(() => deliver(payload))
-        catch { case _: RejectedExecutionException => dropped.incrementAndGet() }
+    private def enqueue(payload: String): Unit = {
+        // Count the post BEFORE handing it over: a task the executor has accepted but not yet
+        // started must already be visible to `flush`. The decrement is in the task's own `finally`,
+        // so a `deliver` override that throws still releases it.
+        inFlight.incrementAndGet()
+        try
+            executor.execute(() =>
+                try deliver(payload)
+                finally inFlight.decrementAndGet()
+            )
+        catch {
+            case _: RejectedExecutionException =>
+                inFlight.decrementAndGet()
+                dropped.incrementAndGet()
+        }
+    }
 
     /** Deliver one payload. Overridable so tests can substitute a synchronous/counting sink for the
       * real HTTP POST without a live webhook.

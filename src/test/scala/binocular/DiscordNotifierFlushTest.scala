@@ -28,6 +28,45 @@ class DiscordNotifierFlushTest extends AnyFunSuite {
         } finally n.close()
     }
 
+    /** The regression test for the race behind the 2026-08-07 CI failure.
+      *
+      * `flush` used to infer "work outstanding" from `ThreadPoolExecutor.getQueue.size` and
+      * `getActiveCount`, and a task can be in NEITHER: below core size `execute` hands it straight
+      * to a newly created worker (never queued), and that worker is not counted active until it has
+      * locked in on the task. `flush` could observe 0/0 and return while the post was in flight —
+      * with `System.exit` next in line, losing exactly the alert it was meant to deliver.
+      *
+      * Asserting on accepted-but-undelivered work makes that window observable without racing: the
+      * post is accounted for the instant `error()` returns, whatever the worker is doing.
+      */
+    test("an accepted post counts as outstanding before its worker starts") {
+        val delivered = new AtomicInteger(0)
+        val n = counting(150, delivered)
+        try {
+            n.error("oracle", "deep reorg — manual re-init required")
+            assert(n.pendingDeliveries == 1, "accepted work must be outstanding immediately")
+            assert(delivered.get() == 0, "…and not yet delivered")
+            n.flush(5000)
+            assert(n.pendingDeliveries == 0, "flush must not return with work outstanding")
+            assert(delivered.get() == 1)
+        } finally n.close()
+    }
+
+    /** A `deliver` that throws must still release its slot, or one failed POST would wedge every
+      * later `flush` for its full timeout.
+      */
+    test("a failed delivery still clears its outstanding slot") {
+        val n = new DiscordNotifier(webhookUrl = "http://unused.invalid") {
+            override protected def deliver(payload: String): Unit =
+                throw new RuntimeException("webhook exploded")
+        }
+        try {
+            n.error("oracle", "boom")
+            n.flush(2000)
+            assert(n.pendingDeliveries == 0, "a throwing deliver must not leak an outstanding post")
+        } finally n.close()
+    }
+
     test("flush returns after the timeout even if delivery is slower") {
         val delivered = new AtomicInteger(0)
         val n = counting(2000, delivered)
