@@ -53,7 +53,6 @@ object CliApp {
         case SignPeginMsg(keyPath: String, message: String)
         case PegInComplete(
             pir: String,
-            tm: String,
             recipient: String,
             signature: Option[String],
             priorPegins: List[String],
@@ -419,8 +418,6 @@ object CliApp {
               "Complete a peg-in: mint fBTC to --recipient and record it in the completed-peg-ins MPF"
             ) {
                 val pirOpt = Opts.option[String]("pir", "PegInRequest UTxO (TX_HASH#INDEX)")
-                val tmOpt =
-                    Opts.option[String]("tm", "Confirmed Treasury Movement BTC txid (64 hex)")
                 val recipientOpt =
                     Opts.option[String]("recipient", "fBTC recipient Cardano address (bech32)")
                 val signatureOpt = Opts
@@ -436,7 +433,7 @@ object CliApp {
                     )
                     .map(_.toList)
                     .withDefault(Nil)
-                (pirOpt, tmOpt, recipientOpt, signatureOpt, priorOpt, dryRunFlag).mapN(
+                (pirOpt, recipientOpt, signatureOpt, priorOpt, dryRunFlag).mapN(
                   Cmd.PegInComplete.apply
                 )
             }
@@ -670,13 +667,12 @@ object CliApp {
                             SignPeginMsgCommand(keyPath, message)
                         case Cmd.PegInComplete(
                               pir,
-                              tm,
                               recipient,
                               signature,
                               priorPegins,
                               dryRun
                             ) =>
-                            PegInCompleteCommand(pir, tm, recipient, signature, priorPegins, dryRun)
+                            PegInCompleteCommand(pir, recipient, signature, priorPegins, dryRun)
                         case Cmd.PegOutRequest(
                               btcAddress,
                               amountSat,

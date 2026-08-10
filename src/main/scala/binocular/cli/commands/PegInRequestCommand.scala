@@ -29,6 +29,12 @@ case class PegInRequestCommand(
     dryRun: Boolean = false
 ) extends Command {
 
+    /** How long the mint transaction stays submittable. It is also the [CLR-7] `created` anchor, so
+      * a longer window only delays the Close grace period's start; one hour keeps the tx usable
+      * across a slow submit without moving `created` far from the real creation time.
+      */
+    private val pegInRequestTtlSeconds: Long = 3600L
+
     override def execute(config: BinocularConfig): Int = boundary {
         Console.header("Binocular Peg-In Request")
         if dryRun then Console.warn("Dry-run mode — will not submit")
@@ -115,22 +121,26 @@ case class PegInRequestCommand(
         val pegInUtxoId =
             ByteString.fromArray(btcTxId.hexToBytes.reverse) ++ ByteString.fromArray(voutLE)
 
-        // owner_auth is now vestigial: completion authorizes the depositor via an embedded BIP340
-        // Schnorr in peg_in.ak (keyed by user_source_chain_pub_key, bound to the deposit at mint),
-        // and the peg-in CLOSE path (Cancel) delegates to the config[6] close verifier – neither
-        // uses owner_auth. The field is kept for datum-shape stability; set to an inert,
-        // never-satisfiable signature credential so it can never be (mis)used as an auth path.
-        // source_chain_treasury_utxo_id is likewise no longer read on-chain (the legit_TM_verifier
-        // was retired); left empty. The `--tm` flag this command used to take was removed when
-        // the field became dead.
+        // owner_auth does not gate completion: peg_in.ak authorizes the depositor with an embedded
+        // BIP-322 signature keyed by user_source_chain_pub_key, bound to the deposit at mint. It
+        // DOES gate the Close path ([CLR-9]), so an inert, never-satisfiable signature credential
+        // means only the completion can ever retire this request.
+        //
+        // [CLR-7]: `created` must equal the mint transaction's validity upper bound, which must be
+        // finite. Derive both from one slot so the datum and the tx cannot disagree: the ledger
+        // turns the slot back into POSIX ms with the same slot config the builder used.
+        val slotConfig = provider.cardanoInfo.slotConfig
+        val validToSlot =
+            slotConfig.instantToSlot(java.time.Instant.now().plusSeconds(pegInRequestTtlSeconds))
+        val created = BigInt(slotConfig.slotToTime(validToSlot))
         val datum = PegInDatum(
           ownerAuth = AuthorizationMethod.CardanoSignature(ByteString.empty),
           sourceChainPegInRawTx = bundle.rawTxHex,
           sourceChainPegInRawTxIndex = BigInt(bundle.txIndex),
           pegInUtxoId = pegInUtxoId,
-          sourceChainTreasuryUtxoId = ByteString.empty,
           pegInAmount = BigInt(bundle.pegInAmountSat),
-          userSourceChainPubKey = bundle.userSourceChainPubKey
+          userSourceChainPubKey = bundle.userSourceChainPubKey,
+          created = created
         )
         val request = PegInRequest(
           expectedDatum = datum,
@@ -166,7 +176,15 @@ case class PegInRequestCommand(
         val tx =
             try
                 PegInRequestTx
-                    .build(provider, setup.hdAccount, pegIn, oracleUtxo, inputRefUtxo, request)
+                    .build(
+                      provider,
+                      setup.hdAccount,
+                      pegIn,
+                      oracleUtxo,
+                      inputRefUtxo,
+                      request,
+                      validToSlot
+                    )
                     .await(timeout)
             catch {
                 case e: Exception =>

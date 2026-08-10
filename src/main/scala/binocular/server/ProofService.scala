@@ -5,7 +5,7 @@ import binocular.bitcoin.SimpleBitcoinRpc
 import binocular.cli.CommandHelpers
 import binocular.oracle.{BitcoinContract, ChainState}
 import binocular.server.ProofApi.ApiError
-import binocular.watchtower.{BridgeState, CpoHistorySource, PegInProofBundle, ProviderChainHistory, SweptPegInsProofService, TreasuryMovementValidator}
+import binocular.watchtower.{BridgeState, ConfigDatum, CpoHistorySource, PegInProofBundle, ProviderChainHistory, SweptPegInsProofService, TreasuryMovementValidator}
 
 import scalus.cardano.address.{Address, Network}
 import scalus.cardano.ledger.{AssetName, Credential, ScriptHash, Utxo}
@@ -117,8 +117,12 @@ final class ProofService(
                       )
                     )
             }
-            bridgeStatePolicy <- bytesField(fields, 3, "bridge_state_policy")
-            tmScriptHash <- bytesField(fields, 4, "tm_script_hash")
+            bridgeStatePolicy <- bytesField(
+              fields,
+              ConfigDatum.BridgeStatePolicyField,
+              "bridge_state_policy"
+            )
+            tmScriptHash <- bytesField(fields, ConfigDatum.TmScriptHashField, "tm_script_hash")
             singletonUtxo <- findByNft(
               ScriptHash.fromHex(bridgeStatePolicy.toHex),
               AssetName(TreasuryMovementValidator.BridgeStateAssetName),
