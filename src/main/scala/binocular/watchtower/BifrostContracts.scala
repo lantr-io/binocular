@@ -54,10 +54,17 @@ object BifrostBlueprint {
       * binocular built would have been rejected on-chain.
       *
       * Two things do guard it, and both must be kept:
-      *   - `BifrostBlueprintSourceTest` diffs this resource against a sibling ft checkout's
-      *     `plutus.json` when one is present, and skips when it is not (CI has no ft checkout).
+      *   - `BifrostContractsTest` compares this resource against a sibling ft checkout's
+      *     `plutus.json` when one is present, and cancels when it is not (CI has no ft checkout).
       *   - The CEK suites (`PegOutCompleteCekTest`) EVALUATE these bytes, so a validator whose
       *     semantics moved fails on behaviour rather than on a hash.
+      *
+      * ==This resource is a SUPERSET of ft's blueprint, on purpose==
+      * ft rev 5.4 deleted `completed-peg-outs-merkle-tree.ak`, but this file still carries that
+      * validator's last published `compiledCode`. Do not "clean it up" while refreshing: several
+      * commands still derive the trie policy from it (see [[CompletedPegOutsContract]]). A refresh
+      * therefore COPIES the titles ft publishes and LEAVES the withdrawn one alone; a title present
+      * here and absent from ft is not by itself evidence of staleness.
       *
       * Refresh with a straight copy of the `compiledCode` fields from ft's `plutus.json`, then move
       * the affected pins in the same commit.
@@ -260,10 +267,14 @@ object PegOutContract {
   * script's address.
   *
   * WITHDRAWN in the ft tree (rev 5.4): `completed-peg-outs-merkle-tree.ak` is replaced by
-  * `bridge-state.ak` (the singleton carries `cpo_root`). The packaged min-json keeps the LAST
-  * published compiledCode of this validator so the interim TM Confirm flow (which still spends the
-  * trie through Config field 3) stays self-consistent. TODO(bridge-state migration): delete this
-  * wrapper with the trie flow.
+  * `bridge-state.ak` (the singleton carries `cpo_root`, see [[BridgeStateContract]]). The packaged
+  * min-json keeps the LAST published compiledCode of this validator so the interim TM Confirm flow
+  * (which still spends the trie through Config field 3) stays self-consistent.
+  *
+  * It cannot be deleted yet because `BootstrapCompletedPegOutsCommand`, `BridgeSweepSetup`,
+  * `ConfirmTmtxCommand` and `PorSweeper` still resolve this policy. Deleting the vendored code
+  * before they move would not fail a hash pin — it would fail at runtime, on the startup path of a
+  * deployed confirm worker. Removed together with those call sites in task `bss-bootstrap-cleanup`.
   *
   * Trie v2 (2026-07): the first parameter is the TM NFT policy (= the [[TreasuryMovementValidator]]
   * script hash), NOT the config NFT pair. The trie is now written at TM **Confirm**, keyed by POR
@@ -299,4 +310,52 @@ object CompletedPegOutsContract {
 
     /** Constant per completed-peg-outs-merkle-tree.ak. */
     val assetName: ByteString = ByteString.fromString("CPO")
+}
+
+/** The `bridge_state` one-shot NFT policy + singleton validator: params `(tm_nft_policy_id,
+  * one_shot_input_ref)` per spec [BSS-4]. policyId = the bridge-state policy the ConfigDatum names;
+  * asset name = the constant `"BSS"`. The singleton UTxO carries that NFT and the `BridgeState`
+  * datum (both roots), and lives at this script's address.
+  *
+  * Rev 5.4 replaces `completed-peg-outs-merkle-tree.ak` with this validator: one UTxO now holds the
+  * completed-peg-outs root and the swept-peg-ins root together, so a TM Confirm updates both in a
+  * single spend.
+  *
+  * The first parameter is the TM NFT policy = the [[TreasuryMovementValidator]] script hash,
+  * because the spend handler gates on a TM Confirm spend in the same transaction. There is no
+  * parameterization cycle: the TM script hash is computable first (oracle hash + config NFT pair),
+  * and the TM validator finds THIS policy at runtime through the ConfigDatum.
+  *
+  * Consequence for deploy ordering: derive the TM script hash BEFORE this contract, and put the
+  * policy this constructor yields into the genesis ConfigDatum.
+  *
+  * Additive for now: no command derives this policy yet, so bootstrap and TM Confirm still run on
+  * [[CompletedPegOutsContract]]. The wrapper lands first because the commands that will use it are
+  * split across later tasks, and each of them needs a policy id that is already pinned.
+  */
+final case class BridgeStateContract(script: Script.PlutusV3) {
+    def policyId: ScriptHash = script.scriptHash
+    def address(network: Network): Address =
+        Address(network, Credential.ScriptHash(script.scriptHash))
+}
+
+object BridgeStateContract {
+
+    // All handlers share one compiledCode; any title for the validator works.
+    val ValidatorTitle = "bitcoin/bridge_state.bridge_state.mint"
+
+    def apply(
+        blueprint: BifrostBlueprint,
+        tmNftPolicyId: ByteString,
+        oneShotInputRef: TxOutRef
+    ): BridgeStateContract = {
+        val applied = Program
+            .fromCborHex(blueprint.compiledCode(ValidatorTitle))
+            .$(Data.B(tmNftPolicyId))
+            .$(oneShotInputRef.toData)
+        BridgeStateContract(Script.PlutusV3(applied.cborByteString))
+    }
+
+    /** Constant per `bridge-state.ak`, mirrored by the TM validator's own copy. */
+    val assetName: ByteString = TreasuryMovementValidator.BridgeStateAssetName
 }

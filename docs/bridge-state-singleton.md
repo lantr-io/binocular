@@ -2,7 +2,7 @@
 
 Implements the core types of `ft-bifrost-bridge/docs/superpowers/specs/2026-08-06-bridge-state-singleton-design.md`,
 rev 5.4: sections **§BridgeState, the singleton datum**, **§The two deposit tries**,
-**§Root commitment output**, and the `[SPI-*]` checks.
+**§Root commitment output**, the `[SPI-*]` checks, and the `[BSS-4]`/`[BSS-5]` parameterization.
 
 This file records the decisions that the code cannot state by itself, and the alternative each one
 rejected. It is not a description of the code. Read the doc comments for that.
@@ -85,6 +85,55 @@ Rejected: also exposing a non-membership proof. Absence from the SPI trie proves
 only grows, and a deposit missing from it may simply not be swept yet. `mpf.miss` on this trie must
 never become the basis of an on-chain decision. (The CPI trie is different: there, absence is the
 replay check, and it is the completion itself that records presence.)
+
+## Vendoring the rev-5.4 blueprint (`[BSS-4]`, `[BSS-5]`)
+
+Code: `src/main/scala/binocular/watchtower/BifrostContracts.scala` (`BridgeStateContract`,
+`BifrostBlueprint.packaged`), `src/main/resources/bifrost-plutus-min.json`.
+
+### The min-json keeps a validator ft deleted
+
+ft rev 5.4 removed `completed-peg-outs-merkle-tree.ak`. The vendored min-json still carries its last
+published `compiledCode`, so the resource is deliberately a superset of ft's blueprint.
+
+Rejected: dropping it in this change, to make the vendored copy a literal subset of ft's. Four call
+sites still resolve that policy (`BootstrapCompletedPegOutsCommand`, `BridgeSweepSetup`,
+`ConfirmTmtxCommand`, `PorSweeper`). None of them is covered by a hash pin, so the failure would not
+be a red test — it would be a `validator not found in blueprint` thrown on the startup path of a
+deployed confirm worker, which has no ft checkout to fall back to. The entry is removed together
+with those call sites in `bss-bootstrap-cleanup`.
+
+The cost of keeping it is that "extra title" no longer signals staleness during a refresh, so the
+refresh rule is written out in the `packaged` doc comment instead of being inferable from a diff.
+
+### `BridgeStateContract` lands before any caller
+
+The wrapper derives a policy that nothing in the command layer uses yet.
+
+Rejected: landing it with its first caller. The callers are split across later tasks and each needs
+a policy id that is already fixed. Adding the wrapper alone lets its regression pin be established
+once, so a later task that changes a derived policy fails here rather than inside a bootstrap flow.
+
+### Two freshness checks, not one
+
+`BifrostContractsTest` asserts a hard-coded `bridge_state` policy id **and** compares the vendored
+`compiledCode` against a sibling ft checkout.
+
+Rejected: either one alone. The pin is computed from the vendored resource, so it locks that
+resource against itself and can stay green through a full ft validator rewrite — this is exactly how
+a stale `peg_out` survived in 2026-08. The ft comparison catches that, but it cancels wherever no
+checkout exists, which is CI and every release build. Neither check covers the other's blind spot.
+
+### The first parameter is derived, not configured
+
+`[BSS-4]` names `tm_nft_policy_id`, and that value is the `TreasuryMovementValidator` script hash.
+The test derives it from `TreasuryMovementContract.script(...)` rather than accepting a configured
+constant, because a configured one could drift from the deployed TM validator and would only be
+caught on-chain, when the singleton's spend handler failed to find its TM Confirm.
+
+The known-answer pin uses a fixed 28-byte placeholder instead, so that it depends on the vendored
+`bridge_state` code and the CIP-57 parameter encoding alone. A pin taken against the real TM hash
+would also move whenever binocular's own TM validator changed, which is unrelated drift.
 
 ## Test notes
 

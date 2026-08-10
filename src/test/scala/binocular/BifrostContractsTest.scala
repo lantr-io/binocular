@@ -6,6 +6,8 @@ import org.scalatest.funsuite.AnyFunSuite
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import scalus.uplc.builtin.ByteString
 
+import java.nio.file.{Files, Path, Paths}
+
 /** Tests for the F3 bridge-contract hash computation in [[BifrostContracts]].
   *
   * The known-answer cases are REGRESSION LOCKS over the CIP-57 parameter-application encoding
@@ -164,5 +166,99 @@ class BifrostContractsTest extends AnyFunSuite {
     test("completed-peg-ins/outs asset names are the CPI/CPO constants") {
         assert(CompletedPegInsContract.assetName == ByteString.fromString("CPI"))
         assert(CompletedPegOutsContract.assetName == ByteString.fromString("CPO"))
+    }
+
+    // --- rev-5.4 bridge-state singleton (spec [BSS-4], [BSS-5]) ---
+
+    private val BridgeStateMintTitle = BridgeStateContract.ValidatorTitle
+    private val BridgeStateSpendTitle = "bitcoin/bridge_state.bridge_state.spend"
+
+    // The real first parameter: the TM NFT policy IS the TreasuryMovementValidator script hash.
+    private val tmScriptHash = ByteString.fromArray(
+      TreasuryMovementContract
+          .script(oraclePolicy, configPolicy, configAssetName)
+          .scriptHash
+          .bytes
+    )
+
+    test("the vendored blueprint carries bridge_state mint and spend") {
+        // `bridge-state.ak` replaces `completed-peg-outs-merkle-tree.ak` in ft rev 5.4. The
+        // packaged min-json is the runtime DEFAULT source, so a deployed image can only derive the
+        // singleton policy if both handler titles are vendored here.
+        val codes = List(BridgeStateMintTitle, BridgeStateSpendTitle).map { title =>
+            scala.util
+                .Try(blueprint.compiledCode(title))
+                .getOrElse(
+                  fail(s"the vendored min-json has no $title – refresh it from ft's plutus.json")
+                )
+        }
+        // All handlers of one Aiken validator share a single compiledCode.
+        assert(codes.head.nonEmpty)
+        assert(codes.head == codes.last)
+    }
+
+    test("bridge-state policy is stable for the (tm-policy, one-shot) encoding") {
+        // Known-answer REGRESSION LOCK, the same kind every sibling contract above carries, and the
+        // only bridge_state check that runs on CI (the ft comparison below cancels there). Computed
+        // against the fixed 28-byte TM placeholder so it depends on the vendored `bridge_state`
+        // compiledCode and the CIP-57 param encoding ALONE, not on binocular's TM validator.
+        //
+        // If this moves, someone re-vendored `bitcoin/bridge_state.bridge_state.mint` or edited the
+        // min-json. Then the deployed image derives a policy the ConfigDatum does not name and every
+        // TM Confirm is rejected on-chain, so re-check the vendoring before you move the pin.
+        val bss = BridgeStateContract(blueprint, tmNftPolicy, cpiRef)
+        assert(hex(bss.policyId) == "0b8626761055d00dd58c99646bd379b3881f15477852755a5d74c1f8")
+        // Asset name is the constant "BSS" per [BSS-5], shared with the TM validator's mirror.
+        assert(BridgeStateContract.assetName == ByteString.fromString("BSS"))
+    }
+
+    test("BridgeStateContract applies (tm_nft_policy_id, one_shot_input_ref) in [BSS-4] order") {
+        // Param order per spec [BSS-4]: (tm_nft_policy_id, one_shot_input_ref). The first param is
+        // the TreasuryMovementValidator script hash, which is also the TM NFT policy id, so the TM
+        // script hash must be derived BEFORE the singleton at deploy.
+        val bss = BridgeStateContract(blueprint, tmScriptHash, cpiRef)
+
+        // Parameter sensitivity: both params must reach the script.
+        assert(bss.policyId != BridgeStateContract(blueprint, tmNftPolicy, cpiRef).policyId)
+        assert(bss.policyId != BridgeStateContract(blueprint, tmScriptHash, configRef).policyId)
+    }
+
+    /** An ft-bifrost-bridge checkout to compare the vendored copy against, when one is on disk.
+      *
+      * The policy-id pins above are computed from the vendored resource, so they lock it against
+      * ITSELF and say nothing about drift from ft. Only this comparison does. It cancels with no
+      * checkout, because CI and release builds have none.
+      */
+    private def ftPlutusJson: Option[Path] =
+        sys.env
+            .get("BIFROST_PLUTUS_JSON")
+            .map(_.trim)
+            .filter(_.nonEmpty)
+            .map(Paths.get(_))
+            .filter(Files.isReadable)
+            .orElse(
+              List(
+                "../ft-bifrost-bridge/onchain/plutus.json",
+                "../../ft-bifrost-bridge/onchain/plutus.json",
+                "../../FluidTokens/ft-bifrost-bridge/onchain/plutus.json"
+              ).map(Paths.get(_)).find(Files.isReadable)
+            )
+
+    test("the vendored bridge_state compiledCode is ft's current one") {
+        // Freshness against ft. Cancels without a checkout, so it guards a developer machine only —
+        // the pin above is what guards CI. Keep BOTH: the pin cannot see ft, this cannot run there.
+        ftPlutusJson match {
+            case None =>
+                cancel(
+                  "no ft-bifrost-bridge checkout found (set BIFROST_PLUTUS_JSON to enable this check)"
+                )
+            case Some(path) =>
+                val ft = BifrostBlueprint.fromFile(path.toString)
+                assert(
+                  BridgeStateContract(blueprint, tmScriptHash, cpiRef).policyId ==
+                      BridgeStateContract(ft, tmScriptHash, cpiRef).policyId,
+                  s"the vendored bridge_state compiledCode is stale against $path – re-vendor it"
+                )
+        }
     }
 }
