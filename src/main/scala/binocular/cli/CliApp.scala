@@ -72,6 +72,7 @@ object CliApp {
         )
         case SpiProof(outpoint: String)
         case DepositProof(outpoint: String)
+        case ServeProofs(port: Option[Int], dryRun: Boolean)
 
     /** CLI argument parsers */
     object CliParsers {
@@ -522,6 +523,21 @@ object CliApp {
                 outpointArg.map(Cmd.DepositProof.apply)
             }
 
+        val serveProofsCommand =
+            Opts.subcommand(
+              "serve-proofs",
+              "Run the proof-serving REST API ([SPI-4]/[OB-13]) standalone: " +
+                  "/api/v1/spi-proof/{outpoint} and /api/v1/deposit-proof/{outpoint}"
+            ) {
+                val portOpt = Opts
+                    .option[Int](
+                      "port",
+                      help = "HTTP port to bind (default: bridge.proof-server-port)"
+                    )
+                    .orNone
+                (portOpt, dryRunFlag).mapN(Cmd.ServeProofs.apply)
+            }
+
         val subcommands =
             versionFlag `orElse`
                 infoCommand `orElse`
@@ -552,7 +568,8 @@ object CliApp {
                 pegOutRequestCommand `orElse`
                 pegOutCompleteCommand `orElse`
                 spiProofCommand `orElse`
-                depositProofCommand
+                depositProofCommand `orElse`
+                serveProofsCommand
 
         com.monovore.decline.Command(
           name = "binocular",
@@ -680,6 +697,8 @@ object CliApp {
                             SpiProofCommand(outpoint)
                         case Cmd.DepositProof(outpoint) =>
                             DepositProofCommand(outpoint)
+                        case Cmd.ServeProofs(port, dryRun) =>
+                            ServeProofsCommand(port, dryRun)
                         case Cmd.Version =>
                             return 0 // unreachable: handled above
                     }

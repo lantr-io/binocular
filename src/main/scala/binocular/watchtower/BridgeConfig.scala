@@ -88,7 +88,15 @@ case class BridgeConfig(
     // Directory holding the persistent completed-peg-outs trie mirror (`cpo-trie.json`). Losing it
     // is not fatal — the sweeper reconstructs from chain history — but reconstruction reads the full
     // history of two addresses, so it should live on durable storage. `~` is expanded.
-    stateDir: String = ".binocular"
+    stateDir: String = ".binocular",
+    // --- proof server ([SPI-4]/[OB-13] REST transport) ---
+    // Serve the swept-peg-ins membership proof and the deposit-inclusion bundle over HTTP as part
+    // of the watchtower process. ON by default: serving is trustless (every proof is verified
+    // on-chain, a wrong one just fails), and [SPI-4] names binocular as the proof server the
+    // frontend depends on. Turn off to run a watchtower that serves nobody; `serve-proofs` runs
+    // the same server standalone.
+    proofServer: Boolean = true,
+    proofServerPort: Int = 9060
 ) derives ConfigReader
 
 object BridgeConfig {

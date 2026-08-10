@@ -360,21 +360,37 @@ object SweptPegInsProofService {
               )
             )
         else
-            confirmedTrie(state.spiRoot, state.treasuryUtxoId, fetchRawTx, maxDepth).flatMap {
-                trie =>
-                    trie.get(pegInUtxoId) match {
-                        case None =>
-                            Left(NotInConfirmedSet(pegInUtxoId, state.spiRoot))
-                        case Some(sweepingTmInput0) =>
-                            Right(
-                              SpiMembershipProof(
-                                pegInUtxoId = pegInUtxoId,
-                                sweepingTmInput0 = sweepingTmInput0,
-                                spiRoot = trie.rootHash,
-                                proof = trie.proveMembership(pegInUtxoId)
-                              )
-                            )
-                    }
+            confirmedTrie(state.spiRoot, state.treasuryUtxoId, fetchRawTx, maxDepth)
+                .flatMap(trie => proveFrom(trie, pegInUtxoId))
+
+    /** Prove membership against an ALREADY-RECONCILED trie — one that [[confirmedTrie]] built and
+      * checked against the singleton's attested root. Callers that cache the trie between requests
+      * (the HTTP server) re-enter here; the [SPI-6] boundary still holds, because the cached trie
+      * contains exactly the confirmed set its root key attests.
+      */
+    def proveFrom(
+        trie: OffChainMPF,
+        pegInUtxoId: ByteString
+    ): Either[ServeError, SpiMembershipProof] =
+        if pegInUtxoId.size != 36 then
+            Left(
+              InvalidRequest(
+                s"peg_in_utxo_id must be 36 bytes (txid ++ vout LE), got ${pegInUtxoId.size}"
+              )
+            )
+        else
+            trie.get(pegInUtxoId) match {
+                case None =>
+                    Left(NotInConfirmedSet(pegInUtxoId, trie.rootHash))
+                case Some(sweepingTmInput0) =>
+                    Right(
+                      SpiMembershipProof(
+                        pegInUtxoId = pegInUtxoId,
+                        sweepingTmInput0 = sweepingTmInput0,
+                        spiRoot = trie.rootHash,
+                        proof = trie.proveMembership(pegInUtxoId)
+                      )
+                    )
             }
 
     /** Harvest every raw TM candidate from the TM address's Cardano history: each `Unconfirmed`

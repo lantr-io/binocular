@@ -109,35 +109,6 @@ object CommandHelpers {
         Console.info("testingMode", params.testingMode)
     }
 
-    /** Parse a Bitcoin outpoint CLI argument into its 36-byte `txid(LE) ++ vout(LE)` form — the
-      * `peg_in_utxo_id` encoding. Accepts either the display form `TXID:VOUT` (txid big-endian, as
-      * explorers and bitcoind print it) or 72 hex chars of the raw 36-byte outpoint.
-      */
-    def parseBtcOutpoint(s: String): Either[String, ByteString] = {
-        val t = s.trim.toLowerCase
-        def isHex(x: String) = x.nonEmpty && x.forall(c => "0123456789abcdef".contains(c))
-        if t.contains(":") then
-            t.split(":") match {
-                case Array(txid, voutStr) if txid.length == 64 && isHex(txid) =>
-                    voutStr.toLongOption
-                        .filter(v => v >= 0 && v <= 0xffffffffL)
-                        .toRight(s"invalid vout: $voutStr")
-                        .map { vout =>
-                            CpoTrieMirror.hintBytes(
-                              ByteString.fromArray(txid.hexToBytes.reverse),
-                              vout
-                            )
-                        }
-                case _ => Left(s"expected TXID:VOUT with a 64-hex txid, got: $t")
-            }
-        else if t.length == 72 && isHex(t) then Right(ByteString.fromHex(t))
-        else
-            Left(
-              "expected a Bitcoin outpoint as TXID:VOUT (display txid) or 72 hex chars " +
-                  s"(raw txid-LE ++ vout-LE), got: $t"
-            )
-    }
-
     /** Parse UTxO reference string (TX_HASH:OUTPUT_INDEX) */
     def parseUtxo(utxo: String): Either[String, (String, Int)] = {
         val parts = utxo.split(":")
