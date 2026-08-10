@@ -1,8 +1,14 @@
 package binocular.watchtower
 
 import binocular.oracle.{CardanoConfig, CardanoNetwork}
-import scalus.cardano.node.BlockfrostProvider
+import scalus.cardano.address.Address
+import scalus.cardano.ledger.{DatumOption, TransactionHash, TransactionInput, TransactionOutput}
+import scalus.cardano.node.{BlockchainProvider, BlockfrostProvider, UtxoQuery, UtxoSource}
 import scalus.uplc.builtin.{ByteString, Data}
+
+import scala.concurrent.ExecutionContext
+import scala.concurrent.duration.Duration
+import scalus.utils.await
 
 /** Why a chain-history read failed, and whether trying again can fix it.
   *
@@ -269,4 +275,108 @@ object BlockfrostCpoHistory {
 
     def fromConfig(cardano: CardanoConfig): Either[String, CpoHistorySource] =
         baseUrlFor(cardano).map((url, id) => new BlockfrostCpoHistory(url, id))
+}
+
+/** A [[CpoHistorySource]] over the Scalus [[BlockfrostProvider]] the rest of binocular already runs
+  * on — one HTTP stack, one credential path, one rate limiter, instead of the second hand-rolled
+  * client [[BlockfrostCpoHistory]] carries.
+  *
+  * The abstract `BlockchainProvider` TRAIT cannot serve history: `findUtxos` reads the LIVE UTxO
+  * set, and a spent `Unconfirmed` record is precisely not in it. The two calls this adapter needs
+  * are on the concrete provider, and both stay inside the Blockfrost-compatible subset Dolos and
+  * yaci-store serve — the same subset [[BlockfrostCpoHistory]] restricts itself to:
+  *
+  *   - `fetchAddressTransactions` — `GET /addresses/{addr}/transactions`;
+  *   - `findUtxos(FromTransaction)` — `GET /txs/{hash}/utxos`, which reports a transaction's
+  *     outputs whether or not they are SPENT.
+  *
+  * Both binocular backends (`blockfrost`, `yaci`) construct a [[BlockfrostProvider]], so
+  * [[ProviderChainHistory.from]] succeeds for every configuration that exists today; a future
+  * provider without a history API is reported plainly, not worked around.
+  *
+  * Every failure is a TRANSIENT [[HistoryError]]: each path here is a network read, and nothing in
+  * a failed read says anything about the chain. The scalus provider brings its own concurrency
+  * limiting in place of [[BlockfrostCpoHistory]]'s per-call backoff.
+  */
+final class ProviderChainHistory(
+    provider: BlockfrostProvider,
+    timeout: Duration
+)(using ExecutionContext)
+    extends CpoHistorySource {
+
+    override def backend: String = "scalus BlockfrostProvider"
+
+    override def addressHistory(addressBech32: String): Either[HistoryError, Seq[ChainOutput]] =
+        try {
+            val address = Address.fromBech32(addressBech32)
+            val txHashes =
+                provider.fetchAddressTransactions(addressBech32).await(timeout).map(_.txHash)
+            val outputs = Vector.newBuilder[ChainOutput]
+            // distinct: reorg pagination can repeat one hash across page boundaries.
+            txHashes.distinct.foreach { txHash =>
+                val txId = TransactionHash.fromHex(txHash)
+                provider
+                    .findUtxos(UtxoQuery.Simple(UtxoSource.FromTransaction(txId)))
+                    .await(timeout) match {
+                    case Left(err) => throw new RuntimeException(s"outputs of tx $txHash: $err")
+                    case Right(utxos) =>
+                        utxos.toSeq
+                            .filter { case (_, out) => out.address == address }
+                            .sortBy { case (in, _) => in.index }
+                            .foreach { case (in, out) =>
+                                outputs += ProviderChainHistory.toChainOutput(in, out)
+                            }
+                }
+            }
+            Right(outputs.result())
+        } catch {
+            case e: Exception =>
+                Left(
+                  HistoryError.transient(
+                    s"address history of $addressBech32 via the scalus provider: ${e.getMessage}"
+                  )
+                )
+        }
+}
+
+object ProviderChainHistory {
+
+    /** Map one ledger output to the [[ChainOutput]] shape reconstruction reads, preserving the
+      * three-way datum distinction: inline, present-but-unreadable (a bare datum hash, whose
+      * preimage `/txs/{hash}/utxos` does not serve), or provably absent.
+      */
+    def toChainOutput(input: TransactionInput, output: TransactionOutput): ChainOutput = {
+        val (inline, unresolved) = output.datumOption match {
+            case Some(DatumOption.Inline(d)) => (Some(d), None)
+            case Some(DatumOption.Hash(h)) =>
+                (None, Some(s"datum hash ${h.toHex} has no inline preimage in /txs/{hash}/utxos"))
+            case None => (None, None)
+        }
+        val multiAssets = output.value.assets.assets.toSeq.flatMap { case (policy, byName) =>
+            byName.toSeq.map { case (name, qty) =>
+                (policy.toHex + name.bytes.toHex).toLowerCase -> BigInt(qty)
+            }
+        }
+        ChainOutput(
+          txHash = ByteString.fromArray(input.transactionId.bytes),
+          outputIndex = input.index.toLong,
+          inlineDatum = inline,
+          assets = (multiAssets :+ ("lovelace" -> BigInt(output.value.coin.value))).toMap,
+          unresolvedDatum = unresolved
+        )
+    }
+
+    /** The history source for an already-created provider, or the reason there is none. */
+    def from(
+        provider: BlockchainProvider,
+        timeout: Duration
+    )(using ExecutionContext): Either[String, CpoHistorySource] =
+        provider match {
+            case bf: BlockfrostProvider => Right(new ProviderChainHistory(bf, timeout))
+            case other =>
+                Left(
+                  s"the configured provider (${other.getClass.getSimpleName}) has no " +
+                      "chain-history API"
+                )
+        }
 }

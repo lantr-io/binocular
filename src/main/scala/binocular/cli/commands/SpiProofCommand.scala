@@ -2,7 +2,7 @@ package binocular.cli.commands
 
 import binocular.BinocularConfig
 import binocular.cli.{Command, CommandHelpers, Console}
-import binocular.watchtower.{BlockfrostCpoHistory, BridgeState, SweptPegInsProofService, TreasuryMovementValidator}
+import binocular.watchtower.{BridgeState, ProviderChainHistory, SweptPegInsProofService, TreasuryMovementValidator}
 
 import scalus.cardano.address.Address
 import scalus.cardano.ledger.{AssetName, Credential, ScriptHash, Utxo}
@@ -131,7 +131,10 @@ case class SpiProofCommand(
             Console.error(s"cannot encode the TM address for script hash ${tmScriptHash.toHex}")
             break(1)
         }
-        val source = BlockfrostCpoHistory.fromConfig(config.cardano) match {
+        // The history source rides on the SAME scalus provider the singleton lookup used: the
+        // concrete BlockfrostProvider serves address history and per-tx outputs (spent included),
+        // so no second HTTP client is constructed.
+        val source = ProviderChainHistory.from(provider, timeout) match {
             case Right(s)  => s
             case Left(err) => Console.error(s"No chain-history backend: $err"); break(1)
         }
