@@ -7,13 +7,15 @@ import binocular.cli.{Command, CommandHelpers, Console}
 
 import scalus.cardano.ledger.{AssetName, TransactionHash, Utxo}
 import scalus.cardano.node.TransactionStatus
-import scalus.cardano.onchain.plutus.prelude.List as PList
+import scalus.cardano.onchain.plutus.prelude.{List as PList, Option as SOption}
 import scalus.cardano.txbuilder.TxBuilder
 import scalus.uplc.builtin.{ByteString, Data}
+import scalus.uplc.builtin.Data.toData
 import scalus.utils.await
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
+import scala.util.Try
 import scala.util.boundary
 import boundary.break
 import cats.syntax.either.*
@@ -47,9 +49,9 @@ import cats.syntax.either.*
   * non-ADA value are preserved (config.ak enforces this); all other datum fields are carried over
   * verbatim.
   *
-  * The rewrite works on the RAW field list and never decodes a typed `ConfigDatum`, so it keeps
-  * working against a deployed datum whose field count grew past the current type (appends are
-  * legal).
+  * The rewrite decodes the typed [[ConfigDatum]] and edits fields by name ([LIB-1]). Because the
+  * whole datum is re-encoded, a deployed datum whose field count grew past the layout this build
+  * knows is REFUSED up front: re-encoding it would silently drop the appended fields.
   *
   * The config script is rebuilt from the bridge blueprint parameterized by the bootstrap one-shot
   * (`bridge.completed-peg-ins-one-shot-ref` — deploy-bridge uses ONE shared one-shot for config,
@@ -160,45 +162,31 @@ case class UpdateConfigCommand(
                     }
         }
 
-        val oldFields = configUtxo.output.inlineDatum match {
-            case Some(Data.Constr(0, fields)) => fields.asScala.toList
-            case other =>
-                Console.error(s"Config UTxO datum is not a Constr 0 inline datum: $other")
-                break(1)
+        val oldData = configUtxo.output.inlineDatum.getOrElse {
+            Console.error("Config UTxO has no inline datum")
+            break(1)
         }
-        val newFields =
-            try
-                UpdateConfigCommand.rewriteFields(
-                  oldFields,
-                  newBridgeStatePolicy,
-                  newTmScriptHash,
-                  newPegInHash,
-                  newPegOutHash,
-                  params
+        val oldConfig = UpdateConfigCommand.decodeDeployed(oldData).valueOr { err =>
+            Console.error(err); break(1)
+        }
+        val newConfig = UpdateConfigCommand.rewrite(
+          oldConfig,
+          newBridgeStatePolicy,
+          newTmScriptHash,
+          newPegInHash,
+          newPegOutHash,
+          params
+        )
+        val newDatum: Data = newConfig.toData
+        val updateAuthPkh = oldConfig.updateAuth match {
+            case SOption.Some(AuthorizationMethod.CardanoSignature(pkh)) => pkh
+            case SOption.Some(other) =>
+                Console.error(
+                  s"update_auth is not a CardanoSignature — this command only supports " +
+                      s"signature-authorized configs, got: $other"
                 )
-            catch {
-                case e: IllegalArgumentException =>
-                    Console.error(e.getMessage); break(1)
-            }
-        val newDatum: Data = Data.Constr(0, PList.from(newFields))
-        val updateAuthPkh = oldFields(0) match {
-            case Data.Constr(0, args) =>
-                args.asScala.toList.headOption match {
-                    // CardanoSignature { hash } = Constr 0 [B hash] inside Some = Constr 0 [...]
-                    case Some(Data.Constr(0, sigArgs)) =>
-                        sigArgs.asScala.toList.headOption match {
-                            case Some(Data.B(pkh)) => pkh
-                            case _ =>
-                                Console.error("update_auth CardanoSignature has no pkh"); break(1)
-                        }
-                    case other =>
-                        Console.error(
-                          s"update_auth is not a CardanoSignature — this command only supports " +
-                              s"signature-authorized configs, got: $other"
-                        )
-                        break(1)
-                }
-            case _ =>
+                break(1)
+            case SOption.None =>
                 Console.error("Config update_auth (field 0) is None — config is frozen")
                 break(1)
         }
@@ -207,8 +195,6 @@ case class UpdateConfigCommand(
           "config UTxO",
           s"${configUtxo.input.transactionId.toHex}#${configUtxo.input.index}"
         )
-        Console.info("old fields", oldFields.size.toString)
-        Console.info("new fields", newFields.size.toString)
         newBridgeStatePolicy.foreach(h =>
             Console.info("new bridge-state policy (field 3)", h.toHex)
         )
@@ -218,7 +204,7 @@ case class UpdateConfigCommand(
         Console.info("update_auth pkh", updateAuthPkh.toHex)
         // Every changed field, old -> new. The operational parameters are consensus inputs for
         // every SPO's TM builder, so an accidental edit is worth seeing before it is signed.
-        UpdateConfigCommand.diff(oldFields, newFields).foreach { case (idx, name, before, after) =>
+        UpdateConfigCommand.diff(oldData, newDatum).foreach { case (idx, name, before, after) =>
             Console.info(s"field $idx ($name)", s"$before -> $after")
         }
         println()
@@ -269,70 +255,71 @@ case class UpdateConfigCommand(
 
 object UpdateConfigCommand {
 
-    /** Pure datum rewrite over the rev-5.4 layout: replace each supplied script hash in place
-      * (fields 3, 4, 5, 6), then patch the named operational parameters inside the nested `params`
-      * record (field 7).
+    /** Pure datum rewrite over the rev-5.4 layout: replace each supplied script hash, then patch
+      * the named operational parameters inside the nested `params` record.
       *
-      * Every supplied swap is applied to the SAME field list, so one call — and therefore one
+      * Every supplied swap is applied to the SAME datum, so one call — and therefore one
       * transaction — performs a whole validator migration (the dependent fields flip together).
       *
-      * Operates on raw `Data` fields and never decodes a `ConfigDatum`, so it keeps working against
-      * a deployed datum whose field count grew past the current type: fields beyond 7 are carried
-      * over verbatim (appends are the legal evolution).
+      * Operates on the typed [[ConfigDatum]] ([LIB-1]: fields by name). The caller guards the
+      * deployed Constr arity BEFORE decoding (see `execute`): a decode-copy-reencode of a datum
+      * with appended fields would silently drop them, so an unknown arity is refused, never
+      * rewritten.
       *
       * @param newBridgeStatePolicy
-      *   field 3, `bridge_state_policy` (spec §Recovery: the singleton swap point).
+      *   `bridge_state_policy` (spec §Recovery: the singleton swap point).
       * @param newTmScriptHash
-      *   field 4, `tm_script_hash` (spec [CFG-2]).
-      * @param newPegInHash
-      *   field 5, `peg_in_script_hash`.
-      * @param newPegOutHash
-      *   field 6, `peg_out_script_hash`.
+      *   `tm_script_hash` (spec [CFG-2]).
       * @param params
-      *   the governed operational parameters inside field 7. Each is optional and overwrites only
-      *   the slot it names; `schedule` patches individual `ScheduleParams` fields by name inside
-      *   the nested record at params[3].
+      *   the governed operational parameters. Each is optional and overwrites only the field it
+      *   names; `schedule` patches individual `ScheduleParams` fields by name.
       */
-    def rewriteFields(
-        fields: List[Data],
+    def rewrite(
+        cfg: ConfigDatum,
         newBridgeStatePolicy: Option[ByteString],
         newTmScriptHash: Option[ByteString],
         newPegInHash: Option[ByteString],
         newPegOutHash: Option[ByteString],
         params: ParamEdits = ParamEdits.none
-    ): List[Data] = {
-        require(
-          fields.size >= ConfigFieldCount,
-          s"config datum has ${fields.size} fields, expected >= $ConfigFieldCount (rev 5.4)"
+    ): ConfigDatum = {
+        val p = cfg.params
+        cfg.copy(
+          bridgeStatePolicy = newBridgeStatePolicy.getOrElse(cfg.bridgeStatePolicy),
+          tmScriptHash = newTmScriptHash.getOrElse(cfg.tmScriptHash),
+          pegInScriptHash = newPegInHash.getOrElse(cfg.pegInScriptHash),
+          pegOutScriptHash = newPegOutHash.getOrElse(cfg.pegOutScriptHash),
+          params = p.copy(
+            feeRateSatPerVb = params.feeRateSatPerVb.getOrElse(p.feeRateSatPerVb),
+            perPegoutFee = params.perPegoutFee.getOrElse(p.perPegoutFee),
+            minPegOutFbtc = params.minPegOutFbtc.getOrElse(p.minPegOutFbtc),
+            schedule = patchSchedule(p.schedule, params.schedule)
+          )
         )
-        val swaps = List(
-          3 -> newBridgeStatePolicy,
-          4 -> newTmScriptHash,
-          5 -> newPegInHash,
-          6 -> newPegOutHash
-        )
-        val swapped = swaps.foldLeft(fields) { case (fs, (idx, v)) =>
-            v.fold(fs)(h => fs.updated(idx, Data.B(h)))
-        }
-        if params.isEmpty then swapped
-        else swapped.updated(ParamsIndex, patchParams(swapped(ParamsIndex), params))
     }
 
     /** Field count of the rev-5.4 Config datum (spec §Config datum). */
     val ConfigFieldCount = 8
 
-    /** Index of the nested `params` record. */
-    val ParamsIndex = 7
-
-    /** `ConfigParams` slot names, in record order — the positions inside the nested Constr at
-      * config field 7. Slot 3 is the doubly-nested `ScheduleParams` record.
+    /** Decode the deployed Config datum for an UPDATE, refusing any Constr arity other than
+      * [[ConfigFieldCount]]. Appends are the legal datum evolution and read-only consumers ignore
+      * unknown trailing fields, but this command re-encodes the WHOLE datum — a
+      * decode-copy-reencode of a grown datum would silently drop the appended fields, so it is
+      * refused instead.
       */
-    val ParamFields: List[String] = List(
-      "fee_rate_sat_per_vb",
-      "per_pegout_fee",
-      "min_peg_out_fbtc",
-      "schedule"
-    )
+    def decodeDeployed(datum: Data): Either[String, ConfigDatum] = datum match {
+        case Data.Constr(0, fields) =>
+            val n = fields.asScala.size
+            if n != ConfigFieldCount then
+                Left(
+                  s"config datum has $n fields; this build knows the $ConfigFieldCount-field " +
+                      "rev-5.4 layout. Re-encoding would drop the extra fields — update binocular " +
+                      "instead of forcing the write."
+                )
+            else
+                Try(datum.to[ConfigDatum]).toOption
+                    .toRight("config datum does not decode as the rev-5.4 ConfigDatum")
+        case other => Left(s"config datum is not a Constr 0 record: $other")
+    }
 
     /** `ScheduleParams` field names, in record order — the `--schedule name=value` keys and the
       * positions inside the doubly-nested Constr at params[3].
@@ -401,56 +388,37 @@ object UpdateConfigCommand {
             }
     }
 
-    /** Overwrite the named slots of the nested `ConfigParams` Constr (config field 7), keeping the
-      * others — including the doubly-nested schedule, which is patched per-slot by name.
+    /** Overwrite the named fields of a [[ScheduleParams]], keeping the others. `parseSchedule`
+      * already validated every name against [[ScheduleFields]]; an unknown one here is a
+      * programming error, so it throws.
       */
-    private def patchParams(current: Data, edits: ParamEdits): Data = current match {
-        case Data.Constr(0, args) =>
-            val slots = args.asScala.toList
-            require(
-              slots.size == ParamFields.size,
-              s"config params (field $ParamsIndex) has ${slots.size} slots, expected " +
-                  s"${ParamFields.size}"
-            )
-            val scalars = List(
-              0 -> edits.feeRateSatPerVb,
-              1 -> edits.perPegoutFee,
-              2 -> edits.minPegOutFbtc
-            ).foldLeft(slots) { case (ss, (idx, v)) =>
-                v.fold(ss)(x => ss.updated(idx, Data.I(x)))
+    private def patchSchedule(s: ScheduleParams, edits: Map[String, BigInt]): ScheduleParams =
+        edits.foldLeft(s) { case (acc, (name, v)) =>
+            name match {
+                case "dkg_r1_deadline"    => acc.copy(dkgR1Deadline = v)
+                case "dkg_r2_deadline"    => acc.copy(dkgR2Deadline = v)
+                case "update_y_deadline"  => acc.copy(updateYDeadline = v)
+                case "tm_batch_interval"  => acc.copy(tmBatchInterval = v)
+                case "sign_r1_window"     => acc.copy(signR1Window = v)
+                case "sign_r2_window"     => acc.copy(signR2Window = v)
+                case "leader_slot_t"      => acc.copy(leaderSlotT = v)
+                case "tm_recovery_window" => acc.copy(tmRecoveryWindow = v)
+                case "final_tm_cutoff"    => acc.copy(finalTmCutoff = v)
+                case "stability_window"   => acc.copy(stabilityWindow = v)
+                case other =>
+                    throw new IllegalArgumentException(s"unknown schedule field '$other'")
             }
-            val patched =
-                if edits.schedule.isEmpty then scalars
-                else scalars.updated(3, patchSchedule(scalars(3), edits.schedule))
-            Data.Constr(0, PList.from(patched))
-        case other =>
-            throw new IllegalArgumentException(
-              s"config field $ParamsIndex (params) is not a Constr 0 record: $other"
-            )
-    }
+        }
 
-    /** Overwrite the named fields of a `ScheduleParams` Constr, keeping the other nine. */
-    private def patchSchedule(current: Data, edits: Map[String, BigInt]): Data = current match {
-        case Data.Constr(0, args) =>
-            val slots = args.asScala.toList
-            require(
-              slots.size == ScheduleFields.size,
-              s"params[3] (schedule) has ${slots.size} fields, expected ${ScheduleFields.size}"
-            )
-            val patched = ScheduleFields.zip(slots).map { case (name, old) =>
-                edits.get(name).fold(old)(v => Data.I(v))
-            }
-            Data.Constr(0, PList.from(patched))
-        case other =>
-            throw new IllegalArgumentException(
-              s"params[3] (schedule) is not a Constr 0 record: $other"
-            )
-    }
-
-    /** `(index, field name, old, new)` for every field the rewrite changed. */
-    def diff(oldFields: List[Data], newFields: List[Data]): List[(Int, String, String, String)] = {
+    /** `(index, field name, old, new)` for every top-level Config field the rewrite changed. */
+    def diff(oldDatum: Data, newDatum: Data): List[(Int, String, String, String)] = {
+        def fieldsOf(d: Data): List[Data] = d match {
+            case Data.Constr(_, fs) => fs.asScala.toList
+            case _                  => Nil
+        }
         val name = (i: Int) => FieldNames.lift(i).getOrElse(s"#$i")
-        newFields.zipWithIndex.flatMap { case (after, i) =>
+        val oldFields = fieldsOf(oldDatum)
+        fieldsOf(newDatum).zipWithIndex.flatMap { case (after, i) =>
             oldFields.lift(i) match {
                 case Some(before) if before == after => None
                 case Some(before) => Some((i, name(i), render(before), render(after)))

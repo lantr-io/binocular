@@ -8,7 +8,7 @@ import scalus.cardano.address.{Address, Network}
 import scalus.cardano.ledger.*
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.wallet.hd.HdAccount
-import scalus.uplc.builtin.{ByteString, Data}
+import scalus.uplc.builtin.ByteString
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.Duration
@@ -75,14 +75,10 @@ object BridgeSweepSetup {
                         Utxo(in, out)
                 }
                 .toRight(s"no UTxO carrying the config NFT at $configAddress")
-            triePolicyBytes <- configUtxo.output.inlineDatum match {
-                case Some(Data.Constr(0, fields)) =>
-                    fields.asScala.toList.lift(3) match {
-                        case Some(Data.B(p)) => Right(p)
-                        case other           => Left(s"config field 3 is not a byte string: $other")
-                    }
-                case other => Left(s"config datum is not a Constr 0 inline datum: $other")
-            }
+            triePolicyBytes <- configUtxo.output.inlineDatum
+                .flatMap(d => Try(d.to[ConfigDatum]).toOption)
+                .map(_.bridgeStatePolicy)
+                .toRight("config datum does not decode as the rev-5.4 ConfigDatum")
             _ <- Either.cond(
               triePolicyBytes.toHex == trieScript.scriptHash.toHex,
               (),

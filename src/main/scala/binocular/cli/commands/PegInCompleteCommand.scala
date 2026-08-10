@@ -180,34 +180,19 @@ case class PegInCompleteCommand(
             .getOrElse { Console.error("Config NFT UTxO not found"); break(1) }
 
         // --- the bridge state singleton ([CPI-10], [PAR-1]) ---
-        // `bridge_state_policy` is Config datum field 3 and `tm_script_hash` is field 4, both read
-        // at runtime: no reader may hard-code either ([PAR-1]). A RAW positional read, never a typed
-        // ConfigDatum decode, so a deployed datum with a different field count still resolves — the
-        // same pattern ProofService.resolveBridge uses.
-        val configFields: List[Data] = configUtxo.output.inlineDatum match {
-            case Some(Data.Constr(0, fs)) => fs.asScala.toList
-            case other =>
-                Console.error(s"Config datum is not a Constr 0 inline datum: $other"); break(1)
-        }
-        def configBytes(index: Int, name: String): ByteString = configFields.lift(index) match {
-            case Some(Data.B(b)) => b
-            case other =>
-                Console.error(s"Config field $index ($name) is not a byte string: $other"); break(1)
-        }
-        val bridgeStatePolicy = ScriptHash.fromHex(
-          configBytes(ConfigDatum.BridgeStatePolicyField, "bridge_state_policy").toHex
-        )
-        val tmScriptHash =
-            ScriptHash.fromHex(configBytes(ConfigDatum.TmScriptHashField, "tm_script_hash").toHex)
+        // `bridge_state_policy` and `tm_script_hash` are read from the Config datum at runtime: no
+        // reader may hard-code either ([PAR-1]). Typed decode, fields by name ([LIB-1]).
+        val configDatum = configUtxo.output.inlineDatum
+            .flatMap(d => Try(d.to[ConfigDatum]).toOption)
+            .getOrElse {
+                Console.error("Config datum does not decode as the rev-5.4 ConfigDatum")
+                break(1)
+            }
+        val bridgeStatePolicy = ScriptHash.fromHex(configDatum.bridgeStatePolicy.toHex)
+        val tmScriptHash = ScriptHash.fromHex(configDatum.tmScriptHash.toHex)
         val tmAddress = Address(network, Credential.ScriptHash(tmScriptHash))
-        Console.info(
-          s"bridge state policy (config field ${ConfigDatum.BridgeStatePolicyField})",
-          bridgeStatePolicy.toHex
-        )
-        Console.info(
-          s"TM validator (config field ${ConfigDatum.TmScriptHashField})",
-          tmScriptHash.toHex
-        )
+        Console.info("bridge state policy (config)", bridgeStatePolicy.toHex)
+        Console.info("TM validator (config)", tmScriptHash.toHex)
 
         val bridgeStateUtxo = findWithAsset(
           Address(network, Credential.ScriptHash(bridgeStatePolicy)),

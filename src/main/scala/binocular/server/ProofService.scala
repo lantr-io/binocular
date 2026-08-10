@@ -11,7 +11,7 @@ import scalus.cardano.address.{Address, Network}
 import scalus.cardano.ledger.{AssetName, Credential, ScriptHash, Utxo}
 import scalus.cardano.node.BlockchainProvider
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
-import scalus.uplc.builtin.{ByteString, Data}
+import scalus.uplc.builtin.ByteString
 
 import java.util.concurrent.atomic.AtomicReference
 import scala.concurrent.ExecutionContext
@@ -106,25 +106,17 @@ final class ProofService(
               what = "config UTxO",
               code = "config_missing"
             )
-            fields <- configUtxo.output.inlineDatum match {
-                case Some(Data.Constr(0, fields)) => Right(fields.asScala.toList)
-                case other =>
-                    Left(
-                      ApiError(
-                        503,
-                        "config_malformed",
-                        s"config datum is not a Constr 0 inline datum: $other"
-                      )
-                    )
-            }
-            bridgeStatePolicy <- bytesField(
-              fields,
-              ConfigDatum.BridgeStatePolicyField,
-              "bridge_state_policy"
-            )
-            tmScriptHash <- bytesField(fields, ConfigDatum.TmScriptHashField, "tm_script_hash")
+            config <- configUtxo.output.inlineDatum
+                .flatMap(d => Try(d.to[ConfigDatum]).toOption)
+                .toRight(
+                  ApiError(
+                    503,
+                    "config_malformed",
+                    "the config UTxO's datum does not decode as the rev-5.4 ConfigDatum"
+                  )
+                )
             singletonUtxo <- findByNft(
-              ScriptHash.fromHex(bridgeStatePolicy.toHex),
+              ScriptHash.fromHex(config.bridgeStatePolicy.toHex),
               AssetName(TreasuryMovementValidator.BridgeStateAssetName),
               what = "bridge state singleton",
               code = "singleton_missing",
@@ -148,13 +140,13 @@ final class ProofService(
                 )
             tmAddress <- Address(
               network,
-              Credential.ScriptHash(ScriptHash.fromHex(tmScriptHash.toHex))
+              Credential.ScriptHash(ScriptHash.fromHex(config.tmScriptHash.toHex))
             ).encode.toOption
                 .toRight(
                   ApiError(
                     503,
                     "config_malformed",
-                    s"cannot encode the TM address for script hash ${tmScriptHash.toHex}"
+                    s"cannot encode the TM address for script hash ${config.tmScriptHash.toHex}"
                   )
                 )
         } yield (state, tmAddress)
@@ -247,23 +239,6 @@ final class ProofService(
                     )
         }
     }
-
-    private def bytesField(
-        fields: List[Data],
-        index: Int,
-        name: String
-    ): Either[ApiError, ByteString] =
-        fields.lift(index) match {
-            case Some(Data.B(p)) => Right(p)
-            case other =>
-                Left(
-                  ApiError(
-                    503,
-                    "config_malformed",
-                    s"config field $index ($name) is not bytes: $other"
-                  )
-                )
-        }
 
     /** Run one backend interaction, turning any thrown exception into a 503 rather than a crash: a
       * proof server answering arbitrary callers must never die on a provider hiccup.

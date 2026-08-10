@@ -40,13 +40,6 @@ object ConfigDatum {
       */
     val BridgedTokenAssetName: ByteString = ByteString.fromString("fSAT")
 
-    /** Position of `bridge_state_policy` in the datum's positional fields — the NFT policy of the
-      * bridge state singleton. Every reader takes it from here at runtime ([PAR-1]).
-      */
-    val BridgeStatePolicyField: Int = 3
-
-    /** Position of `tm_script_hash` — the TM validator hash, i.e. the TM address ([CFG-2]). */
-    val TmScriptHashField: Int = 4
 }
 
 // Scalus mirror of `config.ak::ConfigParams` — the tunable operational parameters, nested as

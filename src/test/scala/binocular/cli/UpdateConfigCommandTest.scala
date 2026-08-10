@@ -2,177 +2,153 @@ package binocular.cli
 
 import binocular.cli.commands.UpdateConfigCommand
 import binocular.cli.commands.UpdateConfigCommand.ParamEdits
+import binocular.watchtower.{AuthorizationMethod, ConfigDatum, ConfigParams, ScheduleParams}
 
 import org.scalatest.funsuite.AnyFunSuite
-import scalus.cardano.onchain.plutus.prelude.List as PList
+import scalus.cardano.onchain.plutus.prelude.{List as PList, Option as SOption}
 import scalus.uplc.builtin.{ByteString, Data}
+import scalus.uplc.builtin.Data.toData
 
 class UpdateConfigCommandTest extends AnyFunSuite {
 
-    /** The deployed rev-5.4 eight-field shape (spec §Config datum): fields 0-6 as distinct byte
-      * strings, field 7 the nested ConfigParams record (3 Ints + the nested ScheduleParams).
+    /** The deployed rev-5.4 eight-field shape (spec §Config datum): the typed mirror the command
+      * decodes, rewrites by name, and re-encodes.
       */
-    private def scheduleSlots: Data = Data.Constr(
-      0,
-      PList.from(
-        List(3600, 7200, 10800, 21600, 1800, 1800, 600, 129600, 345600, 129600)
-            .map(v => Data.I(BigInt(v)): Data)
+    private def schedule: ScheduleParams = ScheduleParams(
+      dkgR1Deadline = 3600,
+      dkgR2Deadline = 7200,
+      updateYDeadline = 10800,
+      tmBatchInterval = 21600,
+      signR1Window = 1800,
+      signR2Window = 1800,
+      leaderSlotT = 600,
+      tmRecoveryWindow = 129600,
+      finalTmCutoff = 345600,
+      stabilityWindow = 129600
+    )
+
+    private def config: ConfigDatum = ConfigDatum(
+      updateAuth = SOption.Some(AuthorizationMethod.CardanoSignature(ByteString.fromHex("00"))),
+      bridgedTokenPolicy = ByteString.fromHex("01"),
+      completedPegInsPolicy = ByteString.fromHex("02"),
+      bridgeStatePolicy = ByteString.fromHex("03"),
+      tmScriptHash = ByteString.fromHex("04"),
+      pegInScriptHash = ByteString.fromHex("05"),
+      pegOutScriptHash = ByteString.fromHex("06"),
+      params = ConfigParams(
+        feeRateSatPerVb = 2,
+        perPegoutFee = 1000,
+        minPegOutFbtc = 10000,
+        schedule = schedule
       )
     )
 
-    private def paramsRecord: Data = Data.Constr(
-      0,
-      PList.from(
-        List[Data](
-          Data.I(BigInt(2)), // params[0] fee_rate_sat_per_vb
-          Data.I(BigInt(1000)), // params[1] per_pegout_fee floor
-          Data.I(BigInt(10000)), // params[2] min_peg_out_fbtc
-          scheduleSlots // params[3] schedule
-        )
-      )
-    )
-
-    private def fields8: List[Data] =
-        (0 to 6).map(i => Data.B(ByteString.fromHex(f"$i%02x")): Data).toList :+ paramsRecord
-
-    test("rewriteFields swaps fields 3, 4, 5 and 6 together in one call") {
-        val out = UpdateConfigCommand.rewriteFields(
-          fields8,
+    test("rewrite swaps all four script hashes together in one call") {
+        val out = UpdateConfigCommand.rewrite(
+          config,
           newBridgeStatePolicy = Some(ByteString.fromHex("33")),
           newTmScriptHash = Some(ByteString.fromHex("44")),
           newPegInHash = Some(ByteString.fromHex("55")),
           newPegOutHash = Some(ByteString.fromHex("66"))
         )
-        assert(out.size == 8)
-        assert(out(3) == Data.B(ByteString.fromHex("33")))
-        assert(out(4) == Data.B(ByteString.fromHex("44")))
-        assert(out(5) == Data.B(ByteString.fromHex("55")))
-        assert(out(6) == Data.B(ByteString.fromHex("66")))
+        assert(out.bridgeStatePolicy == ByteString.fromHex("33"))
+        assert(out.tmScriptHash == ByteString.fromHex("44"))
+        assert(out.pegInScriptHash == ByteString.fromHex("55"))
+        assert(out.pegOutScriptHash == ByteString.fromHex("66"))
         // Neighbours of the swapped fields are untouched.
-        assert(out(0) == fields8(0) && out(2) == fields8(2) && out(7) == fields8(7))
+        assert(out.updateAuth == config.updateAuth)
+        assert(out.completedPegInsPolicy == config.completedPegInsPolicy)
+        assert(out.params == config.params)
     }
 
-    test("rewriteFields swaps field 3 alone without disturbing 4, 5 or 6") {
-        val out = UpdateConfigCommand.rewriteFields(
-          fields8,
+    test("rewrite swaps bridge_state_policy alone without disturbing the other hashes") {
+        val out = UpdateConfigCommand.rewrite(
+          config,
           newBridgeStatePolicy = Some(ByteString.fromHex("33")),
           newTmScriptHash = None,
           newPegInHash = None,
           newPegOutHash = None
         )
-        assert(out(3) == Data.B(ByteString.fromHex("33")))
-        assert(out(4) == fields8(4) && out(5) == fields8(5) && out(6) == fields8(6))
+        assert(out.bridgeStatePolicy == ByteString.fromHex("33"))
+        assert(out.tmScriptHash == config.tmScriptHash)
+        assert(out.pegInScriptHash == config.pegInScriptHash)
+        assert(out.pegOutScriptHash == config.pegOutScriptHash)
     }
 
-    test("rewriteFields rejects short datums") {
-        intercept[IllegalArgumentException] {
-            UpdateConfigCommand.rewriteFields(
-              fields8.take(5),
-              Some(ByteString.fromHex("33")),
-              None,
-              None,
-              None
-            )
-        }
-    }
-
-    test("the operational parameters are patched individually inside field 7") {
-        val out = UpdateConfigCommand.rewriteFields(
-          fields8,
+    test("the operational parameters are patched individually") {
+        val out = UpdateConfigCommand.rewrite(
+          config,
           None,
           None,
           None,
           None,
           ParamEdits(feeRateSatPerVb = Some(BigInt(9)), minPegOutFbtc = Some(BigInt(50_000)))
         )
-        assert(out.size == 8)
-        // Fields 0-6 are byte-identical.
-        assert((0 to 6).forall(i => out(i) == fields8(i)))
-        out(7) match {
-            case Data.Constr(0, args) =>
-                val slots = args.asScala.toList
-                assert(slots(0) == Data.I(BigInt(9)))
-                assert(slots(1) == Data.I(BigInt(1000))) // untouched
-                assert(slots(2) == Data.I(BigInt(50_000)))
-                assert(slots(3) == scheduleSlots) // untouched
-            case other => fail(s"params is not a Constr 0: $other")
-        }
+        assert(out.copy(params = config.params) == config) // only field 7 moved
+        assert(out.params.feeRateSatPerVb == BigInt(9))
+        assert(out.params.perPegoutFee == BigInt(1000)) // untouched
+        assert(out.params.minPegOutFbtc == BigInt(50_000))
+        assert(out.params.schedule == schedule) // untouched
     }
 
     // Governance "replaces the schedule wholesale", but an operator naming one slot must not have
     // the other nine silently reset to whatever this build's defaults happen to be.
     test("a schedule patch keeps the slots it does not name") {
-        val out = UpdateConfigCommand.rewriteFields(
-          fields8,
+        val out = UpdateConfigCommand.rewrite(
+          config,
           None,
           None,
           None,
           None,
           ParamEdits(schedule = Map("tm_batch_interval" -> BigInt(600)))
         )
-        out(7) match {
-            case Data.Constr(0, args) =>
-                args.asScala.toList(3) match {
-                    case Data.Constr(0, sched) =>
-                        val slots = sched.asScala.toList
-                        assert(slots(3) == Data.I(BigInt(600))) // tm_batch_interval
-                        assert(slots(0) == Data.I(BigInt(3600))) // dkg_r1_deadline, untouched
-                        assert(slots(9) == Data.I(BigInt(129600))) // stability_window, untouched
-                    case other => fail(s"schedule is not a Constr 0: $other")
-                }
-            case other => fail(s"params is not a Constr 0: $other")
-        }
-    }
-
-    test("a params edit against a malformed params field is refused") {
-        val broken = fields8.updated(7, Data.I(BigInt(0)): Data)
-        intercept[IllegalArgumentException] {
-            UpdateConfigCommand.rewriteFields(
-              broken,
-              None,
-              None,
-              None,
-              None,
-              ParamEdits(feeRateSatPerVb = Some(BigInt(9)))
-            )
-        }
-    }
-
-    // Appending is the legal datum evolution (config.ak's Update accepts any datum), so a datum
-    // that grew past 8 fields must survive a rewrite untouched beyond field 7.
-    test("rewriteFields carries appended fields beyond 7 over verbatim") {
-        val nine = fields8 :+ (Data.I(BigInt(99)): Data)
-        val out = UpdateConfigCommand.rewriteFields(
-          nine,
-          Some(ByteString.fromHex("33")),
-          None,
-          None,
-          None
-        )
-        assert(out.size == 9)
-        assert(out(3) == Data.B(ByteString.fromHex("33")))
-        assert(out(8) == Data.I(BigInt(99)))
+        assert(out.params.schedule == schedule.copy(tmBatchInterval = 600))
     }
 
     // A params update and a validator hash swap are both Config Updates; nothing stops an operator
     // doing them in one signed act, and the rewrite must not drop either half.
-    test("parameter edits compose with the field 3-6 swaps in one call") {
-        val out = UpdateConfigCommand.rewriteFields(
-          fields8,
+    test("parameter edits compose with the script hash swaps in one call") {
+        val out = UpdateConfigCommand.rewrite(
+          config,
           newBridgeStatePolicy = Some(ByteString.fromHex("33")),
           newTmScriptHash = Some(ByteString.fromHex("44")),
           newPegInHash = Some(ByteString.fromHex("55")),
           newPegOutHash = Some(ByteString.fromHex("66")),
           ParamEdits(feeRateSatPerVb = Some(BigInt(9)))
         )
-        assert(out(3) == Data.B(ByteString.fromHex("33")))
-        assert(out(4) == Data.B(ByteString.fromHex("44")))
-        assert(out(5) == Data.B(ByteString.fromHex("55")))
-        assert(out(6) == Data.B(ByteString.fromHex("66")))
-        out(7) match {
-            case Data.Constr(0, args) => assert(args.asScala.toList(0) == Data.I(BigInt(9)))
-            case other                => fail(s"params is not a Constr 0: $other")
+        assert(out.bridgeStatePolicy == ByteString.fromHex("33"))
+        assert(out.tmScriptHash == ByteString.fromHex("44"))
+        assert(out.pegInScriptHash == ByteString.fromHex("55"))
+        assert(out.pegOutScriptHash == ByteString.fromHex("66"))
+        assert(out.params.feeRateSatPerVb == BigInt(9))
+    }
+
+    test("decodeDeployed round-trips the rev-5.4 datum") {
+        assert(UpdateConfigCommand.decodeDeployed(config.toData) == Right(config))
+    }
+
+    // Appending is the legal datum evolution (config.ak's Update accepts any datum), and READERS
+    // ignore unknown trailing fields — but this command re-encodes the whole datum, so rewriting a
+    // grown datum would silently truncate it. It must be refused, not carried.
+    test("decodeDeployed refuses a datum that grew past the rev-5.4 layout") {
+        val nine = config.toData match {
+            case Data.Constr(0, fields) =>
+                Data.Constr(0, PList.from(fields.asScala.toList :+ (Data.I(BigInt(99)): Data)))
+            case other => fail(s"config datum is not a Constr 0: $other")
         }
+        val out = UpdateConfigCommand.decodeDeployed(nine)
+        assert(out.isLeft)
+        assert(out.swap.toOption.get.contains("9 fields"))
+    }
+
+    test("decodeDeployed refuses short and non-record datums") {
+        val five = config.toData match {
+            case Data.Constr(0, fields) =>
+                Data.Constr(0, PList.from(fields.asScala.toList.take(5)))
+            case other => fail(s"config datum is not a Constr 0: $other")
+        }
+        assert(UpdateConfigCommand.decodeDeployed(five).isLeft)
+        assert(UpdateConfigCommand.decodeDeployed(Data.I(BigInt(0))).isLeft)
     }
 
     test("parseSchedule accepts known slot names and rejects the rest") {
@@ -186,15 +162,15 @@ class UpdateConfigCommandTest extends AnyFunSuite {
     }
 
     test("diff reports every changed field by name") {
-        val out = UpdateConfigCommand.rewriteFields(
-          fields8,
+        val out = UpdateConfigCommand.rewrite(
+          config,
           Some(ByteString.fromHex("33")),
           None,
           None,
           None,
           ParamEdits(feeRateSatPerVb = Some(BigInt(9)))
         )
-        val d = UpdateConfigCommand.diff(fields8, out)
+        val d = UpdateConfigCommand.diff(config.toData, out.toData)
         assert(d.map(x => (x._1, x._2)).toSet == Set((3, "bridge_state_policy"), (7, "params")))
     }
 }
