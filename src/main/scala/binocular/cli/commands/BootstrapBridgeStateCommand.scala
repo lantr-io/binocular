@@ -9,7 +9,7 @@ import scalus.cardano.ledger.{AssetName, TransactionHash, TransactionInput, Utxo
 import scalus.cardano.node.TransactionStatus
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import scalus.cardano.txbuilder.TxBuilder
-import scalus.uplc.builtin.Data
+import scalus.uplc.builtin.{ByteString, Data}
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
@@ -18,41 +18,47 @@ import boundary.break
 import scalus.utils.await
 import cats.syntax.either.*
 
-/** Mint a fresh completed-peg-outs trie against a LIVE bridge — the executable half of the
-  * ConfigDatum field-3 migration.
+/** Mint a fresh bridge-state singleton against a LIVE bridge — the executable half of the
+  * ConfigDatum field-3 swap, and the §Recovery replacement path.
   *
-  * The trie's `"CPO"` NFT can only be created by the trie validator's own mint branch, which
-  * consumes a one-shot UTxO. Until this command existed the only code path that ran that mint was
-  * `deploy-bridge`, which mints a whole NEW bridge (new config NFT, new peg_in/peg_out hashes) — so
-  * an in-place migration of an existing bridge was not possible.
+  * The singleton's `"BSS"` NFT can only be created by `bridge-state.ak`'s own mint branch, which
+  * consumes a one-shot UTxO ([BSS-4]) and pays the token to the policy's own script address
+  * ([BSS-5]). The validator takes `(tm_nft_policy_id, one_shot_input_ref)`; the TM script hash
+  * comes from the live bridge (oracle hash + the deployed config NFT), so the only free parameter
+  * is the one-shot, and a fresh one-shot yields a fresh policy with a fresh singleton.
   *
-  * Trie v2 makes the completed-peg-outs validator take `(tm_nft_policy_id, one_shot_input_ref)`.
-  * The TM script hash comes from the live bridge (oracle hash + the deployed config NFT), so the
-  * only free parameter is the one-shot, and a fresh one-shot yields a fresh policy with an
-  * empty-root trie UTxO.
+  * The bootstrap [[BridgeState]] datum is deliberately NOT pinned on-chain (spec §Why the bootstrap
+  * datum is not pinned): the same mint path serves the FIRST deployment — zero roots and the
+  * deployment anchor — and the §Recovery replacement — the current roots and the live tip. It is
+  * operator-supplied here and observer-verified: the honest roots are a deterministic function of
+  * chain history, so a wrong one is detectable, and being attested rather than folded it is
+  * overwritten by the next honest Confirm.
   *
   * Migration order (the rest is the runbook's):
   *   1. run this command; it prints the new policy id and the one-shot ref;
-  *   2. run `update-config --completed-peg-outs-policy <policy> --peg-out-withdraw-hash <hash>
-  *      [--peg-in-withdraw-hash <hash>]` — ONE transaction, all fields together;
-  *   3. set `bridge.completed-peg-outs-one-shot-ref` to the printed ref, so `confirm-tmtx` derives
-  *      the same script;
+  *   2. run `update-config --bridge-state-policy <policy>` (together with any dependent field
+  *      swaps) — ONE transaction, all fields together;
+  *   3. set `bridge.bridge-state-one-shot-ref` to the printed ref, so `confirm-tmtx` derives the
+  *      same script;
   *   4. restart the watchtower.
   *
-  * Between steps 1 and 2 nothing is live: the config still publishes the old policy, so the TM
-  * validator still looks for the old trie and the freshly minted one is simply idle.
-  *
-  * The trie starts EMPTY. Any peg-out recorded in a previous trie is not carried over — see the
-  * runbook's upgrade rule; this command deliberately does not attempt a migration of trie contents,
-  * because the Aiken mint handler pins the genesis root to 32 zero bytes.
+  * Between steps 1 and 2 nothing is live: the config still publishes the old policy, so every
+  * reader still looks for the old singleton and the freshly minted one is simply idle.
   */
-case class BootstrapCompletedPegOutsCommand(
+case class BootstrapBridgeStateCommand(
     oneShotRef: Option[String] = None,
+    // Override the anchor (TXID:VOUT) / amount from bridge.initial-btc-treasury-*: a §Recovery
+    // replacement anchors at the live tip, not at the deployment anchor.
+    anchor: Option[String] = None,
+    amountSat: Option[Long] = None,
+    // Non-zero roots for a §Recovery replacement of a bridge with history. Hex, 32 bytes each.
+    spiRoot: Option[String] = None,
+    cpoRoot: Option[String] = None,
     dryRun: Boolean = false
 ) extends Command {
 
     override def execute(config: BinocularConfig): Int = boundary {
-        Console.header("Bootstrap Completed-Peg-Outs Trie (config field 3 migration)")
+        Console.header("Bootstrap Bridge-State Singleton (config field 3)")
         if dryRun then Console.warn("Dry-run mode — will compute the policy but not submit")
         println()
 
@@ -75,9 +81,40 @@ case class BootstrapCompletedPegOutsCommand(
         Console.info("blueprint", blueprintSource)
 
         // The TM NFT policy = the deployed TreasuryMovementValidator script hash. Derived exactly
-        // as confirm-tmtx and deploy-bridge derive it, so all three agree on the trie policy.
+        // as confirm-tmtx and deploy-bridge derive it, so all three agree on the singleton policy.
         val tmNftPolicy = CommandHelpers.tmNftPolicy(config, setup.script.scriptHash)
         Console.info("TM NFT policy", tmNftPolicy.toHex)
+
+        // The operator-supplied bootstrap state (spec §Why the bootstrap datum is not pinned).
+        def rootArg(flag: String, value: Option[String]): ByteString =
+            value.map(_.trim).filter(_.nonEmpty) match {
+                case None => BridgeBootstrap.EmptyRoot
+                case Some(h)
+                    if h.length == 64 && h.forall(c => "0123456789abcdefABCDEF".contains(c)) =>
+                    ByteString.fromHex(h)
+                case Some(h) =>
+                    Console.error(s"$flag must be 64 hex chars (a 32-byte MPF root), got '$h'")
+                    break(1)
+            }
+        val anchorDisplay = anchor
+            .map(_.trim)
+            .filter(_.nonEmpty)
+            .orElse(Option(config.bridge.initialBtcTreasuryUtxo.trim).filter(_.nonEmpty))
+            .getOrElse {
+                Console.error(
+                  "no anchor: pass --anchor TXID:VOUT or set bridge.initial-btc-treasury-utxo"
+                )
+                break(1)
+            }
+        val anchorOutpoint =
+            try BridgeConfig.outpointFromDisplay(anchorDisplay)
+            catch { case e: Exception => Console.error(s"anchor: ${e.getMessage}"); break(1) }
+        val state = BridgeState(
+          spiRoot = rootArg("--spi-root", spiRoot),
+          cpoRoot = rootArg("--cpo-root", cpoRoot),
+          treasuryUtxoId = anchorOutpoint,
+          treasuryAmount = BigInt(amountSat.getOrElse(config.bridge.initialBtcTreasuryAmountSat))
+        )
 
         val walletUtxos = provider.findUtxos(sponsorAddress).await(timeout) match {
             case Right(utxos) => utxos.toList.map { case (i, o) => Utxo(i, o) }
@@ -85,7 +122,8 @@ case class BootstrapCompletedPegOutsCommand(
         }
 
         // An explicit --one-shot-ref must still be an UNSPENT wallet UTxO: the mint handler checks
-        // the outref is among the tx inputs, so a spent or foreign ref can never satisfy it.
+        // the outref is among the tx inputs ([BSS-4]), so a spent or foreign ref can never satisfy
+        // it.
         val oneShotUtxo: Utxo = oneShotRef.map(_.trim).filter(_.nonEmpty) match {
             case Some(s) =>
                 val wanted = s.split('#') match {
@@ -119,41 +157,44 @@ case class BootstrapCompletedPegOutsCommand(
         val oneShot = TxOutRef(TxId(oneShotUtxo.input.transactionId), oneShotUtxo.input.index)
         val oneShotDisplay = s"${oneShotUtxo.input.transactionId.toHex}#${oneShotUtxo.input.index}"
 
-        val cpoContract = CompletedPegOutsContract(blueprint, tmNftPolicy, oneShot)
-        val (trieAddress, trieValue, trieDatum) =
-            BridgeBootstrap.completedPegOutsOutput(cpoContract, network)
+        val bssContract = BridgeStateContract(blueprint, tmNftPolicy, oneShot)
+        val (bssAddress, bssValue, bssDatum) =
+            BridgeBootstrap.bridgeStateOutput(bssContract, network, state)
 
         Console.info("one-shot", oneShotDisplay)
-        Console.info("completed-peg-outs policy", cpoContract.policyId.toHex)
-        Console.info("completed-peg-outs asset", CompletedPegOutsContract.assetName.toHex)
-        Console.info("completed-peg-outs address", trieAddress.encode.getOrElse("?"))
-        Console.info("genesis root", BridgeBootstrap.EmptyRoot.toHex)
+        Console.info("bridge-state policy", bssContract.policyId.toHex)
+        Console.info("bridge-state asset", BridgeStateContract.assetName.toHex)
+        Console.info("bridge-state address", bssAddress.encode.getOrElse("?"))
+        Console.info("spi_root", state.spiRoot.toHex)
+        Console.info("cpo_root", state.cpoRoot.toHex)
+        Console.info("head (anchor)", anchorDisplay)
+        Console.info("amount (sat)", state.treasuryAmount.toString)
         println()
 
         if dryRun then {
-            Console.success("Dry-run complete (computed the trie policy; not submitting)")
-            printNextSteps(cpoContract.policyId.toHex, oneShotDisplay)
+            Console.success("Dry-run complete (computed the singleton policy; not submitting)")
+            printNextSteps(bssContract.policyId.toHex, oneShotDisplay)
             break(0)
         }
 
-        Console.step(1, "Minting the completed-peg-outs trie NFT")
+        Console.step(1, "Minting the bridge-state singleton NFT")
         val tx =
             try
                 TxBuilder(provider.cardanoInfo)
                     .spend(oneShotUtxo)
                     .mint(
-                      cpoContract.script,
-                      Map(AssetName(CompletedPegOutsContract.assetName) -> 1L),
+                      bssContract.script,
+                      Map(AssetName(BridgeStateContract.assetName) -> 1L),
                       Data.unit
                     )
-                    .payTo(trieAddress, trieValue, trieDatum)
+                    .payTo(bssAddress, bssValue, bssDatum)
                     .complete(provider, sponsorAddress)
                     .await(timeout)
                     .sign(setup.hdAccount.signerForUtxos)
                     .transaction
             catch {
                 case e: Exception =>
-                    Console.error(s"Building the trie bootstrap tx: ${e.getMessage}")
+                    Console.error(s"Building the singleton bootstrap tx: ${e.getMessage}")
                     Option(e.getCause).foreach(c => Console.error(s"Cause: ${c.getMessage}"))
                     break(1)
             }
@@ -171,9 +212,9 @@ case class BootstrapCompletedPegOutsCommand(
             .await(DeployBridgeCommand.confirmAwait)
         status match {
             case TransactionStatus.Confirmed =>
-                Console.success(s"Completed-peg-outs trie bootstrapped: $txHash")
+                Console.success(s"Bridge-state singleton bootstrapped: $txHash")
                 println()
-                printNextSteps(cpoContract.policyId.toHex, oneShotDisplay)
+                printNextSteps(bssContract.policyId.toHex, oneShotDisplay)
                 0
             case other =>
                 Console.error(s"Not confirmed: $other")
@@ -184,17 +225,16 @@ case class BootstrapCompletedPegOutsCommand(
     /** Print the exact follow-up commands, so the migration cannot be half-applied by guesswork. */
     private def printNextSteps(policyHex: String, oneShotDisplay: String): Unit = {
         Console.separator()
-        Console.info("completed-peg-outs-policy-id", policyHex)
-        Console.info("completed-peg-outs-one-shot-ref", oneShotDisplay)
+        Console.info("bridge-state-policy-id", policyHex)
+        Console.info("bridge-state-one-shot-ref", oneShotDisplay)
         Console.info(
           "next 1",
-          s"binocular update-config --completed-peg-outs-policy $policyHex " +
-              "--peg-out-withdraw-hash <new peg_out hash> [--peg-in-withdraw-hash <new peg_in hash>]"
+          s"binocular update-config --bridge-state-policy $policyHex (plus any dependent field swaps)"
         )
         Console.info(
           "next 2",
-          s"set binocular.bridge.completed-peg-outs-one-shot-ref = $oneShotDisplay, then restart " +
-              "the watchtower"
+          s"set binocular.bridge.bridge-state-one-shot-ref = $oneShotDisplay, then restart the " +
+              "watchtower"
         )
         Console.separator()
     }

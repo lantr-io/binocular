@@ -26,17 +26,16 @@ import cats.syntax.either.*
   * guarded on-chain by [[TreasuryMovementValidator]] (spec §Confirm TM tx, rev 5.4).
   *
   * Polls the TM validator address for `Unconfirmed` UTxOs (datum
-  * `Constr(0, [signed_btc_tx, creator, created, epoch, leader_reward, fulfilled_por_outpoints])`,
-  * as posted by heimdall's `publish.rs` or `create-tmtx`). For each, once the TM is confirmed on
-  * Bitcoin and the block is in the Binocular oracle's confirmed-blocks root, it builds the
-  * inclusion proof and submits the Confirm tx: spend the `Unconfirmed` UTxO and the bridge-state
-  * singleton, reference the oracle and the Config, burn the TM NFT ([CTM-24]), produce no output at
-  * the TM address ([CTM-25]), and recreate the singleton carrying the [[BridgeState]] the TM's
-  * single `"BTMR1"` commitment output attests ([CTM-27]): both roots, the new head
-  * `txid ‖ 00000000` ([CTM-19]) and its satoshi amount ([CTM-21]). This command generates no MPF
-  * proofs and keeps no trie state of its own — both roots are read straight out of the signed
-  * Bitcoin bytes ([[SweptPegInsTrie.committedRoots]], the same exactly-one rule the validator
-  * applies).
+  * `Constr(0, [signed_btc_tx, creator, created, fulfilled_por_outpoints])`, as posted by heimdall's
+  * `publish.rs` or `create-tmtx`). For each, once the TM is confirmed on Bitcoin and the block is
+  * in the Binocular oracle's confirmed-blocks root, it builds the inclusion proof and submits the
+  * Confirm tx: spend the `Unconfirmed` UTxO and the bridge-state singleton, reference the oracle
+  * and the Config, burn the TM NFT ([CTM-24]), produce no output at the TM address ([CTM-25]), and
+  * recreate the singleton carrying the [[BridgeState]] the TM's single `"BTMR1"` commitment output
+  * attests ([CTM-27]): both roots, the new head `txid ‖ 00000000` ([CTM-19]) and its satoshi amount
+  * ([CTM-21]). This command generates no MPF proofs and keeps no trie state of its own — both roots
+  * are read straight out of the signed Bitcoin bytes ([[SweptPegInsTrie.committedRoots]], the same
+  * exactly-one rule the validator applies).
   *
   * A TM without exactly one commitment output can never confirm, so it is reported and skipped
   * permanently rather than retried. A TM whose input 0 does not spend the singleton's CURRENT head
@@ -52,15 +51,6 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         println()
         runConfirm(config, notifier.getOrElse(Notifier.fromConfig(config.notifications)))
     }
-
-    /** Everything a Confirm needs from live chain state: the Config UTxO (reference input), the
-      * singleton UTxO (spent), and its decoded head state.
-      */
-    private final case class SingletonContext(
-        configUtxo: Utxo,
-        singletonUtxo: Utxo,
-        state: BridgeState
-    )
 
     private def runConfirm(config: BinocularConfig, notifier: Notifier): Int = boundary {
         given ec: ExecutionContext = binocular.cli.DaemonExecution.ec
@@ -183,54 +173,33 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         // one-shot minting policy and the spend validator).
         val configAddress = Address(network, Credential.ScriptHash(configNftPolicy))
 
-        /** Resolve the live Config + singleton pair, or say which piece is missing. Re-read every
-          * cycle: each Confirm spends the singleton, so a cached UTxO is stale after one submit.
+        /** Resolve the live Config + singleton pair via [[BridgeSweepSetup.loadSingletonContext]],
+          * then check the config's `bridge_state_policy` equals the locally derived script hash —
+          * confirm must SPEND the singleton, so a mismatch means a wrong one-shot ref or an
+          * unapplied config Update. Re-read every cycle: each Confirm spends the singleton, so a
+          * cached UTxO is stale after one submit.
           */
-        def loadSingletonContext(): Either[String, SingletonContext] = {
-            def findByNft(
-                address: Address,
-                policy: ScriptHash,
-                asset: AssetName,
-                what: String
-            ): Either[String, Utxo] =
-                provider
-                    .findUtxos(address)
-                    .await(timeout)
-                    .left
-                    .map(err => s"fetching the $what: $err")
-                    .flatMap(
-                      _.toList
-                          .collectFirst {
-                              case (in, out) if out.value.hasAsset(policy, asset) => Utxo(in, out)
-                          }
-                          .toRight(s"no UTxO carrying the $what NFT at $address")
-                    )
-            for {
-                configUtxo <- findByNft(configAddress, configNftPolicy, configNftAsset, "config")
-                cfg <- configUtxo.output.inlineDatum
-                    .flatMap(d => Try(d.to[ConfigDatum]).toOption)
-                    .toRight("config datum does not decode as the rev-5.4 ConfigDatum")
-                _ <- Either.cond(
-                  cfg.bridgeStatePolicy.toHex == bssScript.scriptHash.toHex,
-                  (),
-                  s"config field 3 publishes bridge_state policy ${cfg.bridgeStatePolicy.toHex}, " +
-                      s"but the bridge_state validator derived from (TM hash, one-shot) hashes to " +
-                      s"${bssScript.scriptHash.toHex}. Check bridge.bridge-state-one-shot-ref, or " +
-                      "run the config Update that publishes the new policy."
+        def loadSingletonContext(): Either[String, BridgeSweepSetup.SingletonContext] =
+            BridgeSweepSetup
+                .loadSingletonContext(
+                  provider,
+                  configAddress,
+                  configNftPolicy,
+                  configNftAsset,
+                  network,
+                  timeout
                 )
-                singletonUtxo <- findByNft(
-                  bssAddress,
-                  bssScript.scriptHash,
-                  bssAssetName,
-                  "bridge-state singleton (\"BSS\")"
-                )
-                state <- singletonUtxo.output.inlineDatum
-                    .flatMap(d => Try(d.to[BridgeState]).toOption)
-                    .toRight(
-                      "the singleton datum does not decode as the 4-field BridgeState ([LIB-1])"
+                .flatMap(ctx =>
+                    Either.cond(
+                      ctx.config.bridgeStatePolicy.toHex == bssScript.scriptHash.toHex,
+                      ctx,
+                      s"config publishes bridge_state policy " +
+                          s"${ctx.config.bridgeStatePolicy.toHex}, but the bridge_state validator " +
+                          s"derived from (TM hash, one-shot) hashes to " +
+                          s"${bssScript.scriptHash.toHex}. Check bridge.bridge-state-one-shot-ref, " +
+                          "or run the config Update that publishes the new policy."
                     )
-            } yield SingletonContext(configUtxo, singletonUtxo, state)
-        }
+                )
 
         // Operator-declared dead TMs (relay.skip-btc-txids): match on the display (big-endian) btc
         // txid, lower-cased so config casing doesn't matter.
@@ -419,7 +388,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         rpc: SimpleBitcoinRpc,
         utxo: Utxo,
         unconfirmedDatum: UnconfirmedTm,
-        ctx: SingletonContext,
+        ctx: BridgeSweepSetup.SingletonContext,
         bssScript: scalus.cardano.ledger.Script.PlutusV3,
         timeout: Duration,
         skipBtcTxids: Set[String],

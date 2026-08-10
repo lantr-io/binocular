@@ -120,13 +120,8 @@ final class ProofService(
               AssetName(TreasuryMovementValidator.BridgeStateAssetName),
               what = "bridge state singleton",
               code = "singleton_missing",
-              // TODO(bridge-state migration): binocular's TM Confirm still runs the CPO-trie flow,
-              // and deploy still writes the TRIE policy into config field 3 — so a pre-migration
-              // deployment has no "BSS" singleton, only a "CPO" trie UTxO. This service implements
-              // the singleton shape the rev-5.4 spec defines and refuses to serve until the
-              // migration lands; it does NOT invent a root.
-              hint = " — if this deployment predates the bridge-state migration, config field 3 " +
-                  "still publishes the completed-peg-outs trie policy and no singleton exists yet"
+              hint = " — run bootstrap-bridge-state (or deploy-bridge) and publish its policy in " +
+                  "Config field 3"
             )
             state <- singletonUtxo.output.inlineDatum
                 .flatMap(d => Try(d.to[BridgeState]).toOption)

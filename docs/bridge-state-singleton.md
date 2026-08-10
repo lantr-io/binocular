@@ -12,14 +12,11 @@ Code: `src/main/scala/binocular/watchtower/TreasuryMovementValidator.scala` (`Br
 
 ## Scope
 
-This change is **additive only**. No existing code path reads `BridgeState`, calls `committedRoots`,
-or builds an SPI trie yet. The old `"CPOR1"` single-root constants and `committedRoot` stay in
-place, untouched, and the validator still uses them.
-
-Rejected: migrating the reader and deleting `"CPOR1"` in the same change. The single-root commitment
-is what every already-confirmed TM on chain carries. Reconstruction (`CpoReconstruction`,
-`PorSweeper.recover`) replays those TMs, so the old reader must keep working until the migration
-tasks land and decide how history is read.
+The migration is COMPLETE: TM Confirm burns the record and advances the singleton
+([CTM-17..30]), the mint chains from the singleton head ([PTM-6]/[PTM-7]), the confirm/deploy/
+bootstrap/sweep commands run on the singleton, and the `"CPOR1"` single-root constants and
+`committedRoot` are deleted — a fresh deployment's history contains only `"BTMR1"` TMs, so no
+reader of the old form remains.
 
 ## `BridgeState` has four fields, not five
 
@@ -91,28 +88,19 @@ replay check, and it is the completion itself that records presence.)
 Code: `src/main/scala/binocular/watchtower/BifrostContracts.scala` (`BridgeStateContract`,
 `BifrostBlueprint.packaged`), `src/main/resources/bifrost-plutus-min.json`.
 
-### The min-json keeps a validator ft deleted
+### The min-json no longer carries the deleted CPO validator
 
-ft rev 5.4 removed `completed-peg-outs-merkle-tree.ak`. The vendored min-json still carries its last
-published `compiledCode`, so the resource is deliberately a superset of ft's blueprint.
+ft rev 5.4 removed `completed-peg-outs-merkle-tree.ak`. The vendored min-json carried its last
+published `compiledCode` for as long as call sites still resolved that policy
+(`BootstrapCompletedPegOutsCommand`, `BridgeSweepSetup`, `ConfirmTmtxCommand`, `PorSweeper`). The
+`bss-bootstrap-cleanup` migration retired every one of those call sites, so the entry is gone and
+the vendored resource matches ft's published titles again.
 
-Rejected: dropping it in this change, to make the vendored copy a literal subset of ft's. Four call
-sites still resolve that policy (`BootstrapCompletedPegOutsCommand`, `BridgeSweepSetup`,
-`ConfirmTmtxCommand`, `PorSweeper`). None of them is covered by a hash pin, so the failure would not
-be a red test — it would be a `validator not found in blueprint` thrown on the startup path of a
-deployed confirm worker, which has no ft checkout to fall back to. The entry is removed together
-with those call sites in `bss-bootstrap-cleanup`.
+### `BridgeStateContract` landed before its callers
 
-The cost of keeping it is that "extra title" no longer signals staleness during a refresh, so the
-refresh rule is written out in the `packaged` doc comment instead of being inferable from a diff.
-
-### `BridgeStateContract` lands before any caller
-
-The wrapper derives a policy that nothing in the command layer uses yet.
-
-Rejected: landing it with its first caller. The callers are split across later tasks and each needs
-a policy id that is already fixed. Adding the wrapper alone lets its regression pin be established
-once, so a later task that changes a derived policy fails here rather than inside a bootstrap flow.
+The wrapper landed one task before the commands that use it (`deploy-bridge`,
+`bootstrap-bridge-state`, `confirm-tmtx`, `deploy-script-refs`), so its regression pin was
+established once and a later change to a derived policy fails the pin rather than a bootstrap flow.
 
 ### Two freshness checks, not one
 

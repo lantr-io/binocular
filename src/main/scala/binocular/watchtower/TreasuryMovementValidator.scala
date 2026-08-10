@@ -85,16 +85,6 @@ case class UnconfirmedTm(
 @Compile
 object UnconfirmedTm
 
-/** Scalus mirror of the RETIRED `completed-peg-outs-merkle-tree.ak` datum (rev 5.4 deleted that
-  * validator: the bridge-state singleton carries `cpo_root` now). The Confirm branch no longer
-  * spends a trie UTxO; this type survives only for the legacy off-chain readers
-  * (`BridgeSweepSetup`, `PorSweeper`) until task `bss-bootstrap-cleanup` retires them.
-  */
-case class CompletedPegOutsTrieDatum(root: ByteString) derives FromData, ToData
-
-@Compile
-object CompletedPegOutsTrieDatum
-
 /** Datum of the rev-5.4 bridge-state singleton — the one UTxO every TM Confirm advances, and the
   * one datum `peg-in.ak`, `peg-out.ak` and `treasury.ak` read.
   *
@@ -255,33 +245,8 @@ object TreasuryMovementValidator {
       */
     val GcGraceMs: BigInt = BigInt(30) * 24 * 3600 * 1000 // 30 days
 
-    /** First 7 bytes of a completed-peg-outs root commitment `scriptPubKey`:
-      * `OP_RETURN OP_PUSHBYTES_37 "CPOR1"`. The 37-byte push is `"CPOR1" ++ new_root`, so the whole
-      * script is 39 bytes ([[RootCommitmentScriptLength]]).
-      *
-      * Why `"CPOR1"` and not the peg-in `"BFR"` prefix: watchtowers detect peg-in deposits by
-      * scanning for `"BFR"`-prefixed OP_RETURN outputs, and a TM pays the treasury address, so a
-      * `"BFR"`-tagged output inside a TM could be misdetected as a deposit. The trailing `1` is a
-      * format version, so a future commitment layout gets its own tag.
-      */
-    val RootCommitmentPrefix: ByteString = hex"6a2543504f5231"
-
-    /** Length of [[RootCommitmentPrefix]]: `OP_RETURN`(1) + `OP_PUSHBYTES_37`(1) + `"CPOR1"`(5).
-      * Also the offset at which the committed root starts.
-      */
-    val RootCommitmentPrefixLength: BigInt = 7
-
-    /** Length of the committed completed-peg-outs MPF root. */
+    /** Length of one committed MPF root. */
     val RootLength: BigInt = 32
-
-    /** Length in bytes of a well-formed root commitment `scriptPubKey` = prefix(7) + root(32) = 39.
-      */
-    val RootCommitmentScriptLength: BigInt = RootCommitmentPrefixLength + RootLength
-
-    /** Asset name of the completed-peg-outs trie NFT. Mirrors
-      * `bifrost/constants.ak::completed_peg_outs_root_asset_name`.
-      */
-    val CompletedPegOutsAssetName: ByteString = ByteString.fromString("CPO")
 
     /** First 7 bytes of a rev-5.4 TWO-ROOT commitment `scriptPubKey`:
       * `OP_RETURN OP_PUSHBYTES_69 "BTMR1"`. The 69-byte push is `"BTMR1" ++ spi_root ++ cpo_root`,
@@ -353,39 +318,6 @@ object TreasuryMovementValidator {
                 )
             case ScalusList.Nil => fail("TM confirm: missing two-root commitment")
             case _              => fail("TM confirm: multiple two-root commitments")
-
-    /** Is this `scriptPubKey` a completed-peg-outs root commitment? Length AND prefix, so a short
-      * script cannot slice past its end and a 39-byte payment script cannot masquerade as one.
-      */
-    def isRootCommitment(scriptPubKey: ByteString): Boolean =
-        scriptPubKey.length == RootCommitmentScriptLength &&
-            scriptPubKey.slice(0, RootCommitmentPrefixLength) == RootCommitmentPrefix
-
-    /** The completed-peg-outs MPF root the TM's outputs attest: the 32 bytes after the prefix of
-      * its single [[isRootCommitment]] output, i.e. bytes [7, 39) of that `scriptPubKey`.
-      *
-      * `outs` is the TM's FULL parsed output list, treasury change included. The commitment may sit
-      * at any position (heimdall emits it last).
-      *
-      * EXACTLY ONE commitment output is required. Zero fails: every TM must state the trie root
-      * that holds after it, including a TM that fulfills no peg-out (which re-commits the unchanged
-      * root), so the trie root is pinned by an unbroken chain of quorum attestations. Two or more
-      * fail because the validator would otherwise have to choose, and a permissionless confirmer
-      * would make that choice.
-      *
-      * The root is ATTESTED, not verified: it is whatever the FROST quorum signed into the TM. This
-      * validator only copies it into the trie UTxO. Root correctness rests on the same quorum
-      * honesty that already custodies the treasury — every co-signer recomputes the expected root
-      * from its own trie before signing, so a leader proposing a wrong root fails quorum.
-      */
-    def committedRoot(outs: ScalusList[PegOutEntry]): ByteString =
-        // `filter` then match, NOT `find`: `find` stops at the first commitment and would silently
-        // accept a TM carrying a second one.
-        outs.filter(out => isRootCommitment(out.scriptPubKey)) match
-            case ScalusList.Cons(only, ScalusList.Nil) =>
-                only.scriptPubKey.slice(RootCommitmentPrefixLength, RootLength)
-            case ScalusList.Nil => fail("TM confirm: missing root commitment")
-            case _              => fail("TM confirm: multiple root commitments")
 
     /** All input outpoints (prev_txid(32) ++ prev_vout(4), 36 bytes each) of a raw Bitcoin tx, in
       * input order. These are the `sweptPegInUtxoIds` of a TM (the old treasury input is included —

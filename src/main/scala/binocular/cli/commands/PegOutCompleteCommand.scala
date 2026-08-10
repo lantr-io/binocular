@@ -6,7 +6,6 @@ import binocular.notify.Notifier
 import binocular.watchtower.*
 import scalus.cardano.address.Address
 import scalus.cardano.ledger.{AssetName, Credential, ScriptHash}
-import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import scalus.uplc.builtin.ByteString
 
 import scala.concurrent.ExecutionContext
@@ -18,9 +17,10 @@ import cats.syntax.either.*
 /** Complete PAID peg-out requests manually — the one-shot form of the watchtower's POR sweeper.
   *
   * Since spec rev 5.1 completion is PERMISSIONLESS cleanup: it burns a request's locked fBTC
-  * against a value-bound membership proof in the completed-peg-outs trie, and whoever submits it
+  * against a value-bound membership proof of the singleton's `cpo_root`, and whoever submits it
   * keeps the request's MIN_ADA. There is no owner signature, no Bitcoin SPV bundle, and no trie
-  * update — the trie is a reference input, so completions never contend with each other.
+  * update — the bridge-state singleton is a reference input, so completions never contend with each
+  * other.
   *
   * The watchtower runs this automatically after every TM Confirm (`bridge.por-sweeper`, on by
   * default), so this command exists for operators and for the migration runbook's verification
@@ -60,44 +60,22 @@ case class PegOutCompleteCommand(pegOut: Option[String] = None, dryRun: Boolean 
                     Console.error(s"Loading bridge blueprint: ${e.getMessage}"); break(1)
             }
 
-        // The trie validator is parameterized by the TM script hash, so the TM script has to be
-        // derived here too even though no TM is touched.
+        // The TM address is needed only for the sweeper's chain-history reconstruction; the
+        // singleton itself is located through the Config at runtime ([PAR-1]), so this command
+        // needs no one-shot ref and derives no bridge_state script (it only REFERENCES the
+        // singleton, never spends it).
         val tmScript = TreasuryMovementContract.script(
           oracleScriptHashBS,
           ByteString.fromHex(config.bridge.configNftPolicyId),
           ByteString.fromHex(config.bridge.configNftAssetName)
         )
         val tmAddress = Address(network, Credential.ScriptHash(tmScript.scriptHash))
-        val cpoOneShot = config.bridge.completedPegOutsOneShotRef
-            .map(_.trim)
-            .filter(_.nonEmpty)
-            .flatMap(s =>
-                s.split('#') match {
-                    case Array(h, i) if h.length == 64 && i.toIntOption.isDefined =>
-                        Some(TxOutRef(TxId(ByteString.fromHex(h)), BigInt(i.toInt)))
-                    case _ => None
-                }
-            )
-            .getOrElse {
-                Console.error(
-                  "bridge.completed-peg-outs-one-shot-ref must be TX_HASH#INDEX — without it the " +
-                      "completed-peg-outs trie validator cannot be derived, and the CPO singleton " +
-                      "cannot be located."
-                )
-                break(1)
-            }
-        val trieScript = CompletedPegOutsContract(
-          bridgeBlueprint,
-          ByteString.fromArray(tmScript.scriptHash.bytes),
-          cpoOneShot
-        ).script
         val configNftPolicy = ScriptHash.fromHex(config.bridge.configNftPolicyId)
         val configNftAsset = AssetName(ByteString.fromHex(config.bridge.configNftAssetName))
         val configAddress = Address(network, Credential.ScriptHash(configNftPolicy))
 
         Console.info("Cardano", config.cardano.network)
         Console.info("bridge blueprint", blueprintSource)
-        Console.info("completed-peg-outs policy", trieScript.scriptHash.toHex)
 
         val sweeper = BridgeSweepSetup
             .buildPorSweeper(
@@ -117,28 +95,27 @@ case class PegOutCompleteCommand(pegOut: Option[String] = None, dryRun: Boolean 
                 Console.error(s"Building the peg-out sweeper: $err"); break(1)
             }
 
-        val trieCtx = BridgeSweepSetup
-            .loadTrieContext(
+        val ctx = BridgeSweepSetup
+            .loadSingletonContext(
               provider,
               configAddress,
               configNftPolicy,
               configNftAsset,
-              trieScript,
-              AssetName(CompletedPegOutsContract.assetName),
               network,
               timeout
             )
             .valueOr { err =>
-                Console.error(s"completed-peg-outs trie: $err"); break(1)
+                Console.error(s"bridge-state singleton: $err"); break(1)
             }
-        Console.info("on-chain trie root", trieCtx.currentRoot.toHex)
+        Console.info("bridge-state policy", ctx.config.bridgeStatePolicy.toHex)
+        Console.info("on-chain cpo_root", ctx.state.cpoRoot.toHex)
         Console.separator()
         println()
 
         // The mirror is caught up from chain history here — a standalone run has no confirm hints —
         // and the reconstruction is cross-checked against the on-chain root before any proof is
         // built. A halt means the trie could not be reconciled and nothing was submitted.
-        sweeper.sweep(trieCtx.configUtxo, trieCtx.trieUtxo, pegOut.map(normalizeRef))
+        sweeper.sweep(ctx.configUtxo, ctx.singletonUtxo, pegOut.map(normalizeRef))
         if sweeper.isHalted then 1 else 0
     }
 

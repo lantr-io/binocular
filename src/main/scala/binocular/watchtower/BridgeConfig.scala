@@ -55,33 +55,30 @@ case class BridgeConfig(
     // are inputs to the policy hash, so changing one names a different ban list — which is exactly
     // why they are chosen once, here, and then read by every SPO rather than typed by each.
     banSchedule: BanScheduleConfig = BanScheduleConfig(),
-    // The completed-peg-outs one-shot fixes that validator's params (hence its policyId + NFT asset
-    // name); peg-out-complete needs it to reconstruct the script to SPEND the MPF UTxO. `Option`
-    // (not `""`): a peg-in-only bridge (e.g. the synced config) simply omits the key — pureconfig
-    // maps a missing key to `None`. The peg-out commands fail fast when a required ref is absent.
-    //
-    // REQUIRED BY `confirm-tmtx` since the peg-out trie v2 change (2026-07). Every TM Confirm tx
-    // spends and recreates the completed-peg-outs trie UTxO, so the confirm daemon must rebuild that
-    // validator too — its other parameter is the TM script hash, which confirm already derives.
-    // `confirm-tmtx` (and therefore `watchtower`) exits at startup when this key is missing, because
-    // no TM can be confirmed without the trie spend. A peg-in-only deployment must still set it.
-    //
-    // The heavy scripts' CIP-33 reference UTxOs (peg_in, bridged_token, completed_peg_ins, peg_out,
-    // completed_peg_outs) are no longer recorded here: deploy-script-refs publishes them to the
-    // sponsor wallet, and the completion paths discover them by the `reference_script_hash` each
-    // carries (see CommandHelpers.refScriptUtxosByHash). A script hash not found on-chain falls back
-    // to inlining the script in the witness set (only viable for small txs).
-    completedPegOutsOneShotRef: Option[String] = None,
     // The one-shot wallet UTxO (TX_HASH#INDEX) consumed when the bridge-state singleton NFT
     // ("BSS") was minted. It fixes the bridge_state validator's parameter set — its other
     // parameter is the TM script hash, which confirm derives — hence its policyId, which MUST
-    // equal Config field 3 (`bridge_state_policy`).
+    // equal Config field 3 (`bridge_state_policy`). `Option` (not `""`): a missing key maps to
+    // `None`, so "absent" and "present but empty" stay distinguishable.
     //
     // REQUIRED BY `confirm-tmtx` (rev 5.4): every TM Confirm tx spends and recreates the
     // singleton, so the confirm daemon must rebuild that validator. `confirm-tmtx` (and therefore
     // `watchtower`) exits at startup when this key is missing, because no TM can be confirmed
     // without the singleton spend.
+    //
+    // The heavy scripts' CIP-33 reference UTxOs (peg_in, bridged_token, completed_peg_ins,
+    // peg_out, bridge_state) are not recorded here: deploy-script-refs publishes them to the
+    // sponsor wallet, and the completion paths discover them by the `reference_script_hash` each
+    // carries (see CommandHelpers.refScriptUtxosByHash). A script hash not found on-chain falls
+    // back to inlining the script in the witness set (only viable for small txs).
     bridgeStateOneShotRef: Option[String] = None,
+    // The initial Bitcoin treasury outpoint ("TXID:VOUT", display txid) and its satoshi amount —
+    // the deployment anchor written into the singleton's bootstrap BridgeState (spec §Why the
+    // bootstrap datum is not pinned). Nothing on Cardano verifies the amount; a wrong value is
+    // self-limiting (the first TM built from it cannot balance). Read by deploy-bridge and
+    // bootstrap-bridge-state only.
+    initialBtcTreasuryUtxo: String = "",
+    initialBtcTreasuryAmountSat: Long = 0L,
     // --- POR sweeper (spec rev 5.2) ---
     // Chain peg-out Complete after TM Confirm: after each confirmed TM the watchtower burns the
     // locked fBTC of every PAID PegOutRequest and keeps its MIN_ADA. ON by default — completion is

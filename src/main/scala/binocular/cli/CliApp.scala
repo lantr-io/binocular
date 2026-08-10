@@ -39,7 +39,14 @@ object CliApp {
         case TmScript
         case PegInRequest(btcTxId: String, dryRun: Boolean)
         case DeployBridge(dryRun: Boolean)
-        case BootstrapCompletedPegOuts(oneShotRef: Option[String], dryRun: Boolean)
+        case BootstrapBridgeState(
+            oneShotRef: Option[String],
+            anchor: Option[String],
+            amountSat: Option[Long],
+            spiRoot: Option[String],
+            cpoRoot: Option[String],
+            dryRun: Boolean
+        )
         case UpdateConfig(
             bridgeStatePolicy: Option[String],
             tmScriptHash: Option[String],
@@ -295,10 +302,11 @@ object CliApp {
                 dryRunFlag.map(Cmd.RegisterBridgeCreds.apply)
             }
 
-        val bootstrapCompletedPegOutsCommand =
+        val bootstrapBridgeStateCommand =
             Opts.subcommand(
-              "bootstrap-completed-peg-outs",
-              "Mint a fresh completed-peg-outs trie against the LIVE bridge (config field 3 migration)"
+              "bootstrap-bridge-state",
+              "Mint a fresh bridge-state singleton against the LIVE bridge (config field 3 " +
+                  "swap / recovery replacement)"
             ) {
                 val oneShotOpt = Opts
                     .option[String](
@@ -307,7 +315,35 @@ object CliApp {
                           "(default: auto-pick the largest clean pure-ADA UTxO)"
                     )
                     .orNone
-                (oneShotOpt, dryRunFlag).mapN(Cmd.BootstrapCompletedPegOuts.apply)
+                val anchorOpt = Opts
+                    .option[String](
+                      "anchor",
+                      help = "Bitcoin treasury outpoint TXID:VOUT the singleton's head points at " +
+                          "(default: bridge.initial-btc-treasury-utxo)"
+                    )
+                    .orNone
+                val amountOpt = Opts
+                    .option[Long](
+                      "amount-sat",
+                      help = "Satoshi amount of that outpoint " +
+                          "(default: bridge.initial-btc-treasury-amount-sat)"
+                    )
+                    .orNone
+                val spiRootOpt = Opts
+                    .option[String](
+                      "spi-root",
+                      help = "Initial swept-peg-ins root, 64 hex chars (default: 32 zero bytes)"
+                    )
+                    .orNone
+                val cpoRootOpt = Opts
+                    .option[String](
+                      "cpo-root",
+                      help =
+                          "Initial completed-peg-outs root, 64 hex chars (default: 32 zero bytes)"
+                    )
+                    .orNone
+                (oneShotOpt, anchorOpt, amountOpt, spiRootOpt, cpoRootOpt, dryRunFlag)
+                    .mapN(Cmd.BootstrapBridgeState.apply)
             }
 
         val updateConfigCommand =
@@ -556,7 +592,7 @@ object CliApp {
                 tmScriptCommand `orElse`
                 pegInRequestCommand `orElse`
                 deployBridgeCommand `orElse`
-                bootstrapCompletedPegOutsCommand `orElse`
+                bootstrapBridgeStateCommand `orElse`
                 updateConfigCommand `orElse`
                 deployScriptRefsCommand `orElse`
                 registerBridgeCredsCommand `orElse`
@@ -641,8 +677,22 @@ object CliApp {
                             PegInRequestCommand(btcTxId, dryRun)
                         case Cmd.DeployBridge(dryRun) =>
                             DeployBridgeCommand(dryRun)
-                        case Cmd.BootstrapCompletedPegOuts(oneShotRef, dryRun) =>
-                            BootstrapCompletedPegOutsCommand(oneShotRef, dryRun)
+                        case Cmd.BootstrapBridgeState(
+                              oneShotRef,
+                              anchor,
+                              amountSat,
+                              spiRoot,
+                              cpoRoot,
+                              dryRun
+                            ) =>
+                            BootstrapBridgeStateCommand(
+                              oneShotRef,
+                              anchor,
+                              amountSat,
+                              spiRoot,
+                              cpoRoot,
+                              dryRun
+                            )
                         case Cmd.UpdateConfig(
                               bridgeStatePolicy,
                               tmScriptHash,

@@ -47,9 +47,12 @@ class CpoReconstructionTest extends AnyFunSuite {
 
     // --- Bitcoin TM fixtures --------------------------------------------------------------------
 
-    /** `OP_RETURN OP_PUSHBYTES_37 "CPOR1" <root>` — the 39-byte commitment scriptPubKey. */
+    /** `OP_RETURN OP_PUSHBYTES_69 "BTMR1" <spi> <cpo>` — the 71-byte two-root commitment
+      * scriptPubKey. Reconstruction reads the CPO side; the SPI side is a fixed placeholder here.
+      */
     private def commitment(root: ByteString): ByteString =
-        ByteString.fromHex("6a2543504f5231") ++ root
+        ByteString.fromHex("6a4542544d5231") ++
+            ByteString.fromArray(Array.fill[Byte](32)(0x0f)) ++ root
 
     /** A 1-input segwit transaction with the given outputs. `inOutpoint` is the treasury input, so
       * a TM can be chained onto its predecessor's output 0.

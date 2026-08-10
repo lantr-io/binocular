@@ -119,15 +119,6 @@ class BifrostContractsTest extends AnyFunSuite {
         assert(hex(pegOut.policyId) == "61dd27fa3ffa0d49415b0a967a6400df97f84fdcab453afc4c6be42d")
     }
 
-    test("completed-peg-outs policy is stable for the trie-v2 (tm-policy, one-shot) encoding") {
-        // Trie v2 params: (tm_nft_policy_id, one_shot_input_ref). The TM policy placeholder is the
-        // same fixed 28 bytes used for peg_in above, so this is a regression lock over the CIP-57
-        // encoding, not an on-chain-validated value.
-        val cpo = CompletedPegOutsContract(blueprint, tmNftPolicy, cpiRef)
-        assert(hex(cpo.policyId) == "65bd38e83097a5a3261af50052a1ce0e93befde9aa94f38280143602")
-        assert(CompletedPegOutsContract.assetName == ByteString.fromString("CPO"))
-    }
-
     // --- determinism + parameter-sensitivity ---
 
     test("hash computation is deterministic") {
@@ -146,26 +137,8 @@ class BifrostContractsTest extends AnyFunSuite {
         assert(other.policyId != configContract.policyId)
     }
 
-    // The TM script hash is now a completed-peg-outs PARAMETER, so changing the TM validator
-    // orphans the trie: the new policy has no minted "CPO" NFT. This is the migration hazard the
-    // runbook has to sequence, so lock the sensitivity here.
-    test("a different TM policy yields a different completed-peg-outs policy") {
-        val other = CompletedPegOutsContract(
-          blueprint,
-          ByteString.fromHex("22222222222222222222222222222222222222222222222222222222"),
-          cpiRef
-        )
-        assert(other.policyId != CompletedPegOutsContract(blueprint, tmNftPolicy, cpiRef).policyId)
-    }
-
-    test("a different one-shot yields a different completed-peg-outs policy") {
-        val other = CompletedPegOutsContract(blueprint, tmNftPolicy, configRef)
-        assert(other.policyId != CompletedPegOutsContract(blueprint, tmNftPolicy, cpiRef).policyId)
-    }
-
-    test("completed-peg-ins/outs asset names are the CPI/CPO constants") {
+    test("completed-peg-ins asset name is the CPI constant") {
         assert(CompletedPegInsContract.assetName == ByteString.fromString("CPI"))
-        assert(CompletedPegOutsContract.assetName == ByteString.fromString("CPO"))
     }
 
     // --- rev-5.4 bridge-state singleton (spec [BSS-4], [BSS-5]) ---

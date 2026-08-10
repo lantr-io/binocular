@@ -25,9 +25,9 @@ import scala.util.Try
   * undone, paid PegOutRequest UTxOs accumulate forever.
   *
   * ==What one sweep does==
-  *   1. CATCH UP the local trie mirror to the root the on-chain CPO singleton holds, using the data
-  *      -availability hints recorded at each confirm ([[recordConfirmed]]). If the hints cannot
-  *      explain the on-chain root, reconstruct from chain history; if that fails too, HALT.
+  *   1. CATCH UP the local trie mirror to the `cpo_root` the bridge-state singleton holds, using
+  *      the data-availability hints recorded at each confirm ([[recordConfirmed]]). If the hints
+  *      cannot explain the on-chain root, reconstruct from chain history; if that fails too, HALT.
   *   1. COMPLETE every request at the peg-out address whose POR id the mirror records, one
   *      transaction each.
   *
@@ -147,29 +147,30 @@ final class PorSweeper(
         persistPending()
     }
 
-    /** Catch the mirror up to `trieUtxo`'s root, then complete every completable request.
+    /** Catch the mirror up to the singleton's `cpo_root`, then complete every completable request.
       *
-      * `configUtxo` and `trieUtxo` are the LIVE reference inputs, re-read by the caller each cycle.
+      * `configUtxo` and `singletonUtxo` are the LIVE reference inputs, re-read by the caller each
+      * cycle.
       */
-    def sweep(configUtxo: Utxo, trieUtxo: Utxo, only: Option[String] = None): Unit = {
+    def sweep(configUtxo: Utxo, singletonUtxo: Utxo, only: Option[String] = None): Unit = {
         haltReason match {
             case Some(why) => Console.logWarn(s"    sweeper: HALTED — skipping. $why")
-            case None      => sweepUnhalted(configUtxo, trieUtxo, only)
+            case None      => sweepUnhalted(configUtxo, singletonUtxo, only)
         }
     }
 
-    private def sweepUnhalted(configUtxo: Utxo, trieUtxo: Utxo, only: Option[String]): Unit =
+    private def sweepUnhalted(configUtxo: Utxo, singletonUtxo: Utxo, only: Option[String]): Unit =
         verifyAgainstConfig(configUtxo, ctx) match {
             // A deployment/migration state, not a defect: the deployed Config still publishes other
             // scripts than the ones derived here, so any completion we built would be rejected.
             // Report and skip; confirming is unaffected, and the next config Update fixes it with no
             // restart.
             case Left(err) => Console.logWarn(s"    sweeper: not sweeping — $err")
-            case Right(()) => sweepVerified(configUtxo, trieUtxo, only)
+            case Right(()) => sweepVerified(configUtxo, singletonUtxo, only)
         }
 
-    private def sweepVerified(configUtxo: Utxo, trieUtxo: Utxo, only: Option[String]): Unit =
-        onChainRoot(trieUtxo) match {
+    private def sweepVerified(configUtxo: Utxo, singletonUtxo: Utxo, only: Option[String]): Unit =
+        onChainRoot(singletonUtxo) match {
             case Left(err) => Console.logError(s"    sweeper: $err")
             case Right(root) =>
                 catchUp(root) match {
@@ -195,7 +196,7 @@ final class PorSweeper(
                             .foreach(e =>
                                 Console.logWarn(s"    sweeper: persisting the trie mirror: $e")
                             )
-                        completeAll(m, configUtxo, trieUtxo, only)
+                        completeAll(m, configUtxo, singletonUtxo, only)
                 }
         }
 
@@ -359,7 +360,7 @@ final class PorSweeper(
     private def completeAll(
         m: CpoTrieMirror,
         configUtxo: Utxo,
-        trieUtxo: Utxo,
+        singletonUtxo: Utxo,
         only: Option[String]
     ): Unit = {
         val utxos = provider.findUtxos(ctx.pegOutAddress).await(timeout) match {
@@ -405,7 +406,7 @@ final class PorSweeper(
                         )
                         PegOutCompleteTx.ScriptRefs(None, None)
                 }
-            ready.foreach(c => completeOne(c, m, configUtxo, trieUtxo, scriptRefs))
+            ready.foreach(c => completeOne(c, m, configUtxo, singletonUtxo, scriptRefs))
         }
     }
 
@@ -414,7 +415,7 @@ final class PorSweeper(
         c: Completable,
         m: CpoTrieMirror,
         configUtxo: Utxo,
-        trieUtxo: Utxo,
+        singletonUtxo: Utxo,
         scriptRefs: PegOutCompleteTx.ScriptRefs
     ): Unit = {
         val ref = c.ref
@@ -434,7 +435,7 @@ final class PorSweeper(
                           scripts =
                               PegOutCompleteTx.Scripts(ctx.pegOutScript, ctx.bridgedTokenScript),
                           scriptRefs = scriptRefs,
-                          inputs = PegOutCompleteTx.Inputs(c.utxo, configUtxo, trieUtxo),
+                          inputs = PegOutCompleteTx.Inputs(c.utxo, configUtxo, singletonUtxo),
                           membershipProof = proof,
                           lockedFbtc = c.locked,
                           bridgedTokenPolicy = ctx.bridgedTokenPolicy,

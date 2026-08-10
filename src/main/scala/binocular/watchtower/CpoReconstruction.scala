@@ -20,7 +20,7 @@ import scala.util.Try
   *      a hard error, because an unreadable `Confirmed` record would drop a whole movement's
   *      entries while the result still looked complete.
   *   1. PER-TM ROOT ASSERTION. After each confirmed TM the running root MUST equal the root that TM
-  *      committed in its `"CPOR1"` output. A mismatch names the offending TM instead of surfacing
+  *      committed in its `"BTMR1"` output. A mismatch names the offending TM instead of surfacing
   *      later as an unexplained wrong root.
   *   1. ALL HINTS TRIED. Posting a TM record is permissionless, so several `Unconfirmed` records
   *      may claim the same Bitcoin txid with different hints. Every candidate is tried and accepted
@@ -323,9 +323,9 @@ object CpoReconstruction {
         val it = ordered.iterator
         while error.isEmpty && it.hasNext do {
             val tm = it.next()
-            CompletedPegOutsTrie.committedRoot(tm.outputs) match {
-                // A pre-rev-5.1 TM has no commitment output. It also fulfilled nothing under the
-                // trie regime, so it moves the root not at all. Backstopped by the final
+            SweptPegInsTrie.committedRoots(tm.outputs).map(_._2) match {
+                // A pre-rev-5.4 TM has no "BTMR1" commitment output. It also fulfilled nothing
+                // under this regime, so it moves the root not at all. Backstopped by the final
                 // cross-check: a TM wrongly treated as inert shows up as a root mismatch.
                 case Left(_) => ()
                 case Right(committed) if committed == mirror.root =>
@@ -374,7 +374,7 @@ object CpoReconstruction {
         // The TM's actual PAYMENTS: every output except the treasury continuation (index 0) and the
         // root commitment.
         val payments = tm.outputs.drop(1).filterNot { o =>
-            TreasuryMovementValidator.isRootCommitment(o.scriptPubKey)
+            TreasuryMovementValidator.isTwoRootCommitment(o.scriptPubKey)
         }
         val candidates = payments.map { p =>
             history.values
