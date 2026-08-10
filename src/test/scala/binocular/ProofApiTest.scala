@@ -94,8 +94,11 @@ class ProofApiTest extends AnyFunSuite {
           pegInAmountSat = 100_000L,
           userSourceChainPubKey = filled(0xcc, 32)
         )
-        val json = ujson.read(ProofApi.depositBundleJson(bundle))
+        val json = ujson.read(ProofApi.depositBundleJson(bundle, filled(0x0b, 32)))
         assert(json("raw_tx").str == rawTx.toHex)
+        // The root the MPF proof was built against — parity with spi-proof's spi_root echo, so a
+        // client can detect an oracle promotion race before building.
+        assert(json("confirmed_blocks_root").str == ("0b" * 32))
         assert(json("block_header").str == filled(0, 80).toHex)
         assert(json("tx_index").num == 2)
         assert(

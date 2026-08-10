@@ -95,11 +95,17 @@ object ProofApi {
 
     /** The four `PegInRequest` mint redeemer items plus the `PegInDatum` convenience fields
       * ([OF-8]: the frontend builds the request from this instead of assembling proofs itself).
+      *
+      * `confirmedBlocksRoot` is the oracle root the MPF proof was built against — echoed for the
+      * same reason `spi-proof` echoes `spi_root`: a client compares it against the oracle UTxO it
+      * is about to reference, so an oracle promotion between the two reads surfaces BEFORE the
+      * transaction is built instead of at phase-2 evaluation.
       */
-    def depositBundleJson(bundle: PegInProofBundle): String =
+    def depositBundleJson(bundle: PegInProofBundle, confirmedBlocksRoot: ByteString): String =
         ujson.write(
           ujson.Obj(
             "peg_in_utxo_id" -> bundle.pegInUtxoId.toHex,
+            "confirmed_blocks_root" -> confirmedBlocksRoot.toHex,
             // PegInDatum.source_chain_peg_in_raw_tx (witness-stripped, hashes to the txid).
             "raw_tx" -> bundle.rawTxHex.toHex,
             // PegInDatum.source_chain_peg_in_raw_tx_index.

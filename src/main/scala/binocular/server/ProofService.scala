@@ -83,7 +83,7 @@ final class ProofService(
             bundle <- backend("building the deposit bundle") {
                 PegInProofBundle.produceForOutpoint(rpc, mpf, outpoint).await(timeout)
             }.flatMap(_.left.map(ProofApi.depositError))
-        } yield ProofApi.depositBundleJson(bundle)
+        } yield ProofApi.depositBundleJson(bundle, chainState.confirmedBlocksRoot)
 
     /** A one-pass construction check for `--dry-run`: resolve both proof sources without serving.
       */

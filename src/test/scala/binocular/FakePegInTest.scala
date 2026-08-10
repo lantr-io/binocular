@@ -14,7 +14,9 @@ class FakePegInTest extends AnyFunSuite {
         // output 0 is the 100 BTC P2TR
         assert(BitcoinHelpers.outputValueSat(d.rawTx, 0) == BigInt(10_000_000_000L))
         assert(d.p2trScript.toHex.startsWith("5120"))
-        assert(d.opReturnScript.toHex.startsWith("6a23424652"))
+        // The dual-key beacon: OP_RETURN PUSH67 "BFR" ‖ D(32) ‖ Q_auth(32).
+        assert(d.opReturnScript.toHex.startsWith("6a43424652"))
+        assert(d.opReturnScript.size == 69)
         // txid is the double-sha of the (legacy) raw tx, deterministic
         assert(d.txid == BitcoinHelpers.getTxHash(d.rawTx))
         assert(FakePegIn.buildDeposit(140000).txid == d.txid) // deterministic
