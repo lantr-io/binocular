@@ -70,6 +70,8 @@ object CliApp {
             pegOut: Option[String],
             dryRun: Boolean
         )
+        case SpiProof(outpoint: String)
+        case DepositProof(outpoint: String)
 
     /** CLI argument parsers */
     object CliParsers {
@@ -391,8 +393,14 @@ object CliApp {
                 }
                 // Every option is applied in ONE Update tx — a validator migration requires its
                 // dependent fields to flip together, and a params update is one signed act.
-                (bridgeStatePolicyOpt, tmScriptHashOpt, pegInHashOpt, pegOutHashOpt, paramsOpt,
-                dryRunFlag)
+                (
+                  bridgeStatePolicyOpt,
+                  tmScriptHashOpt,
+                  pegInHashOpt,
+                  pegOutHashOpt,
+                  paramsOpt,
+                  dryRunFlag
+                )
                     .mapN(Cmd.UpdateConfig.apply)
             }
 
@@ -493,6 +501,27 @@ object CliApp {
                 (pegOutOpt, dryRunFlag).mapN(Cmd.PegOutComplete.apply)
             }
 
+        val outpointArg: Opts[String] =
+            Opts.argument[String](metavar = "OUTPOINT")
+
+        val spiProofCommand =
+            Opts.subcommand(
+              "spi-proof",
+              "Serve the [CPI-9] swept-peg-ins membership proof for one deposit outpoint " +
+                  "(TXID:VOUT or 72-hex) — [SPI-4]/[SPI-6]"
+            ) {
+                outpointArg.map(Cmd.SpiProof.apply)
+            }
+
+        val depositProofCommand =
+            Opts.subcommand(
+              "deposit-proof",
+              "Serve the [OB-12] deposit-inclusion bundle (header, merkle proof, oracle MPF " +
+                  "proof, raw tx) for one deposit outpoint (TXID:VOUT or 72-hex)"
+            ) {
+                outpointArg.map(Cmd.DepositProof.apply)
+            }
+
         val subcommands =
             versionFlag `orElse`
                 infoCommand `orElse`
@@ -521,7 +550,9 @@ object CliApp {
                 pegInCompleteCommand `orElse`
                 signPeginMsgCommand `orElse`
                 pegOutRequestCommand `orElse`
-                pegOutCompleteCommand
+                pegOutCompleteCommand `orElse`
+                spiProofCommand `orElse`
+                depositProofCommand
 
         com.monovore.decline.Command(
           name = "binocular",
@@ -645,6 +676,10 @@ object CliApp {
                             )
                         case Cmd.PegOutComplete(pegOut, dryRun) =>
                             PegOutCompleteCommand(pegOut, dryRun)
+                        case Cmd.SpiProof(outpoint) =>
+                            SpiProofCommand(outpoint)
+                        case Cmd.DepositProof(outpoint) =>
+                            DepositProofCommand(outpoint)
                         case Cmd.Version =>
                             return 0 // unreachable: handled above
                     }
