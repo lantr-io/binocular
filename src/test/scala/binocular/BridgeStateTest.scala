@@ -86,6 +86,15 @@ class BridgeStateTest extends AnyFunSuite {
         try Right(TreasuryMovementValidator.committedRoots(PList.from(outs)))
         catch { case t: Throwable => Left(Option(t.getMessage).getOrElse(t.toString)) }
 
+    /** Assert the reader rejected these outputs, and return the reason it gave. The reason is
+      * asserted too, because "missing" and "multiple" are different bugs in the TM that produced
+      * the outputs, and an operator reading the failure has only this string to tell them apart.
+      */
+    private def rejects(outs: Seq[PegOutEntry]): String =
+        read(outs) match
+            case Left(reason) => reason
+            case Right(roots) => fail(s"expected a rejection, got $roots")
+
     test("committedRoots reads both roots of the single 71-byte \"BTMR1\" output") {
         val outs = Seq(change, payment(0xaa, 2000L), commitment(spiRoot, cpoRoot))
         assert(read(outs) == Right((spiRoot, cpoRoot)))
@@ -99,37 +108,46 @@ class BridgeStateTest extends AnyFunSuite {
     }
 
     test("committedRoots slices spi_root from [7,39) and cpo_root from [39,71)") {
-        // Distinct roots, so a swapped or mis-sliced pair cannot pass.
+        // Two roots of distinct constant bytes: a slice off by any amount picks up a prefix byte
+        // or a byte of the other root, so it cannot equal either expected value.
         val spi = filled(0xa1, 32)
         val cpo = filled(0xb2, 32)
-        val spk = commitment(spi, cpo).scriptPubKey
-        assert(spk.size == 71)
-        assert(
-          read(Seq(change, commitment(spi, cpo))) == Right((spk.slice(7, 32), spk.slice(39, 32)))
-        )
+        assert(commitment(spi, cpo).scriptPubKey == hex"6a4542544d5231" ++ spi ++ cpo)
+        assert(read(Seq(change, commitment(spi, cpo))) == Right((spi, cpo)))
+        // The offsets themselves, so a constant that drifts out of step with the byte layout is
+        // caught here and not by an Aiken reader.
+        assert(TreasuryMovementValidator.TwoRootCommitmentPrefixLength == BigInt(7))
+        assert(TreasuryMovementValidator.CpoRootOffset == BigInt(39))
+        assert(TreasuryMovementValidator.TwoRootCommitmentScriptLength == BigInt(71))
     }
 
     test("committedRoots rejects a TM with no commitment output") {
-        assert(read(Seq(change, payment(0xaa, 2000L))).isLeft)
-        assert(read(Seq.empty).isLeft)
+        assert(rejects(Seq(change, payment(0xaa, 2000L))).contains("missing two-root commitment"))
+        assert(rejects(Seq.empty).contains("missing two-root commitment"))
     }
 
     test("committedRoots rejects two commitment outputs, even of the same roots") {
-        assert(read(Seq(change, commitment(spiRoot, cpoRoot), commitment(cpoRoot, spiRoot))).isLeft)
-        assert(read(Seq(change, commitment(spiRoot, cpoRoot), commitment(spiRoot, cpoRoot))).isLeft)
+        assert(
+          rejects(Seq(change, commitment(spiRoot, cpoRoot), commitment(cpoRoot, spiRoot)))
+              .contains("multiple two-root commitments")
+        )
+        assert(
+          rejects(Seq(change, commitment(spiRoot, cpoRoot), commitment(spiRoot, cpoRoot)))
+              .contains("multiple two-root commitments")
+        )
     }
 
     test("committedRoots rejects the old 39-byte \"CPOR1\" commitment") {
         val cpor1 = PegOutEntry(hex"6a2543504f5231" ++ cpoRoot, 0)
         assert(cpor1.scriptPubKey.size == 39)
-        assert(read(Seq(change, cpor1)).isLeft)
+        assert(rejects(Seq(change, cpor1)).contains("missing two-root commitment"))
     }
 
     test("committedRoots rejects a 71-byte output with a wrong prefix") {
         // "BTMR2": right length, right OP_RETURN push, wrong tag.
         val wrongTag = PegOutEntry(hex"6a4542544d5232" ++ spiRoot ++ cpoRoot, 0)
         assert(wrongTag.scriptPubKey.size == 71)
-        assert(read(Seq(change, wrongTag)).isLeft)
+        assert(rejects(Seq(change, wrongTag)).contains("missing two-root commitment"))
         // ...and it does not stop the real one from being read.
         assert(
           read(Seq(change, wrongTag, commitment(spiRoot, cpoRoot))) == Right((spiRoot, cpoRoot))
@@ -139,10 +157,13 @@ class BridgeStateTest extends AnyFunSuite {
     test("committedRoots rejects a right-prefix output of the wrong length") {
         // 70 bytes: without the length check the second slice would read past the payload.
         val short = PegOutEntry(commitment(spiRoot, cpoRoot).scriptPubKey.slice(0, 70), 0)
-        assert(read(Seq(change, short)).isLeft)
+        assert(rejects(Seq(change, short)).contains("missing two-root commitment"))
     }
 
     test("committedRoots ignores a 71-byte payment script") {
-        assert(read(Seq(change, PegOutEntry(filled(0x51, 71), BigInt(1)))).isLeft)
+        assert(
+          rejects(Seq(change, PegOutEntry(filled(0x51, 71), BigInt(1))))
+              .contains("missing two-root commitment")
+        )
     }
 }

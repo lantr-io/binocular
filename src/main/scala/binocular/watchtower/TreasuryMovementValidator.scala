@@ -318,21 +318,19 @@ object TreasuryMovementValidator {
       */
     val TwoRootCommitmentPrefixLength: BigInt = 7
 
-    /** Bytes the single `OP_PUSHBYTES_69` pushes: `"BTMR1"`(5) + `spi_root`(32) + `cpo_root`(32).
-      * Well inside every datacarrier standardness limit.
-      */
-    val TwoRootCommitmentPayloadLength: BigInt = 69
-
-    /** Length in bytes of a well-formed two-root commitment `scriptPubKey`: `OP_RETURN`(1) + push
-      * opcode(1) + payload(69) = 71.
-      */
-    val TwoRootCommitmentScriptLength: BigInt = 2 + TwoRootCommitmentPayloadLength
-
     /** Offset at which `cpo_root` starts: after the prefix and the 32-byte `spi_root`. */
     val CpoRootOffset: BigInt = TwoRootCommitmentPrefixLength + RootLength
 
-    /** Asset name of the rev-5.4 bridge-state singleton NFT. Mirrors
-      * `bifrost/constants.ak::bridge_state_asset_name`.
+    /** Length in bytes of a well-formed two-root commitment `scriptPubKey` = prefix(7) +
+      * `spi_root`(32) + `cpo_root`(32) = 71. The single `OP_PUSHBYTES_69` pushes the last 69 of
+      * those bytes, `"BTMR1" ++ spi_root ++ cpo_root`, well inside every datacarrier standardness
+      * limit.
+      */
+    val TwoRootCommitmentScriptLength: BigInt = CpoRootOffset + RootLength
+
+    /** Asset name of the rev-5.4 bridge-state singleton NFT. The Aiken side has no constant for it
+      * yet; when `bifrost/constants.ak` gains one it MUST carry these same bytes, because the
+      * singleton is identified by `(policy, name)` on both sides.
       */
     val BridgeStateAssetName: ByteString = ByteString.fromString("BSS")
 

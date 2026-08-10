@@ -58,35 +58,11 @@ object CompletedPegOutsTrie {
 
     /** Build the trie holding exactly `entries`, keyed by POR id.
       *
-      * Insertion ORDER IS IRRELEVANT: an MPF root is a function of the key/value SET, not of the
-      * order the keys arrived in. So the caller may pass entries in any order and does not have to
-      * reconstruct the TM chain.
-      *
       * A POR id repeated with the SAME value is inserted once (a double-fulfillment records the
       * same completion twice). A POR id repeated with a DIFFERENT value is reported rather than
-      * silently resolved: one of the two sources must be wrong, and picking either would produce a
-      * root no TM ever committed.
+      * silently resolved. See [[MpfSetBuilder.trieFrom]] for the order-independence and duplicate
+      * rules.
       */
-    def trieFrom(entries: Seq[(ByteString, ByteString)]): Either[String, OffChainMPF] = {
-        // Keyed by hex, not by ByteString, so the de-duplication never depends on ByteString's
-        // hashCode contract.
-        val merged = scala.collection.mutable.LinkedHashMap.empty[String, (ByteString, ByteString)]
-        var error: Option[String] = None
-        val it = entries.iterator
-        while error.isEmpty && it.hasNext do {
-            val (key, value) = it.next()
-            merged.get(key.toHex) match {
-                case Some((_, seen)) if seen != value =>
-                    error = Some(
-                      s"POR id ${key.toHex} is recorded twice with different values " +
-                          s"(${seen.toHex} and ${value.toHex})"
-                    )
-                case Some(_) => ()
-                case None    => merged.put(key.toHex, (key, value))
-            }
-        }
-        error.toLeft(
-          merged.valuesIterator.foldLeft(OffChainMPF.empty)((t, kv) => t.insert(kv._1, kv._2))
-        )
-    }
+    def trieFrom(entries: Seq[(ByteString, ByteString)]): Either[String, OffChainMPF] =
+        MpfSetBuilder.trieFrom("POR id", entries)
 }

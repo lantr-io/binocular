@@ -51,37 +51,13 @@ object SweptPegInsTrie {
 
     /** Build the trie holding exactly `entries`, keyed by peg-in UTxO id.
       *
-      * Insertion ORDER IS IRRELEVANT: an MPF root is a function of the key/value SET, not of the
-      * order the keys arrived in. So the caller may pass the entries of many TMs in any order and
-      * does not have to reconstruct the TM chain.
-      *
-      * A peg-in UTxO id repeated with the SAME value is inserted once. A peg-in UTxO id repeated
-      * with a DIFFERENT value means two TMs claim to have swept one deposit, so one of the two
-      * sources must be wrong. That is reported, never resolved: picking either would produce a root
-      * no TM ever committed.
+      * A peg-in UTxO id repeated with the SAME value is inserted once (two sources reporting one
+      * sweep). A peg-in UTxO id repeated with a DIFFERENT value means two TMs claim to have swept
+      * one deposit, so one of the two sources must be wrong; that is reported, never resolved. See
+      * [[MpfSetBuilder.trieFrom]] for the order-independence and duplicate rules.
       */
-    def trieFrom(entries: Seq[(ByteString, ByteString)]): Either[String, OffChainMPF] = {
-        // Keyed by hex, not by ByteString, so the de-duplication never depends on ByteString's
-        // hashCode contract.
-        val merged = scala.collection.mutable.LinkedHashMap.empty[String, (ByteString, ByteString)]
-        var error: Option[String] = None
-        val it = entries.iterator
-        while error.isEmpty && it.hasNext do {
-            val (key, value) = it.next()
-            merged.get(key.toHex) match {
-                case Some((_, seen)) if seen != value =>
-                    error = Some(
-                      s"peg-in UTxO id ${key.toHex} is recorded as swept twice with different " +
-                          s"values (${seen.toHex} and ${value.toHex})"
-                    )
-                case Some(_) => ()
-                case None    => merged.put(key.toHex, (key, value))
-            }
-        }
-        error.toLeft(
-          merged.valuesIterator.foldLeft(OffChainMPF.empty)((t, kv) => t.insert(kv._1, kv._2))
-        )
-    }
+    def trieFrom(entries: Seq[(ByteString, ByteString)]): Either[String, OffChainMPF] =
+        MpfSetBuilder.trieFrom("swept peg-in UTxO id", entries)
 
     /** An MPF membership proof that `pegInUtxoId` was swept, in the shape [CPI-9] verifies on-chain
       * with `mpf.has(peg_in_utxo_id, sweeping_tm_input_0, proof)` ([SPI-4]).

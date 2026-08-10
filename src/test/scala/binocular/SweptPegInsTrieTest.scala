@@ -132,6 +132,15 @@ class SweptPegInsTrieTest extends AnyFunSuite {
         )
     }
 
+    test("trieFrom inserts a peg-in UTxO id repeated with the same value once") {
+        // Two sources reporting the same sweep is normal, and must not change the root.
+        val e = (deposit1, treasuryIn)
+        assert(
+          SweptPegInsTrie.trieFrom(Seq(e, e)).toOption.get.rootHash ==
+              SweptPegInsTrie.trieFrom(Seq(e)).toOption.get.rootHash
+        )
+    }
+
     test("trieFrom rejects one peg-in UTxO id swept by two different TMs") {
         // Two TMs claiming the same deposit means one of the two sources is wrong. Picking either
         // yields a root no TM ever committed, so it is reported, never resolved.
