@@ -5,72 +5,57 @@ import scalus.uplc.builtin.Data.{FromData, ToData}
 
 // Scalus mirror of ft-bifrost-bridge `lib/bifrost/types/config.ak::ConfigDatum`. Field order is
 // positional in the Plutus Constr — keep it identical to the .ak record so `config[N]` reads on the
-// bridge validators line up. All hash/policy/asset fields are ByteStrings; min_stake is an Int.
+// bridge validators line up.
 //
-// Variant B layout (11 fields): 0 bridged_token_policy_id, 1 bridged_token_asset_name,
-// 2 completed_peg_ins_merkle_tree_policy_id, 3 completed_peg_outs_merkle_tree_policy_id,
-// 4 peg_in_withdraw_script_hash, 5 peg_out_withdraw_script_hash, 6 peg_in_close_verifier_script_hash,
-// 7 legit_TM_and_peg_out_produced_verifier_script_hash,
-// 8 legit_TM_and_peg_out_not_produced_verifier_script_hash, 9 min_stake, 10 update_auth. The cpi/cpo
-// NFT asset names are constants ("CPI"/"CPO"), so no asset-name fields are stored. Index 6 is the
-// peg-in CLOSE verifier hash: peg_in.ak's Cancel branch delegates the F4/F5 close checks to a
-// withdrawal from this script. It's a runtime config field, so the close verifier can be deployed +
-// wired via a config update with no peg_in recompile / PIR re-mint. Dummy (Cancel disabled) until
-// the F1–F6 failure-mode milestone ships. Index 10 is the config Update/Retire authority
-// (Aiken `Option<AuthorizationMethod>`, None = permanently frozen). Index 11 is the initial
-// Bitcoin treasury outpoint (36 bytes: txid internal order ++ vout LE) the FIRST Treasury
-// Movement must spend; subsequent TMs chain from the previous Confirmed TM record. Indices 12–16 are
-// the operational-parameter tunables appended after the anchor (spec §Operational parameters): 12
-// fee_rate_sat_per_vb, 13 per_pegout_fee, 14 min_peg_out_fbtc, 15 leader_reward, 16 schedule (nested
-// ScheduleParams). These are OFF-CHAIN consensus anchors / pinned-copy sources — no Aiken validator
-// reads a current value; the TM validator is the Scalus contract here, and the leader_reward pin is
-// enforced there when N9 lands.
+// Rev-5.4 layout (spec §Config datum, eight fields): 0 update_auth (Aiken
+// `Option<AuthorizationMethod>`, None = permanently frozen), 1 bridged_token_policy,
+// 2 completed_peg_ins_policy (CPI trie NFT policy), 3 bridge_state_policy (the singleton NFT
+// policy), 4 tm_script_hash (spec [CFG-2]: the TM validator hash = TM NFT policy id, published so
+// off-chain readers can locate the TM address without a build-time constant — NO on-chain reader),
+// 5 peg_in_script_hash, 6 peg_out_script_hash, 7 params (the nested [[ConfigParams]] record, so
+// governance can replace the tunables wholesale without renumbering their neighbours).
 //
-// Indices 17-23 are the FEDERATION IDENTITY (WI-068): 17 spo_bans_policy_id, 18
-// base_ban_duration_ms, 19 max_faults_before_permanent, 20 max_validity_window_ms, 21
-// spos_registry_policy_id, 22 treasury_info_policy_id, 23 treasury_info_asset_name. Also
-// off-chain-only, and published for a sharper reason than the tunables: every value that would
-// otherwise locate the ban list or the registry is an INPUT to the policy id it identifies, so no
-// node can derive the address it would read them from, and one wrong input gives a well-formed
-// address holding NOTHING rather than an error. Since the eligible DKG roster is the registry minus
-// active bans, that silently splits the roster. treasury_info (#22) is published even though it is
-// a pure function of (#21, TM-NFT policy), because every reader must apply BOTH parameters
-// identically or the state UTxO is unfindable; #23 is derivable from nothing at all, being a name
-// chosen at bootstrap.
+// Gone from rev 5.1: the bridged-token asset name (now the [CFG-1] constant
+// [[ConfigDatum.BridgedTokenAssetName]]), the peg-in close verifier, both legit_TM verifier
+// hashes, min_stake, initial_btc_treasury_utxo and leader_reward.
 //
-// Must mirror ft `config.ak::ConfigDatum` (24 fields), because `config.config`'s genesis path
+// Must mirror ft `config.ak::ConfigDatum` (8 fields), because `config.config`'s genesis path
 // full-casts the datum, so deploy-bridge must write all of them.
 case class ConfigDatum(
-    bridgedTokenPolicyId: ByteString,
-    bridgedTokenAssetName: ByteString,
-    completedPegInsMerkleTreePolicyId: ByteString,
-    completedPegOutsMerkleTreePolicyId: ByteString,
-    pegInWithdrawScriptHash: ByteString,
-    pegOutWithdrawScriptHash: ByteString,
-    pegInCloseVerifierScriptHash: ByteString,
-    legitTmAndPegOutProducedVerifierScriptHash: ByteString,
-    legitTmAndPegOutNotProducedVerifierScriptHash: ByteString,
-    minStake: BigInt,
     updateAuth: scalus.cardano.onchain.plutus.prelude.Option[AuthorizationMethod],
-    initialBtcTreasuryUtxo: ByteString,
+    bridgedTokenPolicy: ByteString,
+    completedPegInsPolicy: ByteString,
+    bridgeStatePolicy: ByteString,
+    tmScriptHash: ByteString,
+    pegInScriptHash: ByteString,
+    pegOutScriptHash: ByteString,
+    params: ConfigParams
+) derives FromData,
+      ToData
+
+object ConfigDatum {
+
+    /** The bridged-token (fBTC) asset name — spec [CFG-1]: a protocol constant, not a Config field.
+      * Mirrors `lib/bifrost/constants.ak::bridged_token_asset_name`.
+      */
+    val BridgedTokenAssetName: ByteString = ByteString.fromString("fSAT")
+}
+
+// Scalus mirror of `config.ak::ConfigParams` — the tunable operational parameters, nested as
+// ConfigDatum field 7 (spec §Operational parameters). Positional; keep field order identical to
+// the .ak record: 0 fee_rate_sat_per_vb, 1 per_pegout_fee, 2 min_peg_out_fbtc, 3 schedule.
+// OFF-CHAIN consensus anchors / pinned-copy sources — no Aiken validator reads a current value.
+case class ConfigParams(
     feeRateSatPerVb: BigInt,
     perPegoutFee: BigInt,
     minPegOutFbtc: BigInt,
-    leaderReward: BigInt,
-    schedule: ScheduleParams,
-    spoBansPolicyId: ByteString,
-    baseBanDurationMs: BigInt,
-    maxFaultsBeforePermanent: BigInt,
-    maxValidityWindowMs: BigInt,
-    sposRegistryPolicyId: ByteString,
-    treasuryInfoPolicyId: ByteString,
-    treasuryInfoAssetName: ByteString
+    schedule: ScheduleParams
 ) derives FromData,
       ToData
 
 // Scalus mirror of `config.ak::ScheduleParams` — the tunable epoch/TM schedule (all Int slot
-// values, spec §TM batches and the protocol schedule). Positional; keep field order identical to
-// the .ak record. Off-chain readers only.
+// values, spec §TM batches and the protocol schedule), nested as ConfigParams field 3.
+// Positional; keep field order identical to the .ak record. Off-chain readers only.
 case class ScheduleParams(
     dkgR1Deadline: BigInt,
     dkgR2Deadline: BigInt,
@@ -94,7 +79,7 @@ case class CompletedPegInsMerkleTreeDatum(
       ToData
 
 // Spend redeemer for `completed-peg-ins-merkle-tree.ak::SpendRedeemer`. The spend handler reads
-// config[4] = peg_in_withdraw_script_hash, then requires the peg_in withdraw redeemer at
+// config[5] = peg_in_script_hash, then requires the peg_in withdraw redeemer at
 // `pegInWithdrawRedeemerIndex` to be a `Withdraw(Script(peg_in_withdraw_hash))` carrying a
 // CompletePegIn action, and that a withdrawal from that script is present. Both indices are
 // computed from the assembled tx (see PegInCompleteTx).

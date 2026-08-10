@@ -161,13 +161,16 @@ class PorSweeperTest extends AnyFunSuite {
 
     // --- config agreement -----------------------------------------------------------------------
 
-    private def configUtxo(pegOutField: ScriptHash, policy: ScriptHash, asset: AssetName): Utxo = {
+    // The rev-5.4 raw layout: 0 update_auth (None), 1 bridged_token_policy, 2-5 inert, 6 the
+    // peg_out script hash. The asset name is the [CFG-1] constant, so it is NOT in the datum.
+    private def configUtxo(pegOutField: ScriptHash, policy: ScriptHash): Utxo = {
         val datum: Data = Data.Constr(
           0,
           PList.from(
             List[Data](
+              Data.Constr(1, PList()), // update_auth = None
               Data.B(ByteString.fromArray(policy.bytes)),
-              Data.B(asset.bytes),
+              Data.B(ByteString.empty),
               Data.B(ByteString.empty),
               Data.B(ByteString.empty),
               Data.B(ByteString.empty),
@@ -187,20 +190,20 @@ class PorSweeperTest extends AnyFunSuite {
     }
 
     test("a Config publishing our scripts lets the sweeper run") {
-        val u = configUtxo(pegOut.policyId, bridgedToken.policyId, bridgedTokenAsset)
+        val u = configUtxo(pegOut.policyId, bridgedToken.policyId)
         assert(PorSweeper.verifyAgainstConfig(u, ctx) == Right(()))
     }
 
     test("a Config still publishing the pre-migration peg-out hash blocks sweeping") {
         // The state between deploying the new peg_out and running `update-config
         // --peg-out-withdraw-hash`. Confirming keeps working; only cleanup waits.
-        val u = configUtxo(pegOutHash, bridgedToken.policyId, bridgedTokenAsset)
+        val u = configUtxo(pegOutHash, bridgedToken.policyId)
         val err = PorSweeper.verifyAgainstConfig(u, ctx).swap.getOrElse(fail("expected a mismatch"))
         assert(err.contains("update-config --peg-out-withdraw-hash"))
     }
 
     test("a Config publishing a different bridged token blocks sweeping") {
-        val u = configUtxo(pegOut.policyId, bridgedTokenPolicy, bridgedTokenAsset)
+        val u = configUtxo(pegOut.policyId, bridgedTokenPolicy)
         assert(PorSweeper.verifyAgainstConfig(u, ctx).isLeft)
     }
 

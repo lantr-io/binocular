@@ -28,11 +28,14 @@ import scalus.uplc.builtin.ByteString
   * Refreshed again for the peg-out trie v2 rewrite: the min-json now also carries `peg_out`, and
   * both peg-out-side validators changed parameter lists — `peg_out_validator` dropped
   * `oracle_policy_id` (2 params), `completed_peg_outs_merkle_tree_validator` swapped the config NFT
-  * pair for `tm_nft_policy_id` (2 params). `config.config`, `bridged_token` and
-  * `completed_peg_ins_merkle_tree` compiledCode are byte-identical to the previous min-json, so
-  * their three pins did NOT move. `peg_in_validator`'s compiledCode did move — not from a source
-  * change (peg-in.ak is untouched) but because ft regenerated `plutus.json` with a different aiken
-  * build after the last refresh — so its pin moved with it.
+  * pair for `tm_nft_policy_id` (2 params).
+  *
+  * Refreshed again for the rev-5.4 eight-field Config datum (spec §Config datum, 2026-08): the
+  * genesis full cast in `config.config` and the getter indexes in every reader moved, so the config
+  * policy pin and everything parameterized by it cascaded. `peg_in_validator` also dropped its
+  * `tm_nft_policy_id` param (3 params now). `completed_peg_outs_merkle_tree_validator` is WITHDRAWN
+  * in the ft tree (replaced by `bridge-state.ak`); the min-json keeps its LAST published
+  * compiledCode for the interim TM Confirm trie flow, so its pin did not move.
   */
 class BifrostContractsTest extends AnyFunSuite {
 
@@ -65,46 +68,38 @@ class BifrostContractsTest extends AnyFunSuite {
     private def configPolicy = ByteString.fromArray(configContract.policyId.bytes)
 
     // --- known-answer (regression lock, re-validated at next deploy) ---
-    //
-    // These moved with WI-068: ft widened ConfigDatum to 24 fields, which changed config.ak's
-    // compiled code and therefore the config NFT policy — and with it every policy parameterized
-    // by it (bridged_token, completed-peg-ins, peg_in, peg_out). They no longer describe the
-    // bridge deployed on preprod, which stays on its pre-WI-068 code; they describe the NEXT
-    // deploy. Nothing supports both at once: spending a config UTxO needs the script whose hash
-    // is its address, so a tool serving both bridges would need both compiled codes.
 
-    test("config NFT policy matches the value the next deploy will mint") {
+    test("config NFT policy matches the deployed value") {
         assert(
-          hex(configContract.policyId) == "5ef1dcb7268a440824000d5a2abf019baefb862dd29f5e9741501e97"
+          hex(configContract.policyId) == "c66d7b83574ca10dac3279ad9f9c403bfe8bd81feebc38c90150ec1f"
         )
     }
 
-    test("bridged_token policy matches the value the next deploy will mint") {
+    test("bridged_token policy matches the deployed value") {
         val bt = BridgedTokenContract(blueprint, configPolicy, configAssetName)
-        assert(hex(bt.policyId) == "fdfc28686ce2de5c7f8b4e4e90c44d0bc279af033c27533a40209897")
+        assert(hex(bt.policyId) == "0c4ff3cea072e5357d67354ebbcbea2382d8c94cffacf1087f955511")
     }
 
     test("completed-peg-ins policy + asset name match the Variant B rebuild") {
         // policyId regression lock over the Variant B rebuild. The asset name is now the constant
         // "CPI" (bytes 435049), independent of the one-shot ref and the compiledCode.
         val cpi = CompletedPegInsContract(blueprint, configPolicy, configAssetName, cpiRef)
-        assert(hex(cpi.policyId) == "20d5d3a50c5df1bea0b43a54810ccfeb8d2d5c9f609f0015b8a83a36")
+        assert(hex(cpi.policyId) == "b6a7d375ce06c4336630c3e3debd3a50c3345d46c99beb4f9eada0d0")
         assert(CompletedPegInsContract.assetName == ByteString.fromString("CPI"))
     }
 
-    // The TM-NFT policy param peg_in.ak takes as its 4th argument (= the TreasuryMovementValidator
-    // script hash). A fixed 28-byte placeholder here — B1 has not been deployed, so this test is a
-    // regression lock over the (4-param) CIP-57 encoding, not an on-chain-validated value.
+    // The TM-NFT policy placeholder the completed-peg-outs pin below is computed against. Rev 5.4
+    // removed it from peg_in's parameter list.
     private val tmNftPolicy =
         ByteString.fromHex("11111111111111111111111111111111111111111111111111111111")
 
-    test("peg_in policy (= withdraw hash) is stable for the B1 4-param encoding") {
-        // B1 rewrite (reference Confirmed TM UTxO + embed depositor auth) + the new tm_nft_policy_id
-        // param change peg_in_validator's compiledCode and hash (was 7d66c4f3…). PIRs minted under
-        // the old policy are orphaned and must be re-minted under this one.
+    test("peg_in policy (= withdraw hash) is stable for the rev-5.4 3-param encoding") {
+        // Rev 5.4 dropped the tm_nft_policy_id param: peg_in.ak reads the bridge-state singleton
+        // through Config field 3 at runtime, so three params remain. PIRs minted under the old
+        // policy are orphaned and must be re-minted under this one.
         val pegIn =
-            PegInContract(blueprint, oraclePolicy, configPolicy, configAssetName, tmNftPolicy)
-        assert(hex(pegIn.policyId) == "4802446011a83a1b44063b71e02cb821dfc592f91144ca27fc481e69")
+            PegInContract(blueprint, oraclePolicy, configPolicy, configAssetName)
+        assert(hex(pegIn.policyId) == "1d9e07de0a36aacf8a5159d87af565118c5a9e60dc40f92b97ab2f61")
     }
 
     test("peg_out policy (= withdraw hash) is stable for the trie-v2 2-param encoding") {
@@ -119,7 +114,7 @@ class BifrostContractsTest extends AnyFunSuite {
         // [[PegOutCompleteCekTest]] runs them — so the stale copy would have made every completion
         // fail on-chain. No other validator's compiledCode changed, so no other pin moved.
         val pegOut = PegOutContract(blueprint, configPolicy, configAssetName)
-        assert(hex(pegOut.policyId) == "b4e64fb5d1a0c82fa13b93a44b5d473330df2934f0b677b3e753c67e")
+        assert(hex(pegOut.policyId) == "61dd27fa3ffa0d49415b0a967a6400df97f84fdcab453afc4c6be42d")
     }
 
     test("completed-peg-outs policy is stable for the trie-v2 (tm-policy, one-shot) encoding") {

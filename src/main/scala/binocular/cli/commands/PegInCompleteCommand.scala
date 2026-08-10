@@ -131,15 +131,15 @@ case class PegInCompleteCommand(
         )
         val cpiRef = TxOutRef(TxId(cpiRefInput.transactionId), cpiRefInput.index)
 
-        // TM-NFT policy = TreasuryMovementValidator hash; both the peg_in 4th param and the marker
-        // on the Confirmed TM UTxO this completion references.
+        // TM-NFT policy = TreasuryMovementValidator hash; the marker on the Confirmed TM UTxO
+        // this completion references. (Rev 5.4: no longer a peg_in parameter.)
         val tmNftPolicyBS = CommandHelpers.tmNftPolicy(config, oracleScriptHash)
         val tmNftPolicy = ScriptHash.fromHex(tmNftPolicyBS.toHex)
         val tmAddress = Address(network, Credential.ScriptHash(tmNftPolicy))
 
         val oraclePolicyBS = ByteString.fromArray(oracleScriptHash.bytes)
         val pegIn =
-            PegInContract(blueprint, oraclePolicyBS, configNftPolicy, configNftAsset, tmNftPolicyBS)
+            PegInContract(blueprint, oraclePolicyBS, configNftPolicy, configNftAsset)
         val cpiContract =
             CompletedPegInsContract(blueprint, configNftPolicy, configNftAsset, cpiRef)
         val cpiPolicy = cpiContract.policyId

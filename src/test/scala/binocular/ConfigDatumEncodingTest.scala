@@ -8,9 +8,11 @@ import scalus.uplc.builtin.{ByteString, Data}
 import scalus.uplc.builtin.Data.toData
 
 /** Pins the Scala mirror of `lib/bifrost/types/config.ak::ConfigDatum` to the on-chain positional
-  * encoding: 17 Constr-0 fields, `update_auth` (10) as Aiken `Option` (Some = Constr 0 [v], None =
-  * Constr 1 []), `initial_btc_treasury_utxo` (11) as bytes, then the operational-parameter tunables
-  * (12–15 Ints, 16 the nested ScheduleParams Constr).
+  * encoding (rev 5.4, spec §Config datum): 8 Constr-0 fields — 0 `update_auth` (Aiken `Option`:
+  * Some = Constr 0 [v], None = Constr 1 []), 1 `bridged_token_policy`, 2
+  * `completed_peg_ins_policy`, 3 `bridge_state_policy`, 4 `tm_script_hash` ([CFG-2]), 5
+  * `peg_in_script_hash`, 6 `peg_out_script_hash`, 7 `params` (nested ConfigParams: 3 Ints then the
+  * nested ScheduleParams Constr).
   */
 class ConfigDatumEncodingTest extends AnyFunSuite {
 
@@ -25,10 +27,7 @@ class ConfigDatumEncodingTest extends AnyFunSuite {
         assert(none.toData == Data.Constr(1, PList()))
     }
 
-    test(
-      "ConfigDatum has 24 positional fields; update_auth 10, anchor 11, tunables 12–16, federation 17–23"
-    ) {
-        val anchor = ByteString.fromHex("bb" * 32 + "01000000")
+    test("ConfigDatum has 8 positional fields; update_auth is 0, tm_script_hash 4, params 7") {
         val sched = ScheduleParams(
           dkgR1Deadline = BigInt(3600),
           dkgR2Deadline = BigInt(7200),
@@ -41,51 +40,54 @@ class ConfigDatumEncodingTest extends AnyFunSuite {
           finalTmCutoff = BigInt(345600),
           stabilityWindow = BigInt(129600)
         )
-        val d = ConfigDatum(
-          bridgedTokenPolicyId = ByteString.fromHex("aa" * 28),
-          bridgedTokenAssetName = ByteString.fromString("fSAT"),
-          completedPegInsMerkleTreePolicyId = ByteString.empty,
-          completedPegOutsMerkleTreePolicyId = ByteString.empty,
-          pegInWithdrawScriptHash = ByteString.empty,
-          pegOutWithdrawScriptHash = ByteString.empty,
-          pegInCloseVerifierScriptHash = ByteString.empty,
-          legitTmAndPegOutProducedVerifierScriptHash = ByteString.empty,
-          legitTmAndPegOutNotProducedVerifierScriptHash = ByteString.empty,
-          minStake = BigInt(0),
-          updateAuth = POption.None,
-          initialBtcTreasuryUtxo = anchor,
+        val params = ConfigParams(
           feeRateSatPerVb = BigInt(1),
           perPegoutFee = BigInt(1000),
           minPegOutFbtc = BigInt(10000),
-          leaderReward = BigInt(2000000),
-          schedule = sched,
-          spoBansPolicyId = ByteString.fromHex("bb" * 28),
-          baseBanDurationMs = BigInt(600000),
-          maxFaultsBeforePermanent = BigInt(3),
-          maxValidityWindowMs = BigInt(3600000),
-          sposRegistryPolicyId = ByteString.fromHex("c1" * 28),
-          treasuryInfoPolicyId = ByteString.fromHex("c2" * 28),
-          treasuryInfoAssetName = ByteString.fromString("TMTx")
+          schedule = sched
+        )
+        val tmHash = ByteString.fromHex("dd" * 28)
+        val d = ConfigDatum(
+          updateAuth = POption.None,
+          bridgedTokenPolicy = ByteString.fromHex("aa" * 28),
+          completedPegInsPolicy = ByteString.fromHex("bb" * 28),
+          bridgeStatePolicy = ByteString.fromHex("cc" * 28),
+          tmScriptHash = tmHash,
+          pegInScriptHash = ByteString.fromHex("ee" * 28),
+          pegOutScriptHash = ByteString.fromHex("ff" * 28),
+          params = params
         )
         d.toData match {
             case Data.Constr(0, fields) =>
                 val fs = fields.asScala.toIndexedSeq
-                assert(fs.size == 24)
-                assert(fs(10) == Data.Constr(1, PList()))
-                assert(fs(11) == Data.B(anchor))
-                assert(fs(15) == Data.I(BigInt(2000000)))
-                assert(fs(16) == sched.toData)
-                // Federation identity (#17-23). Positions are a frozen contract — heimdall reads
-                // them by index off the raw datum — so pin each one, not just the arity.
-                assert(fs(17) == Data.B(ByteString.fromHex("bb" * 28)))
-                assert(fs(18) == Data.I(BigInt(600000)))
-                assert(fs(19) == Data.I(BigInt(3)))
-                assert(fs(20) == Data.I(BigInt(3600000)))
-                assert(fs(21) == Data.B(ByteString.fromHex("c1" * 28)))
-                assert(fs(22) == Data.B(ByteString.fromHex("c2" * 28)))
-                assert(fs(23) == Data.B(ByteString.fromString("TMTx")))
+                assert(fs.size == 8)
+                assert(fs(0) == Data.Constr(1, PList()))
+                assert(fs(1) == Data.B(ByteString.fromHex("aa" * 28)))
+                assert(fs(3) == Data.B(ByteString.fromHex("cc" * 28)))
+                assert(fs(4) == Data.B(tmHash))
+                assert(fs(6) == Data.B(ByteString.fromHex("ff" * 28)))
+                assert(fs(7) == params.toData)
             case other => fail(s"expected Constr 0, got $other")
         }
+    }
+
+    test("ConfigParams nests the schedule at slot 3") {
+        val sched = ScheduleParams(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        val params = ConfigParams(BigInt(1), BigInt(2), BigInt(3), sched)
+        params.toData match {
+            case Data.Constr(0, fields) =>
+                val fs = fields.asScala.toIndexedSeq
+                assert(fs.size == 4)
+                assert(fs(0) == Data.I(BigInt(1)))
+                assert(fs(1) == Data.I(BigInt(2)))
+                assert(fs(2) == Data.I(BigInt(3)))
+                assert(fs(3) == sched.toData)
+            case other => fail(s"expected Constr 0, got $other")
+        }
+    }
+
+    test("the bridged-token asset name is the [CFG-1] constant \"fSAT\", not a datum field") {
+        assert(ConfigDatum.BridgedTokenAssetName == ByteString.fromString("fSAT"))
     }
 
     test("outpointFromDisplay reverses the txid and encodes vout LE") {

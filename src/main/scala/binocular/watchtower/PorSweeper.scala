@@ -601,28 +601,29 @@ object PorSweeper {
 
     /** The scripts this sweeper would use MUST be the ones the deployed Config publishes.
       *
-      * Field 5 is `peg_out_withdraw_script_hash` — the script whose reward account the Complete
-      * transaction withdraws from and whose address holds the requests. Fields 0/1 are the
-      * bridged-token policy and asset name, the tokens the completion burns. A mismatch on any of
+      * Rev-5.4 layout: field 6 is `peg_out_script_hash` — the script whose reward account the
+      * Complete transaction withdraws from and whose address holds the requests. Field 1 is the
+      * bridged-token policy, the token the completion burns; its asset name is the [CFG-1] constant
+      * `"fSAT"` ([[ConfigDatum.BridgedTokenAssetName]]), not a Config field. A mismatch on any of
       * them means the derived scripts are not the live ones and every completion would be rejected.
       */
     def verifyAgainstConfig(configUtxo: Utxo, ctx: Context): Either[String, Unit] =
         for {
-            pegOut <- configField(configUtxo, 5)
-            policy <- configField(configUtxo, 0)
-            asset <- configField(configUtxo, 1)
+            pegOut <- configField(configUtxo, 6)
+            policy <- configField(configUtxo, 1)
             _ <- Either.cond(
               pegOut.toHex == ctx.pegOutScript.scriptHash.toHex,
               (),
-              s"config field 5 publishes peg-out withdraw hash ${pegOut.toHex}, but the derived " +
+              s"config field 6 publishes peg-out withdraw hash ${pegOut.toHex}, but the derived " +
                   s"peg_out validator hashes to ${ctx.pegOutScript.scriptHash.toHex} — run the " +
                   "`update-config --peg-out-withdraw-hash` migration before sweeping"
             )
             _ <- Either.cond(
               policy.toHex == ctx.bridgedTokenPolicy.toHex &&
-                  asset.toHex == ctx.bridgedTokenAsset.bytes.toHex,
+                  ctx.bridgedTokenAsset.bytes.toHex == ConfigDatum.BridgedTokenAssetName.toHex,
               (),
-              s"config publishes bridged token ${policy.toHex}.${asset.toHex}, but the sweeper is " +
+              s"config publishes bridged token policy ${policy.toHex} (asset is the [CFG-1] " +
+                  s"constant ${ConfigDatum.BridgedTokenAssetName.toHex}), but the sweeper is " +
                   s"configured for ${ctx.bridgedTokenPolicy.toHex}.${ctx.bridgedTokenAsset.bytes.toHex}"
             )
         } yield ()

@@ -68,8 +68,7 @@ case class PegInRequestCommand(
           blueprint,
           ByteString.fromArray(oraclePolicyId.bytes),
           hexBytes("bridge.config-nft-policy-id", config.bridge.configNftPolicyId, Some(56)),
-          hexBytes("bridge.config-nft-asset-name", config.bridge.configNftAssetName, None),
-          CommandHelpers.tmNftPolicy(config, oraclePolicyId)
+          hexBytes("bridge.config-nft-asset-name", config.bridge.configNftAssetName, None)
         )
         Console.info("Oracle policy", oraclePolicyId.toHex)
         Console.info("Peg-in policy", pegIn.policyId.toHex)

@@ -46,9 +46,10 @@ class PegOutCompleteCekTest extends AnyFunSuite {
     private val configNftPolicy = filled(0xc0, 28)
     private val configNftAsset = ByteString.fromString("BIFCFG")
     private val bridgedTokenPolicy = filled(0xa1, 28)
-    private val bridgedTokenAsset = ByteString.fromString("fSAT")
-    private val cpoPolicy = filled(0xb2, 28)
-    private val cpoAsset = ByteString.fromString("CPO")
+    // spec [CFG-1]: the asset name is a protocol constant, not a Config field.
+    private val bridgedTokenAsset = ConfigDatum.BridgedTokenAssetName
+    private val bridgeStatePolicy = filled(0xb2, 28)
+    private val bssAsset = ByteString.fromString("BSS")
     private val ownerPkh = filled(0xd3, 28)
     private val destSpk = ByteString.fromHex("0014" + ("ab" * 20))
 
@@ -85,32 +86,23 @@ class PegOutCompleteCekTest extends AnyFunSuite {
     private def porId(ref: TxOutRef): ByteString =
         CpoTrieMirror.porId(ref.id.hash, ref.idx.toLong)
 
-    /** The 17-field ConfigDatum. Complete reads fields 0/1 (bridged token) and 3 (trie policy). */
+    /** The rev-5.4 eight-field ConfigDatum. The withdraw reads fields 1 (bridged token policy) and
+      * 3 (bridge_state_policy); the asset name is the [CFG-1] constant.
+      */
     private def configDatum: Data = ConfigDatum(
-      bridgedTokenPolicyId = bridgedTokenPolicy,
-      bridgedTokenAssetName = bridgedTokenAsset,
-      completedPegInsMerkleTreePolicyId = ByteString.empty,
-      completedPegOutsMerkleTreePolicyId = cpoPolicy,
-      pegInWithdrawScriptHash = ByteString.empty,
-      pegOutWithdrawScriptHash = pegOutHash,
-      pegInCloseVerifierScriptHash = ByteString.empty,
-      legitTmAndPegOutProducedVerifierScriptHash = ByteString.empty,
-      legitTmAndPegOutNotProducedVerifierScriptHash = ByteString.empty,
-      minStake = BigInt(0),
       updateAuth = Option.None,
-      initialBtcTreasuryUtxo = ByteString.empty,
-      feeRateSatPerVb = BigInt(1),
-      perPegoutFee = BigInt(fee),
-      minPegOutFbtc = BigInt(0),
-      leaderReward = BigInt(0),
-      schedule = ScheduleParams(0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
-      spoBansPolicyId = ByteString.fromHex("bb" * 28),
-      baseBanDurationMs = BigInt(600000),
-      maxFaultsBeforePermanent = BigInt(3),
-      maxValidityWindowMs = BigInt(3600000),
-      sposRegistryPolicyId = ByteString.fromHex("c1" * 28),
-      treasuryInfoPolicyId = ByteString.fromHex("c2" * 28),
-      treasuryInfoAssetName = ByteString.fromString("TMTx")
+      bridgedTokenPolicy = bridgedTokenPolicy,
+      completedPegInsPolicy = ByteString.empty,
+      bridgeStatePolicy = bridgeStatePolicy,
+      tmScriptHash = ByteString.empty,
+      pegInScriptHash = ByteString.empty,
+      pegOutScriptHash = pegOutHash,
+      params = ConfigParams(
+        feeRateSatPerVb = BigInt(1),
+        perPegoutFee = BigInt(fee),
+        minPegOutFbtc = BigInt(0),
+        schedule = ScheduleParams(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+      )
     ).toData
 
     private def configRefInput = TxInInfo(
@@ -125,17 +117,29 @@ class PegOutCompleteCekTest extends AnyFunSuite {
       )
     )
 
+    /** The bridge-state singleton as a REFERENCE input (spec [CPO-13]), authenticated by the NFT
+      * `(bridge_state_policy, "BSS")` and carrying the full 4-field [[BridgeState]] datum. The
+      * `spi_root` is a DECOY (a different root): a [LIB-2]-style blind field-0 read would pick it
+      * up and fail every membership/exclusion proof, so only reading `cpo_root` by name passes.
+      */
     private def trieRefInput(root: ByteString, withNft: Boolean = true) = TxInInfo(
       outRef = TxOutRef(TxId(filled(0x22, 32)), BigInt(0)),
       resolved = TxOut(
-        address = Address(Credential.ScriptCredential(cpoPolicy), Option.None),
+        address = Address(Credential.ScriptCredential(bridgeStatePolicy), Option.None),
         value =
             if withNft then
                 Value.unsafeFromList(
-                  PList(ada(2_000_000), (cpoPolicy, PList((cpoAsset, BigInt(1)))))
+                  PList(ada(2_000_000), (bridgeStatePolicy, PList((bssAsset, BigInt(1)))))
                 )
             else Value.unsafeFromList(PList(ada(2_000_000))),
-        datum = OutputDatum.OutputDatum(CompletedPegOutsTrieDatum(root).toData),
+        datum = OutputDatum.OutputDatum(
+          BridgeState(
+            spiRoot = filled(0x5a, 32),
+            cpoRoot = root,
+            treasuryUtxoId = filled(0x33, 32) ++ ByteString.fromHex("00000000"),
+            treasuryAmount = BigInt(5_000_000)
+          ).toData
+        ),
         referenceScript = Option.None
       )
     )
@@ -186,7 +190,7 @@ class PegOutCompleteCekTest extends AnyFunSuite {
         id = TxId(filled(0x00, 32))
       ),
       redeemer = PegOutWithdrawRedeemer(
-        // BOTH indices address `reference_inputs`: 0 = Config, 1 = the CPO singleton.
+        // BOTH indices address `reference_inputs`: 0 = Config, 1 = the bridge-state singleton.
         configRefInputIndex = 0,
         completedPegOutsRefInputIndex = 1,
         actionType = action
@@ -313,7 +317,7 @@ class PegOutCompleteCekTest extends AnyFunSuite {
         )
     }
 
-    test("a trie reference input without the CPO NFT is rejected") {
+    test("a singleton reference input without the BSS NFT is rejected") {
         val ref = porRef()
         val m = happyMirror(ref)
         assert(

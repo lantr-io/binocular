@@ -94,8 +94,9 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
               .scriptHash
               .bytes
         )
+        // Rev 5.4: peg_in dropped its tm_nft_policy_id param; tmNftPolicy still parameterizes cpo.
         val pegIn =
-            PegInContract(blueprint, oraclePolicyId, configNftPolicy, configNftAsset, tmNftPolicy)
+            PegInContract(blueprint, oraclePolicyId, configNftPolicy, configNftAsset)
         val bridgedToken = BridgedTokenContract(blueprint, configNftPolicy, configNftAsset)
         val cpi =
             CompletedPegInsContract(blueprint, configNftPolicy, configNftAsset, cpiOneShotRef)

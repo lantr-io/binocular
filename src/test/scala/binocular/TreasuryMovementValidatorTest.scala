@@ -389,60 +389,45 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
                 )
     }
 
-    // The anchor outpoint = in0 of rawTm: aa*32 ++ 00000000 (txid internal order ++ vout LE).
-    private val anchorOutpoint = ByteString.fromHex(("aa" * 32) + "00000000")
-
-    /** The real 17-field [[ConfigDatum]] mirror. The Confirm path reads field 3
-      * (`completed_peg_outs_merkle_tree_policy_id`); the mint path reads field 11
-      * (`initial_btc_treasury_utxo`). The rest are inert here.
+    /** The real eight-field rev-5.4 [[ConfigDatum]] mirror. The Confirm path reads field 3
+      * (`bridge_state_policy` — INTERIM: it still carries the completed-peg-outs trie policy, see
+      * the validator's Confirm branch). The rest are inert here; the rev-5.1 anchor field is gone
+      * ([PTM-5] retired the Genesis mint with it).
       */
     private def configDatum(
-        anchor: ByteString,
         cpoPolicy: ByteString = triePolicy
     ): Data = ConfigDatum(
-      bridgedTokenPolicyId = ByteString.empty,
-      bridgedTokenAssetName = ByteString.empty,
-      completedPegInsMerkleTreePolicyId = ByteString.empty,
-      completedPegOutsMerkleTreePolicyId = cpoPolicy,
-      pegInWithdrawScriptHash = ByteString.empty,
-      pegOutWithdrawScriptHash = ByteString.empty,
-      pegInCloseVerifierScriptHash = ByteString.empty,
-      legitTmAndPegOutProducedVerifierScriptHash = ByteString.empty,
-      legitTmAndPegOutNotProducedVerifierScriptHash = ByteString.empty,
-      minStake = BigInt(0),
       updateAuth = Option.None,
-      initialBtcTreasuryUtxo = anchor,
-      feeRateSatPerVb = BigInt(1),
-      perPegoutFee = BigInt(0),
-      minPegOutFbtc = BigInt(0),
-      leaderReward = BigInt(0),
-      schedule = ScheduleParams(
-        dkgR1Deadline = BigInt(0),
-        dkgR2Deadline = BigInt(0),
-        updateYDeadline = BigInt(0),
-        tmBatchInterval = BigInt(0),
-        signR1Window = BigInt(0),
-        signR2Window = BigInt(0),
-        leaderSlotT = BigInt(0),
-        tmRecoveryWindow = BigInt(0),
-        finalTmCutoff = BigInt(0),
-        stabilityWindow = BigInt(0)
-      ),
-      spoBansPolicyId = ByteString.fromHex("bb" * 28),
-      baseBanDurationMs = BigInt(600000),
-      maxFaultsBeforePermanent = BigInt(3),
-      maxValidityWindowMs = BigInt(3600000),
-      sposRegistryPolicyId = ByteString.fromHex("c1" * 28),
-      treasuryInfoPolicyId = ByteString.fromHex("c2" * 28),
-      treasuryInfoAssetName = ByteString.fromString("TMTx")
+      bridgedTokenPolicy = ByteString.empty,
+      completedPegInsPolicy = ByteString.empty,
+      bridgeStatePolicy = cpoPolicy,
+      tmScriptHash = ByteString.empty,
+      pegInScriptHash = ByteString.empty,
+      pegOutScriptHash = ByteString.empty,
+      params = ConfigParams(
+        feeRateSatPerVb = BigInt(1),
+        perPegoutFee = BigInt(0),
+        minPegOutFbtc = BigInt(0),
+        schedule = ScheduleParams(
+          dkgR1Deadline = BigInt(0),
+          dkgR2Deadline = BigInt(0),
+          updateYDeadline = BigInt(0),
+          tmBatchInterval = BigInt(0),
+          signR1Window = BigInt(0),
+          signR2Window = BigInt(0),
+          leaderSlotT = BigInt(0),
+          tmRecoveryWindow = BigInt(0),
+          finalTmCutoff = BigInt(0),
+          stabilityWindow = BigInt(0)
+        )
+      )
     ).toData
 
-    /** The Config reference UTxO carrying the config NFT + a config datum with the anchor at field
-      * 11 and the completed-peg-outs trie policy at field 3. `withNft=false` simulates a forged
-      * config UTxO (right datum, no genuine NFT).
+    /** The Config reference UTxO carrying the config NFT + a config datum with the
+      * completed-peg-outs trie policy at field 3 (interim `bridge_state_policy`). `withNft=false`
+      * simulates a forged config UTxO (right datum, no genuine NFT).
       */
     private def configRefInput(
-        anchor: ByteString = anchorOutpoint,
         withNft: Boolean = true,
         cpoPolicy: ByteString = triePolicy
     ): TxInInfo = TxInInfo(
@@ -453,7 +438,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
             if withNft then
                 Value.unsafeFromList(PList((configNftPolicy, PList((configNftName, BigInt(1))))))
             else Value.lovelace(2_000_000),
-        datum = OutputDatum.OutputDatum(configDatum(anchor, cpoPolicy)),
+        datum = OutputDatum.OutputDatum(configDatum(cpoPolicy)),
         referenceScript = Option.None
       )
     )
@@ -568,7 +553,6 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         Interval.after(createdAt + TreasuryMovementValidator.GcGraceMs + 1)
 
     private val genesisRdmr: Data = (TmMintRedeemer.Genesis(0): TmMintRedeemer).toData
-    private def genesisRdmrAt(i: BigInt): Data = (TmMintRedeemer.Genesis(i): TmMintRedeemer).toData
     private def chainRdmr(i: BigInt): Data = (TmMintRedeemer.Chain(i): TmMintRedeemer).toData
 
     private def confirmedDatum(
@@ -597,42 +581,14 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         assert(hash.length == 56)
     }
 
-    test("TM mint Genesis: +1 bound to Unconfirmed output, tx spends config anchor - succeeds") {
+    test("TM mint Genesis: retired ([PTM-5]) - always fails, even a well-formed post") {
+        // Rev 5.4 removed `initial_btc_treasury_utxo` from the Config datum, so the Genesis
+        // variant has no anchor to read and always fails. This context was the pre-5.4 happy
+        // path, so the failure is the retirement, not a malformed fixture.
         val sc = mintContext(
           BigInt(1),
           genesisRdmr,
           PList.from(List(configRefInput())),
-          PList.from(List(mintedTmOutput()))
-        )
-        val result = program.applyArg(sc.toData).evaluateDebug
-        assert(result.isSuccess, s"Expected success, got: $result")
-    }
-
-    test("TM mint Genesis: wrong anchor outpoint fails") {
-        val sc = mintContext(
-          BigInt(1),
-          genesisRdmr,
-          PList.from(List(configRefInput(anchor = filled(0xee, 36)))),
-          PList.from(List(mintedTmOutput()))
-        )
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
-    }
-
-    test("TM mint Genesis: reference-input index out of range fails") {
-        val sc = mintContext(
-          BigInt(1),
-          genesisRdmrAt(1), // only one reference input exists
-          PList.from(List(configRefInput())),
-          PList.from(List(mintedTmOutput()))
-        )
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
-    }
-
-    test("TM mint Genesis: config ref input without the config NFT fails") {
-        val sc = mintContext(
-          BigInt(1),
-          genesisRdmr,
-          PList.from(List(configRefInput(withNft = false))),
           PList.from(List(mintedTmOutput()))
         )
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
@@ -682,8 +638,8 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     test("TM mint: NFT output at a foreign credential fails") {
         val sc = mintContext(
           BigInt(1),
-          genesisRdmr,
-          PList.from(List(configRefInput())),
+          chainRdmr(0),
+          PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32)))),
           PList.from(
             List(mintedTmOutput(credential = Credential.ScriptCredential(filled(0x99, 28))))
           )
@@ -694,8 +650,8 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     test("TM mint: NFT output with a Confirmed datum fails") {
         val sc = mintContext(
           BigInt(1),
-          genesisRdmr,
-          PList.from(List(configRefInput())),
+          chainRdmr(0),
+          PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32)))),
           PList.from(List(mintedTmOutput(datum = confirmedDatum())))
         )
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
@@ -704,8 +660,8 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     test("TM mint: minting more than one fails") {
         val sc = mintContext(
           BigInt(2),
-          genesisRdmr,
-          PList.from(List(configRefInput())),
+          chainRdmr(0),
+          PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32)))),
           PList.from(List(mintedTmOutput()))
         )
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
@@ -721,16 +677,16 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         // created must EQUAL validRange.to, making it an upper bound on the real posting time.
         val sc = mintContext(
           BigInt(1),
-          genesisRdmr,
-          PList.from(List(configRefInput())),
+          chainRdmr(0),
+          PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32)))),
           PList.from(List(mintedTmOutput())),
           validRange = Interval.between(createdAt + 7_200_000, createdAt + 7_800_000)
         )
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
         val off = mintContext(
           BigInt(1),
-          genesisRdmr,
-          PList.from(List(configRefInput())),
+          chainRdmr(0),
+          PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32)))),
           PList.from(List(mintedTmOutput())),
           validRange = Interval.between(createdAt - 600_000, createdAt + 1)
         )
@@ -740,8 +696,8 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     test("TM mint: unbounded validity range fails (created cannot be anchored)") {
         val sc = mintContext(
           BigInt(1),
-          genesisRdmr,
-          PList.from(List(configRefInput())),
+          chainRdmr(0),
+          PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32)))),
           PList.from(List(mintedTmOutput())),
           validRange = Interval.always
         )
@@ -1318,8 +1274,8 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         val garbled = PList.from(List(ByteString.fromHex("00"), filled(0x99, 200)))
         val sc = mintContext(
           BigInt(1),
-          genesisRdmr,
-          PList.from(List(configRefInput())),
+          chainRdmr(0),
+          PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32)))),
           PList.from(List(mintedTmOutput(datum = unconfirmedDatumWith(garbled))))
         )
         val result = program.applyArg(sc.toData).evaluateDebug
@@ -1359,7 +1315,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     // Execution budgets for the three treasury-movement happy paths, printed so they land in the
     // CI log (Milestone 4 performance evidence). Synthetic ScriptContexts, so only the script
     // execution budget and ex-unit fee are meaningful here (no full tx fee).
-    test("Treasury movement budgets - mint Genesis, mint Chain, Confirm spend") {
+    test("Treasury movement budgets - mint Chain, Confirm spend") {
         val pp = CardanoInfo.mainnet.protocolParams
         val maxCpu = pp.maxTxExecutionUnits.steps
         val maxMem = pp.maxTxExecutionUnits.memory
@@ -1376,15 +1332,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
                     fail(s"$name failed: ${r.exception.getMessage}\n${r.logs.mkString("\n")}")
 
         info("TREASURY MOVEMENT BUDGETS | CPU Steps (% limit) | Memory (% limit) | Ex Fee")
-        measure(
-          "Mint Genesis",
-          mintContext(
-            BigInt(1),
-            genesisRdmr,
-            PList.from(List(configRefInput())),
-            PList.from(List(mintedTmOutput()))
-          )
-        )
+        // No "Mint Genesis" row: the Genesis variant is retired ([PTM-5]) and always fails.
         measure(
           "Mint Chain",
           mintContext(

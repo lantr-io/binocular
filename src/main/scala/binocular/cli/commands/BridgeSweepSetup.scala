@@ -47,10 +47,11 @@ object BridgeSweepSetup {
 
     /** Locate the Config and completed-peg-outs trie UTxOs.
       *
-      * The trie policy is taken from Config field 3 (RAW field read, not a typed `ConfigDatum`
-      * decode, so a deployed pre-migration datum with a different field count still works). The
-      * locally derived trie script must hash to that policy, otherwise the config still publishes
-      * the pre-migration trie and the migration Update has not run yet.
+      * The trie policy is taken from Config field 3 (rev 5.4: `bridge_state_policy`, which INTERIM
+      * still carries the trie policy — see the TM validator's Confirm branch). A RAW field read,
+      * not a typed `ConfigDatum` decode, so a deployed datum with a different field count still
+      * works. The locally derived trie script must hash to that policy, otherwise the config still
+      * publishes the pre-migration trie and the migration Update has not run yet.
       */
     def loadTrieContext(
         provider: BlockchainProvider,

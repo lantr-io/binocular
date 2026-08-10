@@ -42,24 +42,16 @@ case class BridgeConfig(
     // reconstruct the script in order to SPEND the MPF UTxO. The config NFT, by contrast, is only a
     // reference input, so it is located by its NFT and needs no script. Empty until F3 is deployed.
     completedPegInsOneShotRef: String = "",
-    // The initial Bitcoin treasury outpoint written into config field 11 (initial_btc_treasury_utxo)
-    // at deploy, in display form "TXID:VOUT" (TXID as shown by explorers; converted to internal
-    // byte order internally). The FIRST Treasury Movement must spend this outpoint; every
-    // subsequent TM chains from the previous Confirmed TM record.
-    initialBtcTreasuryUtxo: String = "",
-    // The DKG candidate-set stake threshold written into config field 9 at deploy (lovelace): a
-    // pool's epoch-snapshot active_stake must reach it to register / enter the candidate set.
-    // Read off-chain only (heimdall's register_spo R2 gate). 0 = no threshold, which is what every
-    // bridge deployed before this key existed carries — raise it with `update-config --min-stake`
-    // rather than by editing each SPO's own config, or the operators disagree about who is eligible.
-    minStakeLovelace: Long = 0L,
-    // Operational-parameter tunables written into config fields 12–15 at deploy (off-chain
-    // consensus anchors; the schedule #16 uses spec devnet defaults, replaced wholesale by a
-    // governance Update). All five are governance-updatable in place — `update-config --fee-rate`
-    // et al — which is how the bridge tracks the Bitcoin fee market. See ConfigDatum #12–16.
+    // Operational-parameter tunables written into the nested config field 7 (`params`) at deploy
+    // (off-chain consensus anchors; the schedule at params[3] uses spec devnet defaults, replaced
+    // wholesale by a governance Update). All three are governance-updatable in place —
+    // `update-config --fee-rate` et al — which is how the bridge tracks the Bitcoin fee market.
+    // See ConfigDatum field 7.
     feeRateSatPerVb: Long = 1L,
     perPegoutFeeSat: Long = 1000L,
     minPegOutSat: Long = 10000L,
+    // The TM poster's reward (lovelace) CreateTmtx writes into the Unconfirmed TM record (TmDatum
+    // field). Not a Config datum field under rev 5.4.
     leaderRewardLovelace: Long = 2000000L,
     // The ban schedule baked into the spo_bans policy id at genesis, and published verbatim as
     // config #18-20. Unlike the tunables above these are NOT governance-updatable in place: they

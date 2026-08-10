@@ -4,7 +4,6 @@ import binocular.*
 import binocular.cli.commands.*
 import com.monovore.decline.*
 import cats.implicits.*
-import scalus.uplc.builtin.ByteString
 
 /** Binocular CLI Application
   *
@@ -42,9 +41,9 @@ object CliApp {
         case DeployBridge(dryRun: Boolean)
         case BootstrapCompletedPegOuts(oneShotRef: Option[String], dryRun: Boolean)
         case UpdateConfig(
-            initialBtcTreasuryUtxo: Option[String],
+            bridgeStatePolicy: Option[String],
+            tmScriptHash: Option[String],
             pegInWithdrawHash: Option[String],
-            completedPegOutsPolicy: Option[String],
             pegOutWithdrawHash: Option[String],
             params: binocular.cli.commands.UpdateConfigCommand.ParamEdits,
             dryRun: Boolean
@@ -312,72 +311,61 @@ object CliApp {
         val updateConfigCommand =
             Opts.subcommand(
               "update-config",
-              "Update the deployed Config UTxO in place (governance): the operational parameters " +
-                  "(min-stake #9, fee-rate/fees/schedule #12-16), the ban policy (#17-20), the " +
-                  "initial-treasury anchor (#11), the script hashes in fields 3, 4 and 5. Only " +
-                  "what you name changes"
+              "Update the deployed Config UTxO in place (governance): the script hashes in " +
+                  "fields 3-6 and the operational parameters nested in field 7. Only what you " +
+                  "name changes"
             ) {
-                val anchorOpt = Opts
+                val bridgeStatePolicyOpt = Opts
                     .option[String](
-                      "initial-btc-treasury-utxo",
-                      help = "Initial Bitcoin treasury outpoint as TXID:VOUT (display txid) for " +
-                          "config field 11. Omit to leave the deployed anchor unchanged."
+                      "bridge-state-policy",
+                      help = "New bridge-state singleton NFT policy (56 hex) for config field 3 " +
+                          "(spec §Recovery: replacing the singleton)"
+                    )
+                    .orNone
+                val tmScriptHashOpt = Opts
+                    .option[String](
+                      "tm-script-hash",
+                      help = "New TM validator script hash (56 hex) for config field 4 " +
+                          "(spec [CFG-2]; swap field 3 with it on a TM redeploy)"
                     )
                     .orNone
                 val pegInHashOpt = Opts
                     .option[String](
                       "peg-in-withdraw-hash",
-                      help = "New peg_in withdraw script hash (56 hex) for config field 4"
-                    )
-                    .orNone
-                val cpoPolicyOpt = Opts
-                    .option[String](
-                      "completed-peg-outs-policy",
-                      help = "New completed-peg-outs trie policy id (56 hex) for config field 3"
+                      help = "New peg_in withdraw script hash (56 hex) for config field 5"
                     )
                     .orNone
                 val pegOutHashOpt = Opts
                     .option[String](
                       "peg-out-withdraw-hash",
-                      help = "New peg_out withdraw script hash (56 hex) for config field 5"
+                      help = "New peg_out withdraw script hash (56 hex) for config field 6"
                     )
                     .orNone
-                // The operational parameters. Every SPO's TM builder reads #12-#14 at its batch
-                // snapshot slot, so these edits change the bytes every heimdall builds.
-                val minStakeOpt = Opts
-                    .option[Long](
-                      "min-stake",
-                      help = "config #9: DKG candidate-set stake threshold (lovelace)"
-                    )
-                    .orNone
+                // The operational parameters (config field 7, nested). Every SPO's TM builder
+                // reads them at its batch snapshot slot, so these edits change the bytes every
+                // heimdall builds.
                 val feeRateOpt = Opts
                     .option[Long](
                       "fee-rate",
-                      help = "config #12: exact Bitcoin miner fee rate for TM construction (sat/vB)"
+                      help = "params[0]: exact Bitcoin miner fee rate for TM construction (sat/vB)"
                     )
                     .orNone
                 val perPegoutFeeOpt = Opts
                     .option[Long](
                       "per-pegout-fee",
-                      help = "config #13: floor for a peg-out's datum-pinned fee (satoshi)"
+                      help = "params[1]: floor for a peg-out's datum-pinned fee (satoshi)"
                     )
                     .orNone
                 val minPegOutOpt = Opts
                     .option[Long](
                       "min-peg-out",
-                      help = "config #14: minimum fBTC a peg-out may lock (satoshi)"
-                    )
-                    .orNone
-                val leaderRewardOpt = Opts
-                    .option[Long](
-                      "leader-reward",
-                      help = "config #15: TM poster's reward (lovelace)"
+                      help = "params[2]: minimum fBTC a peg-out may lock (satoshi)"
                     )
                     .orNone
                 val scheduleOpt: Opts[Map[String, BigInt]] = Opts
                     .options[String](
                       "schedule",
-                      help = "config #16: patch one schedule slot, NAME=VALUE (repeatable). " +
+                      help = "params[3]: patch one schedule slot, NAME=VALUE (repeatable). " +
                           UpdateConfigCommand.ScheduleFields.mkString(", ")
                     )
                     .orEmpty
@@ -388,79 +376,23 @@ object CliApp {
                             .parseSchedule(args)
                             .fold(cats.data.Validated.invalidNel, cats.data.Validated.validNel)
                     )
-                // The ban policy (#17-#20). Publishing it is what removes the ban keys from every
-                // SPO's heimdall.toml: they are inputs to the policy id, so no node can derive
-                // the address it would read them from. All four together or none.
-                val banPolicyOpt: Opts[Option[ByteString]] = Opts
-                    .option[String](
-                      "spo-bans-policy",
-                      help = "config #17: the deployed spo_bans policy id (56 hex). Every SPO " +
-                          "reads its ban list from this and needs no ban config of its own"
-                    )
-                    .mapValidated(arg =>
-                        UpdateConfigCommand.ParamEdits
-                            .parseBanPolicy(arg)
-                            .fold(cats.data.Validated.invalidNel, cats.data.Validated.validNel)
-                    )
-                    .orNone
-                val baseBanDurationOpt = Opts
-                    .option[Long](
-                      "base-ban-duration-ms",
-                      help = "config #18: first ban's length (ms); the nth is base * 2^(n-1)"
-                    )
-                    .orNone
-                val maxFaultsOpt = Opts
-                    .option[Long](
-                      "max-faults-before-permanent",
-                      help = "config #19: fault count at which a pool is banned permanently"
-                    )
-                    .orNone
-                val maxValidityWindowOpt = Opts
-                    .option[Long](
-                      "max-validity-window-ms",
-                      help = "config #20: upper bound on an ApplyBan tx's validity interval (ms)"
-                    )
-                    .orNone
                 val paramsOpt: Opts[UpdateConfigCommand.ParamEdits] = (
-                  minStakeOpt,
                   feeRateOpt,
                   perPegoutFeeOpt,
                   minPegOutOpt,
-                  leaderRewardOpt,
-                  scheduleOpt,
-                  banPolicyOpt,
-                  baseBanDurationOpt,
-                  maxFaultsOpt,
-                  maxValidityWindowOpt
-                ).mapN {
-                    (
-                        minStake,
-                        feeRate,
-                        perPegoutFee,
-                        minPegOut,
-                        leaderReward,
-                        schedule,
-                        banPolicy,
-                        baseBanDuration,
-                        maxFaults,
-                        maxValidityWindow
-                    ) =>
-                        UpdateConfigCommand.ParamEdits(
-                          minStake = minStake.map(BigInt.apply),
-                          feeRateSatPerVb = feeRate.map(BigInt.apply),
-                          perPegoutFee = perPegoutFee.map(BigInt.apply),
-                          minPegOutFbtc = minPegOut.map(BigInt.apply),
-                          leaderReward = leaderReward.map(BigInt.apply),
-                          schedule = schedule,
-                          spoBansPolicyId = banPolicy,
-                          baseBanDurationMs = baseBanDuration.map(BigInt.apply),
-                          maxFaultsBeforePermanent = maxFaults.map(BigInt.apply),
-                          maxValidityWindowMs = maxValidityWindow.map(BigInt.apply)
-                        )
+                  scheduleOpt
+                ).mapN { (feeRate, perPegoutFee, minPegOut, schedule) =>
+                    UpdateConfigCommand.ParamEdits(
+                      feeRateSatPerVb = feeRate.map(BigInt.apply),
+                      perPegoutFee = perPegoutFee.map(BigInt.apply),
+                      minPegOutFbtc = minPegOut.map(BigInt.apply),
+                      schedule = schedule
+                    )
                 }
-                // Every option is applied in ONE Update tx — the trie v2 migration requires
-                // fields 3, 4 and 5 to flip together, and a params update is one signed act.
-                (anchorOpt, pegInHashOpt, cpoPolicyOpt, pegOutHashOpt, paramsOpt, dryRunFlag)
+                // Every option is applied in ONE Update tx — a validator migration requires its
+                // dependent fields to flip together, and a params update is one signed act.
+                (bridgeStatePolicyOpt, tmScriptHashOpt, pegInHashOpt, pegOutHashOpt, paramsOpt,
+                dryRunFlag)
                     .mapN(Cmd.UpdateConfig.apply)
             }
 
@@ -667,17 +599,17 @@ object CliApp {
                         case Cmd.BootstrapCompletedPegOuts(oneShotRef, dryRun) =>
                             BootstrapCompletedPegOutsCommand(oneShotRef, dryRun)
                         case Cmd.UpdateConfig(
-                              anchor,
+                              bridgeStatePolicy,
+                              tmScriptHash,
                               pegInHash,
-                              cpoPolicy,
                               pegOutHash,
                               params,
                               dryRun
                             ) =>
                             UpdateConfigCommand(
-                              anchor,
+                              bridgeStatePolicy,
+                              tmScriptHash,
                               pegInHash,
-                              cpoPolicy,
                               pegOutHash,
                               params,
                               dryRun

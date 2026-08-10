@@ -90,8 +90,12 @@ object BifrostBlueprint {
     }
 }
 
-/** The `peg_in_validator` parameterized with its three on-chain params. The script hash is the
-  * peg-in NFT `policyId` and the address that `PegInRequest` UTxOs are locked at.
+/** The `peg_in_validator` parameterized with its on-chain params. The script hash is the peg-in NFT
+  * `policyId` and the address that `PegInRequest` UTxOs are locked at.
+  *
+  * Rev 5.4: the `tm_nft_policy_id` parameter is GONE — `peg_in.ak` reads the bridge-state singleton
+  * through Config field 3 at runtime instead of referencing a Confirmed TM record, so three params
+  * remain: `(oracle_policy_id, config_nft_policy_id, config_nft_asset_name)`.
   */
 final case class PegInContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash
@@ -108,15 +112,13 @@ object PegInContract {
         blueprint: BifrostBlueprint,
         oraclePolicyId: ByteString,
         configNftPolicyId: ByteString,
-        configNftAssetName: ByteString,
-        tmNftPolicyId: ByteString
+        configNftAssetName: ByteString
     ): PegInContract = {
         val base = Program.fromCborHex(blueprint.compiledCode(ValidatorTitle))
         val applied = base
             .$(Data.B(oraclePolicyId))
             .$(Data.B(configNftPolicyId))
             .$(Data.B(configNftAssetName))
-            .$(Data.B(tmNftPolicyId))
         PegInContract(Script.PlutusV3(applied.cborByteString))
     }
 
@@ -159,7 +161,7 @@ object ConfigContract {
 }
 
 /** The `bridged_token` (fBTC/fSAT) mint policy: params `(configNFTPolicyId, configNFTAssetName)`.
-  * The script hash is the token policyId = ConfigDatum index 0. It reads the ConfigDatum from the
+  * The script hash is the token policyId = ConfigDatum index 1. It reads the ConfigDatum from the
   * config ref input and enforces the Variant B mint/burn rules against the peg-in / peg-out
   * withdrawals directly.
   */
@@ -184,9 +186,10 @@ object BridgedTokenContract {
 }
 
 /** The `completed_peg_ins_merkle_tree` one-shot NFT policy + state validator: params
-  * `(configNFTPolicyId, configNFTAssetName, one_shot_input_ref)`. policyId = ConfigDatum index 2;
-  * asset name = the constant `"CPI"`. The MPF state UTxO (datum = root, empty `0x00*32` at mint)
-  * lives at this script's address and is spent+recreated on each completion.
+  * `(configNFTPolicyId, configNFTAssetName, one_shot_input_ref)`. policyId = ConfigDatum index 2
+  * (`completed_peg_ins_policy`); asset name = the constant `"CPI"`. The MPF state UTxO (datum =
+  * root, empty `0x00*32` at mint) lives at this script's address and is spent+recreated on each
+  * completion.
   */
 final case class CompletedPegInsContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash
@@ -217,7 +220,7 @@ object CompletedPegInsContract {
 }
 
 /** The `peg_out_validator` parameterized with `(config_nft_policy_id, config_nft_asset_name)`. The
-  * script hash is the peg-out withdraw script hash = ConfigDatum index 5, and the address that
+  * script hash is the peg-out withdraw script hash = ConfigDatum index 6, and the address that
   * `PegOut` UTxOs are locked at. The completion path is a `withdraw` (`CompletePegOut`); creation
   * is a plain pay-to-this-address output.
   *
@@ -225,7 +228,7 @@ object CompletedPegInsContract {
   * its own SPV parse of the Treasury Movement. Which Bitcoin payment settles which peg-out request
   * is recorded in the completed-peg-outs trie at TM Confirm, so completion is a single MPF
   * membership proof against a trie reference input and needs no oracle. Dropping the parameter
-  * CHANGES this script's hash, so ConfigDatum field 5 must be swapped by a config Update (see
+  * CHANGES this script's hash, so ConfigDatum field 6 must be swapped by a config Update (see
   * `update-config --peg-out-withdraw-hash`) before any peg-out completes.
   */
 final case class PegOutContract(script: Script.PlutusV3) {
@@ -255,6 +258,12 @@ object PegOutContract {
   * `(tm_nft_policy_id, one_shot_input_ref)`. policyId = ConfigDatum index 3; asset name = the
   * constant `"CPO"`. The MPF state UTxO (datum = root, empty `0x00*32` at mint) lives at this
   * script's address.
+  *
+  * WITHDRAWN in the ft tree (rev 5.4): `completed-peg-outs-merkle-tree.ak` is replaced by
+  * `bridge-state.ak` (the singleton carries `cpo_root`). The packaged min-json keeps the LAST
+  * published compiledCode of this validator so the interim TM Confirm flow (which still spends the
+  * trie through Config field 3) stays self-consistent. TODO(bridge-state migration): delete this
+  * wrapper with the trie flow.
   *
   * Trie v2 (2026-07): the first parameter is the TM NFT policy (= the [[TreasuryMovementValidator]]
   * script hash), NOT the config NFT pair. The trie is now written at TM **Confirm**, keyed by POR

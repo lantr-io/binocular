@@ -206,9 +206,10 @@ object TmConfirmRedeemer
   * reference-input index of their anchor UTxO; the anchor is authenticated by its NFT at that index
   * (config NFT / TM NFT), never by position alone.
   *
-  *   - [[Genesis]] — the FIRST Treasury Movement: the reference input at `configRefInputIndex` must
-  *     be the Config UTxO (config NFT), and the embedded BTC tx's input 0 must spend the initial
-  *     treasury outpoint stored in its field 11 (`initial_btc_treasury_utxo`).
+  *   - [[Genesis]] — RETIRED (spec [PTM-5] WITHDRAWN): the rev-5.4 Config datum no longer carries
+  *     `initial_btc_treasury_utxo`, so this variant now always fails. It stays in the enum so
+  *     [[Chain]]'s constructor index does not move. TODO(bridge-state migration): [PTM-6]/[PTM-7]
+  *     replace both variants with a check against the bridge-state singleton's head.
   *   - [[Chain]] — every subsequent TM: the reference input at `prevTmRefInputIndex` must be a
   *     `Confirmed` TM record (TM NFT), and the embedded BTC tx's input 0 must spend that record's
   *     treasury output `(btcTxid, vout 0)`.
@@ -633,10 +634,15 @@ object TreasuryMovementValidator {
                     )
                     .getOrFail("TM confirm: no config reference input")
                     .resolved
-                // Config field 3. Read at RUNTIME, not applied as a parameter: the trie script
-                // takes THIS script's hash as its own parameter, so a compile-time link would be a
-                // parameterization cycle.
-                val triePolicy = cfgOut.datum.of[ConfigDatum].completedPegOutsMerkleTreePolicyId
+                // Config field 3 (rev 5.4: `bridge_state_policy`). Read at RUNTIME, not applied
+                // as a parameter (spec [PAR-1]): the state script takes THIS script's hash as its
+                // own parameter, so a compile-time link would be a parameterization cycle.
+                //
+                // INTERIM until the TM singleton migration ([CTM-18]..[CTM-30]) rewrites this
+                // whole block: field 3 still carries the completed-peg-outs trie policy at deploy
+                // time, and this branch still spends/recreates that trie. TODO(bridge-state
+                // migration): spend the singleton (NFT asset "BSS") and write BridgeState here.
+                val triePolicy = cfgOut.datum.of[ConfigDatum].bridgeStatePolicy
                 val trieIn = tx.inputs
                     .find(inp =>
                         inp.resolved.value
@@ -681,10 +687,10 @@ object TreasuryMovementValidator {
                 // grace period cannot be shortcut by backdating.
                 //
                 // OPERATIONAL RULE (accepted residual risk): burning the chain-TIP record leaves
-                // the next TM with no predecessor to reference (and Genesis no longer applies), so
+                // the next TM with no predecessor to reference (and Genesis is retired), so
                 // the creator must not burn the tip. While the bridge is active a successor lands
-                // well within the grace period; after a >30-day quiet spell, recovery is a config
-                // Update re-anchoring `initial_btc_treasury_utxo` to the current outpoint.
+                // well within the grace period; after a >30-day quiet spell, recovery arrives with
+                // the bridge-state singleton migration (the head lives there, spec §Recovery).
                 val ownOut = tx.findOwnInput(ownRef).get.resolved
                 ownOut.address.credential match
                     case Credential.ScriptCredential(ownScriptHash) =>
@@ -745,15 +751,13 @@ object TreasuryMovementValidator {
         // deterministic TM layout (input[0] = treasury, output[0] = treasury change).
         val spent = allInputOutpoints(signedBtcTx).head
         val expected = redeemer match
-            case TmMintRedeemer.Genesis(i) =>
-                val cfg = tx.referenceInputs.at(i).resolved
-                // The config NFT — not the index or address — is the trust anchor: it is
-                // minted exactly once, so a forged UTxO cannot carry it.
-                require(
-                  cfg.value.quantityOf(configNftPolicy, configNftName) == BigInt(1),
-                  "TM mint: reference input lacks the config NFT"
-                )
-                cfg.datum.of[ConfigDatum].initialBtcTreasuryUtxo
+            case TmMintRedeemer.Genesis(_) =>
+                // RETIRED (spec [PTM-5] WITHDRAWN with rev 5.4): the Config datum no longer
+                // carries `initial_btc_treasury_utxo` — [BSS-4] anchors the chain in the
+                // bridge-state singleton's bootstrap redeemer instead. The variant stays in the
+                // enum so `Chain`'s constructor index is unchanged. TODO(bridge-state migration):
+                // [PTM-6]/[PTM-7] replace both variants with a check against the singleton head.
+                fail("TM mint: Genesis is retired ([PTM-5]); the chain anchors in the singleton")
             case TmMintRedeemer.Chain(i) =>
                 val prev = tx.referenceInputs.at(i).resolved
                 require(
