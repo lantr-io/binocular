@@ -138,6 +138,47 @@ case class CompletedPegOutsTrieDatum(root: ByteString) derives FromData, ToData
 @Compile
 object CompletedPegOutsTrieDatum
 
+/** Datum of the rev-5.4 bridge-state singleton — the one UTxO every TM Confirm advances, and the
+  * one datum `peg-in.ak`, `peg-out.ak` and `treasury.ak` read.
+  *
+  * Scalus side of a cross-language mirror: the Aiken `BridgeState` type MUST move in lockstep with
+  * this one. The datum is a Plutus `Constr`, so the tag (0) and the FIELD ORDER are
+  * consensus-visible. Spec §BridgeState, the singleton datum:
+  *
+  * | Index | Field            | Bytes | Written at Confirm from                 |
+  * |:------|:-----------------|:------|:----------------------------------------|
+  * | 0     | `spiRoot`        | 32    | the TM's commitment output, first root  |
+  * | 1     | `cpoRoot`        | 32    | the TM's commitment output, second root |
+  * | 2     | `treasuryUtxoId` | 36    | `btc_txid ++ 00000000`                  |
+  * | 3     | `treasuryAmount` | int   | satoshi amount of the TM's output 0     |
+  *
+  *   - [LIB-1] every reader decodes this type and reads its fields BY NAME. A bare "field 0" read
+  *     would return `spiRoot` where the caller wanted `cpoRoot`, and a wrong root makes `mpf.miss`
+  *     SUCCEED — which cancels a paid PegOutRequest.
+  *   - [LIB-3] a new field is APPENDED, never inserted. An insert shifts every later index and
+  *     silently re-points the Aiken readers.
+  *
+  * @param spiRoot
+  *   swept peg-ins MPF root, 32 bytes. Attested by the TM, not derived on-chain.
+  * @param cpoRoot
+  *   completed peg-outs MPF root, 32 bytes. Attested by the TM, not derived on-chain.
+  * @param treasuryUtxoId
+  *   the current treasury UTxO on Bitcoin, `btc_txid`(32) ++ `vout`(4, little-endian, always
+  *   `00000000`). The next TM MUST spend it as its input 0.
+  * @param treasuryAmount
+  *   that UTxO's satoshi amount.
+  */
+case class BridgeState(
+    spiRoot: ByteString,
+    cpoRoot: ByteString,
+    treasuryUtxoId: ByteString,
+    treasuryAmount: BigInt
+) derives FromData,
+      ToData
+
+@Compile
+object BridgeState
+
 /** Redeemer for the Confirm transition.
   *
   * @param txIndex
@@ -260,6 +301,79 @@ object TreasuryMovementValidator {
       * `bifrost/constants.ak::completed_peg_outs_root_asset_name`.
       */
     val CompletedPegOutsAssetName: ByteString = ByteString.fromString("CPO")
+
+    /** First 7 bytes of a rev-5.4 TWO-ROOT commitment `scriptPubKey`:
+      * `OP_RETURN OP_PUSHBYTES_69 "BTMR1"`. The 69-byte push is `"BTMR1" ++ spi_root ++ cpo_root`,
+      * so the whole script is 71 bytes ([[TwoRootCommitmentScriptLength]]).
+      *
+      * `"BTMR1"` means Bifrost TM Roots, version 1. It is deliberately NOT `"BFR"`-prefixed:
+      * watchtowers detect peg-in deposits by scanning for that prefix, and a TM pays the treasury
+      * address, so a `"BFR"` tag here could be misread as a deposit. The trailing `1` is a format
+      * version, so a future commitment layout gets its own tag.
+      */
+    val TwoRootCommitmentPrefix: ByteString = hex"6a4542544d5231"
+
+    /** Length of [[TwoRootCommitmentPrefix]]: `OP_RETURN`(1) + `OP_PUSHBYTES_69`(1) + `"BTMR1"`(5).
+      * Also the offset at which `spi_root` starts.
+      */
+    val TwoRootCommitmentPrefixLength: BigInt = 7
+
+    /** Bytes the single `OP_PUSHBYTES_69` pushes: `"BTMR1"`(5) + `spi_root`(32) + `cpo_root`(32).
+      * Well inside every datacarrier standardness limit.
+      */
+    val TwoRootCommitmentPayloadLength: BigInt = 69
+
+    /** Length in bytes of a well-formed two-root commitment `scriptPubKey`: `OP_RETURN`(1) + push
+      * opcode(1) + payload(69) = 71.
+      */
+    val TwoRootCommitmentScriptLength: BigInt = 2 + TwoRootCommitmentPayloadLength
+
+    /** Offset at which `cpo_root` starts: after the prefix and the 32-byte `spi_root`. */
+    val CpoRootOffset: BigInt = TwoRootCommitmentPrefixLength + RootLength
+
+    /** Asset name of the rev-5.4 bridge-state singleton NFT. Mirrors
+      * `bifrost/constants.ak::bridge_state_asset_name`.
+      */
+    val BridgeStateAssetName: ByteString = ByteString.fromString("BSS")
+
+    /** Is this `scriptPubKey` a two-root commitment? Length AND prefix, so a short script cannot
+      * slice past its end and a 71-byte payment script cannot masquerade as one. The length check
+      * also rejects the old 39-byte `"CPOR1"` output.
+      */
+    def isTwoRootCommitment(scriptPubKey: ByteString): Boolean =
+        scriptPubKey.length == TwoRootCommitmentScriptLength &&
+            scriptPubKey.slice(0, TwoRootCommitmentPrefixLength) == TwoRootCommitmentPrefix
+
+    /** Both MPF roots the TM's outputs attest, as `(spi_root, cpo_root)`: bytes [7, 39) and [39,
+      * 71) of its single [[isTwoRootCommitment]] output.
+      *
+      * `outs` is the TM's FULL parsed output list, treasury change included. The commitment may sit
+      * at any position (heimdall emits it last).
+      *
+      * EXACTLY ONE commitment output is required ([CTM-26]). Zero fails: every TM must state both
+      * roots that hold after it, including a TM that sweeps nothing and fulfills no peg-out (which
+      * re-commits the unchanged roots), so each root is pinned by an unbroken chain of quorum
+      * attestations. Two or more fail because the validator would otherwise have to choose, and a
+      * permissionless confirmer would make that choice.
+      *
+      * The roots are ATTESTED, not verified: they are whatever the FROST quorum signed into the TM.
+      * This validator only copies them into the bridge-state singleton. Correctness rests on the
+      * same quorum honesty that already custodies the treasury — every co-signer recomputes both
+      * expected roots from its own tries before signing ([SPI-2]), so a leader proposing a wrong
+      * root fails quorum.
+      */
+    def committedRoots(outs: ScalusList[PegOutEntry]): (ByteString, ByteString) =
+        // `filter` then match, NOT `find`: `find` stops at the first commitment and would silently
+        // accept a TM carrying a second one.
+        outs.filter(out => isTwoRootCommitment(out.scriptPubKey)) match
+            case ScalusList.Cons(only, ScalusList.Nil) =>
+                val spk = only.scriptPubKey
+                (
+                  spk.slice(TwoRootCommitmentPrefixLength, RootLength),
+                  spk.slice(CpoRootOffset, RootLength)
+                )
+            case ScalusList.Nil => fail("TM confirm: missing two-root commitment")
+            case _              => fail("TM confirm: multiple two-root commitments")
 
     /** Is this `scriptPubKey` a completed-peg-outs root commitment? Length AND prefix, so a short
       * script cannot slice past its end and a 39-byte payment script cannot masquerade as one.
