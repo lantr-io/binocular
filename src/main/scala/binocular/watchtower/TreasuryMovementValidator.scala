@@ -33,105 +33,62 @@ case class PegOutEntry(scriptPubKey: ByteString, amount: BigInt) derives FromDat
 @Compile
 object PegOutEntry
 
-/** Datum of the treasury-movement (TM) UTxO.
+/** Datum of the treasury-movement (TM) UTxO — rev 5.4: a single-constructor record (Constr 0).
   *
-  *   - [[Unconfirmed]] — created when the signed Bitcoin TM is posted to Cardano. Carries the full
-  *     segwit-serialized `signedBtcTx` (the bytes watchtowers relay to Bitcoin), the poster's
-  *     `creator` key hash, `created` (POSIX ms, must equal the posting tx's validity upper bound —
-  *     see the mint branch), the N7 fields `epoch` (the Cardano epoch this TM belongs to) and
-  *     `leaderReward` (the reward amount, a copy of the Config `leader_reward` tunable at post),
-  *     and the rev-5.1 data-availability hint `fulfilledPorOutpoints`. Constr tag 0,
-  *     `[signed_btc_tx, creator, created, epoch, leader_reward, fulfilled_por_outpoints]` — the
-  *     shape heimdall's `publish.rs` and binocular's `create-tmtx` post. N7 note:
-  *     `epoch`/`leaderReward` are carried here but NOT yet enforced on-chain — the leader_reward
-  *     pin against the Config and the reward payout land with N9 (see
-  *     [[2026-07-21-n9-leader-reward-attribution]] in internal-docs); `tm_sequence` is deliberately
-  *     NOT a datum field (off-chain signing counter, spec §Cardano submission and leader reward).
-  *   - [[Confirmed]] — produced by the Confirm transition once the TM is Binocular-confirmed. Holds
-  *     the `btcTxid`, the list of swept peg-in outpoints (`sweptPegInUtxoIds`, 36-byte
-  *     prev_txid++vout each), the `fulfilledPegOuts`, the N10b `spentViaFederationLeaf` flag, and
-  *     `creator`/`created`/`epoch`/`leaderReward` carried verbatim from the Unconfirmed input
-  *     (`creator`/`created` drive the GC path). Constr tag 1. `spentViaFederationLeaf` is the
-  *     objective dead-roster evidence `treasury.ak::FederationReset` gates on: it is `true` iff
-  *     this TM's treasury input (input 0, pinned to the treasury outpoint at mint) was spent via
-  *     the federation CSV leaf. The treasury taproot tree has a SINGLE leaf (the federation
-  *     `<csv> OP_CSV OP_DROP <y_fed> OP_CHECKSIG`; internal key `Y_51` for the key-path roster
-  *     sweep), so a *confirmed* 3-item script-path spend of input 0 can only be that leaf — and it
-  *     could confirm only after `OP_CSV` was satisfied, i.e. the tip aged unmoved past
-  *     `federation_csv_blocks` (a live roster's coins never age that far). The flag is therefore
-  *     computed COARSELY as [[BitcoinHelpers.isValidScriptPathWitness]]`(signedBtcTx, 0)` (3-item
-  *     witness) — no `y_federation`/`csv` needed on-chain — and ENFORCED here: the Confirm branch
-  *     bakes it into the reconstructed `exp` datum the continuing output must match, so a
-  *     (permissionless) confirmer cannot forge it. [[binocular.cli.commands.ConfirmTmtxCommand]]
-  *     computes the same value off-chain to build a matching output.
+  * The `Confirmed` variant is gone (spec §No Confirmed record): Confirm spends the record, burns
+  * the TM NFT ([CTM-24]), produces no output at the TM address ([CTM-25]), and writes everything
+  * downstream readers need into the bridge-state singleton ([[BridgeState]]). The SPENT record
+  * stays in Cardano history forever and is the permanent source of the raw TM bytes for trie
+  * reconstruction ([SPI-7], [OB-9]).
   *
-  * Variant order and field order are positional in the Plutus Constr — do not reorder. New fields
-  * are normally APPENDED (epoch/leaderReward after created), never inserted.
-  * `spentViaFederationLeaf` is the one deliberate exception: the Aiken mirror
-  * `treasury-movement.ak` is a decode-only PREFIX of this datum (it omits
-  * `creator`/`created`/`epoch`/`leaderReward`, which no Aiken validator reads), and
-  * `treasury.ak::FederationReset` binds the flag by its DECLARED position — index 3 — in that
-  * 4-field mirror. So the flag is pinned at Constr index 3 HERE too (inserted after
-  * `fulfilledPegOuts`, before `creator`); appending it after `leaderReward` would make Aiken read
-  * `creator` as the Bool. Downstream prefix readers that stop at index 2 — Aiken `peg_in.ak`
-  * (indices 0,1) and heimdall `parse_confirmed_tm_datum` (indices 0,1,2, `len>=3`) — are unaffected
-  * by the insert.
+  * Created when the signed Bitcoin TM is posted to Cardano. Carries the full segwit-serialized
+  * `signedBtcTx` (the bytes watchtowers relay to Bitcoin), the poster's `creator` key hash,
+  * `created` (POSIX ms, must equal the posting tx's validity upper bound — see the mint branch),
+  * and the rev-5.1 data-availability hint `fulfilledPorOutpoints`. Constr tag 0,
+  * `[signed_btc_tx, creator, created, fulfilled_por_outpoints]` — the shape heimdall's `publish.rs`
+  * and binocular's `create-tmtx` post. The rev-5.3 `epoch` and `leader_reward` fields LEFT the
+  * datum (spec §Leader reward: DEFERRED): no reward is paid anywhere on-chain, and carrying a
+  * half-enforced fee field would hand a permissionless poster a toll on every swept depositor.
+  * `tm_sequence` is likewise NOT a datum field (off-chain signing counter, spec §Cardano submission
+  * and leader reward).
+  *
+  * Field order is positional in the Plutus Constr — do not reorder; new fields are APPENDED, never
+  * inserted. The Constr TAG is a wire fact too: every harvester keys history by `Constr 0` records,
+  * and a plain case-class decode does not check the tag, so the mint branch pins it explicitly.
   */
-enum TmDatum derives FromData, ToData {
-    case Unconfirmed(
-        signedBtcTx: ByteString,
-        creator: PubKeyHash,
-        created: PosixTime,
-        epoch: BigInt,
-        leaderReward: BigInt,
-        /** Rev-5.1 data-availability HINT: the Cardano outpoints of the PegOutRequests this TM
-          * fulfills, 36 bytes each (Cardano tx hash (32) ++ output index as 4 little-endian bytes).
-          *
-          * UNVERIFIED. Neither `mint` nor `spend` reads a single byte of it: the FROST-signed
-          * `"CPOR1"` root commitment inside `signedBtcTx` is the sole integrity anchor for the
-          * completed-peg-outs trie. Posting a TM is permissionless, so a hostile poster can garble
-          * this list; that costs the protocol nothing.
-          *
-          * What it is for: rebuilding the completed-peg-outs trie from chain data alone (cold
-          * start, recovery, a new SPO). Reconstruction reads it from the SPENT `Unconfirmed`
-          * output's inline datum, which stays in Cardano history forever and is indexable by
-          * address alone (Kupo indexes datums of spent outputs; it does not index tx metadata —
-          * which is why the hint is a datum field). With the hint, reconstruction resolves each
-          * outpoint to its POR datum and inserts the entry directly; without it, the fallback is to
-          * match the TM's payment outputs against the PegOutRequests open at that time and search
-          * assignments until the running root equals that TM's committed root. The committed root
-          * turns reconstruction from trust into search-and-check either way.
-          *
-          * [[Confirmed]] deliberately does NOT carry it: the Unconfirmed record is the permanent
-          * source, and keeping `Confirmed` at 8 fields leaves `peg_in.ak`,
-          * `treasury.ak::FederationReset`, and heimdall's Confirmed parser untouched.
-          */
-        fulfilledPorOutpoints: ScalusList[ByteString]
-    )
-    case Confirmed(
-        btcTxid: ByteString,
-        sweptPegInUtxoIds: ScalusList[ByteString],
-        fulfilledPegOuts: ScalusList[PegOutEntry],
-        // N10b: index 3, pinned here to match the Aiken FederationReset positional read — see the
-        // datum scaladoc above. Inserted before the provenance fields, NOT appended.
-        spentViaFederationLeaf: Boolean,
-        creator: PubKeyHash,
-        created: PosixTime,
-        epoch: BigInt,
-        leaderReward: BigInt
-    )
-}
+case class UnconfirmedTm(
+    signedBtcTx: ByteString,
+    creator: PubKeyHash,
+    created: PosixTime,
+    /** Rev-5.1 data-availability HINT: the Cardano outpoints of the PegOutRequests this TM
+      * fulfills, 36 bytes each (Cardano tx hash (32) ++ output index as 4 little-endian bytes).
+      *
+      * UNVERIFIED. Neither `mint` nor `spend` reads a single byte of it: the FROST-signed `"BTMR1"`
+      * root commitment inside `signedBtcTx` is the sole integrity anchor for the completed-peg-outs
+      * trie. Posting a TM is permissionless, so a hostile poster can garble this list; that costs
+      * the protocol nothing.
+      *
+      * What it is for: rebuilding the completed-peg-outs trie from chain data alone (cold start,
+      * recovery, a new SPO). Reconstruction reads it from the SPENT record's inline datum, which
+      * stays in Cardano history forever and is indexable by address alone (Kupo indexes datums of
+      * spent outputs; it does not index tx metadata — which is why the hint is a datum field). With
+      * the hint, reconstruction resolves each outpoint to its POR datum and inserts the entry
+      * directly; without it, the fallback is to match the TM's payment outputs against the
+      * PegOutRequests open at that time and search assignments until the running root equals that
+      * TM's committed root. The committed root turns reconstruction from trust into
+      * search-and-check either way.
+      */
+    fulfilledPorOutpoints: ScalusList[ByteString]
+) derives FromData,
+      ToData
 
 @Compile
-object TmDatum
+object UnconfirmedTm
 
-/** Scalus mirror of `completed-peg-outs-merkle-tree.ak::CompletedPegOutsMerkleTreeDatum` — the MPF
-  * root of the completed peg-outs. Bootstrapped with the empty root (32 zero bytes), then spent and
-  * recreated by EVERY TM Confirm, which copies the root the FROST quorum attested in that TM's
-  * `"CPOR1"` commitment output (a TM that fulfills no peg-out re-commits the unchanged root).
-  *
-  * Kept HERE, not in `ConfigTypes.scala`, because this validator is the only writer and the file's
-  * `@Compile` companion is what lets the Confirm branch decode it on-chain.
+/** Scalus mirror of the RETIRED `completed-peg-outs-merkle-tree.ak` datum (rev 5.4 deleted that
+  * validator: the bridge-state singleton carries `cpo_root` now). The Confirm branch no longer
+  * spends a trie UTxO; this type survives only for the legacy off-chain readers
+  * (`BridgeSweepSetup`, `PorSweeper`) until task `bss-bootstrap-cleanup` retires them.
   */
 case class CompletedPegOutsTrieDatum(root: ByteString) derives FromData, ToData
 
@@ -179,7 +136,7 @@ case class BridgeState(
 @Compile
 object BridgeState
 
-/** Redeemer for the Confirm transition.
+/** The Confirm proof payload ([CTM-14]'s `Confirm(proof)`).
   *
   * @param txIndex
   *   0-based index of the TM tx within its Bitcoin block.
@@ -191,7 +148,7 @@ object BridgeState
   *   the 80-byte Bitcoin block header (its merkle-root is checked, and it must hash to the
   *   oracle-confirmed block hash).
   */
-case class TmConfirmRedeemer(
+case class TmConfirmProof(
     txIndex: BigInt,
     txMerkleProof: ScalusList[ByteString],
     blockMpfProof: ScalusList[ProofStep],
@@ -200,57 +157,79 @@ case class TmConfirmRedeemer(
       ToData
 
 @Compile
-object TmConfirmRedeemer
+object TmConfirmProof
 
-/** Mint redeemer: which anchor the posted TM chains from. Both variants carry the 0-based
-  * reference-input index of their anchor UTxO; the anchor is authenticated by its NFT at that index
-  * (config NFT / TM NFT), never by position alone.
+/** Spend redeemer of a TM record — [CTM-14]: the validator decodes THIS before it looks at the
+  * datum, because the redeemer is the transition selector:
   *
-  *   - [[Genesis]] — RETIRED (spec [PTM-5] WITHDRAWN): the rev-5.4 Config datum no longer carries
-  *     `initial_btc_treasury_utxo`, so this variant now always fails. It stays in the enum so
-  *     [[Chain]]'s constructor index does not move. TODO(bridge-state migration): [PTM-6]/[PTM-7]
-  *     replace both variants with a check against the bridge-state singleton's head.
-  *   - [[Chain]] — every subsequent TM: the reference input at `prevTmRefInputIndex` must be a
-  *     `Confirmed` TM record (TM NFT), and the embedded BTC tx's input 0 must spend that record's
-  *     treasury output `(btcTxid, vout 0)`.
+  *   - [[Confirm]] (Constr 0) — the validated transition: prove the TM on Bitcoin, burn the TM NFT,
+  *     advance the bridge-state singleton.
+  *   - [[Gc]] (Constr 1) — grace-period reclaim by the record's creator ([CTM-16]).
   *
-  * Minting is PERMISSIONLESS: anyone may post a TM chaining from any anchor, but a Bitcoin outpoint
-  * spends exactly once, so at most one such TM can ever confirm — the Confirmed chain cannot fork.
-  * Uniqueness is inherited from Bitcoin, not enforced here.
+  * LOCKSTEP: `bridge-state.ak` discriminates a singleton spend on this redeemer's Constr TAG
+  * ([BSS-2]: tag 0 = Confirm) — not on any datum tag ([BSS-6]) and not on the NFT burn ([BSS-7]),
+  * which a Gc spend also performs. Do not renumber the variants.
   */
-enum TmMintRedeemer derives FromData, ToData {
-    case Genesis(configRefInputIndex: BigInt)
-    case Chain(prevTmRefInputIndex: BigInt)
+enum TmSpendRedeemer derives FromData, ToData {
+    case Confirm(proof: TmConfirmProof)
+    case Gc
 }
 
-/** Treasury-movement validator: enforces the `Unconfirmed -> Confirmed` transition on-chain.
+@Compile
+object TmSpendRedeemer
+
+/** Mint redeemer: the 0-based reference-input index of the bridge-state singleton.
   *
-  * This replaces the always-ok scaffold (`TmtxScript`). The only legal spend of an
-  * [[TmDatum.Unconfirmed]] UTxO recreates it as [[TmDatum.Confirmed]], and only if the spender
-  * *proves* the TM is confirmed on Bitcoin against the Binocular oracle:
+  * [PTM-5] is WITHDRAWN — the rev-5.1 `Genesis`/`Chain` anchor split is retired. Every posted TM
+  * chains from the singleton's `treasury_utxo_id` ([PTM-6]); the reference input at
+  * `bridgeStateRefInputIndex` is authenticated by the singleton NFT `(Config bridge_state_policy,
+  * "BSS")`, never by position alone ([PTM-7]).
   *
-  *   1. `txid = sha256d(strip_witness(signedBtcTx))` — recomputed on-chain, never trusted.
+  * Minting is PERMISSIONLESS: anyone may post a TM chaining from the current head, but a Bitcoin
+  * outpoint spends exactly once, so at most one such TM can ever confirm — the confirmed chain
+  * cannot fork. Uniqueness is inherited from Bitcoin, not enforced here. A TM posted from a STALE
+  * head cannot be posted at all (the singleton's head has moved), which is what stops dead records
+  * from accumulating (spec §Post signed TM, Why note).
+  */
+case class TmMintRedeemer(bridgeStateRefInputIndex: BigInt) derives FromData, ToData
+
+@Compile
+object TmMintRedeemer
+
+/** Treasury-movement validator, rev 5.4: Confirm retires the TM record and advances the
+  * bridge-state singleton.
+  *
+  * The only legal [[TmSpendRedeemer.Confirm]] spend of an [[UnconfirmedTm]] UTxO *proves* the TM is
+  * confirmed on Bitcoin against the Binocular oracle:
+  *
+  *   1. `txid = sha256d(strip_witness(signedBtcTx))` — recomputed on-chain, never trusted
+  *      ([CTM-1]).
   *   2. the block header is in the oracle's `confirmedBlocksRoot` (MPF membership; oracle UTxO is a
-  *      reference input, identified by the script hash applied as a compile parameter).
+  *      reference input, identified by the script hash applied as a compile parameter) ([CTM-3]).
   *   3. the header hashes to the MPF-proven block hash.
-  *   4. `txid` is merkle-included in the header's tx-merkle-root at `txIndex`.
-  *   5. the continuing output sits at the same TM script address, preserves the UTxO value (so the
-  *      TM identity token rides along), and carries a `Confirmed` datum whose `btcTxid` /
-  *      `sweptPegInUtxoIds` / `fulfilledPegOuts` are exactly what the contract parsed out of the
-  *      raw TM transaction.
-  *   6. the completed-peg-outs trie UTxO (policy from Config field 3, asset name `"CPO"`) is spent
-  *      and recreated at the same address, carrying the root the TM's single `"CPOR1"` commitment
-  *      output attests — see [[committedRoot]].
+  *   4. `txid` is merkle-included in the header's tx-merkle-root at `txIndex` ([CTM-2]).
+  *
+  * and then retires the record and advances the singleton:
+  *
+  *   - the TM NFT is burned ([CTM-24]) and NO output sits at the TM address ([CTM-25]) — there is
+  *     no `Confirmed` record (spec §No Confirmed record);
+  *   - the bridge-state singleton — the UTxO carrying `(Config bridge_state_policy, "BSS")`
+  *     ([CTM-28]) — is spent, its head must be what the TM's input 0 spends ([CTM-18]), and the
+  *     continuing singleton output ([CTM-29]) must carry EXACTLY the [[BridgeState]] this TM
+  *     attests ([CTM-27]): both roots from its single `"BTMR1"` commitment output ([CTM-20],
+  *     [CTM-26], [CTM-30]), the new head `txid ‖ 00000000` ([CTM-19]), and output 0's satoshi
+  *     amount ([CTM-21]).
   *
   * That `signedBtcTx` is the protocol's real Treasury Movement transaction is enforced at MINT time
   * (see [[TmMintRedeemer]]): the minted TM NFT is bound to an `Unconfirmed` output whose embedded
-  * BTC tx spends the protocol treasury outpoint — the config anchor (first TM) or the referenced
-  * predecessor `Confirmed` record's output 0 (every subsequent TM). The Confirm spend needs no
-  * linkage re-check: the bytes were committed at mint.
+  * BTC tx spends the singleton's `treasury_utxo_id` ([PTM-6]). The Confirm spend re-checks the
+  * linkage against the SPENT singleton ([CTM-18]), which is what makes replaying an old TM
+  * impossible: the head it chained from is gone.
   *
-  * A `Confirmed` record is additionally spendable by its `creator` once the [[GcGraceMs]] grace
-  * period after `created` elapses: the spend burns the TM NFT and reclaims the min-ADA (garbage
-  * collection — see the Confirmed branch of `spend`). Operational rule: never GC the chain TIP.
+  * An `Unconfirmed` record is additionally spendable by its `creator` with [[TmSpendRedeemer.Gc]]
+  * once the [[GcGraceMs]] grace period after `created` elapses: the spend burns the TM NFT and
+  * reclaims the min-ADA ([CTM-16] — a record whose TM never mines is permanently unconfirmable
+  * under [CTM-18], so it is dead weight).
   *
   * Parameterized by the Binocular oracle script hash and the config NFT `(policy, name)` (applied
   * via [[TreasuryMovementContract.contract]]).
@@ -270,8 +249,9 @@ object TreasuryMovementValidator {
             case _                              => fail("Expected inline datum")
     }
 
-    /** Grace period before a Confirmed record's creator may GC it (burn NFT + reclaim min-ADA).
-      * BigInt arithmetic — the equivalent Int literal product (30*24*3600*1000) overflows Int32.
+    /** Grace period before a TM record's creator may GC it (burn NFT + reclaim min-ADA) ([CTM-8],
+      * [CTM-16]). BigInt arithmetic — the equivalent Int literal product (30*24*3600*1000)
+      * overflows Int32.
       */
     val GcGraceMs: BigInt = BigInt(30) * 24 * 3600 * 1000 // 30 days
 
@@ -457,46 +437,34 @@ object TreasuryMovementValidator {
         refInputs
             .find { input =>
                 val resolved = input.resolved
-                resolved.address.credential match
-                    case Credential.ScriptCredential(hash) =>
-                        hash == oracleScriptHash && resolved.value.quantityOf(
-                          oracleScriptHash,
-                          ByteString.empty
-                        ) == BigInt(1)
-                    case _ => false
+                resolved.address.credential === Credential.ScriptCredential(oracleScriptHash)
+                && resolved.value.quantityOf(oracleScriptHash, ByteString.empty) == BigInt(1)
             }
             .get
             .resolved
     }
 
     /** Count the transaction inputs sitting at the TM script address (Script credential == the TM
-      * script hash). A legal TM spend — Confirm (`Unconfirmed -> Confirmed`) or GC (creator burns a
-      * grace-expired `Confirmed`) — spends EXACTLY ONE TM record; both branches of [[spend]]
-      * require this.
+      * script hash). A legal TM spend — Confirm or GC — spends EXACTLY ONE TM record ([CTM-17]);
+      * both branches of [[spend]] require this.
       *
       * Why: the TM NFT has an empty asset name and no one-shot seed, so `(policy, "")` is fungible
-      * across posts — permissionless posting lets the SAME confirmed `signedBtcTx` be posted as two
+      * across posts — permissionless posting lets the SAME `signedBtcTx` be posted as two
       * `Unconfirmed` records, each bearing the token. Spending two TM records in one tx runs this
-      * validator once per input; every invocation accepts the single continuing output (Confirm) or
-      * the single NFT burn (GC), and ledger value-conservation forces the second token to escape to
-      * an attacker output carrying a fabricated `Confirmed` datum. `peg_in.ak` authenticates the
-      * Confirmed record by the NFT, not the address, so that fabricated record would be trusted —
-      * minting fBTC with no treasury backing. Requiring one TM input per spend closes the escape on
-      * both the Confirm and GC paths.
+      * validator once per input; every invocation sees the same transaction-wide −1 mint, so only
+      * ONE token is burned, and ledger value-conservation forces the second token to escape to an
+      * attacker output with a fabricated `Unconfirmed` datum — a forged post that skipped the mint
+      * checks. Requiring one TM input per spend closes the escape on both paths.
       */
-    def tmInputCount(inputs: ScalusList[TxInInfo], tmScriptHash: ByteString): BigInt = {
-        def loop(remaining: ScalusList[TxInInfo]): BigInt =
-            remaining match
-                case ScalusList.Nil => BigInt(0)
-                case ScalusList.Cons(inp, tail) =>
-                    val here = inp.resolved.address.credential match
-                        case Credential.ScriptCredential(h) =>
-                            if h == tmScriptHash then BigInt(1) else BigInt(0)
-                        case _ => BigInt(0)
-                    here + loop(tail)
-        loop(inputs)
-    }
+    def tmInputCount(inputs: ScalusList[TxInInfo], tmScriptHash: ByteString): BigInt =
+        inputs.count(
+          _.resolved.address.credential === Credential.ScriptCredential(tmScriptHash)
+        )
 
+    /** TM spend — dispatches on the [[TmSpendRedeemer]] FIRST ([CTM-14]), then on the (single)
+      * datum variant. Shared by both transitions: exactly one TM-script input ([CTM-17]) and the
+      * transaction-wide burn of the TM NFT ([CTM-24] / [CTM-6]).
+      */
     def spend(
         oracleScriptHash: ByteString,
         configNftPolicy: ByteString,
@@ -506,20 +474,42 @@ object TreasuryMovementValidator {
         ownRef: TxOutRef,
         redeemer: Datum
     ): Unit = {
-        val datum = datumOpt.getOrFail("Missing TM datum").to[TmDatum]
-        // Only the Unconfirmed -> Confirmed transition is a legal spend.
-        datum match
-            // `fulfilledPorOutpoints` is the rev-5.1 DA hint: decoded positionally, never read. See
-            // the TmDatum scaladoc for why nothing on-chain validates it.
-            case TmDatum.Unconfirmed(signedBtcTx, creator, created, epoch, leaderReward, _) =>
-                val proof = redeemer.to[TmConfirmRedeemer]
-
-                // 1. Recompute the txid from the witness-stripped serialization — never trust the caller.
+        // spec [CTM-14] decode the redeemer before the datum: it is the transition selector.
+        val spendRedeemer = redeemer.to[TmSpendRedeemer]
+        // `fulfilledPorOutpoints` is decoded positionally, never read here. The tag was pinned at
+        // mint (the NFT only ever binds to a Constr-0 record). See the UnconfirmedTm scaladoc.
+        val record = datumOpt.getOrFail("Missing TM datum").to[UnconfirmedTm]
+        val signedBtcTx = record.signedBtcTx
+        // Both transitions retire the record the same way. The TM input is authenticated by
+        // the spend purpose itself (`findOwnInput`); the TM NFT policy IS this script's own
+        // hash (spend and mint share the script).
+        val ownOut = tx.findOwnInput(ownRef).get.resolved
+        val tmScriptHash = ownOut.address.credential match
+            case Credential.ScriptCredential(h) => h
+            case _                              => fail("TM input is not at a script address")
+        // spec [CTM-17] exactly one TM-script input — the NFT is fungible across posts, so
+        // spending two records at once would let the second, un-burned token escape to an
+        // attacker output (see [[tmInputCount]]).
+        require(
+          tmInputCount(tx.inputs, tmScriptHash) == BigInt(1),
+          "TM spend: exactly one TM-script input per tx"
+        )
+        // spec [CTM-24] (Confirm) / [CTM-6] (Gc): the TM NFT is burned — there is no
+        // Confirmed record for it to ride to.
+        require(
+          tx.mint.quantityOf(tmScriptHash, ByteString.empty) == BigInt(-1),
+          "TM spend: must burn the TM NFT"
+        )
+        spendRedeemer match
+            case TmSpendRedeemer.Confirm(proof) =>
+                // spec [CTM-1] recompute the txid from the witness-stripped serialization —
+                // never trust the caller.
                 val txid = BitcoinHelpers.getTxHash(signedBtcTx)
 
-                // 2. The block is in the oracle's confirmed-blocks trie.
+                // spec [CTM-3] the block is in the oracle's confirmed-blocks trie.
                 val oracleState =
-                    findOracleInput(tx.referenceInputs, oracleScriptHash).datum.of[ChainState]
+                    findOracleInput(tx.referenceInputs, oracleScriptHash).datum
+                        .of[ChainState]
                 val blockHash = BitcoinHelpers.blockHeaderHash(proof.blockHeader)
                 MPF(oracleState.confirmedBlocksRoot).verifyMembership(
                   blockHash,
@@ -527,7 +517,8 @@ object TreasuryMovementValidator {
                   proof.blockMpfProof
                 )
 
-                // 3+4. The header hashes to that block hash and commits to txid at txIndex.
+                // spec [CTM-2] the header (which hashes to that block hash) commits to txid
+                // at txIndex.
                 val computedRoot = BitcoinHelpers.merkleRootFromInclusionProof(
                   proof.txMerkleProof,
                   txid,
@@ -538,95 +529,18 @@ object TreasuryMovementValidator {
                   "TM tx not in block merkle root"
                 )
 
-                // 5. The continuing output carries the TM NFT and the parsed Confirmed datum.
-                val ownOut = tx.findOwnInput(ownRef).get.resolved
-                val contOut = tx.outputs.find(out => out.address === ownOut.address).get
-                // Preserve the TM NFT (the minted part), NOT the exact Value. The lovelace need not match:
-                // the Confirmed datum is a different size (so a different min-UTxO), and any lovelace
-                // difference (tx fees / a watchtower reward) is allowed. The TM NFT (policy = this script's
-                // own hash, since spend + mint share the script; empty asset name) is what authenticates the
-                // Confirmed UTxO downstream, so it MUST ride along.
-                val tmNftPolicy = ownOut.address.credential match
-                    case Credential.ScriptCredential(h) => h
-                    case _ => fail("TM input is not at a script address")
-                // NFT containment: exactly one TM record may be spent per Confirm tx. Without this,
-                // spending two duplicate Unconfirmed records lets the second (fungible, empty-name)
-                // TM NFT escape to an attacker output with a fabricated Confirmed datum — see
-                // [[tmInputCount]].
+                // spec [CTM-25] no output at the TM address: the record is retired, not
+                // recreated. Everything downstream reads the singleton instead.
                 require(
-                  tmInputCount(tx.inputs, tmNftPolicy) == BigInt(1),
-                  "TM confirm: exactly one TM-script input per tx"
-                )
-                require(
-                  contOut.value.quantityOf(tmNftPolicy, ByteString.empty) == BigInt(1),
-                  "TM NFT not preserved on the continuing output"
+                  !tx.outputs.exists(
+                    _.address.credential === Credential.ScriptCredential(tmScriptHash)
+                  ),
+                  "TM confirm: no output may sit at the TM address"
                 )
 
-                // 6. "Is this the real TM record?" is settled above, and no longer the way the old
-                // checklist framed it (look the TM address up in a Treasury State reference UTxO).
-                // There is no Treasury State UTxO: this script's address is fixed by its three
-                // applied parameters, so the TM input is authenticated by the spend purpose itself
-                // (`findOwnInput(ownRef)`), the TM NFT policy IS this script's own hash (spend and
-                // mint share it), `tmInputCount == 1` bounds the tx to one TM record, and the
-                // continuing output must carry that NFT back. The `signedBtcTx` those checks
-                // authenticate was in turn bound to the NFT at mint time (`validateMinting`), which
-                // also chained it to the previous Confirmed record or to the config's
-                // `initial_btc_treasury_utxo`. Nothing further is needed here.
-
-                val swept = allInputOutpoints(signedBtcTx)
-                val fulfilled = allOutputs(signedBtcTx)
-                // N10b: was the treasury (input 0) swept via the federation CSV leaf? The treasury
-                // taproot tree is single-leaf (federation `<csv> OP_CSV OP_DROP <y_fed> OP_CHECKSIG`;
-                // internal key Y_51 for the key-path roster sweep), so a 3-item script-path witness on
-                // input 0 IS that leaf. Because this TM is being confirmed against the oracle (it is
-                // mined on Bitcoin), that script-path spend satisfied OP_CSV — the tip had aged past
-                // federation_csv_blocks, i.e. the roster is provably dead. Computing it HERE (from the
-                // mint-committed signedBtcTx) and baking it into `exp` makes the flag unforgeable by a
-                // permissionless confirmer. treasury.ak::FederationReset consumes it. See the datum doc.
-                val spentViaFederationLeaf =
-                    BitcoinHelpers.isValidScriptPathWitness(signedBtcTx, BigInt(0))
-                // N7: epoch + leaderReward ride through the Confirm transition verbatim (like
-                // creator/created), so the Confirmed record carries the poster-declared reward
-                // amount for N9's later payout enforcement.
-                val exp = OutputDatum.OutputDatum(
-                  TmDatum
-                      .Confirmed(
-                        txid,
-                        swept,
-                        fulfilled,
-                        spentViaFederationLeaf,
-                        creator,
-                        created,
-                        epoch,
-                        leaderReward
-                      )
-                      .toData
-                )
-                require(
-                  exp === contOut.datum,
-                  "Continuing output datum does not match parsed TM Confirmed"
-                )
-
-                // 7. Completed-peg-outs trie update. The TM carries exactly one "CPOR1" OP_RETURN
-                // output committing the trie root that holds AFTER it. Copy that root into the
-                // continuing trie output.
-                //
-                // Why here and not in peg-out.ak: the ONLY place the protocol learns which Bitcoin
-                // payment settles which peg-out request is the FROST-signed TM itself. Recording it
-                // at Confirm makes peg-out Complete a single MPF membership proof, with no need to
-                // re-parse the raw TM.
-                //
-                // Why a copy and not an on-chain fold: the root is committed INSIDE the bytes the
-                // quorum signed, so it is a quorum attestation exactly like the payments themselves.
-                // Re-deriving it on-chain from per-peg-out markers (the previous design) cost ~46 vB
-                // of Bitcoin per peg-out and an MPF insert per peg-out in the Confirm budget, and
-                // bought no trust the quorum did not already hold: it never proved a payment settles
-                // the request its marker names. See the design note "rev 5.1".
-                //
-                // The trie UTxO must be SPENT here (not referenced): its own Aiken validator
-                // (`completed-peg-outs-merkle-tree.ak`) gates its spend on exactly this transition
-                // — a TM-NFT input with a tag-0 datum plus a TM-NFT output with a tag-1 datum — and
-                // delegates root correctness to this check.
+                // spec [CTM-28] the singleton policy comes from the Config reference input
+                // at RUNTIME ([PAR-1]): the bridge_state script takes THIS script's hash as
+                // its own parameter, so a compile-time link would be a cycle.
                 val cfgOut = tx.referenceInputs
                     .find(refIn =>
                         refIn.resolved.value
@@ -634,84 +548,79 @@ object TreasuryMovementValidator {
                     )
                     .getOrFail("TM confirm: no config reference input")
                     .resolved
-                // Config field 3 (rev 5.4: `bridge_state_policy`). Read at RUNTIME, not applied
-                // as a parameter (spec [PAR-1]): the state script takes THIS script's hash as its
-                // own parameter, so a compile-time link would be a parameterization cycle.
-                //
-                // INTERIM until the TM singleton migration ([CTM-18]..[CTM-30]) rewrites this
-                // whole block: field 3 still carries the completed-peg-outs trie policy at deploy
-                // time, and this branch still spends/recreates that trie. TODO(bridge-state
-                // migration): spend the singleton (NFT asset "BSS") and write BridgeState here.
-                val triePolicy = cfgOut.datum.of[ConfigDatum].bridgeStatePolicy
-                val trieIn = tx.inputs
+                val bssPolicy = cfgOut.datum.of[ConfigDatum].bridgeStatePolicy
+
+                // spec [CTM-28] the spent singleton, authenticated by its NFT. Its own
+                // validator ([BSS-1]/[BSS-2]) gates the spend on this very transition and
+                // delegates datum correctness here ([CTM-27]).
+                val bssIn = tx.inputs
                     .find(inp =>
                         inp.resolved.value
-                            .quantityOf(triePolicy, CompletedPegOutsAssetName) == BigInt(1)
+                            .quantityOf(bssPolicy, BridgeStateAssetName) == BigInt(1)
                     )
-                    .getOrFail("TM confirm: completed-peg-outs trie not spent")
+                    .getOrFail("TM confirm: bridge state singleton not spent")
                     .resolved
-                val trieOut = tx.outputs
-                    .find(out =>
-                        out.value.quantityOf(triePolicy, CompletedPegOutsAssetName) == BigInt(1)
-                    )
-                    .getOrFail("TM confirm: no continuing completed-peg-outs output")
-                // The NFT must come back to the same script address, or the next TM could not find
-                // it and the trie would be permanently unspendable.
-                require(trieOut.address === trieIn.address, "TM confirm: trie address changed")
-                // The attested root, taken from the TM's single "CPOR1" output. A TM that fulfills
-                // no peg-out commits the UNCHANGED root, so the trie UTxO round-trips with the same
-                // datum — but the commitment output is still mandatory.
-                //
-                // EXACT datum equality, not `trieOut.datum.of[CompletedPegOutsTrieDatum].root ==
-                // newRoot`. On-chain `FromData` is an erased retag: field access is a lazy
-                // projection with no constructor-tag or arity check, so a root-only comparison would
-                // also accept `Constr 5 [root, junk]` at the trie address. Confirming is
-                // permissionless, so that shape is attacker-chosen, and every downstream reader
-                // (the Aiken trie validator, peg-out Complete, reconstruction tooling) would then
-                // have to cope with a datum the protocol never describes. Rebuilding the expected
-                // datum and comparing the whole `OutputDatum` pins the tag, the arity, and
-                // inline-ness in one check — the same discipline as the `exp === contOut.datum`
-                // check on the TM record above.
-                val newRoot = committedRoot(fulfilled)
-                val expTrieDatum =
-                    OutputDatum.OutputDatum(CompletedPegOutsTrieDatum(newRoot).toData)
+
+                // spec [CTM-18] the TM spends the confirmed head. This is what makes
+                // re-posting an OLD TM permanently unconfirmable: the head it chained from
+                // is spent, so a stale root can never be written back (the rev-5.1 root
+                // rollback this revision exists to prevent).
                 require(
-                  expTrieDatum === trieOut.datum,
-                  "TM confirm: trie datum is not the canonical committed root"
+                  allInputOutpoints(signedBtcTx).head
+                      == bssIn.datum.of[BridgeState].treasuryUtxoId,
+                  "TM confirm: BTC tx does not spend the confirmed head"
                 )
-            case TmDatum.Confirmed(_, _, _, _, creator, created, _, _) =>
-                // Garbage collection: after the grace period the CREATOR may reclaim the record's
-                // min-ADA, burning the TM NFT. By then all peg-ins/peg-outs swept by this TM are
-                // expected to be completed (the record is no longer needed as proof material).
-                // `created` is anchored to the mint tx's validity interval (see `mint`), so the
-                // grace period cannot be shortcut by backdating.
-                //
-                // OPERATIONAL RULE (accepted residual risk): burning the chain-TIP record leaves
-                // the next TM with no predecessor to reference (and Genesis is retired), so
-                // the creator must not burn the tip. While the bridge is active a successor lands
-                // well within the grace period; after a >30-day quiet spell, recovery arrives with
-                // the bridge-state singleton migration (the head lives there, spec §Recovery).
-                val ownOut = tx.findOwnInput(ownRef).get.resolved
-                ownOut.address.credential match
-                    case Credential.ScriptCredential(ownScriptHash) =>
-                        require(
-                          tx.mint.quantityOf(ownScriptHash, ByteString.empty) == BigInt(-1),
-                          "Must burn TM NFT"
-                        )
-                        // NFT containment on the GC path too: burning ONE NFT while spending two
-                        // grace-expired Confirmed records (same creator) would let the un-burned
-                        // second NFT escape — see [[tmInputCount]].
-                        require(
-                          tmInputCount(tx.inputs, ownScriptHash) == BigInt(1),
-                          "TM GC: exactly one TM-script input per tx"
-                        )
-                    case Credential.PubKeyCredential(_) => impossible()
-                val timeout = created + GcGraceMs
+
+                // spec [CTM-26] exactly one "BTMR1" commitment output; [CTM-20]/[CTM-30]
+                // both roots are read from it ([[committedRoots]] — attested, not derived).
+                val outs = allOutputs(signedBtcTx)
+                val roots = committedRoots(outs)
+
+                // spec [CTM-29] the continuing singleton carries the NFT at the same
+                // address — otherwise the next TM could never find it.
+                val bssOut = tx.outputs
+                    .find(out => out.value.quantityOf(bssPolicy, BridgeStateAssetName) == BigInt(1))
+                    .getOrFail("TM confirm: no continuing singleton output")
+                require(
+                  bssOut.address === bssIn.address,
+                  "TM confirm: singleton address changed"
+                )
+
+                // spec [CTM-27] rebuild the WHOLE expected datum and compare the whole
+                // OutputDatum. On-chain FromData is an erased retag (no tag or arity
+                // check), so field-wise reads would also accept `Constr 5 [root, junk]` at
+                // the singleton address — attacker-chosen, since confirming is
+                // permissionless. spec [CTM-19] head = txid ++ 00000000 (the TM chain
+                // layout fixes the treasury change at vout 0); spec [CTM-21] amount =
+                // output 0's satoshis.
+                val exp = OutputDatum.OutputDatum(
+                  BridgeState(
+                    spiRoot = roots._1,
+                    cpoRoot = roots._2,
+                    treasuryUtxoId = txid ++ hex"00000000",
+                    treasuryAmount = outs.head.amount
+                  ).toData
+                )
+                require(
+                  exp === bssOut.datum,
+                  "TM confirm: singleton datum is not the attested state"
+                )
+
+            case TmSpendRedeemer.Gc =>
+                // Garbage collection ([CTM-16]): after the grace period the CREATOR may
+                // reclaim the record's min-ADA. A record whose TM never mines is
+                // permanently unconfirmable under [CTM-18] (its head was spent by the TM
+                // that did confirm), so it is dead weight nothing ever reads again.
+                // `created` is anchored to the mint tx's validity interval (see `mint`), so
+                // the grace period cannot be shortcut by backdating.
+                // spec [CTM-8] the validity interval lies ENTIRELY after the boundary.
+                val timeout = record.created + GcGraceMs
                 require(
                   tx.validRange.isEntirelyAfter(timeout),
                   "TM GC: grace period has not elapsed"
                 )
-                require(tx.isSignedBy(creator), "TM GC: not signed by the record's creator")
+                // spec [CTM-7] only the record's creator.
+                require(tx.isSignedBy(record.creator), "TM GC: not signed by the record's creator")
     }
 
     inline def validateMinting(
@@ -726,63 +635,69 @@ object TreasuryMovementValidator {
         val tmOut = tx.outputs
             .find(txout => txout.value.quantityOf(ownPolicyId, ByteString.empty) == BigInt(1))
             .get
-        tmOut.address.credential match
-            case Credential.ScriptCredential(h) if h == ownPolicyId => ()
-            case _ => fail("TM mint: NFT output not at own script address")
-        val signedBtcTx = tmOut.datum.of[TmDatum] match
-            // The 6th field (`fulfilledPorOutpoints`) is decoded positionally and IGNORED — the mint
-            // validates nothing about the DA hint. See the TmDatum scaladoc.
-            case TmDatum.Unconfirmed(rawTx, _, created, _, _, _) =>
-                val txHappenedBefore = tx.validRange.to.finiteOrFail(
-                  "TM mint: validity range upper bound must be finite"
-                )
-                // The tx cannot be included after `txHappenedBefore`, so requiring
-                // `created == txHappenedBefore` makes `created` a guaranteed upper bound on the
-                // real posting time: the GC grace period (see the Confirmed spend branch) can
-                // start late but never early, and cannot be backdated. Future-dating only delays
-                // the poster's own reclaim.
-                require(
-                  created == txHappenedBefore,
-                  "TM mint: created field must be equal to `tx.validRange.to`"
-                )
-                rawTx
-            case _ => fail("TM mint: NFT output datum is not Unconfirmed")
+        require(
+          tmOut.address.credential === Credential.ScriptCredential(ownPolicyId),
+          "TM mint: NFT output not at own script address"
+        )
+        // Pin the datum's Constr TAG to 0. A case-class decode is an erased retag with no tag
+        // check, and every harvester (reconstruction, the SPI proof walk, confirm's poll filter)
+        // keys history by `Constr 0` records — a wrong-tag record would be mintable and
+        // confirmable yet invisible to every reader. `fulfilledPorOutpoints` stays decoded
+        // positionally and IGNORED — the mint validates nothing about the DA hint.
+        val rawDatum = tmOut.datum match
+            case OutputDatum.OutputDatum(d) => d
+            case _                          => fail("TM mint: NFT output datum must be inline")
+        require(
+          unConstrData(rawDatum).fst == BigInt(0),
+          "TM mint: NFT output datum is not an UnconfirmedTm record"
+        )
+        val record = rawDatum.to[UnconfirmedTm]
+        val txHappenedBefore = tx.validRange.to.finiteOrFail(
+          "TM mint: validity range upper bound must be finite"
+        )
+        // The tx cannot be included after `txHappenedBefore`, so requiring
+        // `created == txHappenedBefore` makes `created` a guaranteed upper bound on the real
+        // posting time: the GC grace period (the Gc spend branch) can start late but never
+        // early, and cannot be backdated. Future-dating only delays the poster's own reclaim.
+        require(
+          record.created == txHappenedBefore,
+          "TM mint: created field must be equal to `tx.validRange.to`"
+        )
+        val signedBtcTx = record.signedBtcTx
         // The outpoint the embedded BTC tx spends first: input 0 is the treasury by the
         // deterministic TM layout (input[0] = treasury, output[0] = treasury change).
         val spent = allInputOutpoints(signedBtcTx).head
-        val expected = redeemer match
-            case TmMintRedeemer.Genesis(_) =>
-                // RETIRED (spec [PTM-5] WITHDRAWN with rev 5.4): the Config datum no longer
-                // carries `initial_btc_treasury_utxo` — [BSS-4] anchors the chain in the
-                // bridge-state singleton's bootstrap redeemer instead. The variant stays in the
-                // enum so `Chain`'s constructor index is unchanged. TODO(bridge-state migration):
-                // [PTM-6]/[PTM-7] replace both variants with a check against the singleton head.
-                fail("TM mint: Genesis is retired ([PTM-5]); the chain anchors in the singleton")
-            case TmMintRedeemer.Chain(i) =>
-                val prev = tx.referenceInputs.at(i).resolved
-                require(
-                  prev.value.quantityOf(ownPolicyId, ByteString.empty) == BigInt(1),
-                  "TM mint: predecessor lacks the TM NFT"
-                )
-                prev.datum.of[TmDatum] match
-                    case TmDatum.Confirmed(btcTxid, _, _, _, _, _, _, _) =>
-                        // Predecessor treasury output = (btcTxid, vout 0).
-                        btcTxid ++ hex"00000000"
-                    case _ => fail("TM mint: predecessor is not Confirmed")
-
+        // spec [PTM-7] the singleton reference input is authenticated by its NFT
+        // `(Config bridge_state_policy, "BSS")`, never by position alone. The policy comes from
+        // the Config reference input at runtime ([PAR-1]).
+        val cfgOut = tx.referenceInputs
+            .find(refIn =>
+                refIn.resolved.value.quantityOf(configNftPolicy, configNftName) == BigInt(1)
+            )
+            .getOrFail("TM mint: no config reference input")
+            .resolved
+        val bssPolicy = cfgOut.datum.of[ConfigDatum].bridgeStatePolicy
+        val bssRef = tx.referenceInputs.at(redeemer.bridgeStateRefInputIndex).resolved
         require(
-          spent == expected,
-          "TM mint: BTC tx does not spend the treasury outpoint"
+          bssRef.value.quantityOf(bssPolicy, BridgeStateAssetName) == BigInt(1),
+          "TM mint: reference input lacks the singleton NFT"
+        )
+        // spec [PTM-6] the embedded BTC tx chains from the singleton's confirmed head. [CTM-18]
+        // already makes the design safe; this mint-time copy of the check stops a TM chaining from
+        // a stale head being POSTED at all, so dead records do not accumulate.
+        require(
+          spent == bssRef.datum.of[BridgeState].treasuryUtxoId,
+          "TM mint: BTC tx does not spend the singleton's head"
         )
     }
 
     /** Minting policy for the TM NFT — the policy id IS this script's hash, so the NFT and the
       * spend logic share one script. PERMISSIONLESS, gated by chain linkage: the freshly posted
-      * `Unconfirmed` TM must embed a BTC tx whose input 0 spends the protocol treasury outpoint —
-      * the config anchor ([[TmMintRedeemer.Genesis]]) or the referenced predecessor `Confirmed`
-      * record's output 0 ([[TmMintRedeemer.Chain]]). See [[TmMintRedeemer]] for why permissionless
-      * minting is safe (Bitcoin's spend-once semantics — the Confirmed chain cannot fork). Burning
-      * (draining a Confirmed TM) is permissionless cleanup.
+      * `Unconfirmed` TM must embed a BTC tx whose input 0 spends the bridge-state singleton's
+      * `treasury_utxo_id` ([PTM-6]/[PTM-7] — the singleton is a reference input, authenticated by
+      * its NFT). See [[TmMintRedeemer]] for why permissionless minting is safe (Bitcoin's
+      * spend-once semantics — the confirmed chain cannot fork). Burning happens on every legal
+      * spend (Confirm and Gc alike); all its checks live in `spend`.
       */
     def mint(
         configNftPolicy: ByteString,
@@ -844,9 +759,9 @@ object TreasuryMovementValidator {
 /** The TM validator parameterized with the Binocular oracle script hash and the config NFT
   * `(policy, name)`. The compiled script's hash is BOTH the TM UTxO address (spend) and the TM NFT
   * policy id (mint). All three parameters are STABLE — the address does NOT depend on any
-  * participant key. `Unconfirmed` UTxOs are locked here and spent into `Confirmed` ones; the TM NFT
-  * can be minted by ANYONE whose posted TM chains from the current treasury outpoint (config anchor
-  * or predecessor `Confirmed` record — see [[TmMintRedeemer]]).
+  * participant key. `Unconfirmed` UTxOs are locked here until Confirm retires them; the TM NFT can
+  * be minted by ANYONE whose posted TM chains from the bridge-state singleton's head (see
+  * [[TmMintRedeemer]]).
   */
 object TreasuryMovementContract extends Contract {
     // MUST be releaseUntagged (no `_scalusTag` wrapper), like TmtxScript. This validator is

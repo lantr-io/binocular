@@ -466,10 +466,14 @@ final class PorSweeper(
         }
     }
 
-    private def onChainRoot(trieUtxo: Utxo): Either[String, ByteString] =
-        trieUtxo.output.inlineDatum
-            .flatMap(d => Try(d.to[CompletedPegOutsTrieDatum].root).toOption)
-            .toRight("the CPO singleton UTxO has no decodable inline root datum")
+    // Rev 5.4: the completed-peg-outs root lives in the bridge-state singleton, decoded as the
+    // 4-field BridgeState and read BY NAME ([LIB-1]) — a bare field-0 read would return spi_root
+    // where this caller wants cpo_root, and a wrong root makes `mpf.miss` SUCCEED, cancelling a
+    // paid PegOutRequest.
+    private def onChainRoot(singletonUtxo: Utxo): Either[String, ByteString] =
+        singletonUtxo.output.inlineDatum
+            .flatMap(d => Try(d.to[BridgeState].cpoRoot).toOption)
+            .toRight("the bridge-state singleton has no decodable BridgeState datum ([LIB-1])")
 }
 
 object PorSweeper {

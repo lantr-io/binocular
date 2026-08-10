@@ -175,9 +175,9 @@ object CpoReconstruction {
 
     /** Decode a `Confirmed` TM datum (Constr 1) defensively.
       *
-      * Read positionally from raw `Data` rather than through `TmDatum`'s derived decoder: the TM
-      * address is permissionlessly payable, so most outputs here are not TM records at all, and a
-      * typed decode would just throw on each of them.
+      * Read positionally from raw `Data` rather than through a typed decoder: the TM address is
+      * permissionlessly payable, so most outputs here are not TM records at all, and a typed decode
+      * would just throw on each of them.
       */
     def parseConfirmed(datum: Data): Option[ConfirmedTm] =
         datum match {
@@ -207,12 +207,12 @@ object CpoReconstruction {
             case _ => None
         }
 
-    /** The rev-5.1 data-availability hint of an `Unconfirmed` TM datum (Constr 0, field 5), keyed
-      * by the txid recomputed from field 0's signed Bitcoin bytes.
+    /** The rev-5.1 data-availability hint of an `Unconfirmed` TM datum (rev 5.4: Constr 0, field
+      * 3), keyed by the txid recomputed from field 0's signed Bitcoin bytes.
       *
-      * Tolerates the OLD 5-field shape by returning an empty hint: such records confirm fine
-      * on-chain, so real history contains them, and reconstruction must read the chain rather than
-      * refuse it. A malformed entry (not 36 bytes) is dropped — the hint is unverified,
+      * Tolerates a shorter datum, or one whose field 3 is not a list (the retired 6-field shape
+      * carried `epoch` there), by returning an empty hint: reconstruction must read the chain
+      * rather than refuse it. A malformed entry (not 36 bytes) is dropped — the hint is unverified,
       * attacker-supplied data. Every failure path is safe because a hint is only ever ACCEPTED
       * after it reproduces the attested root.
       */
@@ -228,7 +228,7 @@ object CpoReconstruction {
                         // a crafted datum could recurse deeply. Guarded by the same catch that
                         // covers the decode.
                         val txid = BitcoinHelpers.getTxHash(signedTx)
-                        val hint = f.lift(5) match {
+                        val hint = f.lift(3) match {
                             case Some(Data.List(items)) =>
                                 items.asScala.toSeq
                                     .flatMap(d => Try(d.toByteString).toOption)

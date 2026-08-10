@@ -50,11 +50,8 @@ case class BridgeConfig(
     feeRateSatPerVb: Long = 1L,
     perPegoutFeeSat: Long = 1000L,
     minPegOutSat: Long = 10000L,
-    // The TM poster's reward (lovelace) CreateTmtx writes into the Unconfirmed TM record (TmDatum
-    // field). Not a Config datum field under rev 5.4.
-    leaderRewardLovelace: Long = 2000000L,
     // The ban schedule baked into the spo_bans policy id at genesis, and published verbatim as
-    // config #18-20. Unlike the tunables above these are NOT governance-updatable in place: they
+    // config #8-10. Unlike the tunables above these are NOT governance-updatable in place: they
     // are inputs to the policy hash, so changing one names a different ban list — which is exactly
     // why they are chosen once, here, and then read by every SPO rather than typed by each.
     banSchedule: BanScheduleConfig = BanScheduleConfig(),
@@ -75,6 +72,16 @@ case class BridgeConfig(
     // carries (see CommandHelpers.refScriptUtxosByHash). A script hash not found on-chain falls back
     // to inlining the script in the witness set (only viable for small txs).
     completedPegOutsOneShotRef: Option[String] = None,
+    // The one-shot wallet UTxO (TX_HASH#INDEX) consumed when the bridge-state singleton NFT
+    // ("BSS") was minted. It fixes the bridge_state validator's parameter set — its other
+    // parameter is the TM script hash, which confirm derives — hence its policyId, which MUST
+    // equal Config field 3 (`bridge_state_policy`).
+    //
+    // REQUIRED BY `confirm-tmtx` (rev 5.4): every TM Confirm tx spends and recreates the
+    // singleton, so the confirm daemon must rebuild that validator. `confirm-tmtx` (and therefore
+    // `watchtower`) exits at startup when this key is missing, because no TM can be confirmed
+    // without the singleton spend.
+    bridgeStateOneShotRef: Option[String] = None,
     // --- POR sweeper (spec rev 5.2) ---
     // Chain peg-out Complete after TM Confirm: after each confirmed TM the watchtower burns the
     // locked fBTC of every PAID PegOutRequest and keeps its MIN_ADA. ON by default — completion is

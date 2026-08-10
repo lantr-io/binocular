@@ -97,10 +97,11 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
         println()
 
         // Build the Unconfirmed datum: Constr 0
-        // [signed_btc_tx, creator, created, epoch, leader_reward, fulfilled_por_outpoints] —
-        // matches heimdall publish.rs and what TreasuryMovementValidator expects to spend. creator =
-        // the sponsor payment key (it may GC the Confirmed record after the grace period);
-        // created = now (the real TM mint policy anchors it to the tx validity interval).
+        // [signed_btc_tx, creator, created, fulfilled_por_outpoints] — matches heimdall publish.rs
+        // and what TreasuryMovementValidator expects to spend (rev 5.4: epoch/leader_reward LEFT
+        // the datum, spec §Leader reward: DEFERRED). creator = the sponsor payment key (it may GC
+        // the record after the grace period); created = now (the real TM mint policy anchors it to
+        // the tx validity interval).
         val btcTxBytes = ByteString.fromHex(btcTxHex)
         import scalus.cardano.onchain.plutus.prelude.List as ScalusList
         val creatorPkh = ByteString.fromArray(hdAccount.paymentKeyHash.bytes)
@@ -112,12 +113,7 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
         // both the devnet horizon and preprod's (20s slots, ~36h safe zone).
         val validTo = java.time.Instant.ofEpochSecond(java.time.Instant.now().getEpochSecond + 90)
         val createdMs = BigInt(validTo.toEpochMilli)
-        // N7 datum fields [.., epoch, leader_reward]. `leaderReward` mirrors the Config
-        // `leader_reward` tunable (its pin against the on-chain Config datum lands with N9). `epoch`
-        // is the Cardano epoch this TM belongs to — heimdall's `publish.rs` sets the real value; this
-        // manual scaffold leaves it 0 (the validator carries epoch but does not enforce it in N7).
-        val leaderReward = BigInt(config.bridge.leaderRewardLovelace)
-        // Field 5 is the rev-5.1 DA hint `fulfilled_por_outpoints` (36-byte Cardano outpoints of the
+        // Field 3 is the rev-5.1 DA hint `fulfilled_por_outpoints` (36-byte Cardano outpoints of the
         // PegOutRequests the TM fulfills). EMPTY here: this scaffold posts an operator-supplied raw
         // BTC tx that settles no PegOutRequest. Nothing on-chain reads the field — it only helps
         // reconstruction skip its search fallback — so an empty list costs the scaffold nothing.
@@ -127,8 +123,6 @@ case class CreateTmtxCommand(btcTxHex: String) extends Command {
             Data.B(btcTxBytes),
             Data.B(creatorPkh),
             Data.I(createdMs),
-            Data.I(BigInt(0)),
-            Data.I(leaderReward),
             Data.List(ScalusList.Nil)
           )
         )

@@ -31,6 +31,35 @@ import scalus.uplc.builtin.ByteString
   */
 object SweptPegInsTrie {
 
+    /** Both roots a TM attests — `(spi_root, cpo_root)` — read from its parsed outputs.
+      *
+      * Same rule as the on-chain [[TreasuryMovementValidator.committedRoots]] ([CTM-26]): `outputs`
+      * is the FULL output list (treasury change included), a commitment is a 71-byte `scriptPubKey`
+      * with the `"BTMR1"` prefix, EXACTLY ONE must be present in any position, `spi_root` is bytes
+      * [7, 39) and `cpo_root` bytes [39, 71).
+      *
+      * Returns Left with the reason for a TM the validator would reject, so the caller reports an
+      * unconfirmable TM instead of submitting a doomed transaction.
+      */
+    def committedRoots(outputs: Seq[PegOutEntry]): Either[String, (ByteString, ByteString)] =
+        outputs.map(_.scriptPubKey).filter(TreasuryMovementValidator.isTwoRootCommitment) match {
+            case Seq(spk) =>
+                Right(
+                  (
+                    spk.slice(
+                      TreasuryMovementValidator.TwoRootCommitmentPrefixLength,
+                      TreasuryMovementValidator.RootLength
+                    ),
+                    spk.slice(
+                      TreasuryMovementValidator.CpoRootOffset,
+                      TreasuryMovementValidator.RootLength
+                    )
+                  )
+                )
+            case Seq() => Left("missing two-root commitment (no \"BTMR1\" OP_RETURN output)")
+            case many  => Left(s"multiple two-root commitments (${many.size} \"BTMR1\" outputs)")
+        }
+
     /** The SPI entries a single confirmed TM adds: `(peg_in_utxo_id, sweeping_tm_input_0)`.
       *
       * `rawTm` is the segwit-serialized TM, the same bytes the `Unconfirmed` datum carries. Keys

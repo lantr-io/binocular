@@ -18,13 +18,15 @@ import scalus.uplc.builtin.Data.toData
 import scalus.cardano.ledger.CardanoInfo
 import scalus.uplc.eval.{PlutusVM, Result}
 
-/** CEK-evaluation tests for [[TreasuryMovementValidator]] — the real (non-scaffold) treasury
-  * movement Confirm validator.
+/** CEK-evaluation tests for [[TreasuryMovementValidator]] — the rev-5.4 treasury movement
+  * validator: Confirm retires the TM record and advances the bridge-state singleton.
   *
-  * Builds a fully synthetic happy path: a small segwit TM tx, a single-tx Bitcoin block whose
-  * merkle-root is that tx's txid, an oracle [[ChainState]] whose `confirmedBlocksRoot` is an
-  * off-chain MPF holding the block hash, and the `Unconfirmed -> Confirmed` spend. Asserts the
-  * contract accepts a proven confirmation and rejects tampering with the proof / parsed datum.
+  * Builds a fully synthetic happy path: a small segwit TM tx carrying one `"BTMR1"` two-root
+  * commitment, a single-tx Bitcoin block whose merkle-root is that tx's txid, an oracle
+  * [[ChainState]] whose `confirmedBlocksRoot` is an off-chain MPF holding the block hash, and the
+  * Confirm spend that burns the TM NFT and rewrites the singleton's [[BridgeState]]. Asserts the
+  * contract accepts a proven confirmation and rejects tampering with the proof, the linkage, and
+  * the singleton datum ([CTM-17] through [CTM-30]).
   */
 class TreasuryMovementValidatorTest extends AnyFunSuite {
 
@@ -36,14 +38,12 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     private val tmScriptHash = filled(0xab, 28)
     private val configNftPolicy = filled(0xc0, 28)
     private val configNftName = ByteString.fromHex("434f4e464947") // "CONFIG"
-    // The completed-peg-outs trie: policy id published in Config field 3, asset name "CPO", and the
-    // UTxO sits at the trie script's own address (policy id == script hash).
-    private val triePolicy = filled(0xc2, 28)
-    private val cpoName = ByteString.fromString("CPO")
+    // The bridge-state singleton: policy id published in Config field 3 (`bridge_state_policy`),
+    // asset name "BSS", and the UTxO sits at the bridge_state script's own address.
+    private val bssPolicy = filled(0xb5, 28)
+    private val bssName = ByteString.fromString("BSS")
     // The TM UTxO carries the TM NFT (policy = the TM script's own hash — here the stand-in
-    // `tmScriptHash` the input/output sit at — empty asset name, qty 1) plus some ADA. The spend
-    // validator derives the NFT policy from the UTxO's own address and requires it on the continuing
-    // output; the ADA need not be preserved.
+    // `tmScriptHash` the input sits at — empty asset name, qty 1) plus some ADA.
     private val tmValue: Value =
         Value.unsafeFromList(
           PList(
@@ -56,26 +56,33 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         ByteString.fromArray(Array.fill[Byte](n)(v.toByte))
 
     // --- raw TM builder -------------------------------------------------------------------------
-    // TM output layout: [0] = treasury change, [1..m] = peg-out payments, [m+1] = the ONE "CPOR1"
-    // root commitment. The commitment holds the completed-peg-outs trie root that must hold after
-    // this TM; the FROST quorum signed it, and Confirm copies it into the trie UTxO.
+    // TM output layout: [0] = treasury change, [1..m] = peg-out payments, [m+1] = the ONE "BTMR1"
+    // two-root commitment. The commitment holds the swept-peg-ins and completed-peg-outs roots that
+    // must hold after this TM; the FROST quorum signed them, and Confirm copies them into the
+    // singleton ([CTM-20]/[CTM-30]).
 
     private val changeSpk = ByteString.fromHex("0014" + ("11" * 20))
     private val paySpk1 = ByteString.fromHex("0014" + ("22" * 20))
     private val paySpk2 = ByteString.fromHex("0014" + ("33" * 20))
     private val paySpk3 = ByteString.fromHex("0014" + ("44" * 20))
-    private val porId1 = filled(0xd1, 32)
-    private val porId2 = filled(0xd2, 32)
-    private val porId3 = filled(0xd3, 32)
 
-    /** `OP_RETURN OP_PUSHBYTES_37 <tag ++ root>` — 39 script bytes. `tag` is "CPOR1" (43504f5231)
-      * for a genuine commitment; the wrong-prefix test passes "CPOR2" (43504f5232).
+    // The two attested roots. ATTESTED, not verified ([CTM-20]/[CTM-30] only COPY them), so any
+    // 32-byte constants serve.
+    private val spiRootA = filled(0x5a, 32)
+    private val cpoRootA = filled(0x6b, 32)
+
+    /** `OP_RETURN OP_PUSHBYTES_69 <tag ++ spi ++ cpo>` — 71 script bytes. `tag` is "BTMR1"
+      * (42544d5231) for a genuine commitment; the wrong-prefix test passes "BTMR2".
       */
-    private def commitmentSpk(root: ByteString, tag: String = "43504f5231"): ByteString =
-        ByteString.fromHex("6a25" + tag) ++ root
+    private def btmr1Spk(
+        spi: ByteString = spiRootA,
+        cpo: ByteString = cpoRootA,
+        tag: String = "42544d5231"
+    ): ByteString =
+        ByteString.fromHex("6a45" + tag) ++ spi ++ cpo
 
     /** A 2-in segwit tx (empty witnesses, fixed outpoints) with the given `(scriptPubKey, sats)`
-      * outputs.
+      * outputs. Input 0 spends `(aa*32, vout 0)` — the head the singleton fixture carries.
       */
     private def rawTxWith(outs: List[(ByteString, BigInt)]): ByteString = {
         val outsHex = outs.map { case (spk, amt) =>
@@ -92,32 +99,21 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         )
     }
 
-    /** The value a fulfilled peg-out records in the trie: `dest_spk ++ amount_le8`. Must match
-      * `peg-out.ak`'s Complete branch byte for byte, or completion breaks.
-      *
-      * The validator no longer derives this — it is heimdall's job — but the fixtures build the
-      * committed roots from real entries, so the roots the tests move between are realistic.
+    /** The default TM: treasury change + ONE fulfilled peg-out payment + the two-root commitment.
       */
-    private def trieValue(spk: ByteString, amount: BigInt): ByteString =
-        spk ++ integerToByteString(false, 8, amount)
-
-    private val emptyTrie = OffChainMPF.empty
-    private val emptyRoot = emptyTrie.rootHash
-
-    /** The trie after the default TM's single peg-out: the root its commitment output attests. */
-    private val defaultTrie = emptyTrie.insert(porId1, trieValue(paySpk1, BigInt(2000)))
-    private val defaultEndRoot = defaultTrie.rootHash
-
-    /** The default TM: treasury change + ONE fulfilled peg-out payment + the root commitment. */
     private val rawTm: ByteString = rawTxWith(
       List(
         (changeSpk, BigInt(1000)),
         (paySpk1, BigInt(2000)),
-        (commitmentSpk(defaultEndRoot), BigInt(0))
+        (btmr1Spk(), BigInt(0))
       )
     )
 
     private val txid = BitcoinHelpers.getTxHash(rawTm)
+
+    /** Input 0 of every `rawTxWith` tx: the head the spent singleton must carry ([CTM-18]). */
+    private val treasuryHead: ByteString = ByteString.fromHex(("aa" * 32) + "00000000")
+    private val zeroVout: ByteString = ByteString.fromHex("00000000")
 
     // single-tx block: merkle-root == txid, so an empty merkle proof at index 0 verifies.
     private val blockHeader: ByteString =
@@ -148,46 +144,69 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
       List(
         PegOutEntry(changeSpk, BigInt(1000)),
         PegOutEntry(paySpk1, BigInt(2000)),
-        PegOutEntry(commitmentSpk(defaultEndRoot), BigInt(0))
+        PegOutEntry(btmr1Spk(), BigInt(0))
       )
     )
 
-    // --- completed-peg-outs trie fixtures --------------------------------------------------------
+    // --- bridge-state singleton fixtures ---------------------------------------------------------
 
-    private val trieAddress = Address(Credential.ScriptCredential(triePolicy), Option.None)
+    private val bssAddress = Address(Credential.ScriptCredential(bssPolicy), Option.None)
 
-    private def trieNftValue(policy: ByteString = triePolicy): Value =
+    private def bssValue(policy: ByteString = bssPolicy): Value =
         Value.unsafeFromList(
           PList(
             (ByteString.empty, PList((ByteString.empty, BigInt(2_000_000)))),
-            (policy, PList((cpoName, BigInt(1))))
+            (policy, PList((bssName, BigInt(1))))
           )
         )
 
-    private def trieInput(
-        root: ByteString = emptyRoot,
-        value: Value = trieNftValue()
+    /** The state the singleton holds BEFORE the Confirm: stale-by-construction roots and amount the
+      * Confirm must overwrite, and the head the TM's input 0 spends ([CTM-18]).
+      */
+    private def prevState(head: ByteString = treasuryHead): BridgeState =
+        BridgeState(
+          spiRoot = filled(0x01, 32),
+          cpoRoot = filled(0x02, 32),
+          treasuryUtxoId = head,
+          treasuryAmount = BigInt(5000)
+        )
+
+    /** The state the Confirm must write for the default `rawTm` ([CTM-27]): both attested roots,
+      * head = `txid ‖ 00000000` ([CTM-19]), amount = output 0's satoshis ([CTM-21]).
+      */
+    private val defaultNewState: BridgeState =
+        BridgeState(
+          spiRoot = spiRootA,
+          cpoRoot = cpoRootA,
+          treasuryUtxoId = txid ++ zeroVout,
+          treasuryAmount = BigInt(1000)
+        )
+
+    private def bssInput(
+        state: BridgeState = prevState(),
+        value: Value = bssValue()
     ): TxInInfo = TxInInfo(
       outRef = TxOutRef(TxId(filled(0x06, 32)), BigInt(0)),
       resolved = TxOut(
-        address = trieAddress,
+        address = bssAddress,
         value = value,
-        datum = OutputDatum.OutputDatum(CompletedPegOutsTrieDatum(root).toData),
+        datum = OutputDatum.OutputDatum(state.toData),
         referenceScript = Option.None
       )
     )
 
-    private def trieOutput(
-        root: ByteString,
-        value: Value = trieNftValue(),
-        address: Address = trieAddress
-    ): TxOut = trieOutputWithDatum(CompletedPegOutsTrieDatum(root).toData, value, address)
+    private def bssOutput(
+        state: BridgeState = defaultNewState,
+        value: Value = bssValue(),
+        address: Address = bssAddress
+    ): TxOut = bssOutputWithDatum(state.toData, value, address)
 
-    /** A continuing trie output carrying an ARBITRARY datum — for the malformed-datum tests. */
-    private def trieOutputWithDatum(
+    /** A continuing singleton output carrying an ARBITRARY datum — for the malformed-datum tests.
+      */
+    private def bssOutputWithDatum(
         datum: Data,
-        value: Value = trieNftValue(),
-        address: Address = trieAddress
+        value: Value = bssValue(),
+        address: Address = bssAddress
     ): TxOut = TxOut(
       address = address,
       value = value,
@@ -198,23 +217,13 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     private val ownRef = TxOutRef(TxId(filled(0x01, 32)), BigInt(0))
     private val creatorPkh = PubKeyHash(filled(0x7a, 28))
     private val createdAt: BigInt = BigInt("1700000000000")
-    // N7 datum fields — carried through Confirm, not yet enforced on-chain (pin lands with N9).
-    private val tmEpoch: BigInt = BigInt(42)
-    private val tmLeaderReward: BigInt = BigInt(2_000_000)
     // Rev-5.1 DA hint: 36-byte Cardano outpoints of the PegOutRequests this TM fulfills. NOTHING
     // on-chain reads it, so the default fixture carries a non-empty one — every happy-path test then
     // doubles as evidence that mint and confirm ignore its content.
     private val porOutpointHint: PList[ByteString] =
-        PList.from(List(filled(0x31, 32) ++ ByteString.fromHex("00000000")))
-    private def unconfirmedDatumWith(hint: PList[ByteString]): Data =
-        (TmDatum.Unconfirmed(
-          rawTm,
-          creatorPkh,
-          createdAt,
-          tmEpoch,
-          tmLeaderReward,
-          hint
-        ): TmDatum).toData
+        PList.from(List(filled(0x31, 32) ++ zeroVout))
+    private def unconfirmedDatumWith(hint: PList[ByteString], rawTx: ByteString = rawTm): Data =
+        UnconfirmedTm(rawTx, creatorPkh, createdAt, hint).toData
     private val unconfirmedDatum: Data = unconfirmedDatumWith(porOutpointHint)
 
     private def tmInput(value: Value, datum: Data) = TxInInfo(
@@ -241,46 +250,51 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
       )
     )
 
-    private def confirmedOutput(value: Value, datum: Data) = TxOut(
-      address = Address(Credential.ScriptCredential(tmScriptHash), Option.None),
-      value = value,
-      datum = OutputDatum.OutputDatum(datum),
-      referenceScript = Option.None
-    )
-
-    private def redeemer(
-        proof: PList[ProofStep],
+    private def confirmProof(
+        proof: PList[ProofStep] = mpfProof,
+        header: ByteString = blockHeader,
         txIndex: BigInt = 0
-    ): Data =
-        TmConfirmRedeemer(
+    ): TmConfirmProof =
+        TmConfirmProof(
           txIndex = txIndex,
           txMerkleProof = PList.Nil,
           blockMpfProof = proof,
-          blockHeader = BlockHeader(blockHeader)
-        ).toData
+          blockHeader = BlockHeader(header)
+        )
 
-    /** A Confirm ScriptContext over the default `rawTm` (one fulfilled peg-out). The trie UTxO is
-      * spent (empty root) and recreated with the root that TM's commitment output attests, and the
-      * Config reference input publishes `triePolicy` at field 3.
+    private def confirmRdmr(proof: TmConfirmProof = confirmProof()): Data =
+        (TmSpendRedeemer.Confirm(proof): TmSpendRedeemer).toData
+
+    private val gcRdmr: Data = (TmSpendRedeemer.Gc: TmSpendRedeemer).toData
+
+    /** A Confirm ScriptContext over the default `rawTm` (one fulfilled peg-out). The singleton is
+      * spent (stale state, matching head) and recreated with the state that TM attests; the Config
+      * reference input publishes `bssPolicy` at field 3; the TM NFT is burned.
+      *
+      * `outputs` is the WHOLE output list — the default has ONLY the continuing singleton
+      * ([CTM-25]: nothing at the TM address).
       */
     private def scriptContext(
-        outValue: Value,
-        outDatum: Data,
         rdmr: Data,
         oracleRef: TxInInfo = oracleRefInput(),
-        extraOutputs: List[TxOut] = List.empty,
-        extraInputs: List[TxInInfo] = List(trieInput()),
-        trieOutputs: List[TxOut] = List(trieOutput(defaultEndRoot)),
+        extraInputs: List[TxInInfo] = List(bssInput()),
+        outputs: List[TxOut] = List(bssOutput()),
         cfgRefs: List[TxInInfo] = List(configRefInput()),
-        tmDatum: Data = unconfirmedDatum
+        tmDatum: Data = unconfirmedDatum,
+        burnQty: BigInt = BigInt(-1)
     ): ScriptContext =
         ScriptContext(
           txInfo = TxInfo(
             inputs = PList.from(tmInput(tmValue, tmDatum) :: extraInputs),
             referenceInputs = PList.from(oracleRef :: cfgRefs),
-            outputs = PList.from(
-              (confirmedOutput(outValue, outDatum) :: extraOutputs) ++ trieOutputs
-            ),
+            outputs = PList.from(outputs),
+            mint =
+                if burnQty == BigInt(0) then Value.zero
+                else
+                    Value.unsafeFromList(
+                      PList((tmScriptHash, PList((ByteString.empty, burnQty))))
+                    )
+            ,
             id = TxId(filled(0x00, 32))
           ),
           redeemer = rdmr,
@@ -288,13 +302,13 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         )
 
     /** A Confirm ScriptContext for an ARBITRARY raw TM: derives its txid, wraps it in a single-tx
-      * block, builds the oracle state proving that block, reconstructs the expected `Confirmed`
-      * datum, and wires the trie in/out pair plus the Config reference input.
+      * block, builds the oracle state proving that block, and wires the singleton in/out pair plus
+      * the Config reference input. `newState` is what the continuing singleton claims — for a
+      * well-formed TM the caller passes the state its commitment attests.
       */
     private def confirmContextFor(
         rawTx: ByteString,
-        trieInRoot: ByteString,
-        trieOutRoot: ByteString
+        newState: BridgeState
     ): ScriptContext = {
         val id = BitcoinHelpers.getTxHash(rawTx)
         val hdr = ByteString.fromHex("01000000") ++ filled(0x00, 32) ++ id ++
@@ -313,40 +327,45 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
             referenceScript = Option.None
           )
         )
-        val unconf: Data =
-            (TmDatum.Unconfirmed(
-              rawTx,
-              creatorPkh,
-              createdAt,
-              tmEpoch,
-              tmLeaderReward,
-              porOutpointHint
-            ): TmDatum).toData
-        val conf: Data = (TmDatum.Confirmed(
-          id,
-          TreasuryMovementValidator.allInputOutpoints(rawTx),
-          TreasuryMovementValidator.allOutputs(rawTx),
-          false,
-          creatorPkh,
-          createdAt,
-          tmEpoch,
-          tmLeaderReward
-        ): TmDatum).toData
-        val rdmr: Data = TmConfirmRedeemer(
-          txIndex = 0,
-          txMerkleProof = PList.Nil,
-          blockMpfProof = obMpf.proveMembership(bh),
-          blockHeader = BlockHeader(hdr)
-        ).toData
+        val unconf: Data = unconfirmedDatumWith(porOutpointHint, rawTx)
+        val rdmr: Data = (TmSpendRedeemer.Confirm(
+          TmConfirmProof(
+            txIndex = 0,
+            txMerkleProof = PList.Nil,
+            blockMpfProof = obMpf.proveMembership(bh),
+            blockHeader = BlockHeader(hdr)
+          )
+        ): TmSpendRedeemer).toData
         ScriptContext(
           txInfo = TxInfo(
-            inputs = PList.from(List(tmInput(tmValue, unconf), trieInput(trieInRoot))),
+            inputs = PList.from(List(tmInput(tmValue, unconf), bssInput())),
             referenceInputs = PList.from(List(oracleRef, configRefInput())),
-            outputs = PList.from(List(confirmedOutput(tmValue, conf), trieOutput(trieOutRoot))),
+            outputs = PList.from(List(bssOutput(newState))),
+            mint = Value.unsafeFromList(
+              PList((tmScriptHash, PList((ByteString.empty, BigInt(-1)))))
+            ),
             id = TxId(filled(0x00, 32))
           ),
           redeemer = rdmr,
           scriptInfo = SpendingScript(ownRef, Option.Some(unconf))
+        )
+    }
+
+    /** The state a well-formed `rawTx` attests: its committed roots, its txid as the head, and its
+      * output 0's satoshi amount — the off-chain construction of what [CTM-27] pins.
+      */
+    private def attestedState(rawTx: ByteString): BridgeState = {
+        val (spi, cpo) = SweptPegInsTrie
+            .committedRoots(
+              TreasuryMovementValidator.allOutputs(rawTx).asScala.toSeq
+            )
+            .toOption
+            .get
+        BridgeState(
+          spiRoot = spi,
+          cpoRoot = cpo,
+          treasuryUtxoId = BitcoinHelpers.getTxHash(rawTx) ++ zeroVout,
+          treasuryAmount = TreasuryMovementValidator.allOutputs(rawTx).head.amount
         )
     }
 
@@ -371,9 +390,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     /** Assert the DEPLOYED script rejects `sc`, and that it rejects it for `reason` (matched
       * against the trace log of the debug twin).
       *
-      * Why the second half matters: several rejection fixtures are multi-cause. A malformed marker
-      * pair, for example, also leaves the trie root unequal to the continuing output's, so a plain
-      * `!isSuccess` would still pass if the marker check were deleted outright. Pinning the message
+      * Why the second half matters: several rejection fixtures are multi-cause. Pinning the message
       * makes each test fail for its own reason.
       */
     private def assertRejects(sc: ScriptContext, reason: String): Unit = {
@@ -389,18 +406,16 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
                 )
     }
 
-    /** The real eight-field rev-5.4 [[ConfigDatum]] mirror. The Confirm path reads field 3
-      * (`bridge_state_policy` — INTERIM: it still carries the completed-peg-outs trie policy, see
-      * the validator's Confirm branch). The rest are inert here; the rev-5.1 anchor field is gone
-      * ([PTM-5] retired the Genesis mint with it).
+    /** The real eight-field rev-5.4 [[ConfigDatum]] mirror. The Confirm path and the mint path read
+      * field 3 (`bridge_state_policy`). The rest are inert here.
       */
     private def configDatum(
-        cpoPolicy: ByteString = triePolicy
+        bridgeStatePolicyArg: ByteString = bssPolicy
     ): Data = ConfigDatum(
       updateAuth = Option.None,
       bridgedTokenPolicy = ByteString.empty,
       completedPegInsPolicy = ByteString.empty,
-      bridgeStatePolicy = cpoPolicy,
+      bridgeStatePolicy = bridgeStatePolicyArg,
       tmScriptHash = ByteString.empty,
       pegInScriptHash = ByteString.empty,
       pegOutScriptHash = ByteString.empty,
@@ -423,13 +438,13 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
       )
     ).toData
 
-    /** The Config reference UTxO carrying the config NFT + a config datum with the
-      * completed-peg-outs trie policy at field 3 (interim `bridge_state_policy`). `withNft=false`
-      * simulates a forged config UTxO (right datum, no genuine NFT).
+    /** The Config reference UTxO carrying the config NFT + a config datum with the bridge-state
+      * policy at field 3. `withNft=false` simulates a forged config UTxO (right datum, no genuine
+      * NFT).
       */
     private def configRefInput(
         withNft: Boolean = true,
-        cpoPolicy: ByteString = triePolicy
+        bridgeStatePolicyArg: ByteString = bssPolicy
     ): TxInInfo = TxInInfo(
       outRef = TxOutRef(TxId(filled(0x03, 32)), BigInt(0)),
       resolved = TxOut(
@@ -438,46 +453,23 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
             if withNft then
                 Value.unsafeFromList(PList((configNftPolicy, PList((configNftName, BigInt(1))))))
             else Value.lovelace(2_000_000),
-        datum = OutputDatum.OutputDatum(configDatum(cpoPolicy)),
+        datum = OutputDatum.OutputDatum(configDatum(bridgeStatePolicyArg)),
         referenceScript = Option.None
       )
     )
 
-    /** A predecessor TM record UTxO with `Confirmed(prevTxid, [], [])` (or Unconfirmed when
-      * `confirmed=false`), carrying the TM NFT unless `withNft=false`.
+    /** The singleton as a REFERENCE input for the mint path ([PTM-6]/[PTM-7]): carries the BSS NFT
+      * (unless `withNft=false`) and a [[BridgeState]] whose head the posted TM must spend.
       */
-    private def predecessorRefInput(
-        prevTxid: ByteString,
-        withNft: Boolean = true,
-        confirmed: Boolean = true
+    private def bssRefInput(
+        head: ByteString = treasuryHead,
+        withNft: Boolean = true
     ): TxInInfo = TxInInfo(
       outRef = TxOutRef(TxId(filled(0x04, 32)), BigInt(0)),
       resolved = TxOut(
-        address = Address(Credential.ScriptCredential(tmPolicy), Option.None),
-        value =
-            if withNft then
-                Value.unsafeFromList(
-                  PList(
-                    (ByteString.empty, PList((ByteString.empty, BigInt(2_000_000)))),
-                    (tmPolicy, PList((ByteString.empty, BigInt(1))))
-                  )
-                )
-            else Value.lovelace(2_000_000),
-        datum = OutputDatum.OutputDatum(
-          if confirmed then
-              (TmDatum
-                  .Confirmed(
-                    prevTxid,
-                    PList.Nil,
-                    PList.Nil,
-                    false,
-                    creatorPkh,
-                    createdAt,
-                    tmEpoch,
-                    tmLeaderReward
-                  ): TmDatum).toData
-          else unconfirmedDatum
-        ),
+        address = bssAddress,
+        value = if withNft then bssValue() else Value.lovelace(2_000_000),
+        datum = OutputDatum.OutputDatum(prevState(head).toData),
         referenceScript = Option.None
       )
     )
@@ -499,7 +491,8 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     )
 
     /** A minting ScriptContext: mint `nftQty` of the TM NFT with the given redeemer, reference
-      * inputs, and outputs.
+      * inputs, and outputs. The default reference inputs are `[config, singleton]`, so the default
+      * redeemer index is 1.
       */
     private def mintContext(
         nftQty: BigInt,
@@ -523,19 +516,24 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           scriptInfo = ScriptInfo.MintingScript(tmPolicy)
         )
 
-    /** A GC (Confirmed-spend) ScriptContext: spend a Confirmed TM UTxO, optionally burning the NFT,
-      * signed by `signer`, within `validRange`.
+    private val postRdmr: Data = TmMintRedeemer(bridgeStateRefInputIndex = BigInt(1)).toData
+    private val defaultMintRefs: PList[TxInInfo] =
+        PList.from(List(configRefInput(), bssRefInput()))
+
+    /** A GC ScriptContext: spend an Unconfirmed TM UTxO with the Gc redeemer, optionally burning
+      * the NFT, signed by `signer`, within `validRange`.
       */
     private def gcContext(
         burnQty: BigInt,
         signer: ByteString,
         validRange: Interval,
-        datum: Data = confirmedDatum()
+        extraInputs: List[TxInInfo] = List.empty,
+        outputs: List[TxOut] = List.empty
     ): ScriptContext =
         ScriptContext(
           txInfo = TxInfo(
-            inputs = PList.from(List(tmInput(tmValue, datum))),
-            outputs = PList.Nil,
+            inputs = PList.from(tmInput(tmValue, unconfirmedDatum) :: extraInputs),
+            outputs = PList.from(outputs),
             mint =
                 if burnQty == BigInt(0) then Value.zero
                 else
@@ -545,33 +543,12 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
             validRange = validRange,
             id = TxId(filled(0x00, 32))
           ),
-          redeemer = Data.unit,
-          scriptInfo = SpendingScript(ownRef, Option.Some(datum))
+          redeemer = gcRdmr,
+          scriptInfo = SpendingScript(ownRef, Option.Some(unconfirmedDatum))
         )
 
     private val afterGrace: Interval =
         Interval.after(createdAt + TreasuryMovementValidator.GcGraceMs + 1)
-
-    private val genesisRdmr: Data = (TmMintRedeemer.Genesis(0): TmMintRedeemer).toData
-    private def chainRdmr(i: BigInt): Data = (TmMintRedeemer.Chain(i): TmMintRedeemer).toData
-
-    private def confirmedDatum(
-        swept: PList[ByteString] = expectedSwept,
-        fulfilled: PList[PegOutEntry] = expectedFulfilled,
-        // N10b flag. Default false: `rawTm`'s input 0 has 0 witness items (not a 3-item script-path),
-        // so the validator computes false — a continuing datum must carry the same value to match.
-        spentViaFederationLeaf: Boolean = false
-    ): Data =
-        (TmDatum.Confirmed(
-          txid,
-          swept,
-          fulfilled,
-          spentViaFederationLeaf,
-          creatorPkh,
-          createdAt,
-          tmEpoch,
-          tmLeaderReward
-        ): TmDatum).toData
 
     // --- tests ---
 
@@ -581,55 +558,58 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         assert(hash.length == 56)
     }
 
-    test("TM mint Genesis: retired ([PTM-5]) - always fails, even a well-formed post") {
-        // Rev 5.4 removed `initial_btc_treasury_utxo` from the Config datum, so the Genesis
-        // variant has no anchor to read and always fails. This context was the pre-5.4 happy
-        // path, so the failure is the retirement, not a malformed fixture.
-        val sc = mintContext(
-          BigInt(1),
-          genesisRdmr,
-          PList.from(List(configRefInput())),
-          PList.from(List(mintedTmOutput()))
-        )
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
-    }
+    // --- mint ([PTM-6]/[PTM-7]) ---
 
-    test("TM mint Chain: predecessor Confirmed(txid=aa*32), tx spends (aa*32, 0) - succeeds") {
+    test("TM mint: singleton head (aa*32, 0) matches the posted TM's input 0 - succeeds") {
         val sc = mintContext(
           BigInt(1),
-          chainRdmr(0),
-          PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32)))),
+          postRdmr,
+          defaultMintRefs,
           PList.from(List(mintedTmOutput()))
         )
         val result = program.applyArg(sc.toData).evaluateDebug
         assert(result.isSuccess, s"Expected success, got: $result")
     }
 
-    test("TM mint Chain: wrong predecessor txid fails") {
+    test("TM mint: a TM chaining from a stale head fails ([PTM-6])") {
         val sc = mintContext(
           BigInt(1),
-          chainRdmr(0),
-          PList.from(List(predecessorRefInput(prevTxid = filled(0xbb, 32)))),
+          postRdmr,
+          PList.from(List(configRefInput(), bssRefInput(head = filled(0xbb, 36)))),
           PList.from(List(mintedTmOutput()))
         )
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
 
-    test("TM mint Chain: predecessor without the TM NFT fails") {
+    test("TM mint: a singleton reference without the BSS NFT fails ([PTM-7])") {
         val sc = mintContext(
           BigInt(1),
-          chainRdmr(0),
-          PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32), withNft = false))),
+          postRdmr,
+          PList.from(List(configRefInput(), bssRefInput(withNft = false))),
           PList.from(List(mintedTmOutput()))
         )
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
 
-    test("TM mint Chain: Unconfirmed predecessor fails") {
+    test("TM mint: a missing config reference input fails") {
+        // Without the config there is no authority on the singleton policy, so [PTM-7] cannot
+        // authenticate the reference input.
         val sc = mintContext(
           BigInt(1),
-          chainRdmr(0),
-          PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32), confirmed = false))),
+          TmMintRedeemer(bridgeStateRefInputIndex = BigInt(0)).toData,
+          PList.from(List(bssRefInput())),
+          PList.from(List(mintedTmOutput()))
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("TM mint: the redeemer index must point AT the singleton, not near it") {
+        // Index 0 is the config UTxO — it does not carry the BSS NFT, so [PTM-7] rejects it even
+        // though a genuine singleton sits one slot over.
+        val sc = mintContext(
+          BigInt(1),
+          TmMintRedeemer(bridgeStateRefInputIndex = BigInt(0)).toData,
+          defaultMintRefs,
           PList.from(List(mintedTmOutput()))
         )
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
@@ -638,8 +618,8 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     test("TM mint: NFT output at a foreign credential fails") {
         val sc = mintContext(
           BigInt(1),
-          chainRdmr(0),
-          PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32)))),
+          postRdmr,
+          defaultMintRefs,
           PList.from(
             List(mintedTmOutput(credential = Credential.ScriptCredential(filled(0x99, 28))))
           )
@@ -647,21 +627,11 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
 
-    test("TM mint: NFT output with a Confirmed datum fails") {
-        val sc = mintContext(
-          BigInt(1),
-          chainRdmr(0),
-          PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32)))),
-          PList.from(List(mintedTmOutput(datum = confirmedDatum())))
-        )
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
-    }
-
     test("TM mint: minting more than one fails") {
         val sc = mintContext(
           BigInt(2),
-          chainRdmr(0),
-          PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32)))),
+          postRdmr,
+          defaultMintRefs,
           PList.from(List(mintedTmOutput()))
         )
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
@@ -677,16 +647,16 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         // created must EQUAL validRange.to, making it an upper bound on the real posting time.
         val sc = mintContext(
           BigInt(1),
-          chainRdmr(0),
-          PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32)))),
+          postRdmr,
+          defaultMintRefs,
           PList.from(List(mintedTmOutput())),
           validRange = Interval.between(createdAt + 7_200_000, createdAt + 7_800_000)
         )
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
         val off = mintContext(
           BigInt(1),
-          chainRdmr(0),
-          PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32)))),
+          postRdmr,
+          defaultMintRefs,
           PList.from(List(mintedTmOutput())),
           validRange = Interval.between(createdAt - 600_000, createdAt + 1)
         )
@@ -696,15 +666,47 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
     test("TM mint: unbounded validity range fails (created cannot be anchored)") {
         val sc = mintContext(
           BigInt(1),
-          chainRdmr(0),
-          PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32)))),
+          postRdmr,
+          defaultMintRefs,
           PList.from(List(mintedTmOutput())),
           validRange = Interval.always
         )
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
 
-    test("TM GC: creator burns a Confirmed record after the grace period") {
+    test("DA hint: mint accepts a garbled hint (nothing on-chain validates it)") {
+        // A permissionless poster controls the hint. Junk in it must not block the mint — the
+        // committed roots, not the hint, are what reconstruction verifies against.
+        val garbled = PList.from(List(ByteString.fromHex("00"), filled(0x99, 200)))
+        val sc = mintContext(
+          BigInt(1),
+          postRdmr,
+          defaultMintRefs,
+          PList.from(List(mintedTmOutput(datum = unconfirmedDatumWith(garbled))))
+        )
+        val result = program.applyArg(sc.toData).evaluateDebug
+        assert(result.isSuccess, s"Expected success, got: $result")
+    }
+
+    test("TM mint: an Unconfirmed-shaped datum with a wrong Constr tag fails") {
+        // A case-class decode is an erased retag, so without the explicit tag pin a poster could
+        // mint a Constr-7 record that confirms on-chain yet is invisible to every harvester
+        // (reconstruction, the SPI proof walk, confirm's poll filter all key on Constr 0).
+        val wrongTag = unconfirmedDatum match
+            case Data.Constr(0, fields) => Data.Constr(7, fields)
+            case other                  => fail(s"expected Constr 0, got: $other")
+        val sc = mintContext(
+          BigInt(1),
+          postRdmr,
+          defaultMintRefs,
+          PList.from(List(mintedTmOutput(datum = wrongTag)))
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    // --- GC ([CTM-16], [CTM-6..8], [CTM-17]) ---
+
+    test("TM GC: creator burns an Unconfirmed record after the grace period") {
         val sc = gcContext(BigInt(-1), creatorPkh.hash, afterGrace)
         val result = program.applyArg(sc.toData).evaluateDebug
         assert(result.isSuccess, s"Expected success, got: $result")
@@ -712,47 +714,84 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
 
     test("TM GC: before the grace period elapses fails") {
         val sc = gcContext(BigInt(-1), creatorPkh.hash, Interval.after(createdAt + 1000))
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM GC: grace period has not elapsed")
     }
 
     test("TM GC: non-creator signer fails") {
         val sc = gcContext(BigInt(-1), filled(0x11, 28), afterGrace)
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM GC: not signed by the record's creator")
     }
 
     test("TM GC: spending without burning the TM NFT fails") {
         val sc = gcContext(BigInt(0), creatorPkh.hash, afterGrace)
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM spend: must burn the TM NFT")
     }
 
-    test("TmDatum / redeemer Data round-trip") {
-        // The 6-field Unconfirmed: the DA hint is the appended field 5 and survives the round trip
-        // even though no validator reads it.
+    test("NFT containment (GC): spending two records while burning one is rejected") {
+        // Two grace-expired Unconfirmed records (same creator) are spent; the tx burns ONE TM NFT
+        // (mint == -1) and is signed by the creator after the grace period — so pre-[CTM-17] each
+        // per-input GC invocation passes (its burn/grace/creator checks are all tx-wide and
+        // satisfied). Ledger value-conservation then forces the un-burned SECOND NFT to escape to
+        // the attacker output below with a fabricated Unconfirmed datum — a forged post that
+        // skipped the mint checks. The single-TM-input rule rejects it.
+        val secondRecord = TxInInfo(
+          outRef = TxOutRef(TxId(filled(0x05, 32)), BigInt(1)),
+          resolved = TxOut(
+            address = Address(Credential.ScriptCredential(tmScriptHash), Option.None),
+            value = tmValue,
+            datum = OutputDatum.OutputDatum(unconfirmedDatum),
+            referenceScript = Option.None
+          )
+        )
+        val escapedOutput = TxOut(
+          address = Address(Credential.ScriptCredential(filled(0x99, 28)), Option.None),
+          value = tmValue, // the un-burned second NFT escapes
+          datum = OutputDatum.OutputDatum(unconfirmedDatum),
+          referenceScript = Option.None
+        )
+        val sc = gcContext(
+          BigInt(-1),
+          creatorPkh.hash,
+          afterGrace,
+          extraInputs = List(secondRecord),
+          outputs = List(escapedOutput)
+        )
+        assertRejects(sc, "TM spend: exactly one TM-script input per tx")
+    }
+
+    // --- data round-trips ---
+
+    test("UnconfirmedTm / redeemer Data round-trips pin the wire format") {
+        // The 4-field Unconfirmed: the DA hint is the appended field 3 and survives the round trip
+        // even though no validator reads it. epoch/leader_reward are GONE (spec §Leader reward:
+        // DEFERRED).
         assert(
-          unconfirmedDatum.to[TmDatum] == TmDatum
-              .Unconfirmed(rawTm, creatorPkh, createdAt, tmEpoch, tmLeaderReward, porOutpointHint)
+          unconfirmedDatum.to[UnconfirmedTm] ==
+              UnconfirmedTm(rawTm, creatorPkh, createdAt, porOutpointHint)
         )
         unconfirmedDatum match
             case Data.Constr(0, fields) =>
                 val positional = fields.asScala.toList
-                assert(positional.size == 6, "Unconfirmed must encode as 6 positional fields")
-                positional(5) match
+                assert(positional.size == 4, "Unconfirmed must encode as 4 positional fields")
+                positional(3) match
                     case Data.List(items) =>
                         assert(items.asScala.toList == List(Data.B(porOutpointHint.head)))
-                    case other => fail(s"field 5 must be a Data list, got: $other")
+                    case other => fail(s"field 3 must be a Data list, got: $other")
             case other => fail(s"Unconfirmed must encode as Constr 0, got: $other")
-        val conf: TmDatum =
-            TmDatum.Confirmed(
-              txid,
-              expectedSwept,
-              expectedFulfilled,
-              false,
-              creatorPkh,
-              createdAt,
-              tmEpoch,
-              tmLeaderReward
-            )
-        assert(conf.toData.to[TmDatum] == conf)
+        // LOCKSTEP with bridge-state.ak [BSS-2]: Confirm MUST be Constr tag 0, Gc tag 1 — the
+        // singleton validator discriminates a spend on exactly this tag.
+        confirmRdmr() match
+            case Data.Constr(0, _) => ()
+            case other             => fail(s"Confirm must encode as Constr 0, got: $other")
+        gcRdmr match
+            case Data.Constr(1, fields) => assert(fields.asScala.isEmpty)
+            case other                  => fail(s"Gc must encode as Constr 1 [], got: $other")
+        val rt: TmSpendRedeemer = TmSpendRedeemer.Confirm(confirmProof())
+        assert(rt.toData.to[TmSpendRedeemer] == rt)
+        val mint = TmMintRedeemer(BigInt(7))
+        assert(mint.toData.to[TmMintRedeemer] == mint)
+        val state = defaultNewState
+        assert(state.toData.to[BridgeState] == state)
     }
 
     test("parses all input outpoints and all outputs from a raw TM") {
@@ -760,8 +799,13 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         assert(TreasuryMovementValidator.allOutputs(rawTm) == expectedFulfilled)
     }
 
-    test("proven confirmation with matching Confirmed datum succeeds") {
-        val sc = scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof))
+    // --- Confirm: proof and linkage ---
+
+    test("proven confirmation advancing the singleton succeeds") {
+        // Assert the roots actually MOVE (a fixture whose previous state already matched would
+        // pass vacuously).
+        assert(prevState().spiRoot != spiRootA && prevState().cpoRoot != cpoRootA)
+        val sc = scriptContext(confirmRdmr())
         val result = program.applyArg(sc.toData).evaluateDebug
         assert(result.isSuccess, s"Expected success, got: $result")
     }
@@ -774,7 +818,7 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         // the deployed `.script` ERRORED ("Error evaluated") on the spend branch — so no deployed TM
         // could ever be confirmed. Options.releaseUntagged makes UPLC-level application land the
         // params correctly, so the two agree. Assert that invariant here.
-        val ctx = scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof)).toData
+        val ctx = scriptContext(confirmRdmr()).toData
 
         // The typed `.contract` form (what other tests exercise) — must accept.
         assert(program.applyArg(ctx).evaluateDebug.isSuccess)
@@ -793,118 +837,49 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         )
         // NB: `.contract` (typed .apply) and `.script` (UPLC bytesParam) produce different-but-
         // equivalent UPLC, so their hashes differ — that is fine: only `.script` is ever deployed
-        // (address, NFT policy, spend all use it). The invariant that matters is that the DEPLOYED
-        // form accepts a valid confirm (asserted above); with plain Options.release it did NOT.
-    }
-
-    test("tampered Confirmed datum (wrong peg-out amount) fails") {
-        val wrongFulfilled = PList.from(
-          List(
-            PegOutEntry(changeSpk, BigInt(999)), // tampered
-            PegOutEntry(paySpk1, BigInt(2000)),
-            PegOutEntry(commitmentSpk(defaultEndRoot), BigInt(0))
-          )
-        )
-        val sc =
-            scriptContext(tmValue, confirmedDatum(fulfilled = wrongFulfilled), redeemer(mpfProof))
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
-    }
-
-    test("TM NFT dropped from the continuing output fails") {
-        // Continuing output keeps only ADA, no TM NFT — must be rejected (the NFT authenticates the
-        // Confirmed UTxO downstream).
-        val sc = scriptContext(Value.lovelace(1_000_000), confirmedDatum(), redeemer(mpfProof))
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
-    }
-
-    test("forged spent_via_federation_leaf=true fails (N10b — flag is unforgeable)") {
-        // The confirmer cannot set the federation-leaf flag freely: the validator recomputes it from
-        // the mint-committed signedBtcTx (here `rawTm`, whose input 0 has 0 witness items → false)
-        // and bakes it into the datum the continuing output must match. A continuing datum claiming
-        // true is therefore rejected — without this, a permissionless confirmer could fabricate the
-        // dead-roster evidence treasury.ak::FederationReset consumes.
-        val sc =
-            scriptContext(
-              tmValue,
-              confirmedDatum(spentViaFederationLeaf = true),
-              redeemer(mpfProof)
-            )
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
-    }
-
-    test("lovelace reduced but TM NFT preserved succeeds") {
-        // The exact Value need NOT be preserved — only the TM NFT. A smaller Confirmed datum means a
-        // smaller min-UTxO; the lovelace difference (fees / watchtower reward) is allowed.
-        val reduced =
-            Value.unsafeFromList(
-              PList(
-                (ByteString.empty, PList((ByteString.empty, BigInt(1_000_000)))),
-                (tmScriptHash, PList((ByteString.empty, BigInt(1))))
-              )
-            )
-        val sc = scriptContext(reduced, confirmedDatum(), redeemer(mpfProof))
-        val result = program.applyArg(sc.toData).evaluateDebug
-        assert(result.isSuccess, s"Expected success, got: $result")
-    }
-
-    test("oracle reference input without the oracle NFT fails") {
-        val sc = scriptContext(
-          tmValue,
-          confirmedDatum(),
-          redeemer(mpfProof),
-          oracleRef = oracleRefInput(Value.lovelace(5_000_000)) // no NFT
-        )
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
-    }
-
-    test("extra TM-address outputs are tolerated (first output is the checked one)") {
-        // The confirm check takes the FIRST output at the TM address; it must carry the NFT and
-        // the exact Confirmed datum. Later duplicates are unauthenticated junk (downstream readers
-        // filter by the TM NFT, which exists in only one output).
-        val sc = scriptContext(
-          tmValue,
-          confirmedDatum(),
-          redeemer(mpfProof),
-          extraOutputs = List(confirmedOutput(Value.lovelace(2_000_000), confirmedDatum()))
-        )
-        val result = program.applyArg(sc.toData).evaluateDebug
-        assert(result.isSuccess, s"Expected success, got: $result")
-    }
-
-    test("a first TM-address output without the NFT fails (decoy ordering)") {
-        // If a decoy without the NFT comes FIRST, the NFT-preservation check fails - the prover
-        // cannot demote the genuine continuing output to a later position.
-        val decoyFirst = scriptContext(
-          Value.lovelace(2_000_000),
-          confirmedDatum(),
-          redeemer(mpfProof),
-          extraOutputs = List(confirmedOutput(tmValue, confirmedDatum()))
-        )
-        assert(!program.applyArg(decoyFirst.toData).evaluateDebug.isSuccess)
+        // (address, NFT policy, spend all use it).
     }
 
     test("block header not in oracle's confirmed-blocks root fails") {
         // Same merkle-root (bytes 36..68 = txid), but a different nonce → a different block hash
         // that the oracle's MPF does not contain. Isolates the MPF membership check.
         val tamperedHeader = blockHeader.slice(0, 76) ++ ByteString.fromHex("deadbeef")
-        val rdmr = TmConfirmRedeemer(
-          txIndex = 0,
-          txMerkleProof = PList.Nil,
-          blockMpfProof = mpfProof,
-          blockHeader = BlockHeader(tamperedHeader)
-        ).toData
-        val sc = scriptContext(tmValue, confirmedDatum(), rdmr)
+        val sc = scriptContext(confirmRdmr(confirmProof(header = tamperedHeader)))
         assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
     }
 
-    test("NFT containment (Confirm): spending two duplicate Unconfirmed records is rejected") {
-        // The fund-theft repro. Two TM-script inputs embed the SAME signedBtcTx (permissionless
-        // duplicate posts, both bearing the fungible empty-name TM NFT). Otherwise this is a valid
-        // Confirm: the first output at the TM address carries the correct Confirmed datum + the NFT,
-        // and the oracle proof holds. Pre-fix, both per-input spend invocations accept that single
-        // continuing output, and ledger value-conservation forces the SECOND NFT to escape to the
-        // attacker output below (foreign address) bearing a fabricated Confirmed datum — which
-        // peg_in.ak trusts by NFT alone → unbacked fBTC. The single-TM-input rule rejects the tx.
+    test("oracle reference input without the oracle NFT fails") {
+        val sc = scriptContext(
+          confirmRdmr(),
+          oracleRef = oracleRefInput(Value.lovelace(5_000_000)) // no NFT
+        )
+        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+    }
+
+    test("[CTM-24] a Confirm that does not burn the TM NFT fails") {
+        val sc = scriptContext(confirmRdmr(), burnQty = BigInt(0))
+        assertRejects(sc, "TM spend: must burn the TM NFT")
+    }
+
+    test("[CTM-25] any output at the TM script address fails") {
+        // There is no Confirmed record: the record is retired, not recreated. Even a junk output
+        // parked at the TM address by the confirmer is rejected.
+        val junkAtTm = TxOut(
+          address = Address(Credential.ScriptCredential(tmScriptHash), Option.None),
+          value = Value.lovelace(2_000_000),
+          datum = OutputDatum.OutputDatum(Data.unit),
+          referenceScript = Option.None
+        )
+        val sc = scriptContext(confirmRdmr(), outputs = List(bssOutput(), junkAtTm))
+        assertRejects(sc, "TM confirm: no output may sit at the TM address")
+    }
+
+    test("[CTM-17] NFT containment (Confirm): two duplicate Unconfirmed records are rejected") {
+        // The fund-theft repro, rev-5.4 shape. Two TM-script inputs embed the SAME signedBtcTx
+        // (permissionless duplicate posts, both bearing the fungible empty-name TM NFT). The tx
+        // burns ONE NFT; pre-[CTM-17] each per-input invocation would accept, and ledger value
+        // conservation forces the SECOND NFT to escape to an attacker output with a fabricated
+        // Unconfirmed datum — a forged post that skipped the mint checks.
         val secondInput = TxInInfo(
           outRef = TxOutRef(TxId(filled(0x05, 32)), BigInt(1)),
           resolved = TxOut(
@@ -914,201 +889,128 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
             referenceScript = Option.None
           )
         )
-        // The escaped NFT lands at an attacker address with a fabricated Confirmed datum (claims an
-        // arbitrary outpoint was swept). Ignored by the continuing-output check (foreign address).
-        val fabricated: Data =
-            (TmDatum.Confirmed(
-              filled(0xde, 32),
-              PList.from(List(filled(0xfe, 36))),
-              PList.Nil,
-              false,
-              creatorPkh,
-              createdAt,
-              tmEpoch,
-              tmLeaderReward
-            ): TmDatum).toData
         val escapedOutput = TxOut(
           address = Address(Credential.ScriptCredential(filled(0x99, 28)), Option.None),
           value = tmValue, // carries the TM NFT (policy = tmScriptHash, empty name, qty 1)
-          datum = OutputDatum.OutputDatum(fabricated),
+          datum = OutputDatum.OutputDatum(unconfirmedDatum),
           referenceScript = Option.None
         )
         val sc = scriptContext(
-          tmValue,
-          confirmedDatum(),
-          redeemer(mpfProof),
-          extraOutputs = List(escapedOutput),
-          extraInputs = List(secondInput, trieInput())
+          confirmRdmr(),
+          extraInputs = List(secondInput, bssInput()),
+          outputs = List(bssOutput(), escapedOutput)
         )
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM spend: exactly one TM-script input per tx")
     }
 
-    test("NFT containment (GC): spending two Confirmed records while burning one is rejected") {
-        // The GC-path variant. Two grace-expired Confirmed records (same creator) are spent; the tx
-        // burns ONE TM NFT (mint == -1) and is signed by the creator after the grace period — so
-        // pre-fix each per-input GC invocation passes (its burn/grace/creator checks are all tx-wide
-        // and satisfied). Ledger value-conservation then forces the un-burned SECOND NFT to escape
-        // to the attacker output below with a fabricated Confirmed datum. The single-TM-input rule
-        // on the GC branch rejects it.
-        val secondConfirmed = TxInInfo(
-          outRef = TxOutRef(TxId(filled(0x05, 32)), BigInt(1)),
-          resolved = TxOut(
-            address = Address(Credential.ScriptCredential(tmScriptHash), Option.None),
-            value = tmValue,
-            datum = OutputDatum.OutputDatum(confirmedDatum()),
-            referenceScript = Option.None
-          )
+    test("[CTM-18] a TM that does not spend the singleton's head fails") {
+        // The singleton's head is some OTHER outpoint — the posted TM (input 0 = aa*32, 0) chains
+        // from a head that no longer exists. This is the replay defense: an old TM's head is spent,
+        // so a stale root can never be written back.
+        val sc = scriptContext(
+          confirmRdmr(),
+          extraInputs = List(bssInput(state = prevState(head = filled(0xcc, 36))))
         )
-        val escapedOutput = TxOut(
-          address = Address(Credential.ScriptCredential(filled(0x99, 28)), Option.None),
-          value = tmValue, // the un-burned second NFT escapes
-          datum = OutputDatum.OutputDatum(confirmedDatum()),
-          referenceScript = Option.None
-        )
-        val sc = ScriptContext(
-          txInfo = TxInfo(
-            inputs = PList.from(List(tmInput(tmValue, confirmedDatum()), secondConfirmed)),
-            outputs = PList.from(List(escapedOutput)),
-            mint = Value.unsafeFromList(
-              PList((tmScriptHash, PList((ByteString.empty, BigInt(-1)))))
-            ),
-            signatories = PList.from(List(creatorPkh)),
-            validRange = afterGrace,
-            id = TxId(filled(0x00, 32))
-          ),
-          redeemer = Data.unit,
-          scriptInfo = SpendingScript(ownRef, Option.Some(confirmedDatum()))
-        )
-        assert(!program.applyArg(sc.toData).evaluateDebug.isSuccess)
+        assertRejects(sc, "TM confirm: BTC tx does not spend the confirmed head")
     }
 
-    // --- completed-peg-outs root commitment ---
+    // --- Confirm: the two-root commitment ([CTM-26], [CTM-20], [CTM-30]) ---
 
-    test("root commitment: the attested root is copied into the trie output") {
-        // The default fixture IS the 1-peg-out case. Assert the root actually MOVES (a fixture that
-        // committed the starting root would pass vacuously) and that the entry the root stands for
-        // is the exact bytes peg-out.ak rebuilds on Complete.
-        assert(defaultEndRoot != emptyRoot)
-        assert(
-          trieValue(paySpk1, BigInt(2000)) ==
-              (paySpk1 ++ ByteString.fromHex("d007000000000000"))
-        )
-        val sc = scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof))
-        val result = program.applyArg(sc.toData).evaluateDebug
-        assert(result.isSuccess, s"Expected success, got: $result")
-    }
-
-    test("root commitment: three peg-out payments and one commitment succeed") {
-        // Confirm is O(1) in the batch size now: the payments are inert to this validator, only the
+    test("three peg-out payments and one commitment succeed") {
+        // Confirm is O(1) in the batch size: the payments are inert to this validator, only the
         // single commitment output matters.
-        val committed = emptyTrie
-            .insert(porId1, trieValue(paySpk1, BigInt(2000)))
-            .insert(porId2, trieValue(paySpk2, BigInt(3000)))
-            .insert(porId3, trieValue(paySpk3, BigInt(4000)))
-            .rootHash
         val raw = rawTxWith(
           List(
             (changeSpk, BigInt(1000)),
             (paySpk1, BigInt(2000)),
             (paySpk2, BigInt(3000)),
             (paySpk3, BigInt(4000)),
-            (commitmentSpk(committed), BigInt(0))
+            (btmr1Spk(), BigInt(0))
           )
         )
-        val sc = confirmContextFor(raw, emptyRoot, committed)
+        val sc = confirmContextFor(raw, attestedState(raw))
         val result = program.applyArg(sc.toData).evaluateDebug
         assert(result.isSuccess, s"Expected success, got: $result")
     }
 
-    test("root commitment: the commitment may sit anywhere in the output list") {
+    test("the commitment may sit anywhere in the output list") {
         // heimdall emits it last, but nothing on-chain depends on the position: the scan covers
         // every output, output 0 included.
         val raw = rawTxWith(
           List(
             (changeSpk, BigInt(1000)),
-            (commitmentSpk(defaultEndRoot), BigInt(0)),
+            (btmr1Spk(), BigInt(0)),
             (paySpk1, BigInt(2000))
           )
         )
-        val sc = confirmContextFor(raw, emptyRoot, defaultEndRoot)
+        val sc = confirmContextFor(raw, attestedState(raw))
         val result = program.applyArg(sc.toData).evaluateDebug
         assert(result.isSuccess, s"Expected success, got: $result")
     }
 
-    test("root commitment: a zero-peg-out TM re-commits the unchanged root") {
-        // Change output + commitment only. A non-empty starting root proves the root is carried
-        // through, not reset.
-        val raw = rawTxWith(
-          List((changeSpk, BigInt(1000)), (commitmentSpk(defaultEndRoot), BigInt(0)))
-        )
-        val sc = confirmContextFor(raw, defaultEndRoot, defaultEndRoot)
+    test("a zero-peg-out TM re-commits both roots") {
+        // Change output + commitment only. The singleton still advances: same roots, new head.
+        val raw = rawTxWith(List((changeSpk, BigInt(1000)), (btmr1Spk(), BigInt(0))))
+        val sc = confirmContextFor(raw, attestedState(raw))
         val result = program.applyArg(sc.toData).evaluateDebug
         assert(result.isSuccess, s"Expected success, got: $result")
     }
 
-    test("root commitment: a zero-peg-out TM may not change the root") {
-        val raw = rawTxWith(
-          List((changeSpk, BigInt(1000)), (commitmentSpk(emptyRoot), BigInt(0)))
-        )
-        val sc = confirmContextFor(raw, emptyRoot, defaultEndRoot)
-        assertRejects(sc, "TM confirm: trie datum is not the canonical committed root")
-    }
-
-    test("root commitment: a TM with no commitment output cannot be confirmed") {
-        // Not a tolerated case: without a commitment the trie root would be whatever the confirmer
-        // chose. Every TM must state the root that holds after it, peg-outs or none.
+    test("[CTM-26] a TM with no commitment output cannot be confirmed") {
+        // Not a tolerated case: without a commitment the roots would be whatever the confirmer
+        // chose. Every TM must state the roots that hold after it, peg-outs or none.
         val raw = rawTxWith(List((changeSpk, BigInt(1000)), (paySpk1, BigInt(2000))))
-        val sc = confirmContextFor(raw, emptyRoot, emptyRoot)
-        assertRejects(sc, "TM confirm: missing root commitment")
+        val sc = confirmContextFor(raw, defaultNewState)
+        assertRejects(sc, "TM confirm: missing two-root commitment")
     }
 
-    test("root commitment: two commitment outputs fail") {
-        // The validator must never have to choose which root to copy — a permissionless confirmer
+    test("[CTM-26] two commitment outputs fail") {
+        // The validator must never have to choose which roots to copy — a permissionless confirmer
         // would make that choice by ordering the outputs.
         val raw = rawTxWith(
           List(
             (changeSpk, BigInt(1000)),
             (paySpk1, BigInt(2000)),
-            (commitmentSpk(defaultEndRoot), BigInt(0)),
-            (commitmentSpk(emptyRoot), BigInt(0))
+            (btmr1Spk(), BigInt(0)),
+            (btmr1Spk(spi = filled(0x11, 32)), BigInt(0))
           )
         )
-        val sc = confirmContextFor(raw, emptyRoot, defaultEndRoot)
-        assertRejects(sc, "TM confirm: multiple root commitments")
+        val sc = confirmContextFor(raw, defaultNewState)
+        assertRejects(sc, "TM confirm: multiple two-root commitments")
     }
 
-    test("root commitment: two commitments of the SAME root still fail") {
+    test("[CTM-26] two commitments of the SAME roots still fail") {
         // No "harmless duplicate" tolerance: one output, always. Duplicates mean the signer built
         // something the protocol does not describe.
         val raw = rawTxWith(
           List(
             (changeSpk, BigInt(1000)),
-            (commitmentSpk(defaultEndRoot), BigInt(0)),
-            (commitmentSpk(defaultEndRoot), BigInt(0))
+            (btmr1Spk(), BigInt(0)),
+            (btmr1Spk(), BigInt(0))
           )
         )
-        val sc = confirmContextFor(raw, emptyRoot, defaultEndRoot)
-        assertRejects(sc, "TM confirm: multiple root commitments")
+        val sc = confirmContextFor(raw, defaultNewState)
+        assertRejects(sc, "TM confirm: multiple two-root commitments")
     }
 
-    test("root commitment: a wrong prefix (\"CPOR2\") is not a commitment") {
-        // Right length, right OP_RETURN push, wrong tag. Only "CPOR1" commits a trie root, so the
-        // TM reads as having none.
+    test("a wrong prefix (\"BTMR2\") is not a commitment") {
+        // Right length, right OP_RETURN push, wrong tag. Only "BTMR1" commits the roots, so the TM
+        // reads as having none.
         val raw = rawTxWith(
           List(
             (changeSpk, BigInt(1000)),
             (paySpk1, BigInt(2000)),
-            (commitmentSpk(defaultEndRoot, tag = "43504f5232"), BigInt(0))
+            (btmr1Spk(tag = "42544d5232"), BigInt(0))
           )
         )
-        val sc = confirmContextFor(raw, emptyRoot, defaultEndRoot)
-        assertRejects(sc, "TM confirm: missing root commitment")
+        val sc = confirmContextFor(raw, defaultNewState)
+        assertRejects(sc, "TM confirm: missing two-root commitment")
     }
 
-    test("root commitment: a right-prefix output of the wrong length is not a commitment") {
-        // 38 bytes instead of 39. Without the length check the slice would read past the payload
-        // and a truncated push would attest a root nobody signed.
-        val short = commitmentSpk(defaultEndRoot).slice(0, 38)
+    test("a right-prefix output of the wrong length is not a commitment") {
+        // 70 bytes instead of 71. Without the length check the slice would read past the payload
+        // and a truncated push would attest roots nobody signed.
+        val short = btmr1Spk().slice(0, 70)
         val raw = rawTxWith(
           List(
             (changeSpk, BigInt(1000)),
@@ -1116,145 +1018,135 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
             (short, BigInt(0))
           )
         )
-        val sc = confirmContextFor(raw, emptyRoot, defaultEndRoot)
-        assertRejects(sc, "TM confirm: missing root commitment")
-    }
-
-    test("root commitment: a continuing output with a root the TM did not commit fails") {
-        val sc = scriptContext(
-          tmValue,
-          confirmedDatum(),
-          redeemer(mpfProof),
-          trieOutputs = List(trieOutput(filled(0x5a, 32)))
-        )
-        assertRejects(sc, "TM confirm: trie datum is not the canonical committed root")
-    }
-
-    test("root commitment: keeping the old root on a 1-peg-out TM fails") {
-        val sc = scriptContext(
-          tmValue,
-          confirmedDatum(),
-          redeemer(mpfProof),
-          trieOutputs = List(trieOutput(emptyRoot))
-        )
-        assertRejects(sc, "TM confirm: trie datum is not the canonical committed root")
-    }
-
-    test("root commitment: a trie datum with the right root but a wrong SHAPE fails") {
-        // Confirming is permissionless, so the trie datum's shape is attacker-chosen. On-chain
-        // `FromData` is an erased retag — field access is a lazy projection with no tag or arity
-        // check — so comparing only field 0 would accept both of these and leave a datum the
-        // protocol never describes at the trie address for every downstream reader to trip over.
-        // The whole-`OutputDatum` comparison rejects them.
-        val correctRoot = Data.B(defaultEndRoot)
-        val extraField = Data.Constr(0, PList.from(List(correctRoot, Data.I(BigInt(7)))))
-        val wrongTag = Data.Constr(5, PList.from(List(correctRoot)))
-        for bad <- List(extraField, wrongTag) do {
-            val sc = scriptContext(
-              tmValue,
-              confirmedDatum(),
-              redeemer(mpfProof),
-              trieOutputs = List(trieOutputWithDatum(bad))
-            )
-            assertRejects(sc, "TM confirm: trie datum is not the canonical committed root")
-        }
-    }
-
-    test("root commitment: not spending the trie UTxO fails") {
-        val sc =
-            scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof), extraInputs = List.empty)
-        assertRejects(sc, "TM confirm: completed-peg-outs trie not spent")
-    }
-
-    test("root commitment: no continuing trie output fails") {
-        val sc =
-            scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof), trieOutputs = List.empty)
-        assertRejects(sc, "TM confirm: no continuing completed-peg-outs output")
-    }
-
-    test("root commitment: a forged trie NFT policy is not accepted") {
-        // A CPO-named token under a policy the Config does not publish is invisible to the
-        // validator, so the genuine trie UTxO is simply missing.
-        val forged = filled(0xc9, 28)
-        val sc = scriptContext(
-          tmValue,
-          confirmedDatum(),
-          redeemer(mpfProof),
-          extraInputs = List(trieInput(value = trieNftValue(forged))),
-          trieOutputs = List(trieOutput(defaultEndRoot, value = trieNftValue(forged)))
-        )
-        assertRejects(sc, "TM confirm: completed-peg-outs trie not spent")
-    }
-
-    test("root commitment: moving the trie NFT to a different address fails") {
-        val sc = scriptContext(
-          tmValue,
-          confirmedDatum(),
-          redeemer(mpfProof),
-          trieOutputs = List(
-            trieOutput(
-              defaultEndRoot,
-              address = Address(Credential.ScriptCredential(filled(0x99, 28)), Option.None)
-            )
-          )
-        )
-        assertRejects(sc, "TM confirm: trie address changed")
-    }
-
-    test("root commitment: a missing config reference input fails") {
-        val sc =
-            scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof), cfgRefs = List.empty)
-        assertRejects(sc, "TM confirm: no config reference input")
-    }
-
-    test("root commitment: a config UTxO without the config NFT is ignored") {
-        val sc = scriptContext(
-          tmValue,
-          confirmedDatum(),
-          redeemer(mpfProof),
-          cfgRefs = List(configRefInput(withNft = false))
-        )
-        assertRejects(sc, "TM confirm: no config reference input")
-    }
-
-    test("root commitment: a config publishing a different trie policy fails") {
-        // Config field 3 is the ONLY authority on which UTxO is the trie. Point it elsewhere and
-        // the trie input the tx actually spends is no longer found.
-        val sc = scriptContext(
-          tmValue,
-          confirmedDatum(),
-          redeemer(mpfProof),
-          cfgRefs = List(configRefInput(cpoPolicy = filled(0xc8, 28)))
-        )
-        assertRejects(sc, "TM confirm: completed-peg-outs trie not spent")
+        val sc = confirmContextFor(raw, defaultNewState)
+        assertRejects(sc, "TM confirm: missing two-root commitment")
     }
 
     test("commitment recognition: length and prefix are both required") {
-        val spk = commitmentSpk(defaultEndRoot)
-        assert(spk.size == 39)
-        assert(TreasuryMovementValidator.isRootCommitment(spk))
+        val spk = btmr1Spk()
+        assert(spk.size == 71)
+        assert(TreasuryMovementValidator.isTwoRootCommitment(spk))
         assert(
-          TreasuryMovementValidator.committedRoot(
+          TreasuryMovementValidator.committedRoots(
             PList.from(List(PegOutEntry(changeSpk, BigInt(1)), PegOutEntry(spk, BigInt(0))))
-          ) == defaultEndRoot
+          ) == (spiRootA, cpoRootA)
         )
         // Wrong tag.
+        assert(!TreasuryMovementValidator.isTwoRootCommitment(btmr1Spk(tag = "42544d5232")))
+        // Right prefix, wrong length (truncated payload).
+        assert(!TreasuryMovementValidator.isTwoRootCommitment(spk.slice(0, 70)))
+        // A 71-byte payment script must not be mistaken for a commitment.
+        assert(!TreasuryMovementValidator.isTwoRootCommitment(filled(0x51, 71)))
+        // The old 39-byte "CPOR1" output is NOT a two-root commitment.
         assert(
-          !TreasuryMovementValidator.isRootCommitment(
-            commitmentSpk(defaultEndRoot, tag = "43504f5232")
+          !TreasuryMovementValidator.isTwoRootCommitment(
+            ByteString.fromHex("6a2543504f5231") ++ spiRootA
           )
         )
-        // Right prefix, wrong length (truncated payload).
-        assert(!TreasuryMovementValidator.isRootCommitment(spk.slice(0, 38)))
-        // A 39-byte payment script must not be mistaken for a commitment.
-        assert(!TreasuryMovementValidator.isRootCommitment(filled(0x51, 39)))
+    }
+
+    // --- Confirm: the singleton datum ([CTM-27], [CTM-19], [CTM-21], [CTM-28], [CTM-29]) ---
+
+    test("[CTM-27] a continuing singleton with roots the TM did not commit fails") {
+        for bad <- List(
+              defaultNewState.copy(spiRoot = filled(0x77, 32)),
+              defaultNewState.copy(cpoRoot = filled(0x77, 32))
+            )
+        do {
+            val sc = scriptContext(confirmRdmr(), outputs = List(bssOutput(bad)))
+            assertRejects(sc, "TM confirm: singleton datum is not the attested state")
+        }
+    }
+
+    test("[CTM-19] a continuing singleton with a wrong head fails") {
+        val bad = defaultNewState.copy(treasuryUtxoId = filled(0x77, 36))
+        val sc = scriptContext(confirmRdmr(), outputs = List(bssOutput(bad)))
+        assertRejects(sc, "TM confirm: singleton datum is not the attested state")
+    }
+
+    test("[CTM-21] a continuing singleton with a wrong treasury amount fails") {
+        val bad = defaultNewState.copy(treasuryAmount = BigInt(999_999))
+        val sc = scriptContext(confirmRdmr(), outputs = List(bssOutput(bad)))
+        assertRejects(sc, "TM confirm: singleton datum is not the attested state")
+    }
+
+    test("[CTM-27] a singleton datum with the right fields but a wrong SHAPE fails") {
+        // Confirming is permissionless, so the singleton datum's shape is attacker-chosen. On-chain
+        // `FromData` is an erased retag — field access is a lazy projection with no tag or arity
+        // check — so field-wise comparison would accept both of these and leave a datum the
+        // protocol never describes at the singleton address for every downstream reader ([LIB-1]).
+        // The whole-`OutputDatum` comparison rejects them.
+        val fields = List(
+          Data.B(spiRootA),
+          Data.B(cpoRootA),
+          Data.B(txid ++ zeroVout),
+          Data.I(BigInt(1000))
+        )
+        val extraField = Data.Constr(0, PList.from(fields :+ Data.I(BigInt(7))))
+        val wrongTag = Data.Constr(5, PList.from(fields))
+        for bad <- List(extraField, wrongTag) do {
+            val sc = scriptContext(confirmRdmr(), outputs = List(bssOutputWithDatum(bad)))
+            assertRejects(sc, "TM confirm: singleton datum is not the attested state")
+        }
+    }
+
+    test("[CTM-28] not spending the singleton fails") {
+        val sc = scriptContext(confirmRdmr(), extraInputs = List.empty)
+        assertRejects(sc, "TM confirm: bridge state singleton not spent")
+    }
+
+    test("[CTM-28] a forged singleton NFT policy is not accepted") {
+        // A BSS-named token under a policy the Config does not publish is invisible to the
+        // validator, so the genuine singleton is simply missing.
+        val forged = filled(0xc9, 28)
+        val sc = scriptContext(
+          confirmRdmr(),
+          extraInputs = List(bssInput(value = bssValue(forged))),
+          outputs = List(bssOutput(value = bssValue(forged)))
+        )
+        assertRejects(sc, "TM confirm: bridge state singleton not spent")
+    }
+
+    test("[CTM-28] a missing config reference input fails") {
+        val sc = scriptContext(confirmRdmr(), cfgRefs = List.empty)
+        assertRejects(sc, "TM confirm: no config reference input")
+    }
+
+    test("[CTM-28] a config UTxO without the config NFT is ignored") {
+        val sc = scriptContext(confirmRdmr(), cfgRefs = List(configRefInput(withNft = false)))
+        assertRejects(sc, "TM confirm: no config reference input")
+    }
+
+    test("[CTM-28] a config publishing a different singleton policy fails") {
+        // Config field 3 is the ONLY authority on which UTxO is the singleton. Point it elsewhere
+        // and the singleton the tx actually spends is no longer found.
+        val sc = scriptContext(
+          confirmRdmr(),
+          cfgRefs = List(configRefInput(bridgeStatePolicyArg = filled(0xc8, 28)))
+        )
+        assertRejects(sc, "TM confirm: bridge state singleton not spent")
+    }
+
+    test("[CTM-29] no continuing singleton output fails") {
+        val sc = scriptContext(confirmRdmr(), outputs = List.empty)
+        assertRejects(sc, "TM confirm: no continuing singleton output")
+    }
+
+    test("[CTM-29] moving the singleton NFT to a different address fails") {
+        val sc = scriptContext(
+          confirmRdmr(),
+          outputs = List(
+            bssOutput(address = Address(Credential.ScriptCredential(filled(0x99, 28)), Option.None))
+          )
+        )
+        assertRejects(sc, "TM confirm: singleton address changed")
     }
 
     // --- the DA hint is decoded and ignored ---
 
-    test("DA hint: confirm accepts any hint content, and never copies it into Confirmed") {
+    test("DA hint: confirm accepts any hint content") {
         // The hint is UNVERIFIED. Three Unconfirmed records differing only in the hint must all
-        // confirm to the SAME Confirmed datum (which has no hint field at all).
+        // confirm to the SAME singleton state (which has no hint field at all).
         val hints = List(
           PList.Nil,
           porOutpointHint,
@@ -1262,60 +1154,36 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         )
         for hint <- hints do {
             val datum = unconfirmedDatumWith(hint)
-            val sc = scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof), tmDatum = datum)
+            val sc = scriptContext(confirmRdmr(), tmDatum = datum)
             val result = program.applyArg(sc.toData).evaluateDebug
             assert(result.isSuccess, s"Expected success for hint $hint, got: $result")
         }
     }
 
-    test("DA hint: mint accepts a garbled hint (nothing on-chain validates it)") {
-        // A permissionless poster controls the hint. Junk in it must not block the mint — the
-        // committed root, not the hint, is what reconstruction verifies against.
-        val garbled = PList.from(List(ByteString.fromHex("00"), filled(0x99, 200)))
-        val sc = mintContext(
-          BigInt(1),
-          chainRdmr(0),
-          PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32)))),
-          PList.from(List(mintedTmOutput(datum = unconfirmedDatumWith(garbled))))
-        )
-        val result = program.applyArg(sc.toData).evaluateDebug
-        assert(result.isSuccess, s"Expected success, got: $result")
-    }
-
-    test("DA hint: a 5-field Unconfirmed datum still confirms (the field is never projected)") {
+    test("DA hint: a 3-field Unconfirmed datum still confirms (the field is never projected)") {
         // Observed behaviour, pinned deliberately. Scalus lowers the pattern match to per-index
-        // field projections and nothing in `spend` or `mint` touches index 5, so a datum that stops
-        // at `leaderReward` — a pre-rev-5.1 poster, or a truncated one — is never rejected for its
-        // arity. That follows from "the hint is unverified": the Confirmed datum the validator
-        // reconstructs does not contain it, so there is nothing to be wrong about.
+        // field projections and nothing in `spend` or `mint` touches index 3, so a datum that stops
+        // at `created` — a truncated post — is never rejected for its arity. That follows from "the
+        // hint is unverified": the singleton state the validator reconstructs does not contain it,
+        // so there is nothing to be wrong about.
         //
         // If a future check ever reads `fulfilledPorOutpoints`, this test flips, and that is the
-        // point: the change must be a decision, not a side effect. NOTE the Aiken mirror
-        // `treasury-movement.ak` is stricter — `expect` there validates the exact arity — but no
-        // Aiken validator decodes the Unconfirmed constructor today.
+        // point: the change must be a decision, not a side effect.
         val short = Data.Constr(
           0,
-          PList.from(
-            List(
-              Data.B(rawTm),
-              Data.B(creatorPkh.hash),
-              Data.I(createdAt),
-              Data.I(tmEpoch),
-              Data.I(tmLeaderReward)
-            )
-          )
+          PList.from(List(Data.B(rawTm), Data.B(creatorPkh.hash), Data.I(createdAt)))
         )
-        val sc = scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof), tmDatum = short)
+        val sc = scriptContext(confirmRdmr(), tmDatum = short)
         val result = program.applyArg(sc.toData).evaluateDebug
         assert(result.isSuccess, s"Expected success, got: $result")
     }
 
     // --- budget measurements ---
 
-    // Execution budgets for the three treasury-movement happy paths, printed so they land in the
-    // CI log (Milestone 4 performance evidence). Synthetic ScriptContexts, so only the script
-    // execution budget and ex-unit fee are meaningful here (no full tx fee).
-    test("Treasury movement budgets - mint Chain, Confirm spend") {
+    // Execution budgets for the treasury-movement happy paths, printed so they land in the CI log
+    // (Milestone 4 performance evidence). Synthetic ScriptContexts, so only the script execution
+    // budget and ex-unit fee are meaningful here (no full tx fee).
+    test("Treasury movement budgets - mint Post, Confirm spend") {
         val pp = CardanoInfo.mainnet.protocolParams
         val maxCpu = pp.maxTxExecutionUnits.steps
         val maxMem = pp.maxTxExecutionUnits.memory
@@ -1332,44 +1200,28 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
                     fail(s"$name failed: ${r.exception.getMessage}\n${r.logs.mkString("\n")}")
 
         info("TREASURY MOVEMENT BUDGETS | CPU Steps (% limit) | Memory (% limit) | Ex Fee")
-        // No "Mint Genesis" row: the Genesis variant is retired ([PTM-5]) and always fails.
         measure(
-          "Mint Chain",
+          "Mint Post",
           mintContext(
             BigInt(1),
-            chainRdmr(0),
-            PList.from(List(predecessorRefInput(prevTxid = filled(0xaa, 32)))),
+            postRdmr,
+            defaultMintRefs,
             PList.from(List(mintedTmOutput()))
           )
         )
-        measure("Confirm spend", scriptContext(tmValue, confirmedDatum(), redeemer(mpfProof)))
-        // Batch sizing evidence. Confirm no longer folds anything: the root is copied from ONE
-        // commitment output whatever the batch size, so the only cost that grows with the batch is
-        // parsing the extra outputs into `fulfilledPegOuts`. Measure a 0-peg-out and an 8-peg-out TM
-        // to show the gap (the marker-fold design paid one MPF insert per peg-out here).
-        measure(
-          "Confirm 0 pegout",
-          confirmContextFor(
-            rawTxWith(
-              List((changeSpk, BigInt(1000)), (commitmentSpk(defaultEndRoot), BigInt(0)))
-            ),
-            defaultEndRoot,
-            defaultEndRoot
-          )
-        )
+        measure("Confirm spend", scriptContext(confirmRdmr()))
+        // Batch sizing evidence. Confirm folds nothing: both roots are copied from ONE commitment
+        // output whatever the batch size, so the only cost that grows with the batch is parsing the
+        // extra outputs. Measure a 0-peg-out and an 8-peg-out TM to show the gap.
+        val zeroPegOut = rawTxWith(List((changeSpk, BigInt(1000)), (btmr1Spk(), BigInt(0))))
+        measure("Confirm 0 pegout", confirmContextFor(zeroPegOut, attestedState(zeroPegOut)))
         val batch = List.range(0, 8).map { i =>
             val spk = ByteString.fromHex("0014" + (f"$i%02x" * 20))
-            val id = filled(0xe0 + i, 32)
-            (id, spk, BigInt(1000 + i))
+            (spk, BigInt(1000 + i))
         }
-        val batchRoot = batch
-            .foldLeft(emptyTrie)((t, e) => t.insert(e._1, trieValue(e._2, e._3)))
-            .rootHash
         val batchRaw = rawTxWith(
-          ((changeSpk, BigInt(1000)) :: batch.map((_, spk, amt) => (spk, amt)))
-              :+ (commitmentSpk(batchRoot), BigInt(0))
+          ((changeSpk, BigInt(1000)) :: batch) :+ (btmr1Spk(), BigInt(0))
         )
-        measure("Confirm 8 pegout", confirmContextFor(batchRaw, emptyRoot, batchRoot))
+        measure("Confirm 8 pegout", confirmContextFor(batchRaw, attestedState(batchRaw)))
     }
-
 }

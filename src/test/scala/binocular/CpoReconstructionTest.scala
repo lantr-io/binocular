@@ -72,17 +72,42 @@ class CpoReconstructionTest extends AnyFunSuite {
 
     // --- Cardano fixtures -----------------------------------------------------------------------
 
+    /** A LEGACY rev-5.1 `Confirmed` record datum, built as raw Data: the typed layer no longer has
+      * the variant (rev 5.4 produces no Confirmed record), but old history could still carry these
+      * Constr-1 shapes and `parseConfirmed` reads them positionally.
+      */
     private def confirmedOutput(raw: ByteString, index: Long = 0): ChainOutput = {
-        val datum: Data = (TmDatum.Confirmed(
-          BitcoinHelpers.getTxHash(raw),
-          TreasuryMovementValidator.allInputOutpoints(raw),
-          TreasuryMovementValidator.allOutputs(raw),
-          false,
-          PubKeyHash(filled(0x0c, 28)),
-          BigInt(0),
-          BigInt(0),
-          BigInt(0)
-        ): TmDatum).toData
+        val datum: Data = Data.Constr(
+          1,
+          PList.from(
+            List[Data](
+              Data.B(BitcoinHelpers.getTxHash(raw)),
+              Data.List(
+                PList.from(
+                  TreasuryMovementValidator
+                      .allInputOutpoints(raw)
+                      .asScala
+                      .toList
+                      .map(b => Data.B(b): Data)
+                )
+              ),
+              Data.List(
+                PList.from(
+                  TreasuryMovementValidator
+                      .allOutputs(raw)
+                      .asScala
+                      .toList
+                      .map(e =>
+                          Data.Constr(
+                            0,
+                            PList.from(List[Data](Data.B(e.scriptPubKey), Data.I(e.amount)))
+                          ): Data
+                      )
+                )
+              )
+            )
+          )
+        )
         ChainOutput(filled(0xc1 + index.toInt, 32), index, Some(datum), Map.empty)
     }
 
@@ -91,14 +116,12 @@ class CpoReconstructionTest extends AnyFunSuite {
         hints: Seq[ByteString],
         seed: Int = 0xe0
     ): ChainOutput = {
-        val datum: Data = (TmDatum.Unconfirmed(
+        val datum: Data = UnconfirmedTm(
           raw,
           PubKeyHash(filled(0x0c, 28)),
           BigInt(0),
-          BigInt(0),
-          BigInt(0),
           PList.from(hints.toList)
-        ): TmDatum).toData
+        ).toData
         ChainOutput(filled(seed, 32), 0, Some(datum), Map.empty)
     }
 

@@ -16,34 +16,32 @@ import scalus.uplc.builtin.Data.toData
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
+import scala.util.Try
 import scala.util.boundary
 import boundary.break
 import scalus.utils.await
 import cats.syntax.either.*
 
-/** Confirm posted Treasury Movement (TM) transactions on Cardano — the validated `Unconfirmed ->
-  * Confirmed` transition guarded on-chain by [[TreasuryMovementValidator]].
+/** Confirm posted Treasury Movement (TM) transactions on Cardano — the validated Confirm transition
+  * guarded on-chain by [[TreasuryMovementValidator]] (spec §Confirm TM tx, rev 5.4).
   *
   * Polls the TM validator address for `Unconfirmed` UTxOs (datum
   * `Constr(0, [signed_btc_tx, creator, created, epoch, leader_reward, fulfilled_por_outpoints])`,
   * as posted by heimdall's `publish.rs` or `create-tmtx`). For each, once the TM is confirmed on
   * Bitcoin and the block is in the Binocular oracle's confirmed-blocks root, it builds the
-  * inclusion proof and submits the Confirm tx: spend the `Unconfirmed` UTxO, reference the oracle,
-  * and recreate it with the `Confirmed` datum
-  * `{ btc_txid, swept_peg_in_utxo_ids, fulfilled_peg_outs }` that the validator re-parses and
-  * verifies on-chain.
-  *
-  * Unlike the old always-ok scaffold, the datum flip is now only accepted if the Bitcoin
-  * confirmation is *proven* against the oracle.
-  *
-  * The Confirm tx ALSO carries the completed-peg-outs trie update: it references the Config UTxO
-  * (the validator reads the trie policy from field 3), spends the trie UTxO, and recreates it with
-  * the root the TM's single `"CPOR1"` OP_RETURN output attests. That root is read straight out of
-  * the signed Bitcoin bytes ([[CompletedPegOutsTrie.committedRoot]], the same exactly-one rule the
-  * validator applies) — this command generates no MPF proofs and keeps no trie state of its own.
+  * inclusion proof and submits the Confirm tx: spend the `Unconfirmed` UTxO and the bridge-state
+  * singleton, reference the oracle and the Config, burn the TM NFT ([CTM-24]), produce no output at
+  * the TM address ([CTM-25]), and recreate the singleton carrying the [[BridgeState]] the TM's
+  * single `"BTMR1"` commitment output attests ([CTM-27]): both roots, the new head
+  * `txid ‖ 00000000` ([CTM-19]) and its satoshi amount ([CTM-21]). This command generates no MPF
+  * proofs and keeps no trie state of its own — both roots are read straight out of the signed
+  * Bitcoin bytes ([[SweptPegInsTrie.committedRoots]], the same exactly-one rule the validator
+  * applies).
   *
   * A TM without exactly one commitment output can never confirm, so it is reported and skipped
-  * permanently rather than retried. Every other well-formed TM confirms.
+  * permanently rather than retried. A TM whose input 0 does not spend the singleton's CURRENT head
+  * can never confirm either ([CTM-18]) — the head moved, so the record is dead weight until its
+  * creator garbage-collects it.
   */
 case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier] = None)
     extends Command {
@@ -54,6 +52,15 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         println()
         runConfirm(config, notifier.getOrElse(Notifier.fromConfig(config.notifications)))
     }
+
+    /** Everything a Confirm needs from live chain state: the Config UTxO (reference input), the
+      * singleton UTxO (spent), and its decoded head state.
+      */
+    private final case class SingletonContext(
+        configUtxo: Utxo,
+        singletonUtxo: Utxo,
+        state: BridgeState
+    )
 
     private def runConfirm(config: BinocularConfig, notifier: Notifier): Int = boundary {
         given ec: ExecutionContext = binocular.cli.DaemonExecution.ec
@@ -71,7 +78,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         val oracleScriptHashBS = ByteString.fromArray(oraclePolicyId.bytes)
 
         // The TM UTxO lives at the validator address (parameterized by the oracle script hash + the
-        // TM-control NFT that authenticates the authorized-minter datum).
+        // config NFT pair).
         val tmScript = TreasuryMovementContract.script(
           oracleScriptHashBS,
           ByteString.fromHex(config.bridge.configNftPolicyId),
@@ -102,10 +109,10 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                 )
             else None
 
-        // --- completed-peg-outs trie wiring (rebuilt per cycle; the scripts are fixed) ---
-        // The trie validator takes (TM script hash, one-shot ref). Its hash must equal Config
-        // field 3, which is checked against the live config each cycle.
-        // Defaults to the blueprint vendored in binocular's own jar, so a Docker image or a
+        // --- bridge-state singleton wiring (the scripts are fixed for the process's life) ---
+        // The bridge_state validator takes (TM script hash, one-shot ref). Its hash must equal
+        // Config field 3 (`bridge_state_policy`), which is checked against the live config each
+        // cycle. Defaults to the blueprint vendored in binocular's own jar, so a Docker image or a
         // systemd unit with no sibling ft checkout still starts. `bridge.plutus-json` /
         // BIFROST_PLUTUS_JSON overrides it when the file exists (development).
         val (bridgeBlueprint, blueprintSource) =
@@ -114,7 +121,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                 case e: Exception =>
                     Console.error(s"Loading bridge blueprint: ${e.getMessage}"); break(1)
             }
-        val cpoOneShot = config.bridge.completedPegOutsOneShotRef
+        val bssOneShot = config.bridge.bridgeStateOneShotRef
             .map(_.trim)
             .filter(_.nonEmpty)
             .flatMap(s =>
@@ -126,18 +133,19 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
             )
             .getOrElse {
                 Console.error(
-                  "bridge.completed-peg-outs-one-shot-ref must be TX_HASH#INDEX (the deploy-bridge " +
-                      "one-shot that parameterizes the completed-peg-outs trie validator). Confirm " +
-                      "cannot build the trie spend without it."
+                  "bridge.bridge-state-one-shot-ref must be TX_HASH#INDEX (the one-shot that " +
+                      "parameterizes the bridge_state validator). Confirm cannot build the " +
+                      "singleton spend without it."
                 )
                 break(1)
             }
-        val trieScript = CompletedPegOutsContract(
+        val bssScript = BridgeStateContract(
           bridgeBlueprint,
           ByteString.fromArray(tmScript.scriptHash.bytes),
-          cpoOneShot
+          bssOneShot
         ).script
-        val trieAssetName = AssetName(CompletedPegOutsContract.assetName)
+        val bssAssetName = AssetName(BridgeStateContract.assetName)
+        val bssAddress = Address(network, Credential.ScriptHash(bssScript.scriptHash))
         val configNftPolicy = ScriptHash.fromHex(config.bridge.configNftPolicyId)
         val configNftAsset = AssetName(ByteString.fromHex(config.bridge.configNftAssetName))
 
@@ -175,6 +183,55 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         // one-shot minting policy and the spend validator).
         val configAddress = Address(network, Credential.ScriptHash(configNftPolicy))
 
+        /** Resolve the live Config + singleton pair, or say which piece is missing. Re-read every
+          * cycle: each Confirm spends the singleton, so a cached UTxO is stale after one submit.
+          */
+        def loadSingletonContext(): Either[String, SingletonContext] = {
+            def findByNft(
+                address: Address,
+                policy: ScriptHash,
+                asset: AssetName,
+                what: String
+            ): Either[String, Utxo] =
+                provider
+                    .findUtxos(address)
+                    .await(timeout)
+                    .left
+                    .map(err => s"fetching the $what: $err")
+                    .flatMap(
+                      _.toList
+                          .collectFirst {
+                              case (in, out) if out.value.hasAsset(policy, asset) => Utxo(in, out)
+                          }
+                          .toRight(s"no UTxO carrying the $what NFT at $address")
+                    )
+            for {
+                configUtxo <- findByNft(configAddress, configNftPolicy, configNftAsset, "config")
+                cfg <- configUtxo.output.inlineDatum
+                    .flatMap(d => Try(d.to[ConfigDatum]).toOption)
+                    .toRight("config datum does not decode as the rev-5.4 ConfigDatum")
+                _ <- Either.cond(
+                  cfg.bridgeStatePolicy.toHex == bssScript.scriptHash.toHex,
+                  (),
+                  s"config field 3 publishes bridge_state policy ${cfg.bridgeStatePolicy.toHex}, " +
+                      s"but the bridge_state validator derived from (TM hash, one-shot) hashes to " +
+                      s"${bssScript.scriptHash.toHex}. Check bridge.bridge-state-one-shot-ref, or " +
+                      "run the config Update that publishes the new policy."
+                )
+                singletonUtxo <- findByNft(
+                  bssAddress,
+                  bssScript.scriptHash,
+                  bssAssetName,
+                  "bridge-state singleton (\"BSS\")"
+                )
+                state <- singletonUtxo.output.inlineDatum
+                    .flatMap(d => Try(d.to[BridgeState]).toOption)
+                    .toRight(
+                      "the singleton datum does not decode as the 4-field BridgeState ([LIB-1])"
+                    )
+            } yield SingletonContext(configUtxo, singletonUtxo, state)
+        }
+
         // Operator-declared dead TMs (relay.skip-btc-txids): match on the display (big-endian) btc
         // txid, lower-cased so config casing doesn't matter.
         val skipBtcTxids: Set[String] = config.relay.skipBtcTxids.map(_.toLowerCase).toSet
@@ -192,7 +249,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         Console.info("TM validator", tmScript.scriptHash.toHex)
         Console.info("TM address", tmAddress.encode.getOrElse("?"))
         Console.info("bridge blueprint", blueprintSource)
-        Console.info("completed-peg-outs policy", trieScript.scriptHash.toHex)
+        Console.info("bridge-state policy", bssScript.scriptHash.toHex)
         Console.separator()
         println()
 
@@ -228,12 +285,8 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                                           tmNftPolicy,
                                           tmNftAsset
                                         ) =>
-                                        // Full typed decode (signedBtcTx, creator, created): the
-                                        // creator/created fields must be carried verbatim into the
-                                        // Confirmed datum the validator expects.
-                                        scala.util.Try(d.to[TmDatum]).toOption.collect {
-                                            case u: TmDatum.Unconfirmed => (Utxo(in, out), u)
-                                        }
+                                        Try(d.to[UnconfirmedTm]).toOption
+                                            .map(u => (Utxo(in, out), u))
                                     case _ => None
                             }
                             .flatten
@@ -249,60 +302,50 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                             )
                         else
                             Console.log(s"Found ${unconfirmed.size} Unconfirmed TM UTxO(s)")
-                            BridgeSweepSetup.loadTrieContext(
-                              provider,
-                              configAddress,
-                              configNftPolicy,
-                              configNftAsset,
-                              trieScript,
-                              trieAssetName,
-                              network,
-                              timeout
-                            ) match {
+                            loadSingletonContext() match {
                                 case Left(err) =>
                                     // This halts confirming for EVERY TM, indefinitely, and every
-                                    // cause needs an operator (run the migration Update, bootstrap
-                                    // the trie singleton, fix the one-shot ref). So it is paged, not
-                                    // only logged. The notifier debounces repeats, so a stuck
-                                    // watchtower does not spam.
+                                    // cause needs an operator (bootstrap the singleton, publish the
+                                    // policy in Config field 3, fix the one-shot ref). So it is
+                                    // paged, not only logged. The notifier debounces repeats, so a
+                                    // stuck watchtower does not spam.
                                     Console.logError(
-                                      s"  completed-peg-outs trie unavailable: $err — will retry"
+                                      s"  bridge-state singleton unavailable: $err — will retry"
                                     )
                                     notifier.error(
                                       "confirm",
-                                      s"completed-peg-outs trie unavailable — TM confirming is " +
+                                      s"bridge-state singleton unavailable — TM confirming is " +
                                           s"HALTED until this is fixed: $err"
                                     )
-                                    // --dry-run is a preflight check, so a broken trie context must
-                                    // be a non-zero exit: it is exactly the state that says the
-                                    // field-3 migration has not been applied yet.
+                                    // --dry-run is a preflight check, so a broken singleton context
+                                    // must be a non-zero exit: it is exactly the state that says
+                                    // the bridge-state migration has not been applied yet.
                                     if dryRun then break(1)
-                                case Right(trieCtx) =>
-                                    // The trie UTxO is a single shared input, so at most ONE TM can
-                                    // be confirmed per tx. After a submitted confirm the trie UTxO
-                                    // is spent and every remaining context is stale, so stop and let
-                                    // the next poll re-read the chain.
+                                case Right(ctx) =>
+                                    // The singleton is a single shared input, so at most ONE TM can
+                                    // be confirmed per tx. After a submitted confirm the singleton
+                                    // is spent and every remaining context is stale, so stop and
+                                    // let the next poll re-read the chain.
                                     //
                                     // --dry-run submits nothing, so it previews EVERY pending TM
-                                    // against the same trie UTxO. Each TM's committed root is fixed
-                                    // in its own signed bytes, so the previews are independent; only
-                                    // the "from" root in the log line is shared.
-                                    var trieSpent = false
+                                    // against the same singleton. At most one of them chains from
+                                    // the current head ([CTM-18]), so the others report that.
+                                    var singletonSpent = false
                                     for
                                         (utxo, unconfirmedDatum) <- unconfirmed
-                                        if !trieSpent
+                                        if !singletonSpent
                                     do
                                         val submitted = confirmOne(
                                           provider,
                                           hdAccount,
                                           tmScript,
-                                          tmAddress,
                                           oracleUtxo,
                                           obMpf,
                                           rpc,
                                           utxo,
                                           unconfirmedDatum,
-                                          trieCtx,
+                                          ctx,
+                                          bssScript,
                                           timeout,
                                           skipBtcTxids,
                                           processed,
@@ -310,13 +353,13 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                                           debugTmScript,
                                           sweeper
                                         )
-                                        if submitted then trieSpent = true
+                                        if submitted then singletonSpent = true
                             }
                 }
 
                 // --- chain peg-out Complete after Confirm ---
-                // Runs OUTSIDE the confirm branch, and re-reads the trie context, because the
-                // Confirm just submitted spent the trie UTxO: the sweeper references the RECREATED
+                // Runs OUTSIDE the confirm branch, and re-reads its context, because the Confirm
+                // just submitted spent the singleton: the sweeper references the RECREATED
                 // singleton, which is only visible once that transaction settles. Until then the
                 // mirror already matches the on-chain root and the sweep is a cheap no-op.
                 sweeper.foreach { s =>
@@ -329,19 +372,12 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                         // guard a sweeper throw would land in the outer handler, page as a confirm
                         // error, and sleep the retry interval before the next TM is even looked at.
                         try
-                            BridgeSweepSetup.loadTrieContext(
-                              provider,
-                              configAddress,
-                              configNftPolicy,
-                              configNftAsset,
-                              trieScript,
-                              trieAssetName,
-                              network,
-                              timeout
-                            ) match {
-                                case Right(ctx) => s.sweep(ctx.configUtxo, ctx.trieUtxo)
+                            loadSingletonContext() match {
+                                case Right(ctx) => s.sweep(ctx.configUtxo, ctx.singletonUtxo)
                                 case Left(err) =>
-                                    Console.logWarn(s"  sweeper: trie context unavailable: $err")
+                                    Console.logWarn(
+                                      s"  sweeper: singleton context unavailable: $err"
+                                    )
                             }
                         catch {
                             case e: Exception =>
@@ -372,19 +408,19 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
     /** Build + submit the Confirm tx for one Unconfirmed UTxO (or report why it's not ready).
       *
       * Returns `true` only when a Confirm tx was actually submitted, which tells the caller the
-      * shared trie UTxO is now spent and no further TM may be confirmed this cycle.
+      * shared singleton UTxO is now spent and no further TM may be confirmed this cycle.
       */
     private def confirmOne(
         provider: BlockchainProvider,
         hdAccount: scalus.cardano.wallet.hd.HdAccount,
         tmScript: scalus.cardano.ledger.Script.PlutusV3,
-        tmAddress: Address,
         oracleUtxo: Utxo,
         obMpf: scalus.crypto.trie.MerklePatriciaForestry,
         rpc: SimpleBitcoinRpc,
         utxo: Utxo,
-        unconfirmedDatum: TmDatum.Unconfirmed,
-        trieCtx: BridgeSweepSetup.TrieContext,
+        unconfirmedDatum: UnconfirmedTm,
+        ctx: SingletonContext,
+        bssScript: scalus.cardano.ledger.Script.PlutusV3,
         timeout: Duration,
         skipBtcTxids: Set[String],
         processed: scala.collection.mutable.Map[String, String],
@@ -399,18 +435,13 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         // StackOverflow/OOM. A parse failure is deterministic → mark the UTxO skipped so it neither
         // crashes the watchtower nor is retried forever. RPC errors stay outside this guard (the
         // outer loop retries those).
-        val parsed: Option[(ByteString, ScalusList[ByteString], ScalusList[PegOutEntry], Boolean)] =
+        val parsed: Option[(ByteString, ScalusList[ByteString], ScalusList[PegOutEntry])] =
             try
                 Some(
                   (
-                    BitcoinHelpers.getTxHash(signedBtcTx), // internal (LE) — the Confirmed btc_txid
+                    BitcoinHelpers.getTxHash(signedBtcTx), // internal (LE) — the new head's txid
                     TreasuryMovementValidator.allInputOutpoints(signedBtcTx),
-                    TreasuryMovementValidator.allOutputs(signedBtcTx),
-                    // N10b: treasury (input 0) swept via the federation CSV leaf? Coarse = a 3-item
-                    // script-path witness on input 0 (the treasury tree is single-leaf, so that IS
-                    // the federation leaf). MUST equal what the on-chain Confirm branch computes,
-                    // else `exp === contOut.datum` fails. See TreasuryMovementValidator.TmDatum.
-                    BitcoinHelpers.isValidScriptPathWitness(signedBtcTx, BigInt(0))
+                    TreasuryMovementValidator.allOutputs(signedBtcTx)
                   )
                 )
             catch {
@@ -423,28 +454,30 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
             }
 
         var submitted = false
-        parsed.foreach { case (txid, swept, fulfilled, spentViaFederationLeaf) =>
+        parsed.foreach { case (txid, swept, fulfilled) =>
             val displayTxid = txid.reverse.toHex
             Console.log(s"  $utxoRef: TM btc txid=$displayTxid")
-            if spentViaFederationLeaf then
-                Console.logWarn(
-                  s"    $utxoRef: treasury swept via the FEDERATION CSV leaf — " +
-                      "Confirmed record will carry spent_via_federation_leaf=true (N10b reset evidence)"
-                )
 
             if skipBtcTxids.contains(displayTxid.toLowerCase) then
                 Console.logWarn(s"    $utxoRef: skipped (relay.skip-btc-txids)")
                 processed(utxoRef) = "skip:config"
             else {
-                // The completed-peg-outs root THIS TM attests: the payload of its single "CPOR1"
-                // OP_RETURN output. Zero or several such outputs mean the validator will reject the
-                // TM whatever we build, so it can never confirm.
+                // Both roots THIS TM attests: the payload of its single "BTMR1" OP_RETURN output.
+                // Zero or several such outputs mean the validator will reject the TM whatever we
+                // build ([CTM-26]), so it can never confirm.
                 //
                 // Read BEFORE the Bitcoin proof: it is deterministic and free, so a TM that can
                 // never confirm is reported and skipped without a node round-trip. The match below
-                // is NESTED for exactly that reason — a single match on a `(rootResult, proofResult)`
-                // tuple would build the tuple first and defeat the ordering.
-                val rootResult = CompletedPegOutsTrie.committedRoot(fulfilled.asScala.toSeq)
+                // is NESTED for exactly that reason — a single match on a `(rootsResult,
+                // proofResult)` tuple would build the tuple first and defeat the ordering.
+                val rootsResult = SweptPegInsTrie.committedRoots(fulfilled.asScala.toSeq)
+
+                // [CTM-18] preflight: the TM must spend the singleton's CURRENT head as its
+                // input 0. A TM chaining from any other outpoint can never confirm against this
+                // singleton state. NOT marked processed: after the head advances past it the
+                // record stays dead, but until this cycle's context settles a competing view is
+                // possible, so it is re-checked (cheaply) next poll.
+                val chainsFromHead = swept.asScala.headOption.contains(ctx.state.treasuryUtxoId)
 
                 // Proof construction fetches the TM's signed BTC tx from the node. If the node
                 // doesn't know the txid (bitcoind -5), the TM is in neither the mempool nor the
@@ -474,41 +507,52 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                               s"BTC tx $displayTxid lookup failed (${t.getMessage}) — will retry"
                             )
                     }
-                rootResult match {
+                rootsResult match {
                     case Left(err) =>
                         Console.logError(s"    $utxoRef: unconfirmable TM — $err")
                         processed(utxoRef) = "skip:root-commitment"
-                    case Right(newRoot) =>
+                    case Right((spiRoot, cpoRoot)) if !chainsFromHead =>
+                        Console.log(
+                          s"    not chained from the current head " +
+                              s"${ctx.state.treasuryUtxoId.toHex} — cannot confirm ([CTM-18])"
+                        )
+                    case Right((spiRoot, cpoRoot)) =>
                         proofResult match {
                             case Left(err) =>
                                 Console.log(s"    not ready: $err")
                             case Right(tm) =>
-                                val redeemer: Data = TmConfirmRedeemer(
-                                  txIndex = BigInt(tm.txIndex),
-                                  txMerkleProof = ScalusList.from(tm.txInBlockMerklePath.toList),
-                                  blockMpfProof = tm.mpfHeaderInclusionProof,
-                                  blockHeader = binocular.oracle.BlockHeader(tm.blockHeader)
-                                ).toData
-                                val trieSpend = TreasuryMovementTx.TrieSpend(
-                                  utxo = trieCtx.trieUtxo,
-                                  script = trieCtx.trieScript,
-                                  newDatum = CompletedPegOutsTrieDatum(newRoot).toData
+                                val redeemer: Data = (TmSpendRedeemer.Confirm(
+                                  TmConfirmProof(
+                                    txIndex = BigInt(tm.txIndex),
+                                    txMerkleProof = ScalusList.from(tm.txInBlockMerklePath.toList),
+                                    blockMpfProof = tm.mpfHeaderInclusionProof,
+                                    blockHeader = binocular.oracle.BlockHeader(tm.blockHeader)
+                                  )
+                                ): TmSpendRedeemer).toData
+                                // The state the validator will rebuild and pin ([CTM-27]):
+                                // both attested roots, head = txid ‖ 00000000 ([CTM-19]),
+                                // amount = the TM's output 0 ([CTM-21]).
+                                val newState = BridgeState(
+                                  spiRoot = spiRoot,
+                                  cpoRoot = cpoRoot,
+                                  treasuryUtxoId = txid ++ ByteString.fromHex("00000000"),
+                                  treasuryAmount = fulfilled.head.amount
                                 )
-                                val confirmed: Data =
-                                    (TmDatum.Confirmed(
-                                      txid,
-                                      swept,
-                                      fulfilled,
-                                      spentViaFederationLeaf,
-                                      unconfirmedDatum.creator,
-                                      unconfirmedDatum.created,
-                                      unconfirmedDatum.epoch,
-                                      unconfirmedDatum.leaderReward
-                                    ): TmDatum).toData
+                                val singletonSpend = TreasuryMovementTx.SingletonSpend(
+                                  utxo = ctx.singletonUtxo,
+                                  script = bssScript,
+                                  newDatum = newState.toData
+                                )
 
                                 Console.log(
-                                  s"    trie: attested root " +
-                                      s"${trieCtx.currentRoot.toHex} -> ${newRoot.toHex}"
+                                  s"    singleton: spi ${ctx.state.spiRoot.toHex} -> ${spiRoot.toHex}"
+                                )
+                                Console.log(
+                                  s"    singleton: cpo ${ctx.state.cpoRoot.toHex} -> ${cpoRoot.toHex}"
+                                )
+                                Console.log(
+                                  s"    singleton: head ${ctx.state.treasuryUtxoId.toHex} -> " +
+                                      s"${newState.treasuryUtxoId.toHex} (${newState.treasuryAmount} sat)"
                                 )
 
                                 if dryRun then {
@@ -529,13 +573,11 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                                       provider,
                                       hdAccount,
                                       tmScript,
-                                      tmAddress,
                                       utxo,
                                       oracleUtxo,
-                                      trieCtx.configUtxo,
-                                      trieSpend,
+                                      ctx.configUtxo,
+                                      singletonSpend,
                                       redeemer,
-                                      confirmed,
                                       timeout,
                                       debugTmScript
                                     ) match {
@@ -562,15 +604,15 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
                                             sweeper.foreach(
                                               _.recordConfirmed(
                                                 displayTxid,
-                                                newRoot,
+                                                cpoRoot,
                                                 unconfirmedDatum.fulfilledPorOutpoints.asScala.toSeq
                                               )
                                             )
                                         case Left(err) =>
-                                            // The trie UTxO may or may not have been consumed: a build or
-                                            // submit failure never spends it, and a submitted-then-rejected
-                                            // tx does not either. Treat it as unspent and let the next
-                                            // cycle re-read the chain.
+                                            // The singleton may or may not have been consumed: a
+                                            // build or submit failure never spends it, and a
+                                            // submitted-then-rejected tx does not either. Treat it
+                                            // as unspent and let the next cycle re-read the chain.
                                             Console.logError(
                                               s"    Confirm failed: $err — will retry"
                                             )
@@ -600,7 +642,7 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
       * whole event and individual facts are machine-extractable. Peg-ins are listed before
       * peg-outs. `cardanoTx` is `None` for the dry-run preview (no submitted tx yet).
       *
-      * The recreated Confirmed-TM UTxO is the Confirm tx's first output (`payTo(tmAddress, …)` in
+      * The recreated singleton is the Confirm tx's first output (`payTo(singleton…)` in
       * [[TreasuryMovementTx.buildAndSubmitConfirm]]), hence `new_state=<hash>#0`.
       */
     private def confirmSummaryLines(
