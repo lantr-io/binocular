@@ -1,9 +1,8 @@
 package binocular.cli.commands
 
 import binocular.BinocularConfig
-import binocular.bitcoin.SimpleBitcoinRpc
 import binocular.cli.{Command, CommandHelpers, Console}
-import binocular.watchtower.{BridgeState, SweptPegInsProofService, TreasuryMovementValidator}
+import binocular.watchtower.{BlockfrostCpoHistory, BridgeState, SweptPegInsProofService, TreasuryMovementValidator}
 
 import scalus.cardano.address.Address
 import scalus.cardano.ledger.{AssetName, Credential, ScriptHash, Utxo}
@@ -21,6 +20,11 @@ import scalus.utils.await
   * Thin transport over [[SweptPegInsProofService]], which owns the [SPI-6] walk and reconciliation.
   * Prints a JSON object whose fields are exactly what the [CPI-9] redeemer needs: the proven value
   * (`sweeping_tm_input_0`) and the membership proof as Plutus `Data` CBOR.
+  *
+  * Runs on Cardano access ALONE: the raw TM bytes come from the spent `Unconfirmed` records at the
+  * TM address — the spec's permanent history source (§No Confirmed record, cf. [OB-9]) — so no
+  * Bitcoin node is needed. The TM address is discovered from Config field 4 (`tm_script_hash`,
+  * published for off-chain readers per [CFG-2]).
   *
   * Serving is trustless ([SPI-4]): the proof is verified on-chain against the singleton's attested
   * `spi_root`, so a wrong one simply fails `mpf.has`. Anyone may run this command.
@@ -44,7 +48,8 @@ case class SpiProofCommand(
         }
         val network = config.cardano.scalusNetwork
 
-        // 1. The Config UTxO: field 3 is `bridge_state_policy`, the singleton's NFT policy.
+        // 1. The Config UTxO: field 3 is `bridge_state_policy` (the singleton's NFT policy) and
+        //    field 4 is `tm_script_hash` (the TM address, [CFG-2]).
         val configNftPolicy = ScriptHash.fromHex(config.bridge.configNftPolicyId)
         val configNftAsset = AssetName(ByteString.fromHex(config.bridge.configNftAssetName))
         val configAddress = Address(network, Credential.ScriptHash(configNftPolicy))
@@ -60,16 +65,21 @@ case class SpiProofCommand(
                 Console.error(s"no UTxO carrying the config NFT at $configAddress")
                 break(1)
             }
-        val bridgeStatePolicy = configUtxo.output.inlineDatum match {
-            case Some(Data.Constr(0, fields)) =>
-                fields.asScala.toList.lift(3) match {
-                    case Some(Data.B(p)) => p
-                    case other => Console.error(s"config field 3 is not bytes: $other"); break(1)
-                }
+        val configFields = configUtxo.output.inlineDatum match {
+            case Some(Data.Constr(0, fields)) => fields.asScala.toList
             case other =>
                 Console.error(s"config datum is not a Constr 0 inline datum: $other"); break(1)
         }
+        def configBytesField(index: Int, name: String): ByteString =
+            configFields.lift(index) match {
+                case Some(Data.B(p)) => p
+                case other =>
+                    Console.error(s"config field $index ($name) is not bytes: $other"); break(1)
+            }
+        val bridgeStatePolicy = configBytesField(3, "bridge_state_policy")
+        val tmScriptHash = configBytesField(4, "tm_script_hash")
         Console.info("bridge_state_policy", bridgeStatePolicy.toHex)
+        Console.info("tm_script_hash", tmScriptHash.toHex)
 
         // 2. The bridge state singleton, authenticated by the NFT (bridge_state_policy, "BSS")
         //    and decoded as BridgeState BY NAME ([LIB-1]). No fallback: if it does not exist or
@@ -110,9 +120,26 @@ case class SpiProofCommand(
         Console.info("spi_root", state.spiRoot.toHex)
         Console.info("head", state.treasuryUtxoId.toHex)
 
-        // 3. Walk the Bitcoin treasury chain from the confirmed head and serve ([SPI-6]).
-        val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
-        val fetch = SweptPegInsProofService.rpcFetcher(rpc, timeout)
+        // 3. Walk the treasury chain from the confirmed head and serve ([SPI-6]). The raw TM
+        //    bytes come from the spent Unconfirmed records at the TM address — Cardano history,
+        //    hash-verified by the walk, so no Bitcoin node is involved.
+        val tmAddress = Address(
+          network,
+          Credential.ScriptHash(ScriptHash.fromHex(tmScriptHash.toHex))
+        )
+        val tmAddressBech32 = tmAddress.encode.getOrElse {
+            Console.error(s"cannot encode the TM address for script hash ${tmScriptHash.toHex}")
+            break(1)
+        }
+        val source = BlockfrostCpoHistory.fromConfig(config.cardano) match {
+            case Right(s)  => s
+            case Left(err) => Console.error(s"No chain-history backend: $err"); break(1)
+        }
+        val fetch = SweptPegInsProofService
+            .cardanoFetcher(source, tmAddressBech32, msg => Console.info("history", msg)) match {
+            case Right(f)  => f
+            case Left(err) => Console.error(s"Reading TM address history: $err"); break(1)
+        }
         SweptPegInsProofService.serve(state, fetch, pegInUtxoId) match {
             case Left(err) =>
                 Console.error(err.message)

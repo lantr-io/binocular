@@ -6,7 +6,7 @@ import binocular.oracle.reverse
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import scalus.cardano.onchain.plutus.prelude.List as PList
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
-import scalus.uplc.builtin.ByteString
+import scalus.uplc.builtin.{ByteString, Data}
 
 import scala.collection.mutable
 import scala.concurrent.ExecutionContext
@@ -49,8 +49,29 @@ import scalus.utils.await
   * happened yet. This service cannot tell those two apart (and does not need to — the caller
   * retries after the next Confirm).
   *
-  * Nothing here trusts the Bitcoin node either: the fetched bytes are re-hashed against the
-  * requested txid, and the resulting trie is checked against the quorum-attested root.
+  * ==Where the raw TM bytes come from==
+  *
+  * The walk is source-agnostic: it takes a `txid -> raw bytes` fetcher and NEVER trusts it — every
+  * fetched byte string is re-hashed against the txid the chain linkage demands, and that linkage is
+  * anchored at the singleton's attested head. Two fetchers are provided:
+  *
+  *   - [[cardanoFetcher]], the default: reads the raw TMs from the spent `Unconfirmed` records'
+  *     `signed_btc_tx` at the TM address. The spec designates those records as "the permanent
+  *     history source for trie reconstruction" (§No Confirmed record), and [OB-9] already sources
+  *     the CPO side from them. This needs no Bitcoin node at all: the "walking the Bitcoin treasury
+  *     chain" of [SPI-6] is about the CHAIN — input-0 ancestry between Bitcoin transactions — not
+  *     about which store serves their bytes. A record's poster cannot lie: the bytes are keyed by
+  *     the txid RECOMPUTED from them, so a hostile record can only occupy its own hash's slot,
+  *     which the walk never asks for unless the attested chain leads there.
+  *   - [[rpcFetcher]], for a watchtower that prefers its own bitcoind (`txindex=1`).
+  *
+  * A fetcher that cannot resolve a txid ends the walk there ([[ConfirmedChain.unresolvedOrigin]]).
+  * That is NORMAL for the Cardano source: the genesis funding transaction is not a TM, has no
+  * `Unconfirmed` record, and terminates every complete walk. It is also what an INCOMPLETE source
+  * looks like — the two are told apart by reconciliation, not by the fetcher: a missing confirmed
+  * TM that swept anything makes the replayed roots mismatch the attestations, and the failure
+  * message then names the unresolved txid. A missing TM that swept nothing changes no root and
+  * loses nothing.
   */
 object SweptPegInsProofService {
 
@@ -68,6 +89,19 @@ object SweptPegInsProofService {
         txidLE: ByteString,
         committedSpiRoot: ByteString,
         entries: Seq[(ByteString, ByteString)]
+    )
+
+    /** The walk's result: the confirmed TMs oldest first, plus where the walk stopped.
+      *
+      * @param unresolvedOrigin
+      *   `Some(txid)` when the walk stopped because the fetcher could not resolve `txid`; `None`
+      *   when it reached a retrievable non-TM transaction (the genesis funding tx). An unresolved
+      *   origin is normal for the Cardano source (see the object doc) and is carried so a later
+      *   reconciliation failure can say "your history source may be incomplete" by name.
+      */
+    final case class ConfirmedChain(
+        tms: Seq[ConfirmedTm],
+        unresolvedOrigin: Option[ByteString]
     )
 
     /** Everything the [CPI-9] redeemer needs from the proof server: the key, the proven value
@@ -92,17 +126,35 @@ object SweptPegInsProofService {
       */
     final case class WalkFailed(message: String) extends ServeError
 
-    /** The set derived from Bitcoin does not reproduce the singleton's attested `spi_root`. The
-      * service REFUSES to serve rather than guessing: a proof against a root the chain does not
-      * hold is useless, and inventing entries to force a match would be forgery.
+    /** The set derived from the treasury chain does not reproduce the singleton's attested
+      * `spi_root`. The service REFUSES to serve rather than guessing: a proof against a root the
+      * chain does not hold is useless, and inventing entries to force a match would be forgery.
+      *
+      * @param unresolvedOrigin
+      *   the txid the walk stopped at unresolved, if any: with it set, the likely cause is an
+      *   INCOMPLETE history source rather than a chain disagreement, and the message says so.
       */
-    final case class RootMismatch(derivedRoot: ByteString, attestedRoot: ByteString)
-        extends ServeError {
+    final case class RootMismatch(
+        derivedRoot: ByteString,
+        attestedRoot: ByteString,
+        unresolvedOrigin: Option[ByteString] = None
+    ) extends ServeError {
         def message: String =
-            s"the swept set derived from the Bitcoin treasury chain yields spi_root " +
+            s"the swept set derived from the treasury chain yields spi_root " +
                 s"${derivedRoot.toHex}, but the on-chain singleton attests ${attestedRoot.toHex} " +
-                "— refusing to serve proofs the chain would reject"
+                "— refusing to serve proofs the chain would reject" +
+                incompleteHistoryHint(unresolvedOrigin)
     }
+
+    /** Appended to a reconciliation failure when the walk stopped at an unresolved txid: the
+      * probable cause is then a history source missing a confirmed TM record, not a lying chain.
+      */
+    private def incompleteHistoryHint(unresolvedOrigin: Option[ByteString]): String =
+        unresolvedOrigin.fold("")(txid =>
+            s". The walk stopped at txid ${txid.reverse.toHex}, which the history source could " +
+                "not resolve — if that transaction is a confirmed TM, the source is missing its " +
+                "record"
+        )
 
     /** THE [SPI-6] BOUNDARY: the deposit is not in the set the current on-chain `spi_root`
       * contains. It was either never swept, or swept by a TM that has not yet confirmed on Cardano
@@ -126,25 +178,32 @@ object SweptPegInsProofService {
       * confirmed TMs OLDEST FIRST.
       *
       * `headUtxoId` is the singleton's `treasury_utxo_id` (36 bytes, `btc_txid ‖ vout LE`).
-      * `fetchRawTx` maps an internal (little-endian) txid to the raw transaction bytes; `None`
-      * aborts the walk — a gap would silently drop every older TM's entries.
+      * `fetchRawTx` maps an internal (little-endian) txid to the raw transaction bytes.
       *
-      * Termination: the first ancestor WITHOUT a `"BTMR1"` commitment output is the genesis funding
-      * transaction (or the bootstrap origin), not a TM. Its inputs are not swept deposits, so the
-      * walk stops BEFORE harvesting it. A transaction with several commitment outputs is malformed
-      * ([CTM-26] admits exactly one) and aborts the walk.
+      * Termination, two ways:
+      *   - a retrievable ancestor WITHOUT a `"BTMR1"` commitment output is the genesis funding
+      *     transaction (or the bootstrap origin), not a TM — its inputs are not swept deposits, so
+      *     the walk stops BEFORE harvesting it;
+      *   - an ancestor the fetcher cannot resolve stops the walk with
+      *     [[ConfirmedChain.unresolvedOrigin]] set. The Cardano source ends every complete walk
+      *     this way (the genesis tx has no `Unconfirmed` record); an incomplete source is told
+      *     apart by [[confirmedTrie]]'s reconciliation, never guessed at here.
+      *
+      * A transaction with several commitment outputs is malformed ([CTM-26] admits exactly one) and
+      * aborts the walk.
       */
     def walkConfirmedChain(
         headUtxoId: ByteString,
         fetchRawTx: ByteString => Option[ByteString],
         maxDepth: Int = MaxWalkDepth
-    ): Either[String, Seq[ConfirmedTm]] = {
+    ): Either[String, ConfirmedChain] = {
         if headUtxoId.size != 36 then
             return Left(
               s"the head outpoint must be 36 bytes (txid ++ vout LE), got ${headUtxoId.size}"
             )
         var cursorTxid = ByteString.fromArray(headUtxoId.bytes.take(32))
         var acc = List.empty[ConfirmedTm] // prepend while walking newest -> oldest = oldest first
+        var unresolvedOrigin: Option[ByteString] = None
         var depth = 0
         var done = false
         var error: Option[String] = None
@@ -157,11 +216,8 @@ object SweptPegInsProofService {
             else
                 fetchRawTx(cursorTxid) match {
                     case None =>
-                        error = Some(
-                          s"Bitcoin tx ${cursorTxid.reverse.toHex} is not retrievable — cannot " +
-                              "continue the treasury chain walk (a gap would drop every older " +
-                              "TM's entries)"
-                        )
+                        unresolvedOrigin = Some(cursorTxid)
+                        done = true
                     case Some(raw) =>
                         // Never trust the fetcher: the bytes must hash to the txid asked for.
                         if Try(BitcoinHelpers.getTxHash(raw)).toOption.contains(cursorTxid) then {
@@ -218,7 +274,7 @@ object SweptPegInsProofService {
                             )
                 }
         }
-        error.toLeft(acc)
+        error.toLeft(ConfirmedChain(acc, unresolvedOrigin))
     }
 
     /** Derive the CONFIRMED swept-peg-ins trie: walk from the singleton's head, replay oldest
@@ -237,14 +293,14 @@ object SweptPegInsProofService {
     ): Either[ServeError, OffChainMPF] =
         walkConfirmedChain(headUtxoId, fetchRawTx, maxDepth).left
             .map(WalkFailed.apply)
-            .flatMap { tms =>
+            .flatMap { chain =>
                 var trie = OffChainMPF.empty
                 // Keyed by hex, like MpfSetBuilder: the duplicate check must not depend on
                 // ByteString's hashCode contract. A Bitcoin outpoint is spent once, so a duplicate
-                // key with a different value means the walk (or the node) is lying.
+                // key with a different value means the walk (or the source) is lying.
                 val seen = mutable.Map.empty[String, ByteString]
                 var error: Option[ServeError] = None
-                val it = tms.iterator
+                val it = chain.tms.iterator
                 while error.isEmpty && it.hasNext do {
                     val tm = it.next()
                     val entryIt = tm.entries.iterator
@@ -264,18 +320,22 @@ object SweptPegInsProofService {
                                 trie = trie.insert(key, value)
                         }
                     }
+                    // A replay starting AFTER a gap fails here on the oldest kept TM (its
+                    // committed root includes the dropped entries), so an incomplete history
+                    // source is caught even though the walk itself cannot see the gap.
                     if error.isEmpty && trie.rootHash != tm.committedSpiRoot then
                         error = Some(
                           WalkFailed(
                             s"replaying TM ${tm.txidLE.reverse.toHex} yields spi_root " +
                                 s"${trie.rootHash.toHex}, but its \"BTMR1\" output commits " +
-                                s"${tm.committedSpiRoot.toHex}"
+                                s"${tm.committedSpiRoot.toHex}" +
+                                incompleteHistoryHint(chain.unresolvedOrigin)
                           )
                         )
                 }
                 error.toLeft(trie).flatMap { t =>
                     if t.rootHash != attestedSpiRoot then
-                        Left(RootMismatch(t.rootHash, attestedSpiRoot))
+                        Left(RootMismatch(t.rootHash, attestedSpiRoot, chain.unresolvedOrigin))
                     else Right(t)
                 }
             }
@@ -317,8 +377,75 @@ object SweptPegInsProofService {
                     }
             }
 
-    /** A tx fetcher backed by a Bitcoin node. Requires `txindex=1` on bitcoind, because the walk
-      * retrieves arbitrary confirmed transactions by txid.
+    /** Harvest every raw TM candidate from the TM address's Cardano history: each `Unconfirmed`
+      * record's `signed_btc_tx` (Constr 0, field 0), keyed by the txid RECOMPUTED from the bytes
+      * themselves — never by any self-declared field, so a hostile record can only ever occupy the
+      * slot of its own hash, which the walk never asks for unless the attested chain leads there.
+      *
+      * Harvesting never fails, deliberately — a difference from [[CpoReconstruction.scanTmAddress]]
+      * and its "no silent skips" rule, and a sound one HERE because nothing harvested is trusted: a
+      * junk or unreadable record either goes unrequested or, if it hides a confirmed TM's bytes,
+      * surfaces as a reconciliation failure that names the unresolved txid. Skipped-but-present
+      * datums are returned as warnings so the operator sees them before that happens.
+      *
+      * Returns `(txidHex -> raw bytes, warnings)`.
+      */
+    def harvestTmHistory(
+        outputs: Seq[ChainOutput]
+    ): (Map[String, ByteString], Seq[String]) = {
+        val byTxid = mutable.LinkedHashMap.empty[String, ByteString]
+        val warnings = Vector.newBuilder[String]
+        outputs.foreach { out =>
+            out.inlineDatum match {
+                case Some(Data.Constr(0, fields)) =>
+                    fields.asScala.headOption.foreach { f0 =>
+                        // Attacker-placeable bytes: both the decode and getTxHash (which walks
+                        // tx-declared counts) are guarded. A record that does not parse is junk at
+                        // a permissionlessly-payable address, not an error.
+                        try {
+                            val raw = f0.toByteString
+                            val txid = BitcoinHelpers.getTxHash(raw)
+                            // Same key => byte-identical preimage, so first-in wins losslessly.
+                            byTxid.getOrElseUpdate(txid.toHex, raw)
+                        } catch { case _: Throwable => () }
+                    }
+                case Some(_) => () // a pre-migration Confirmed record, or junk — not a carrier
+                case None if out.unresolvedDatum.isEmpty => () // provably not a TM record
+                case None =>
+                    warnings += s"${out.ref}: ${out.unresolvedDatum.getOrElse("unknown reason")}"
+            }
+        }
+        (byTxid.toMap, warnings.result())
+    }
+
+    /** The DEFAULT tx fetcher: raw TM bytes from the spent `Unconfirmed` records at the TM address,
+      * read from Cardano history — no Bitcoin node needed. See the object doc for why this is
+      * exactly as trustless as asking bitcoind.
+      *
+      * `log` receives one summary line and one warning per skipped-but-present datum.
+      */
+    def cardanoFetcher(
+        source: CpoHistorySource,
+        tmAddressBech32: String,
+        log: String => Unit = _ => ()
+    ): Either[String, ByteString => Option[ByteString]] =
+        source.addressHistory(tmAddressBech32).left.map(_.toString).map { outputs =>
+            val (byTxid, warnings) = harvestTmHistory(outputs)
+            log(
+              s"spi proof source: ${source.backend}, ${outputs.size} output(s) at the TM " +
+                  s"address, ${byTxid.size} raw TM candidate(s) harvested"
+            )
+            warnings.foreach(w =>
+                log(
+                  s"spi proof source: WARNING unreadable datum at $w — if it is an Unconfirmed " +
+                      "TM record, the walk will stop short and reconciliation will refuse to serve"
+                )
+            )
+            txidLE => byTxid.get(txidLE.toHex)
+        }
+
+    /** An alternative tx fetcher backed by a Bitcoin node. Requires `txindex=1` on bitcoind,
+      * because the walk retrieves arbitrary confirmed transactions by txid.
       */
     def rpcFetcher(
         rpc: SimpleBitcoinRpc,

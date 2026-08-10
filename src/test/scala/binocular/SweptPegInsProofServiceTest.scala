@@ -7,9 +7,10 @@ import binocular.watchtower.SweptPegInsProofService.*
 
 import org.scalatest.funsuite.AnyFunSuite
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry as MPF
+import scalus.cardano.onchain.plutus.prelude.List as PList
 import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 import scalus.uplc.builtin.Builtins.integerToByteString
-import scalus.uplc.builtin.ByteString
+import scalus.uplc.builtin.{ByteString, Data}
 import scalus.uplc.builtin.ByteString.hex
 
 /** Unit tests for the swept-peg-ins proof server ([SPI-4], [SPI-6]).
@@ -136,30 +137,60 @@ class SweptPegInsProofServiceTest extends AnyFunSuite {
     // --- the walk ([SPI-6]: anchored at the singleton's head) ----------------------------------
 
     test("walkConfirmedChain returns the confirmed TMs oldest first, stopping at genesis") {
-        val tms = walkConfirmedChain(outpoint0(tm2), fetcher(allTxs)).toOption.get
-        assert(tms.map(_.txidLE) == Seq(txidOf(tm1), txidOf(tm2)))
-        assert(tms.map(_.committedSpiRoot) == Seq(spiRoot1, spiRoot2))
-        assert(tms.flatMap(_.entries) == tm2Entries)
+        val chain = walkConfirmedChain(outpoint0(tm2), fetcher(allTxs)).toOption.get
+        assert(chain.tms.map(_.txidLE) == Seq(txidOf(tm1), txidOf(tm2)))
+        assert(chain.tms.map(_.committedSpiRoot) == Seq(spiRoot1, spiRoot2))
+        assert(chain.tms.flatMap(_.entries) == tm2Entries)
+        // The genesis tx WAS retrievable and identified as a non-TM: a resolved origin.
+        assert(chain.unresolvedOrigin.isEmpty)
     }
 
     test("the walk never visits a TM that spends the head (mined but unconfirmed)") {
         // TM3 is fetchable, but the walk starts at the CONFIRMED head and goes backward, so its
         // entries are structurally out of reach. This is where the [SPI-6] boundary lives.
-        val tms = walkConfirmedChain(outpoint0(tm2), fetcher(allTxs)).toOption.get
-        assert(!tms.exists(_.txidLE == txidOf(tm3)))
-        assert(!tms.flatMap(_.entries).exists(_._1 == d4))
+        val chain = walkConfirmedChain(outpoint0(tm2), fetcher(allTxs)).toOption.get
+        assert(!chain.tms.exists(_.txidLE == txidOf(tm3)))
+        assert(!chain.tms.flatMap(_.entries).exists(_._1 == d4))
     }
 
     test("the genesis funding tx's own inputs never become swept entries") {
-        val tms = walkConfirmedChain(outpoint0(tm2), fetcher(allTxs)).toOption.get
-        assert(!tms.flatMap(_.entries).exists(_._1 == genesisFundingInput))
+        val chain = walkConfirmedChain(outpoint0(tm2), fetcher(allTxs)).toOption.get
+        assert(!chain.tms.flatMap(_.entries).exists(_._1 == genesisFundingInput))
     }
 
-    test("a gap in the chain (missing ancestor tx) aborts the walk") {
+    test("an unresolvable ancestor ends the walk with the origin recorded, not an error") {
+        // The Cardano source ends every complete walk this way: the genesis funding tx is not a
+        // TM, so it has no Unconfirmed record. Whether the stop is genesis or a gap is decided by
+        // reconciliation, not here.
         val gapped = allTxs - txidOf(tm1).toHex
-        val res = walkConfirmedChain(outpoint0(tm2), fetcher(gapped))
+        val chain = walkConfirmedChain(outpoint0(tm2), fetcher(gapped)).toOption.get
+        assert(chain.tms.map(_.txidLE) == Seq(txidOf(tm2)))
+        assert(chain.unresolvedOrigin.contains(txidOf(tm1)))
+    }
+
+    test("a gap in the chain is caught by reconciliation and names the missing txid") {
+        // TM1's record is missing, so the truncated replay starts empty and TM2's committed root
+        // (which includes TM1's entries) cannot be reproduced. The failure must point at the
+        // unresolved ancestor: an incomplete history source, not a lying chain.
+        val gapped = allTxs - txidOf(tm1).toHex
+        val res = confirmedTrie(spiRoot2, outpoint0(tm2), fetcher(gapped))
         assert(res.isLeft)
-        assert(res.left.toOption.get.contains("not retrievable"))
+        val msg = res.left.toOption.get.message
+        assert(msg.contains(txidOf(tm2).reverse.toHex)) // the TM whose replay failed
+        assert(msg.contains(txidOf(tm1).reverse.toHex)) // the unresolved ancestor
+        assert(msg.contains("could not resolve"))
+    }
+
+    test("a TM that sweeps nothing re-commits the unchanged root and the replay accepts it") {
+        // Such a TM adds no entries, so it moves the root not at all — and the per-TM assertion
+        // must accept the re-committed root rather than demand movement.
+        val tmEmpty = rawTxWith(
+          Seq(outpoint0(tm2)),
+          Seq((changeSpk, BigInt(750_000)), (commitmentSpk(spiRoot2, cpoRoot), BigInt(0)))
+        )
+        val chainTxs = allTxs + (txidOf(tmEmpty).toHex -> tmEmpty)
+        val trie = confirmedTrie(spiRoot2, outpoint0(tmEmpty), fetcher(chainTxs)).toOption.get
+        assert(trie.rootHash == spiRoot2)
     }
 
     test("a malformed head outpoint is rejected") {
@@ -285,5 +316,97 @@ class SweptPegInsProofServiceTest extends AnyFunSuite {
             )
         val res = serve(genesisState, fetcher(allTxs), d1)
         assert(res == Left(NotInConfirmedSet(d1, OffChainMPF.empty.rootHash)))
+    }
+
+    // --- the Cardano byte source (spent Unconfirmed records instead of bitcoind) ---------------
+
+    test("a Cardano-shaped source (genesis tx absent) serves identically") {
+        // The genesis funding tx is not a TM and has no Unconfirmed record, so a Cardano-backed
+        // fetcher can never resolve it: every complete walk ends at an unresolved origin.
+        val cardanoShaped = allTxs - txidOf(genesisTx).toHex
+        val proof = serve(stateAfterTm2, fetcher(cardanoShaped), d1).toOption.get
+        assert(MPF(spiRoot2).has(d1, proof.sweepingTmInput0, proof.proof))
+        // The [SPI-6] boundary holds identically over this source.
+        assert(
+          serve(stateAfterTm2, fetcher(cardanoShaped), d4) ==
+              Left(NotInConfirmedSet(d4, spiRoot2))
+        )
+    }
+
+    test("a root mismatch with an unresolved origin names the stop txid") {
+        val cardanoShaped = allTxs - txidOf(genesisTx).toHex
+        confirmedTrie(filled(0x99, 32), outpoint0(tm2), fetcher(cardanoShaped)) match {
+            case Left(rm: RootMismatch) =>
+                assert(rm.unresolvedOrigin.contains(txidOf(genesisTx)))
+                assert(rm.message.contains(txidOf(genesisTx).reverse.toHex))
+            case other => fail(s"expected RootMismatch, got $other")
+        }
+    }
+
+    test("an unresolvable HEAD reconciles as the empty confirmed set") {
+        // A freshly bootstrapped bridge over the Cardano source: the head is the funding
+        // outpoint, and NOTHING at the TM address resolves — legitimately zero confirmed TMs.
+        val state =
+            BridgeState(OffChainMPF.empty.rootHash, cpoRoot, outpoint0(genesisTx), BigInt(1))
+        val res = serve(state, fetcher(Map.empty), d1)
+        assert(res == Left(NotInConfirmedSet(d1, OffChainMPF.empty.rootHash)))
+    }
+
+    // --- harvesting raw TMs from spent Unconfirmed records -------------------------------------
+
+    /** An `Unconfirmed` TM record's output at the TM address: Constr 0 with `signed_btc_tx` at
+      * field 0 (the only field the harvest reads).
+      */
+    private def unconfirmedRecord(raw: ByteString, seed: Int): ChainOutput =
+        ChainOutput(
+          filled(seed, 32),
+          0,
+          Some(Data.Constr(0, PList.from(List[Data](Data.B(raw), Data.B(filled(0x0c, 28)))))),
+          Map.empty
+        )
+
+    test("harvestTmHistory keys each record by the txid recomputed from its own bytes") {
+        val (map, warnings) =
+            harvestTmHistory(Seq(unconfirmedRecord(tm1, 1), unconfirmedRecord(tm2, 2)))
+        assert(map == Map(txidOf(tm1).toHex -> tm1, txidOf(tm2).toHex -> tm2))
+        assert(warnings.isEmpty)
+    }
+
+    test("harvestTmHistory skips junk without failing and reports unreadable datums") {
+        val outputs = Seq(
+          ChainOutput(filled(1, 32), 0, None, Map.empty), // no datum: provably not a TM record
+          ChainOutput(filled(2, 32), 0, Some(Data.I(BigInt(7))), Map.empty), // junk datum
+          unconfirmedRecord(hex"0102", 3), // field 0 does not parse as a tx
+          ChainOutput(filled(4, 32), 1, None, Map.empty, unresolvedDatum = Some("no preimage")),
+          unconfirmedRecord(tm1, 5)
+        )
+        val (map, warnings) = harvestTmHistory(outputs)
+        assert(map == Map(txidOf(tm1).toHex -> tm1))
+        assert(warnings == Seq(s"${filled(4, 32).toHex}#1: no preimage"))
+    }
+
+    test("a hostile record cannot shadow a real TM's bytes") {
+        // Keying is by RECOMPUTED txid: a record carrying different bytes lands under its own
+        // hash's slot, so it cannot occupy tm1's — there is nothing to poison.
+        val (map, _) =
+            harvestTmHistory(Seq(unconfirmedRecord(genesisTx, 1), unconfirmedRecord(tm1, 2)))
+        assert(map(txidOf(tm1).toHex) == tm1)
+    }
+
+    test("cardanoFetcher end-to-end: serve from Cardano history alone, no Bitcoin node") {
+        val source = new CpoHistorySource {
+            def backend = "fake"
+            def addressHistory(addr: String): Either[HistoryError, Seq[ChainOutput]] =
+                Right(Seq(tm1, tm2, tm3).zipWithIndex.map { case (raw, i) =>
+                    unconfirmedRecord(raw, i + 1)
+                })
+        }
+        val fetch = cardanoFetcher(source, "addr_test1fake").toOption.get
+        val proof = serve(stateAfterTm2, fetch, d3).toOption.get
+        assert(MPF(spiRoot2).has(d3, proof.sweepingTmInput0, proof.proof))
+        // TM3's Unconfirmed record IS on Cardano (posted and mined on Bitcoin), but the singleton
+        // has not confirmed it: the [SPI-6] boundary holds over this source too, because the walk
+        // is anchored at the head, not at what the source happens to hold.
+        assert(serve(stateAfterTm2, fetch, d4) == Left(NotInConfirmedSet(d4, spiRoot2)))
     }
 }
