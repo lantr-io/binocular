@@ -64,6 +64,9 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
     // Bridged-token asset name.
     private val BridgedTokenAssetName: ByteString = ByteString.fromString("fSAT")
     private val Dummy28: ByteString = ByteString.fromArray(Array.fill[Byte](28)(0))
+    // Asset name of the treasury_info state NFT. Chosen here and published as config #23 — it is
+    // derivable from nothing, so publishing it is the only way an SPO avoids typing it.
+    private val TreasuryInfoAssetName: ByteString = ByteString.fromString("TMTx")
     private val EmptyRoot: ByteString = BridgeBootstrap.EmptyRoot
 
     override def execute(config: BinocularConfig): Int = boundary {
@@ -197,6 +200,50 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
         val cpoPolicy = cpoContract.policyId
         val cpoAssetName = CompletedPegOutsContract.assetName
 
+        // --- federation side (config indices 17-23) ---
+        //
+        // The derivation chain is strictly ordered: one-shot -> spos_registry -> the three fault
+        // verifiers -> spo_bans. It shares the SAME one-shot as config/cpi/cpo, so a deployer
+        // never names it and it is consumed and forgotten. That is the point: every one of these
+        // values is an INPUT to the policy id it identifies, so an SPO handed them by email cannot
+        // check them — a wrong one derives a well-formed address holding nothing.
+        // A SECOND one-shot, distinct from the config/cpi/cpo one. It has to be: a one-shot mint
+        // handler requires its outref to be SPENT in the minting transaction, and the registry and
+        // ban roots cannot be minted in the config transaction — the five scripts together are
+        // 17.6 kB against a 16 kB max_tx_size. So the federation gets its own outref, spent by its
+        // own transaction, which must confirm BEFORE the config exists: the Config NFT is the
+        // bridge's identity, so minting the roots first is what makes "a bridge cannot exist
+        // without a ban list" true by construction rather than by procedure.
+        val federationUtxo = BridgeBootstrap
+            .pickOneShot(walletUtxos, excludedInputs + oneShotUtxo.input)
+            .getOrElse {
+                Console.error(
+                  "No SECOND clean pure-ADA wallet UTxO (>=5 ADA) for the federation one-shot. " +
+                      "Genesis needs two: one for config/cpi/cpo and one for the registry + ban " +
+                      "roots, which cannot share a transaction (17.6 kB of scripts > 16 kB " +
+                      "max_tx_size). Fund the sponsor wallet with another UTxO"
+                )
+                break(1)
+            }
+        val federationRef = refOf(federationUtxo)
+        val registryContract =
+            SposRegistryContract(blueprint, federationRef.id.hash, federationRef.idx)
+        val registryPolicy = ByteString.fromArray(registryContract.policyId.bytes)
+        val faultPolicies = FaultVerifierContract.all(blueprint, registryPolicy)
+        val banSchedule = config.bridge.banSchedule
+        val spoBansContract = SpoBansContract(
+          blueprint,
+          registryPolicy,
+          faultPolicies,
+          baseBanDurationMs = BigInt(banSchedule.baseBanDurationMs),
+          maxFaultsBeforePermanent = BigInt(banSchedule.maxFaultsBeforePermanent),
+          maxValidityWindowMs = BigInt(banSchedule.maxValidityWindowMs),
+          bootstrapTxId = federationRef.id.hash,
+          bootstrapIndex = federationRef.idx
+        )
+        // treasury_info takes the TM-NFT policy as well, so it must follow tmNftPolicy above.
+        val treasuryInfoContract = TreasuryInfoContract(blueprint, registryPolicy, tmNftPolicy)
+
         val pegOutProducedVerifierHash =
             PegOutProducedVerifierContract.pinnedScript.scriptHash
         val pegOutNotProducedVerifierHash =
@@ -258,7 +305,16 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
             tmRecoveryWindow = BigInt(129600),
             finalTmCutoff = BigInt(345600),
             stabilityWindow = BigInt(129600)
-          )
+          ),
+          // Federation identity (config #17-23; off-chain readers only). Publishing these is what
+          // lets an SPO join this bridge with NO ban or registry configuration of its own.
+          spoBansPolicyId = ByteString.fromArray(spoBansContract.policyId.bytes),
+          baseBanDurationMs = BigInt(banSchedule.baseBanDurationMs),
+          maxFaultsBeforePermanent = BigInt(banSchedule.maxFaultsBeforePermanent),
+          maxValidityWindowMs = BigInt(banSchedule.maxValidityWindowMs),
+          sposRegistryPolicyId = registryPolicy,
+          treasuryInfoPolicyId = ByteString.fromArray(treasuryInfoContract.policyId.bytes),
+          treasuryInfoAssetName = TreasuryInfoAssetName
         )
 
         Console.info("Oracle policy", oraclePolicyId.toHex)
@@ -273,6 +329,19 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
         Console.info("completed-peg-ins asset", cpiAssetName.toHex)
         Console.info("cpo one-shot", s"${cpoRef.id.hash.toHex}#${cpoRef.idx}")
         Console.info("completed-peg-outs policy", cpoPolicy.toHex)
+        println()
+        Console.info(
+          "federation one-shot",
+          s"${federationRef.id.hash.toHex}#${federationRef.idx}"
+        )
+        Console.info("spos_registry policy", registryPolicy.toHex)
+        Console.info("spo_bans policy (config #17)", spoBansContract.policyId.toHex)
+        Console.info("treasury_info policy", treasuryInfoContract.policyId.toHex)
+        Console.info("treasury_info NFT", TreasuryInfoAssetName.toHex)
+        Console.info(
+          "  SPO config",
+          "none — the roster and ban list are read from config #17-23"
+        )
         Console.info("completed-peg-outs asset", cpoAssetName.toHex)
         Console.info("peg_in withdraw hash", pegInWithdrawHash.toHex)
         Console.info("peg_out withdraw hash", pegOutWithdrawHash.toHex)

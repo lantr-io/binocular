@@ -427,7 +427,14 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         tmRecoveryWindow = BigInt(0),
         finalTmCutoff = BigInt(0),
         stabilityWindow = BigInt(0)
-      )
+      ),
+      spoBansPolicyId = ByteString.fromHex("bb" * 28),
+      baseBanDurationMs = BigInt(600000),
+      maxFaultsBeforePermanent = BigInt(3),
+      maxValidityWindowMs = BigInt(3600000),
+      sposRegistryPolicyId = ByteString.fromHex("c1" * 28),
+      treasuryInfoPolicyId = ByteString.fromHex("c2" * 28),
+      treasuryInfoAssetName = ByteString.fromString("TMTx")
     ).toData
 
     /** The Config reference UTxO carrying the config NFT + a config datum with the anchor at field
