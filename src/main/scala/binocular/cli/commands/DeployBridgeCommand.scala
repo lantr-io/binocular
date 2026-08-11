@@ -62,6 +62,9 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
     private val ConfigAssetName: ByteString = ByteString.fromString("BIFCFG")
     // Bridged-token asset name — the [CFG-1] protocol constant, not a config field.
     private val BridgedTokenAssetName: ByteString = ConfigDatum.BridgedTokenAssetName
+    // Asset name of the treasury_info state NFT. Chosen here and published as config #13 — it is
+    // derivable from nothing, so publishing it is the only way an SPO avoids typing it.
+    private val TreasuryInfoAssetName: ByteString = ByteString.fromString("TMTx")
     private val EmptyRoot: ByteString = BridgeBootstrap.EmptyRoot
 
     override def execute(config: BinocularConfig): Int = boundary {
@@ -200,6 +203,53 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
           treasuryAmount = BigInt(config.bridge.initialBtcTreasuryAmountSat)
         )
 
+        // --- federation side (config indices 7-13) ---
+        //
+        // The derivation chain is strictly ordered: one-shot -> spos_registry -> the three fault
+        // verifiers -> spo_bans. Every one of these values is an INPUT to the policy id it
+        // identifies, so an SPO handed them by email cannot check them — a wrong one derives a
+        // well-formed address holding nothing. That is why genesis derives them here and publishes
+        // the finished ids at #7-#13.
+        //
+        // A SECOND one-shot, distinct from the config/cpi/bridge-state one. It has to be: a
+        // one-shot mint handler requires its outref to be SPENT in the minting transaction, and the
+        // registry and ban roots cannot be minted in the config transaction — the scripts together
+        // exceed the 16 kB max_tx_size. So the federation gets its own outref, spent by its own
+        // transaction, which must confirm BEFORE the config exists: the Config NFT is the bridge's
+        // identity, so minting the roots first is what makes "a bridge cannot exist without a ban
+        // list" true by construction rather than by procedure.
+        val federationUtxo = BridgeBootstrap
+            .pickOneShot(walletUtxos, excludedInputs + oneShotUtxo.input)
+            .getOrElse {
+                Console.error(
+                  "No SECOND clean pure-ADA wallet UTxO (>=5 ADA) for the federation one-shot. " +
+                      "Genesis needs two: one for config/cpi/bridge-state and one for the " +
+                      "registry + ban roots, which cannot share a transaction (the scripts " +
+                      "together exceed the 16 kB max_tx_size). Fund the sponsor wallet with " +
+                      "another UTxO"
+                )
+                break(1)
+            }
+        val federationRef = refOf(federationUtxo)
+        val registryContract =
+            SposRegistryContract(blueprint, federationRef.id.hash, federationRef.idx)
+        val registryPolicy = ByteString.fromArray(registryContract.policyId.bytes)
+        val faultPolicies = FaultVerifierContract.all(blueprint, registryPolicy)
+        val banSchedule = config.bridge.banSchedule
+        val spoBansContract = SpoBansContract(
+          blueprint,
+          registryPolicy,
+          faultPolicies,
+          baseBanDurationMs = BigInt(banSchedule.baseBanDurationMs),
+          maxFaultsBeforePermanent = BigInt(banSchedule.maxFaultsBeforePermanent),
+          maxValidityWindowMs = BigInt(banSchedule.maxValidityWindowMs),
+          bootstrapTxId = federationRef.id.hash,
+          bootstrapIndex = federationRef.idx
+        )
+        // Rev 5.4: treasury_info takes the registry policy alone — the TM-NFT parameter went with
+        // the FederationReset branch that was its only reader.
+        val treasuryInfoContract = TreasuryInfoContract(blueprint, registryPolicy)
+
         // config Update/Retire authority = the binocular owner key (oracle.owner-pkh),
         // so the same operator that runs the oracle governs the bridge config.
         val updateAuthPkh = {
@@ -229,7 +279,16 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
           tmScriptHash = tmNftPolicy,
           pegInScriptHash = pegInWithdrawHash,
           pegOutScriptHash = pegOutWithdrawHash,
-          // Operational-parameter tunables (config field 7, nested; off-chain readers only).
+          // Federation identity (config #7-13; off-chain readers only, spec [CFG-3]). Publishing
+          // these is what lets an SPO join this bridge with NO ban or registry configuration.
+          spoBansPolicyId = ByteString.fromArray(spoBansContract.policyId.bytes),
+          baseBanDurationMs = BigInt(banSchedule.baseBanDurationMs),
+          maxFaultsBeforePermanent = BigInt(banSchedule.maxFaultsBeforePermanent),
+          maxValidityWindowMs = BigInt(banSchedule.maxValidityWindowMs),
+          sposRegistryPolicyId = registryPolicy,
+          treasuryInfoPolicyId = ByteString.fromArray(treasuryInfoContract.policyId.bytes),
+          treasuryInfoAssetName = TreasuryInfoAssetName,
+          // Operational-parameter tunables (config field 14, nested; off-chain readers only).
           params = ConfigParams(
             feeRateSatPerVb = BigInt(config.bridge.feeRateSatPerVb),
             perPegoutFee = BigInt(config.bridge.perPegoutFeeSat),
@@ -278,11 +337,68 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
             break(0)
         }
 
+        // --- Federation tx, FIRST: spend the federation one-shot and mint both linked-list
+        //     roots. It cannot be merged into the bootstrap tx below — the two script sets
+        //     together exceed the 16 kB max_tx_size — and it must PRECEDE it, because the config
+        //     NFT is the bridge's identity: minting the roots first is what makes "a bridge cannot
+        //     exist without a ban list" true by construction rather than by procedure. A crash
+        //     between the two leaves an orphan registry and ban list, which costs a few ADA and is
+        //     simply re-run; the reverse order would leave a live bridge whose published addresses
+        //     hold nothing.
+        //
+        //     Neither mint handler constrains output ORDER (both locate their root by script
+        //     address + asset via find_singleton_asset_output_at_script), unlike config.ak. ---
+        Console.step(1, "Bootstrapping the federation (registry + ban roots) in one tx")
+        val registryRootAsset = AssetName(SposRegistryContract.RootAssetName)
+        val banRootAsset = AssetName(SpoBansContract.RootAssetName)
+        val registryRootValue =
+            Value.lovelace(2_000_000L) +
+                Value.asset(registryContract.policyId, registryRootAsset, 1L)
+        val banRootValue =
+            Value.lovelace(2_000_000L) + Value.asset(spoBansContract.policyId, banRootAsset, 1L)
+        val federationTx =
+            try
+                TxBuilder(provider.cardanoInfo)
+                    .spend(federationUtxo)
+                    .mint(
+                      registryContract.script,
+                      Map(registryRootAsset -> 1L),
+                      FederationRoot.RegistryBootstrapRedeemer
+                    )
+                    .mint(
+                      spoBansContract.script,
+                      Map(banRootAsset -> 1L),
+                      FederationRoot.banBootstrapRedeemer(federationRef.id.hash, federationRef.idx)
+                    )
+                    .payTo(
+                      registryContract.address(network),
+                      registryRootValue,
+                      FederationRoot.Datum
+                    )
+                    .payTo(spoBansContract.address(network), banRootValue, FederationRoot.Datum)
+                    .complete(provider, sponsorAddress)
+                    .await(timeout)
+                    .sign(signer)
+                    .transaction
+            catch {
+                case e: Exception =>
+                    Console.error(s"Building federation tx: ${e.getMessage}")
+                    Option(e.getCause).foreach(c => Console.error(s"Cause: ${c.getMessage}"))
+                    break(1)
+            }
+        // submitAndConfirm does not return until this is on chain, which is the ordering guarantee:
+        // the config tx below is never built against a federation that failed to materialise.
+        val federationTxHash = submitAndConfirm(provider, federationTx, timeout)
+        Console.success(s"Federation bootstrapped: $federationTxHash")
+        Console.info("registry address", registryContract.address(network).encode.getOrElse("?"))
+        Console.info("ban list address", spoBansContract.address(network).encode.getOrElse("?"))
+        println()
+
         // --- Single bootstrap tx: spend the one-shot, mint all three protocol NFTs, and create
         //     every protocol UTxO in one atomic tx. config.ak::mint checks self.outputs[0] is the
         //     config UTxO, so the config output MUST be first. cpi/bridge_state mint handlers find
         //     their own output by script address and see the shared one-shot consumed. ---
-        Console.step(1, "Bootstrapping bridge (config + cpi + bridge-state) in one tx")
+        Console.step(2, "Bootstrapping bridge (config + cpi + bridge-state) in one tx")
         val configAsset = AssetName(ConfigAssetName)
         val cpiAsset = AssetName(cpiAssetName)
         val bssAsset = AssetName(bssAssetName)

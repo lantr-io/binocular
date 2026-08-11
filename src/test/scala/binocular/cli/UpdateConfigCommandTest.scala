@@ -35,6 +35,13 @@ class UpdateConfigCommandTest extends AnyFunSuite {
       tmScriptHash = ByteString.fromHex("04"),
       pegInScriptHash = ByteString.fromHex("05"),
       pegOutScriptHash = ByteString.fromHex("06"),
+      spoBansPolicyId = ByteString.fromHex("07"),
+      baseBanDurationMs = 600000,
+      maxFaultsBeforePermanent = 3,
+      maxValidityWindowMs = 3600000,
+      sposRegistryPolicyId = ByteString.fromHex("11"),
+      treasuryInfoPolicyId = ByteString.fromHex("12"),
+      treasuryInfoAssetName = ByteString.fromString("TMTx"),
       params = ConfigParams(
         feeRateSatPerVb = 2,
         perPegoutFee = 1000,
@@ -131,14 +138,14 @@ class UpdateConfigCommandTest extends AnyFunSuite {
     // ignore unknown trailing fields — but this command re-encodes the whole datum, so rewriting a
     // grown datum would silently truncate it. It must be refused, not carried.
     test("decodeDeployed refuses a datum that grew past the rev-5.4 layout") {
-        val nine = config.toData match {
+        val sixteen = config.toData match {
             case Data.Constr(0, fields) =>
                 Data.Constr(0, PList.from(fields.asScala.toList :+ (Data.I(BigInt(99)): Data)))
             case other => fail(s"config datum is not a Constr 0: $other")
         }
-        val out = UpdateConfigCommand.decodeDeployed(nine)
+        val out = UpdateConfigCommand.decodeDeployed(sixteen)
         assert(out.isLeft)
-        assert(out.swap.toOption.get.contains("9 fields"))
+        assert(out.swap.toOption.get.contains("16 fields"))
     }
 
     test("decodeDeployed refuses short and non-record datums") {
@@ -171,6 +178,6 @@ class UpdateConfigCommandTest extends AnyFunSuite {
           ParamEdits(feeRateSatPerVb = Some(BigInt(9)))
         )
         val d = UpdateConfigCommand.diff(config.toData, out.toData)
-        assert(d.map(x => (x._1, x._2)).toSet == Set((3, "bridge_state_policy"), (7, "params")))
+        assert(d.map(x => (x._1, x._2)).toSet == Set((3, "bridge_state_policy"), (14, "params")))
     }
 }

@@ -25,7 +25,6 @@ class FederationContractsTest extends AnyFunSuite {
     /** The one-shot outref and TM policy the vectors were derived with. */
     private val oneShot = ByteString.fromHex("bb" * 32)
     private val oneShotIndex = BigInt(2)
-    private val tmNftPolicy = ByteString.fromHex("11" * 28)
 
     private def registry = SposRegistryContract(blueprint, oneShot, oneShotIndex)
     private def registryPolicy = ByteString.fromArray(registry.policyId.bytes)
@@ -47,8 +46,10 @@ class FederationContractsTest extends AnyFunSuite {
     }
 
     test("treasury_info policy matches heimdall's derivation") {
-        val ti = TreasuryInfoContract(blueprint, registryPolicy, tmNftPolicy)
-        assert(ti.policyId.toHex == "24e8bf8028b0f35a0784a7f24b27f57d14169d69bc9eb6382c3ef14d")
+        // Rev 5.4: the registry policy is the ONLY parameter — the TM-NFT policy went with the
+        // FederationReset branch that was its only reader, so the pinned hash moved with it.
+        val ti = TreasuryInfoContract(blueprint, registryPolicy)
+        assert(ti.policyId.toHex == "486203df4a4c88fa9f7c2d12f9d6b630faa9155837b39293c396c8e6")
     }
 
     // The seven-parameter application, including the indefinite-array List<PolicyId>.

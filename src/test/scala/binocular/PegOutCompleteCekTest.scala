@@ -97,6 +97,13 @@ class PegOutCompleteCekTest extends AnyFunSuite {
       tmScriptHash = ByteString.empty,
       pegInScriptHash = ByteString.empty,
       pegOutScriptHash = pegOutHash,
+      spoBansPolicyId = ByteString.empty,
+      baseBanDurationMs = BigInt(0),
+      maxFaultsBeforePermanent = BigInt(0),
+      maxValidityWindowMs = BigInt(0),
+      sposRegistryPolicyId = ByteString.empty,
+      treasuryInfoPolicyId = ByteString.empty,
+      treasuryInfoAssetName = ByteString.empty,
       params = ConfigParams(
         feeRateSatPerVb = BigInt(1),
         perPegoutFee = BigInt(fee),

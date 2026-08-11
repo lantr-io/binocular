@@ -55,18 +55,32 @@ class ConfigDatumEncodingTest extends AnyFunSuite {
           tmScriptHash = tmHash,
           pegInScriptHash = ByteString.fromHex("ee" * 28),
           pegOutScriptHash = ByteString.fromHex("ff" * 28),
+          spoBansPolicyId = ByteString.fromHex("bb" * 28),
+          baseBanDurationMs = BigInt(600000),
+          maxFaultsBeforePermanent = BigInt(3),
+          maxValidityWindowMs = BigInt(3600000),
+          sposRegistryPolicyId = ByteString.fromHex("c1" * 28),
+          treasuryInfoPolicyId = ByteString.fromHex("c2" * 28),
+          treasuryInfoAssetName = ByteString.fromString("TMTx"),
           params = params
         )
         d.toData match {
             case Data.Constr(0, fields) =>
                 val fs = fields.asScala.toIndexedSeq
-                assert(fs.size == 8)
+                assert(fs.size == 15)
                 assert(fs(0) == Data.Constr(1, PList()))
                 assert(fs(1) == Data.B(ByteString.fromHex("aa" * 28)))
                 assert(fs(3) == Data.B(ByteString.fromHex("cc" * 28)))
                 assert(fs(4) == Data.B(tmHash))
                 assert(fs(6) == Data.B(ByteString.fromHex("ff" * 28)))
-                assert(fs(7) == params.toData)
+                // Federation identity, #7-13 (spec [CFG-3]).
+                assert(fs(7) == Data.B(ByteString.fromHex("bb" * 28)))
+                assert(fs(8) == Data.I(BigInt(600000)))
+                assert(fs(10) == Data.I(BigInt(3600000)))
+                assert(fs(11) == Data.B(ByteString.fromHex("c1" * 28)))
+                assert(fs(13) == Data.B(ByteString.fromString("TMTx")))
+                // params is LAST, so appends never move it.
+                assert(fs(14) == params.toData)
             case other => fail(s"expected Constr 0, got $other")
         }
     }

@@ -4,6 +4,7 @@ import binocular.*
 import binocular.cli.commands.*
 import com.monovore.decline.*
 import cats.implicits.*
+import scalus.uplc.builtin.ByteString
 
 /** Binocular CLI Application
   *
@@ -338,8 +339,8 @@ object CliApp {
             Opts.subcommand(
               "update-config",
               "Update the deployed Config UTxO in place (governance): the script hashes in " +
-                  "fields 3-6 and the operational parameters nested in field 7. Only what you " +
-                  "name changes"
+                  "fields 3-6, the ban policy in fields 7-10, and the operational parameters " +
+                  "nested in field 14. Only what you name changes"
             ) {
                 val bridgeStatePolicyOpt = Opts
                     .option[String](
@@ -367,7 +368,7 @@ object CliApp {
                       help = "New peg_out withdraw script hash (56 hex) for config field 6"
                     )
                     .orNone
-                // The operational parameters (config field 7, nested). Every SPO's TM builder
+                // The operational parameters (config field 14, nested). Every SPO's TM builder
                 // reads them at its batch snapshot slot, so these edits change the bytes every
                 // heimdall builds.
                 val feeRateOpt = Opts
@@ -402,18 +403,69 @@ object CliApp {
                             .parseSchedule(args)
                             .fold(cats.data.Validated.invalidNel, cats.data.Validated.validNel)
                     )
+                // The ban policy (config #7-#10). Publishing it is what removes the ban keys from
+                // every SPO's heimdall.toml: they are inputs to the policy id, so no node can
+                // derive the address it would read them from.
+                val banPolicyOpt: Opts[Option[ByteString]] = Opts
+                    .option[String](
+                      "spo-bans-policy",
+                      help = "config #7: the deployed spo_bans policy id (56 hex). Every SPO " +
+                          "reads its ban list from this and needs no ban config of its own"
+                    )
+                    .mapValidated(arg =>
+                        UpdateConfigCommand.ParamEdits
+                            .parseBanPolicy(arg)
+                            .fold(cats.data.Validated.invalidNel, cats.data.Validated.validNel)
+                    )
+                    .orNone
+                val baseBanDurationOpt = Opts
+                    .option[Long](
+                      "base-ban-duration-ms",
+                      help = "config #8: first ban's length (ms); the nth is base * 2^(n-1)"
+                    )
+                    .orNone
+                val maxFaultsOpt = Opts
+                    .option[Long](
+                      "max-faults-before-permanent",
+                      help = "config #9: fault count at which a pool is banned permanently"
+                    )
+                    .orNone
+                val maxValidityWindowOpt = Opts
+                    .option[Long](
+                      "max-validity-window-ms",
+                      help = "config #10: upper bound on an ApplyBan tx's validity interval (ms)"
+                    )
+                    .orNone
                 val paramsOpt: Opts[UpdateConfigCommand.ParamEdits] = (
                   feeRateOpt,
                   perPegoutFeeOpt,
                   minPegOutOpt,
-                  scheduleOpt
-                ).mapN { (feeRate, perPegoutFee, minPegOut, schedule) =>
-                    UpdateConfigCommand.ParamEdits(
-                      feeRateSatPerVb = feeRate.map(BigInt.apply),
-                      perPegoutFee = perPegoutFee.map(BigInt.apply),
-                      minPegOutFbtc = minPegOut.map(BigInt.apply),
-                      schedule = schedule
-                    )
+                  scheduleOpt,
+                  banPolicyOpt,
+                  baseBanDurationOpt,
+                  maxFaultsOpt,
+                  maxValidityWindowOpt
+                ).mapN {
+                    (
+                        feeRate,
+                        perPegoutFee,
+                        minPegOut,
+                        schedule,
+                        banPolicy,
+                        baseBanDuration,
+                        maxFaults,
+                        maxValidityWindow
+                    ) =>
+                        UpdateConfigCommand.ParamEdits(
+                          feeRateSatPerVb = feeRate.map(BigInt.apply),
+                          perPegoutFee = perPegoutFee.map(BigInt.apply),
+                          minPegOutFbtc = minPegOut.map(BigInt.apply),
+                          schedule = schedule,
+                          spoBansPolicyId = banPolicy,
+                          baseBanDurationMs = baseBanDuration.map(BigInt.apply),
+                          maxFaultsBeforePermanent = maxFaults.map(BigInt.apply),
+                          maxValidityWindowMs = maxValidityWindow.map(BigInt.apply)
+                        )
                 }
                 // Every option is applied in ONE Update tx — a validator migration requires its
                 // dependent fields to flip together, and a params update is one signed act.

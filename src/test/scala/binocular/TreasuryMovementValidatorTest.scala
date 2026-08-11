@@ -406,8 +406,8 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
                 )
     }
 
-    /** The real eight-field rev-5.4 [[ConfigDatum]] mirror. The Confirm path and the mint path read
-      * field 3 (`bridge_state_policy`). The rest are inert here.
+    /** The real fifteen-field rev-5.4 [[ConfigDatum]] mirror. The Confirm path and the mint path
+      * read field 3 (`bridge_state_policy`). The rest are inert here.
       */
     private def configDatum(
         bridgeStatePolicyArg: ByteString = bssPolicy
@@ -419,6 +419,13 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
       tmScriptHash = ByteString.empty,
       pegInScriptHash = ByteString.empty,
       pegOutScriptHash = ByteString.empty,
+      spoBansPolicyId = ByteString.empty,
+      baseBanDurationMs = BigInt(0),
+      maxFaultsBeforePermanent = BigInt(0),
+      maxValidityWindowMs = BigInt(0),
+      sposRegistryPolicyId = ByteString.empty,
+      treasuryInfoPolicyId = ByteString.empty,
+      treasuryInfoAssetName = ByteString.empty,
       params = ConfigParams(
         feeRateSatPerVb = BigInt(1),
         perPegoutFee = BigInt(0),

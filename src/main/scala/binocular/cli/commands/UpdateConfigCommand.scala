@@ -288,6 +288,11 @@ object UpdateConfigCommand {
           tmScriptHash = newTmScriptHash.getOrElse(cfg.tmScriptHash),
           pegInScriptHash = newPegInHash.getOrElse(cfg.pegInScriptHash),
           pegOutScriptHash = newPegOutHash.getOrElse(cfg.pegOutScriptHash),
+          spoBansPolicyId = params.spoBansPolicyId.getOrElse(cfg.spoBansPolicyId),
+          baseBanDurationMs = params.baseBanDurationMs.getOrElse(cfg.baseBanDurationMs),
+          maxFaultsBeforePermanent =
+              params.maxFaultsBeforePermanent.getOrElse(cfg.maxFaultsBeforePermanent),
+          maxValidityWindowMs = params.maxValidityWindowMs.getOrElse(cfg.maxValidityWindowMs),
           params = p.copy(
             feeRateSatPerVb = params.feeRateSatPerVb.getOrElse(p.feeRateSatPerVb),
             perPegoutFee = params.perPegoutFee.getOrElse(p.perPegoutFee),
@@ -298,7 +303,7 @@ object UpdateConfigCommand {
     }
 
     /** Field count of the rev-5.4 Config datum (spec §Config datum). */
-    val ConfigFieldCount = 8
+    val ConfigFieldCount = 15
 
     /** Decode the deployed Config datum for an UPDATE, refusing any Constr arity other than
       * [[ConfigFieldCount]]. Appends are the legal datum evolution and read-only consumers ignore
@@ -346,10 +351,18 @@ object UpdateConfigCommand {
       "tm_script_hash",
       "peg_in_script_hash",
       "peg_out_script_hash",
+      "spo_bans_policy_id",
+      "base_ban_duration_ms",
+      "max_faults_before_permanent",
+      "max_validity_window_ms",
+      "spos_registry_policy_id",
+      "treasury_info_policy_id",
+      "treasury_info_asset_name",
       "params"
     )
 
-    /** The governed parameter edits (inside config field 7). All optional: `None` means "carry the
+    /** The governed parameter edits (config fields 7-10 and inside field 14). All optional:
+      * `None` means "carry the
       * deployed value over". `schedule` patches individual `ScheduleParams` fields by name, leaving
       * the rest of the nested record untouched.
       */
@@ -357,15 +370,42 @@ object UpdateConfigCommand {
         feeRateSatPerVb: Option[BigInt] = None,
         perPegoutFee: Option[BigInt] = None,
         minPegOutFbtc: Option[BigInt] = None,
-        schedule: Map[String, BigInt] = Map.empty
+        schedule: Map[String, BigInt] = Map.empty,
+        spoBansPolicyId: Option[ByteString] = None,
+        baseBanDurationMs: Option[BigInt] = None,
+        maxFaultsBeforePermanent: Option[BigInt] = None,
+        maxValidityWindowMs: Option[BigInt] = None
     ) {
-        def isEmpty: Boolean =
-            feeRateSatPerVb.isEmpty && perPegoutFee.isEmpty && minPegOutFbtc.isEmpty &&
-                schedule.isEmpty
+        def isEmpty: Boolean = !touchesTunables && !touchesBans
+
+        /** Whether any of the nested `params` tunables (#14) is edited. */
+        def touchesTunables: Boolean =
+            feeRateSatPerVb.nonEmpty || perPegoutFee.nonEmpty || minPegOutFbtc.nonEmpty ||
+                schedule.nonEmpty
+
+        /** Whether the ban policy (#7-#10) is being written.
+          *
+          * Unlike rev 5.1, where these were an APPEND a deployed datum might not carry yet, rev
+          * 5.4 makes them mandatory fields — so writing one is an ordinary in-place patch and
+          * needs no all-or-nothing grouping.
+          */
+        def touchesBans: Boolean =
+            spoBansPolicyId.nonEmpty || baseBanDurationMs.nonEmpty ||
+                maxFaultsBeforePermanent.nonEmpty || maxValidityWindowMs.nonEmpty
     }
 
     object ParamEdits {
         val none: ParamEdits = ParamEdits()
+
+        /** Parse `--spo-bans-policy`. A wrong policy id names a well-formed ban address holding
+          * nothing, so a malformed one is refused at the CLI rather than published.
+          */
+        def parseBanPolicy(arg: String): Either[String, ByteString] = {
+            val h = arg.trim
+            if h.length == 56 && h.forall(c => "0123456789abcdefABCDEF".contains(c)) then
+                Right(ByteString.fromHex(h))
+            else Left(s"--spo-bans-policy must be a 56-hex-char policy id, got '$arg'")
+        }
 
         /** Parse repeated `--schedule name=value` arguments against [[ScheduleFields]]. */
         def parseSchedule(args: List[String]): Either[String, Map[String, BigInt]] =
