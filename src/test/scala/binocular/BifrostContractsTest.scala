@@ -99,9 +99,13 @@ class BifrostContractsTest extends AnyFunSuite {
         // Rev 5.4 dropped the tm_nft_policy_id param: peg_in.ak reads the bridge-state singleton
         // through Config field 3 at runtime, so three params remain. PIRs minted under the old
         // policy are orphaned and must be re-minted under this one.
+        //
+        // Moved again (2026-08) when `utils.get_mpf_from_output` became a TYPED decode of the CPI
+        // trie datum instead of a blind field-0 read. peg_in.ak is its only caller, so only this
+        // hash moved; ConfigDatum field 5 must name the new one at deployment.
         val pegIn =
             PegInContract(blueprint, oraclePolicy, configPolicy, configAssetName)
-        assert(hex(pegIn.policyId) == "1d9e07de0a36aacf8a5159d87af565118c5a9e60dc40f92b97ab2f61")
+        assert(hex(pegIn.policyId) == "c57e1fd6df01a7f7c0b7dc2707f1fef28b07844f3db0b6e2ceb6b4c5")
     }
 
     test("peg_out policy (= withdraw hash) is stable for the trie-v2 2-param encoding") {
