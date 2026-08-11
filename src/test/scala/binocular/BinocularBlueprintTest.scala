@@ -2,7 +2,7 @@ package binocular
 
 import binocular.blueprint.BinocularBlueprint
 import binocular.oracle.BitcoinContract
-import binocular.watchtower.{PegOutNotProducedVerifierContract, PegOutProducedVerifierContract, TmtxScript, TransactionVerifierContract, TreasuryMovementContract}
+import binocular.watchtower.{PegOutNotProducedVerifierContract, PegOutProducedVerifierContract, TransactionVerifierContract, TreasuryMovementContract}
 
 import org.scalatest.funsuite.AnyFunSuite
 import scalus.uplc.Program
@@ -11,7 +11,6 @@ import scalus.uplc.builtin.ByteString
 class BinocularBlueprintTest extends AnyFunSuite {
 
     private val paramFree = Seq(
-      ("TmtxScript", TmtxScript.blueprint),
       ("PegOutProducedVerifierContract", PegOutProducedVerifierContract.blueprint),
       ("PegOutNotProducedVerifierContract", PegOutNotProducedVerifierContract.blueprint),
       ("TransactionVerifierContract", TransactionVerifierContract.blueprint)
@@ -23,7 +22,6 @@ class BinocularBlueprintTest extends AnyFunSuite {
       */
     private val pins: Seq[(String, () => Program)] = Seq(
       // Salt is applied at compile time, so the pinned entry is param-free.
-      ("TmtxScript", () => TmtxScript.mintingScript.program),
       ("PegOutProducedVerifierContract", () => PegOutProducedVerifierContract.compiled.program),
       (
         "PegOutNotProducedVerifierContract",

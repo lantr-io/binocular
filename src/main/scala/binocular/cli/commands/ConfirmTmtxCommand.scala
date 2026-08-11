@@ -27,12 +27,12 @@ import cats.syntax.either.*
   *
   * Polls the TM validator address for `Unconfirmed` UTxOs (datum
   * `Constr(0, [signed_btc_tx, creator, created, fulfilled_por_outpoints])`, as posted by heimdall's
-  * `publish.rs` or `create-tmtx`). For each, once the TM is confirmed on Bitcoin and the block is
-  * in the Binocular oracle's confirmed-blocks root, it builds the inclusion proof and submits the
-  * Confirm tx: spend the `Unconfirmed` UTxO and the bridge-state singleton, reference the oracle
-  * and the Config, burn the TM NFT ([CTM-24]), produce no output at the TM address ([CTM-25]), and
-  * recreate the singleton carrying the [[BridgeState]] the TM's single `"BTMR1"` commitment output
-  * attests ([CTM-27]): both roots, the new head `txid ‖ 00000000` ([CTM-19]) and its satoshi amount
+  * `publish.rs`). For each, once the TM is confirmed on Bitcoin and the block is in the Binocular
+  * oracle's confirmed-blocks root, it builds the inclusion proof and submits the Confirm tx: spend
+  * the `Unconfirmed` UTxO and the bridge-state singleton, reference the oracle and the Config, burn
+  * the TM NFT ([CTM-24]), produce no output at the TM address ([CTM-25]), and recreate the
+  * singleton carrying the [[BridgeState]] the TM's single `"BTMR1"` commitment output attests
+  * ([CTM-27]): both roots, the new head `txid ‖ 00000000` ([CTM-19]) and its satoshi amount
   * ([CTM-21]). This command generates no MPF proofs and keeps no trie state of its own — both roots
   * are read straight out of the signed Bitcoin bytes ([[SweptPegInsTrie.committedRoots]], the same
   * exactly-one rule the validator applies).

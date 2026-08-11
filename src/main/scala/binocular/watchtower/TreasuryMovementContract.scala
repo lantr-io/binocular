@@ -20,7 +20,7 @@ object TreasuryMovementContract extends Contract {
     given opts: Options = Options.release
 
     /** Curried form: `oracleScriptHash -> configNftPolicy -> configNftName -> (scriptContext ->
-      * ())`. Applied via `.apply`, like the always-ok scaffold bakes in its salt.
+      * ())`. Applied via `.apply`.
       */
     lazy val parameterized: PlutusV3[ByteString => (ByteString => (ByteString => (Data => Unit)))] =
         PlutusV3.compile((oracleScriptHash: ByteString) =>

@@ -32,8 +32,6 @@ object CliApp {
             merkleRoot: Option[String]
         )
         case Relay(dryRun: Boolean)
-        case CreateTmtx(btcTxHex: String)
-        case SpendTmtx
         case ConfirmTmtx(dryRun: Boolean)
         case Watchtower(dryRun: Boolean)
         case TmScript
@@ -230,24 +228,6 @@ object CliApp {
               "Relay signed Bitcoin transactions from Cardano to Bitcoin"
             ) {
                 dryRunFlag.map(Cmd.Relay.apply)
-            }
-
-        val createTmtxCommand =
-            Opts.subcommand(
-              "create-tmtx",
-              "Create a TMTx UTxO on Cardano (for testing relay)"
-            ) {
-                Opts
-                    .argument[String](metavar = "BTC_TX_HEX")
-                    .map(Cmd.CreateTmtx.apply)
-            }
-
-        val spendTmtxCommand =
-            Opts.subcommand(
-              "spend-tmtx",
-              "Spend (destroy) all TMTx UTxOs at the script address"
-            ) {
-                Opts(Cmd.SpendTmtx)
             }
 
         val confirmTmtxCommand =
@@ -585,8 +565,6 @@ object CliApp {
                 deployScriptCommand `orElse`
                 proveCommand `orElse`
                 relayCommand `orElse`
-                createTmtxCommand `orElse`
-                spendTmtxCommand `orElse`
                 confirmTmtxCommand `orElse`
                 watchtowerCommand `orElse`
                 tmScriptCommand `orElse`
@@ -663,10 +641,6 @@ object CliApp {
                             )
                         case Cmd.Relay(dryRun) =>
                             RelayCommand(dryRun)
-                        case Cmd.CreateTmtx(btcTxHex) =>
-                            CreateTmtxCommand(btcTxHex)
-                        case Cmd.SpendTmtx =>
-                            SpendTmtxCommand()
                         case Cmd.ConfirmTmtx(dryRun) =>
                             ConfirmTmtxCommand(dryRun)
                         case Cmd.Watchtower(dryRun) =>

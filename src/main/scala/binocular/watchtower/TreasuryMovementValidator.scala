@@ -40,11 +40,10 @@ object PegOutEntry
   * `created` (POSIX ms, must equal the posting tx's validity upper bound — see the mint branch),
   * and the rev-5.1 data-availability hint `fulfilledPorOutpoints`. Constr tag 0,
   * `[signed_btc_tx, creator, created, fulfilled_por_outpoints]` — the shape heimdall's `publish.rs`
-  * and binocular's `create-tmtx` post. The rev-5.3 `epoch` and `leader_reward` fields LEFT the
-  * datum (spec §Leader reward: DEFERRED): no reward is paid anywhere on-chain, and carrying a
-  * half-enforced fee field would hand a permissionless poster a toll on every swept depositor.
-  * `tm_sequence` is likewise NOT a datum field (off-chain signing counter, spec §Cardano submission
-  * and leader reward).
+  * posts. The rev-5.3 `epoch` and `leader_reward` fields LEFT the datum (spec §Leader reward:
+  * DEFERRED): no reward is paid anywhere on-chain, and carrying a half-enforced fee field would
+  * hand a permissionless poster a toll on every swept depositor. `tm_sequence` is likewise NOT a
+  * datum field (off-chain signing counter, spec §Cardano submission and leader reward).
   *
   * Field order is positional in the Plutus Constr — do not reorder; new fields are APPENDED, never
   * inserted. The Constr TAG is a wire fact too: every harvester keys history by `Constr 0` records,
