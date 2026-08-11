@@ -170,10 +170,10 @@ final class PorSweeper(
         }
 
     private def sweepVerified(configUtxo: Utxo, singletonUtxo: Utxo, only: Option[String]): Unit =
-        onChainRoot(singletonUtxo) match {
+        bridgeState(singletonUtxo) match {
             case Left(err) => Console.logError(s"    sweeper: $err")
-            case Right(root) =>
-                catchUp(root) match {
+            case Right(state) =>
+                catchUp(state.cpoRoot, state.treasuryUtxoId) match {
                     // Transient: the backend was busy or unreachable. It says nothing about the
                     // trie, so the next tick simply tries again. Latching here would trade a
                     // seconds-long outage for a process-lifetime one.
@@ -207,7 +207,10 @@ final class PorSweeper(
       * it: consuming first would mean a transient backend error costs the cheap path back and
       * forces the next attempt into a full reconstruction.
       */
-    private def catchUp(target: ByteString): Either[HistoryError, CpoTrieMirror] =
+    private def catchUp(
+        target: ByteString,
+        headUtxoId: ByteString
+    ): Either[HistoryError, CpoTrieMirror] =
         ensureLoaded().left.map(HistoryError.permanent).flatMap { start =>
             val queued = pending.toIndexedSeq
             var current = start
@@ -234,7 +237,7 @@ final class PorSweeper(
                 }
             }
             error match {
-                case Some(err) => recover(target, err)
+                case Some(err) => recover(target, headUtxoId, err)
                 case None if current.root == target =>
                     if consumed > 0 then {
                         pending.remove(0, consumed)
@@ -244,6 +247,7 @@ final class PorSweeper(
                 case None =>
                     recover(
                       target,
+                      headUtxoId,
                       s"the mirror holds ${current.root.toHex} and no recorded hint explains the " +
                           s"on-chain root ${target.toHex} (a TM confirmed by another party)"
                     )
@@ -257,7 +261,11 @@ final class PorSweeper(
       * back, and discarding them before knowing the expensive path worked would guarantee a full
       * reconstruction on the next attempt too.
       */
-    private def recover(target: ByteString, why: String): Either[HistoryError, CpoTrieMirror] =
+    private def recover(
+        target: ByteString,
+        headUtxoId: ByteString,
+        why: String
+    ): Either[HistoryError, CpoTrieMirror] =
         historySource match {
             case None =>
                 Left(
@@ -267,7 +275,7 @@ final class PorSweeper(
                 )
             case Some(source) =>
                 Console.logWarn(s"    sweeper: reconstructing the trie mirror — $why")
-                reconstructConfig(target) match {
+                reconstructConfig(target, headUtxoId) match {
                     case Left(err) => Left(HistoryError.permanent(err))
                     case Right(cfg) =>
                         CpoReconstruction.reconstruct(
@@ -296,7 +304,10 @@ final class PorSweeper(
       * to become the empty string, which the backend answers with an EMPTY history — and an empty
       * history reconstructs a confidently empty trie. Fail loudly instead.
       */
-    private def reconstructConfig(target: ByteString): Either[String, CpoReconstruction.Config] =
+    private def reconstructConfig(
+        target: ByteString,
+        headUtxoId: ByteString
+    ): Either[String, CpoReconstruction.Config] =
         for {
             tm <- ctx.tmAddress.encode.toEither.left
                 .map(e => s"the TM address does not encode to bech32: ${e.getMessage}")
@@ -307,6 +318,7 @@ final class PorSweeper(
           pegOutAddress = por,
           fbtcPolicyHex = ctx.bridgedTokenPolicy.toHex,
           fbtcAssetNameHex = ctx.bridgedTokenAsset.bytes.toHex,
+          headUtxoId = headUtxoId,
           onChainRoot = Some(target)
         )
 
@@ -470,10 +482,11 @@ final class PorSweeper(
     // Rev 5.4: the completed-peg-outs root lives in the bridge-state singleton, decoded as the
     // 4-field BridgeState and read BY NAME ([LIB-1]) — a bare field-0 read would return spi_root
     // where this caller wants cpo_root, and a wrong root makes `mpf.miss` SUCCEED, cancelling a
-    // paid PegOutRequest.
-    private def onChainRoot(singletonUtxo: Utxo): Either[String, ByteString] =
+    // paid PegOutRequest. The head (`treasury_utxo_id`) is read alongside: it is where a
+    // reconstruction's treasury-chain walk starts ([OB-2]).
+    private def bridgeState(singletonUtxo: Utxo): Either[String, BridgeState] =
         singletonUtxo.output.inlineDatum
-            .flatMap(d => Try(d.to[BridgeState].cpoRoot).toOption)
+            .flatMap(d => Try(d.to[BridgeState]).toOption)
             .toRight("the bridge-state singleton has no decodable BridgeState datum ([LIB-1])")
 }
 

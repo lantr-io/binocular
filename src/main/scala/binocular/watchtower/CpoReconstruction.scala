@@ -4,41 +4,44 @@ import binocular.bitcoin.BitcoinHelpers
 import binocular.oracle.reverse
 import scalus.uplc.builtin.{ByteString, Data}
 
-import scala.annotation.tailrec
-import scala.collection.immutable.TreeMap
 import scala.collection.mutable
 import scala.util.Try
 
-/** Rebuild the completed-peg-outs trie from Cardano history alone.
+/** Rebuild the completed-peg-outs trie from Cardano history alone ([OB-2], [OB-9]).
   *
   * This is the cold-start / recovery path: it exists so a watchtower that has lost (or never had) a
   * local mirror can produce membership proofs again without asking anyone for the entry set. It is
-  * the Scala mirror of heimdall's `src/cardano/cpo_trie.rs::reconstruct`, and it keeps that
-  * implementation's invariants deliberately:
+  * the Scala mirror of heimdall's `src/cardano/cpo_trie.rs::reconstruct`.
+  *
+  * Rev 5.4 produces NO `Confirmed` record — Confirm burns the TM NFT and leaves nothing at the TM
+  * address ([CTM-24], [CTM-25]) — so the confirmed chain is recovered exactly the way the SPI
+  * proof server recovers it ([SPI-6]): harvest every spent `UnconfirmedTm` record's
+  * `signed_btc_tx`, key it by the txid RECOMPUTED from the bytes ([SPI-7]/[OB-9]), and walk the
+  * treasury spend chain BACKWARD from the singleton's `treasury_utxo_id` via input-0 ancestry
+  * ([[SweptPegInsProofService.walkConfirmedChain]]). A TM mined but not yet confirmed SPENDS the
+  * head, so the walk never visits it — the walk's result is exactly the set the singleton's
+  * attested roots cover. Invariants kept from the pre-walk implementation:
   *
   *   1. NO SILENT SKIPS at the TM address. An output there whose datum EXISTS but cannot be read is
-  *      a hard error, because an unreadable `Confirmed` record would drop a whole movement's
-  *      entries while the result still looked complete.
-  *   1. PER-TM ROOT ASSERTION. After each confirmed TM the running root MUST equal the root that TM
-  *      committed in its `"BTMR1"` output. A mismatch names the offending TM instead of surfacing
-  *      later as an unexplained wrong root.
-  *   1. ALL HINTS TRIED. Posting a TM record is permissionless, so several `Unconfirmed` records
+  *      a hard error: if it hides a confirmed TM's `UnconfirmedTm` record, the walk would stop
+  *      short and the replay would fail with an unexplained gap — better to name the output.
+  *   1. PER-TM ROOT ASSERTION. After each confirmed TM the running root MUST equal the `cpo_root`
+  *      that TM committed in its `"BTMR1"` output. A mismatch names the offending TM instead of
+  *      surfacing later as an unexplained wrong root.
+  *   1. ALL HINTS TRIED. Posting a TM record is permissionless, so several `UnconfirmedTm` records
   *      may claim the same Bitcoin txid with different hints. Every candidate is tried and accepted
   *      only if it reproduces the attested root; a hostile one simply fails.
-  *   1. FINAL CROSS-CHECK. The finished trie is compared against the on-chain CPO singleton's root.
-  *      Only this catches a replay that stopped early — the per-TM assertion has no later TM to
-  *      fail against at the tip.
+  *   1. FINAL CROSS-CHECK. The finished trie is compared against the bridge-state singleton's
+  *      `cpo_root`. Only this catches a replay that stopped early — the per-TM assertion has no
+  *      later TM to fail against at the tip.
   *
   * Invariant 1 turns on a THREE-way reading of a datum, not a two-way one. An output carrying NO
-  * datum at all is skipped even at the TM address: every TM record, `Unconfirmed` and `Confirmed`
-  * alike, is created with an inline datum, so a datum-less output provably is not one. Only a datum
-  * that exists and cannot be READ is fatal. Both addresses are permissionlessly payable, so
-  * treating "no datum" as fatal let a single junk payment block every reconstruction forever —
-  * which is a denial of service, not a safety property.
-  *
-  * heimdall's `cpo_trie.rs::reconstruct` applies the identical rule (landed 2026-08 in `84688ff`),
-  * and the spec records it as normative, so the two implementations agree on which outputs a
-  * reconstruction may skip.
+  * datum at all is skipped even at the TM address: every TM record is created with an inline
+  * datum, so a datum-less output provably is not one. Only a datum that exists and cannot be READ
+  * is fatal. Both addresses are permissionlessly payable, so treating "no datum" as fatal let a
+  * single junk payment block every reconstruction forever — which is a denial of service, not a
+  * safety property. A datum that resolves but is not an `UnconfirmedTm` record (junk, or a legacy
+  * rev-5.1 `Confirmed` Constr-1 shape) is skipped: it is not a byte carrier for the walk.
   *
   * The asymmetry between the two addresses is intentional. An UNREADABLE output at the PEG-OUT
   * address is skipped rather than fatal, because a missing request cannot shrink the trie silently
@@ -57,28 +60,30 @@ object CpoReconstruction {
 
     /** Everything reconstruction needs to identify the protocol's UTxOs.
       *
+      * @param headUtxoId
+      *   the bridge-state singleton's `treasury_utxo_id` (36 bytes, `btc_txid ‖ vout LE`) — where
+      *   the backward walk starts. The head bounds the confirmed set structurally ([SPI-6]).
       * @param onChainRoot
-      *   the root the deployed CPO singleton holds. `Some` turns on the final safety net. `None`
-      *   skips it and MUST be logged loudly — only for a bridge whose singleton is not deployed
-      *   yet, and for tests.
+      *   the `cpo_root` the singleton holds. `Some` turns on the final safety net. `None` skips it
+      *   and MUST be logged loudly — only for a bridge whose singleton is not deployed yet, and
+      *   for tests.
       */
     final case class Config(
         tmAddress: String,
         pegOutAddress: String,
         fbtcPolicyHex: String,
         fbtcAssetNameHex: String,
+        headUtxoId: ByteString,
         onChainRoot: Option[ByteString]
     )
 
-    /** A confirmed Treasury Movement, as its on-chain `Confirmed` datum records it.
+    /** A confirmed Treasury Movement, recovered by the treasury-chain walk.
       *
-      * `outputs` is EVERY output of the signed Bitcoin transaction, root commitment included — the
-      * Confirm transition stores `allOutputs(signedBtcTx)` verbatim — so the committed root is
-      * readable from Cardano state without re-parsing Bitcoin bytes.
+      * `outputs` is EVERY output of the signed Bitcoin transaction, root commitment included,
+      * parsed from the raw bytes the spent `UnconfirmedTm` record carries ([OB-9]).
       */
     final case class ConfirmedTm(
         btcTxid: ByteString,
-        sweptInputs: Seq[ByteString],
         outputs: Seq[PegOutEntry]
     )
 
@@ -108,115 +113,105 @@ object CpoReconstruction {
             tmOutputs <- source.addressHistory(cfg.tmAddress)
             _ = log(s"cpo reconstruction: ${tmOutputs.size} output(s) ever at the TM address")
             scanned <- scanTmAddress(tmOutputs, cfg.tmAddress).left.map(HistoryError.permanent)
-            (confirmed, hints) = scanned
-            ordered = chainOrder(confirmed)
+            (rawByTxid, hints) = scanned
+            chain <- SweptPegInsProofService
+                .walkConfirmedChain(cfg.headUtxoId, txid => rawByTxid.get(txid.toHex))
+                .left
+                .map(HistoryError.permanent)
+            ordered = chain.tms.map(tm =>
+                ConfirmedTm(
+                  tm.txidLE,
+                  TreasuryMovementValidator.allOutputs(tm.raw).asScala.toSeq
+                )
+            )
             porOutputs <- source.addressHistory(cfg.pegOutAddress)
             history = pegOutHistory(porOutputs, cfg)
             _ = log(
-              s"cpo reconstruction: ${ordered.size} confirmed TM(s), " +
+              s"cpo reconstruction: ${ordered.size} confirmed TM(s) on the walk from the head, " +
                   s"${history.size} peg-out request(s) in history"
             )
-            mirror <- replay(ordered, hints, history, log).left.map(HistoryError.permanent)
-            _ <- crossCheck(mirror, cfg.onChainRoot, log).left.map(HistoryError.permanent)
+            mirror <- replay(ordered, hints, history, log).left
+                .map(err => HistoryError.permanent(err + incompleteHistoryHint(chain)))
+            _ <- crossCheck(mirror, cfg.onChainRoot, log).left
+                .map(err => HistoryError.permanent(err + incompleteHistoryHint(chain)))
         } yield mirror
     }
 
-    /** Split the TM address's history into confirmed records and hint candidates.
+    /** Appended to a replay/cross-check failure when the walk stopped at an unresolved txid: the
+      * probable cause is then a history source missing a confirmed TM's record, not a lying chain.
+      * An unresolved origin alone is NORMAL — the genesis funding transaction has no
+      * `UnconfirmedTm` record and terminates every complete walk this way.
+      */
+    private def incompleteHistoryHint(
+        chain: SweptPegInsProofService.ConfirmedChain
+    ): String =
+        chain.unresolvedOrigin.fold("")(txid =>
+            s". The walk stopped at txid ${txid.reverse.toHex}, which the TM-address history " +
+                "could not resolve — if that transaction is a confirmed TM, its record's datum " +
+                "is missing from the history source"
+        )
+
+    /** Split the TM address's history into raw-TM byte carriers and hint candidates.
       *
-      * Returned hints are keyed by the btc txid RECOMPUTED from the record's own signed bytes,
-      * never by a self-declared field, and every candidate for a txid is kept (see the object doc).
+      * Both maps are keyed by the btc txid RECOMPUTED from the record's own signed bytes, never by
+      * a self-declared field ([SPI-7]). Raw bytes: first record in wins (same key means a
+      * byte-identical preimage). Hints: EVERY candidate for a txid is kept (see the object doc).
       */
     def scanTmAddress(
         outputs: Seq[ChainOutput],
         tmAddress: String
-    ): Either[String, (Seq[ConfirmedTm], Map[String, Seq[Seq[ByteString]]])] = {
-        val confirmed = Vector.newBuilder[ConfirmedTm]
+    ): Either[String, (Map[String, ByteString], Map[String, Seq[Seq[ByteString]]])] = {
+        val rawByTxid = mutable.LinkedHashMap.empty[String, ByteString]
         val hints = mutable.LinkedHashMap.empty[String, Vector[Seq[ByteString]]]
         var error: Option[String] = None
         val it = outputs.iterator
         while error.isEmpty && it.hasNext do {
             val out = it.next()
             out.inlineDatum match {
-                // No datum AT ALL: provably not a TM record, because every TM record — Unconfirmed
-                // and Confirmed alike — is created with an inline datum. The TM address is
-                // permissionlessly payable, so a bare payment to it is ordinary junk and skipping it
-                // costs nothing. Conflating this with the unresolvable case below let ONE junk UTxO
-                // block every reconstruction forever.
+                // No datum AT ALL: provably not a TM record, because every TM record is created
+                // with an inline datum. The TM address is permissionlessly payable, so a bare
+                // payment to it is ordinary junk and skipping it costs nothing. Conflating this
+                // with the unresolvable case below let ONE junk UTxO block every reconstruction
+                // forever.
                 case None if out.unresolvedDatum.isEmpty => ()
                 case None                                =>
-                    // A datum EXISTS and could not be read. This one might be a Confirmed record,
-                    // and dropping a Confirmed record yields a trie that silently omits a whole
-                    // movement while still looking complete — and if it is the tip, nothing
-                    // downstream notices. So: stop.
+                    // A datum EXISTS and could not be read. This one might be the UnconfirmedTm
+                    // record of a confirmed TM, and dropping it stops the treasury-chain walk
+                    // short of that movement — the replay then fails with an unexplained gap. So:
+                    // name the output and stop.
                     error = Some(
                       s"cannot resolve the datum of ${out.ref} at the TM address $tmAddress " +
                           s"(${out.unresolvedDatum.getOrElse("unknown reason")}) — refusing to " +
-                          "reconstruct with an unexplained gap: if that output is a Confirmed TM " +
-                          "record, skipping it yields a trie that silently omits a movement"
+                          "reconstruct with an unexplained gap: if that output is the record of " +
+                          "a confirmed TM, the walk would silently stop short of it"
                     )
                 case Some(datum) =>
-                    parseConfirmed(datum) match {
-                        case Some(tm) => confirmed += tm
-                        case None     =>
-                            // Not a Confirmed record. If it is an Unconfirmed one, harvest its
-                            // hint; anything else is junk at a permissionlessly-payable address,
-                            // which is NOT an error — its datum resolved, it just is not a TM.
-                            parseUnconfirmedHint(datum).foreach { case (txid, hint) =>
-                                hints.updateWith(txid.toHex) {
-                                    case Some(seen) => Some(seen :+ hint)
-                                    case None       => Some(Vector(hint))
-                                }
-                            }
+                    // Not an UnconfirmedTm record (junk, or a legacy rev-5.1 Confirmed shape) is
+                    // skipped: its datum resolved, it just is not a byte carrier for the walk.
+                    parseUnconfirmedHint(datum).foreach { case (txid, raw, hint) =>
+                        rawByTxid.getOrElseUpdate(txid.toHex, raw)
+                        hints.updateWith(txid.toHex) {
+                            case Some(seen) => Some(seen :+ hint)
+                            case None       => Some(Vector(hint))
+                        }
                     }
             }
         }
-        error.toLeft((confirmed.result(), hints.view.mapValues(_.toSeq).toMap))
+        error.toLeft((rawByTxid.toMap, hints.view.mapValues(_.toSeq).toMap))
     }
 
-    /** Decode a `Confirmed` TM datum (Constr 1) defensively.
-      *
-      * Read positionally from raw `Data` rather than through a typed decoder: the TM address is
-      * permissionlessly payable, so most outputs here are not TM records at all, and a typed decode
-      * would just throw on each of them.
-      */
-    def parseConfirmed(datum: Data): Option[ConfirmedTm] =
-        datum match {
-            case Data.Constr(1, fields) =>
-                val f = fields.asScala.toIndexedSeq
-                if f.size < 3 then None
-                else
-                    try {
-                        val txid = f(0).toByteString
-                        val swept = f(1) match {
-                            case Data.List(items) => items.asScala.toSeq.map(_.toByteString)
-                            case _                => Seq.empty
-                        }
-                        val outs = f(2) match {
-                            case Data.List(items) =>
-                                items.asScala.toSeq.flatMap {
-                                    case Data.Constr(0, of) =>
-                                        val o = of.asScala.toIndexedSeq
-                                        if o.size < 2 then None
-                                        else Some(PegOutEntry(o(0).toByteString, o(1).toBigInt))
-                                    case _ => None
-                                }
-                            case _ => Seq.empty
-                        }
-                        if txid.size == 32 then Some(ConfirmedTm(txid, swept, outs)) else None
-                    } catch { case _: Exception => None }
-            case _ => None
-        }
-
-    /** The rev-5.1 data-availability hint of an `Unconfirmed` TM datum (rev 5.4: Constr 0, field
-      * 3), keyed by the txid recomputed from field 0's signed Bitcoin bytes.
+    /** An `UnconfirmedTm` record's byte payload and data-availability hint (rev 5.4: Constr 0,
+      * `signed_btc_tx` at field 0, `fulfilled_por_outpoints` at field 3), keyed by the txid
+      * recomputed from the signed Bitcoin bytes ([SPI-7]).
       *
       * Tolerates a shorter datum, or one whose field 3 is not a list (the retired 6-field shape
       * carried `epoch` there), by returning an empty hint: reconstruction must read the chain
       * rather than refuse it. A malformed entry (not 36 bytes) is dropped — the hint is unverified,
       * attacker-supplied data. Every failure path is safe because a hint is only ever ACCEPTED
-      * after it reproduces the attested root.
+      * after it reproduces the attested root, and the raw bytes are only ever USED when the
+      * attested chain walk asks for their hash.
       */
-    def parseUnconfirmedHint(datum: Data): Option[(ByteString, Seq[ByteString])] =
+    def parseUnconfirmedHint(datum: Data): Option[(ByteString, ByteString, Seq[ByteString])] =
         datum match {
             case Data.Constr(0, fields) =>
                 val f = fields.asScala.toIndexedSeq
@@ -235,7 +230,7 @@ object CpoReconstruction {
                                     .filter(_.size == 36)
                             case _ => Seq.empty
                         }
-                        Some((txid, hint))
+                        Some((txid, signedTx, hint))
                     } catch { case _: Throwable => None }
             case _ => None
         }
@@ -270,45 +265,6 @@ object CpoReconstruction {
                     }
         }
         out.toMap
-    }
-
-    /** Order confirmed TM records by treasury linkage: *B* follows *A* iff *B* spends
-      * `(A.txid, 0)`.
-      *
-      * Records that do not link into the main chain (a re-confirmation, a divergent lineage) are
-      * appended in txid order, so the replay is deterministic and still sees them.
-      */
-    def chainOrder(confirmed: Seq[ConfirmedTm]): Seq[ConfirmedTm] = {
-        // Dedupe on btc txid: the same TM can be confirmed into two records.
-        val byTxid = TreeMap.from(
-          confirmed.reverse.map(tm => tm.btcTxid.toHex -> tm)
-        )
-        val successor = mutable.Map.empty[String, String]
-        val hasPredecessor = mutable.Set.empty[String]
-        byTxid.foreach { case (txid, tm) =>
-            tm.sweptInputs.foreach { input =>
-                CpoTrieMirror.parseHint(input).foreach { case (prevTx, vout) =>
-                    val prev = prevTx.toHex
-                    if vout == 0 && byTxid.contains(prev) then {
-                        if !successor.contains(prev) then successor.put(prev, txid)
-                        hasPredecessor += txid
-                    }
-                }
-            }
-        }
-        val ordered = Vector.newBuilder[ConfirmedTm]
-        val placed = mutable.Set.empty[String]
-        byTxid.keys.filterNot(hasPredecessor.contains).foreach { root =>
-            @tailrec def walk(cur: Option[String]): Unit = cur match {
-                case Some(txid) if placed.add(txid) =>
-                    byTxid.get(txid).foreach(ordered += _)
-                    walk(successor.get(txid))
-                case _ => ()
-            }
-            walk(Some(root))
-        }
-        byTxid.foreach { case (txid, tm) => if !placed.contains(txid) then ordered += tm }
-        ordered.result()
     }
 
     /** Replay the confirmed chain into a mirror, asserting the running root after every TM. */

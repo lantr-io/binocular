@@ -84,11 +84,16 @@ object SweptPegInsProofService {
       * @param entries
       *   the SPI entries this TM adds: `(peg_in_utxo_id -> its own input-0 outpoint)`, per
       *   [SPI-1]/[SPI-3].
+      * @param raw
+      *   the verified raw transaction bytes (they hash to `txidLE`). Carried so the CPO side
+      *   ([[CpoReconstruction]]) can replay the SAME walk without re-fetching: its entries need
+      *   the TM's outputs, not its inputs.
       */
     final case class ConfirmedTm(
         txidLE: ByteString,
         committedSpiRoot: ByteString,
-        entries: Seq[(ByteString, ByteString)]
+        entries: Seq[(ByteString, ByteString)],
+        raw: ByteString
     )
 
     /** The walk's result: the confirmed TMs oldest first, plus where the walk stopped.
@@ -255,7 +260,8 @@ object SweptPegInsProofService {
                                             acc = ConfirmedTm(
                                               cursorTxid,
                                               spiRoot,
-                                              SweptPegInsTrie.entriesOf(raw)
+                                              SweptPegInsTrie.entriesOf(raw),
+                                              raw
                                             ) :: acc
                                             cursorTxid = ByteString.fromArray(input0.bytes.take(32))
                                             depth += 1
