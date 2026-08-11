@@ -26,7 +26,7 @@ class ConfigDatumEncodingTest extends AnyFunSuite {
     }
 
     test(
-      "ConfigDatum has 24 positional fields; update_auth 10, anchor 11, tunables 12–16, federation 17–23"
+      "ConfigDatum has 25 positional fields; update_auth 10, anchor 11, tunables 12–16, federation 17–23, anchor value 24"
     ) {
         val anchor = ByteString.fromHex("bb" * 32 + "01000000")
         val sched = ScheduleParams(
@@ -65,12 +65,13 @@ class ConfigDatumEncodingTest extends AnyFunSuite {
           maxValidityWindowMs = BigInt(3600000),
           sposRegistryPolicyId = ByteString.fromHex("c1" * 28),
           treasuryInfoPolicyId = ByteString.fromHex("c2" * 28),
-          treasuryInfoAssetName = ByteString.fromString("TMTx")
+          treasuryInfoAssetName = ByteString.fromString("TMTx"),
+          initialBtcTreasuryValueSat = BigInt(5_000_000)
         )
         d.toData match {
             case Data.Constr(0, fields) =>
                 val fs = fields.asScala.toIndexedSeq
-                assert(fs.size == 24)
+                assert(fs.size == 25)
                 assert(fs(10) == Data.Constr(1, PList()))
                 assert(fs(11) == Data.B(anchor))
                 assert(fs(15) == Data.I(BigInt(2000000)))
@@ -84,6 +85,10 @@ class ConfigDatumEncodingTest extends AnyFunSuite {
                 assert(fs(21) == Data.B(ByteString.fromHex("c1" * 28)))
                 assert(fs(22) == Data.B(ByteString.fromHex("c2" * 28)))
                 assert(fs(23) == Data.B(ByteString.fromString("TMTx")))
+                // #24 — the anchor's value in satoshi. It sits beside #11 because the two are one
+                // fact: heimdall prices the genesis TM from this pair and cannot check either
+                // against Bitcoin.
+                assert(fs(24) == Data.I(BigInt(5_000_000)))
             case other => fail(s"expected Constr 0, got $other")
         }
     }

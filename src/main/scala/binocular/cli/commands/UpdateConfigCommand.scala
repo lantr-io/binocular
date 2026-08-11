@@ -1,6 +1,7 @@
 package binocular.cli.commands
 
 import binocular.*
+import binocular.bitcoin.SimpleBitcoinRpc
 import binocular.oracle.OracleTransactions
 import binocular.watchtower.*
 import binocular.cli.{Command, CommandHelpers, Console}
@@ -94,14 +95,39 @@ case class UpdateConfigCommand(
         // so rewriting it re-anchors the whole TM chain. Making it mandatory meant every unrelated
         // update (a hash swap) had to restate it, and a typo would silently re-anchor. Omitted now
         // means: leave the deployed field 11 exactly as it is.
-        val anchor: Option[ByteString] =
+        //
+        // Re-anchoring rewrites BOTH #11 and #24 (the outpoint and its value in satoshi), because
+        // they are one fact: the SPOs price the genesis TM from the pair and can check neither
+        // against Bitcoin. The value is READ from the node rather than taken as a flag — gettxout
+        // cannot be wrong about an amount and an operator can, and a wrong one makes the first
+        // movement unspendable with nothing on Cardano able to detect it.
+        val anchor: Option[(ByteString, BigInt)] =
             initialBtcTreasuryUtxo.map(_.trim).filter(_.nonEmpty).map { s =>
-                try BridgeConfig.outpointFromDisplay(s)
-                catch {
-                    case e: IllegalArgumentException =>
-                        Console.error(s"--initial-btc-treasury-utxo: ${e.getMessage}")
-                        break(1)
-                }
+                val outpoint =
+                    try BridgeConfig.outpointFromDisplay(s)
+                    catch {
+                        case e: IllegalArgumentException =>
+                            Console.error(s"--initial-btc-treasury-utxo: ${e.getMessage}")
+                            break(1)
+                    }
+                val (txidDisplay, voutStr) = s.span(_ != ':')
+                val valueSat =
+                    try
+                        new SimpleBitcoinRpc(config.bitcoinNode)
+                            .getTxOutValueSat(txidDisplay, voutStr.drop(1).toInt)
+                            .await(timeout)
+                    catch {
+                        case e: Exception =>
+                            Console.error(
+                              s"Reading the new anchor's value from Bitcoin: ${e.getMessage}\n" +
+                                  "Re-anchoring cannot proceed without it: config #24 must move " +
+                                  "with #11, or the bridge publishes an outpoint priced at the " +
+                                  "OLD anchor's value and its next genesis TM is unspendable."
+                            )
+                            break(1)
+                    }
+                Console.info("new anchor value", s"$valueSat sat (read from Bitcoin)")
+                (outpoint, BigInt(valueSat))
             }
         // Every swappable field holds a 28-byte script hash; reject anything else up front rather
         // than writing an undecodable datum that only fails when a validator later reads it.
@@ -234,7 +260,10 @@ case class UpdateConfigCommand(
         )
         Console.info("old fields", oldFields.size.toString)
         Console.info("new fields", newFields.size.toString)
-        Console.info("anchor (field 11)", anchor.fold("unchanged")(_.toHex))
+        Console.info(
+          "anchor (fields 11 + 24)",
+          anchor.fold("unchanged")((op, sat) => s"${op.toHex} = $sat sat")
+        )
         newCpoPolicy.foreach(h => Console.info("new completed-peg-outs policy (field 3)", h.toHex))
         newPegInHash.foreach(h => Console.info("new peg-in hash (field 4)", h.toHex))
         newPegOutHash.foreach(h => Console.info("new peg-out hash (field 5)", h.toHex))
@@ -333,10 +362,22 @@ object UpdateConfigCommand {
         newCpoPolicy: Option[ByteString],
         newPegInHash: Option[ByteString],
         newPegOutHash: Option[ByteString],
-        anchor: Option[ByteString],
+        anchor: Option[(ByteString, BigInt)],
         params: ParamEdits = ParamEdits.none
     ): List[Data] = {
         require(fields.size >= 11, s"config datum has ${fields.size} fields, expected >= 11")
+        // The anchor outpoint (#11) and its value in satoshi (#24) are ONE FACT, and the type
+        // above says so: there is no way to pass one without the other. An Update that re-anchored
+        // the TM chain without restating the value would leave a Config that prices the genesis TM
+        // wrong, and nothing on chain could catch it — the amount is a Bitcoin fact and this is
+        // Cardano. So the pairing is enforced here rather than trusted to a flag combination.
+        require(
+          anchor.isEmpty || fields.size >= FieldsWithRegistry,
+          s"config datum has ${fields.size} fields — re-anchoring writes both #11 (the outpoint) " +
+              s"and #24 (its value in satoshi), and #24 only exists on a $FieldsWithRegistry+" +
+              "-field datum. Redeploy the bridge rather than re-anchoring a datum that cannot " +
+              "record what the anchor is worth"
+        )
         require(
           !params.touchesTunables || fields.size >= FieldsWithTunables,
           s"config datum has ${fields.size} fields — the operational parameters are #12-#16, " +
@@ -360,9 +401,11 @@ object UpdateConfigCommand {
         val swapped = swaps.foldLeft(fields) { case (fs, (idx, v)) =>
             v.fold(fs)(h => fs.updated(idx, Data.B(h)))
         }
-        val anchored = anchor.fold(swapped)(a =>
-            if swapped.size == 11 then swapped :+ Data.B(a) else swapped.updated(11, Data.B(a))
-        )
+        val anchored = anchor.fold(swapped) { case (outpoint, valueSat) =>
+            val withOutpoint = swapped.updated(11, Data.B(outpoint))
+            if withOutpoint.size == FieldsWithRegistry then withOutpoint :+ Data.I(valueSat)
+            else withOutpoint.updated(FieldsWithRegistry, Data.I(valueSat))
+        }
         val withScalars = List(
           9 -> params.minStake,
           12 -> params.feeRateSatPerVb,
@@ -385,6 +428,11 @@ object UpdateConfigCommand {
 
     /** Field count of a Config datum carrying the ban-policy append (#17-#20). */
     val FieldsWithBans = 21
+
+    /** Field count of a Config datum that also carries the federation identity (#21-#23) — the
+      * shape a bridge deployed at WI-068 genesis has, and the first one with room for #24.
+      */
+    val FieldsWithRegistry = 24
 
     /** `ScheduleParams` field names, in record order — the `--schedule name=value` keys and the
       * positions inside the nested Constr at config #16.

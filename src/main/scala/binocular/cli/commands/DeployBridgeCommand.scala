@@ -1,6 +1,7 @@
 package binocular.cli.commands
 
 import binocular.*
+import binocular.bitcoin.SimpleBitcoinRpc
 import binocular.oracle.*
 import binocular.watchtower.*
 import binocular.cli.{Command, CommandHelpers, Console}
@@ -86,10 +87,11 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
         val oraclePolicyId = setup.script.scriptHash
 
         // The initial Bitcoin treasury outpoint (config field 11): the FIRST TM must spend it.
+        val initialTreasuryDisplay = config.bridge.initialBtcTreasuryUtxo.trim
         val initialTreasuryOutpoint =
             try
-                if config.bridge.initialBtcTreasuryUtxo.trim.nonEmpty then
-                    BridgeConfig.outpointFromDisplay(config.bridge.initialBtcTreasuryUtxo.trim)
+                if initialTreasuryDisplay.nonEmpty then
+                    BridgeConfig.outpointFromDisplay(initialTreasuryDisplay)
                 else if dryRun then {
                     Console.warn("bridge.initial-btc-treasury-utxo unset — zeros for dry-run")
                     ByteString.fromArray(Array.fill[Byte](36)(0))
@@ -104,6 +106,45 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
                 case e: IllegalArgumentException =>
                     Console.error(s"bridge.initial-btc-treasury-utxo: ${e.getMessage}")
                     break(1)
+            }
+
+        // Its value in satoshi (config field 24), READ FROM BITCOIN rather than typed.
+        //
+        // The SPOs need this to price the genesis Treasury Movement, and publishing it here is what
+        // lets them do so with no Bitcoin node at all — every later TM takes the treasury value
+        // from the previous Confirmed TM's own record. Deriving beats prompting because gettxout
+        // cannot be wrong about an amount and an operator can: a value that is off by anything
+        // makes the first TM unspendable, and nothing on Cardano can detect it, since the amount is
+        // a Bitcoin fact.
+        //
+        // Binocular is the right place for the one remaining Bitcoin read: it is the watchtower and
+        // already has a node. Moving it here deletes that dependency from every SPO.
+        val initialTreasuryValueSat: Long =
+            if initialTreasuryDisplay.isEmpty then {
+                if !dryRun then
+                    Console.error("internal: no anchor outpoint but not a dry run")
+                    break(1)
+                0L
+            } else {
+                val (txidDisplay, voutStr) = initialTreasuryDisplay.span(_ != ':')
+                val vout = voutStr.drop(1).toInt
+                try
+                    val sat = new SimpleBitcoinRpc(config.bitcoinNode)
+                        .getTxOutValueSat(txidDisplay, vout)
+                        .await(60.seconds)
+                    Console.info("genesis treasury", s"$initialTreasuryDisplay = $sat sat")
+                    sat
+                catch {
+                    case e: Exception =>
+                        Console.error(
+                          s"Reading the genesis treasury value from Bitcoin: ${e.getMessage}\n" +
+                              "This is not optional — the SPOs price the first Treasury Movement " +
+                              "from config field 24, and a bridge deployed without it cannot make " +
+                              "its first movement. Point bitcoin-node at a node that sees " +
+                              s"$initialTreasuryDisplay as unspent."
+                        )
+                        break(1)
+                }
             }
 
         val (blueprint, blueprintSource) =
@@ -287,6 +328,9 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
           ),
           // The anchor outpoint the first Treasury Movement must spend (chain genesis).
           initialBtcTreasuryUtxo = initialTreasuryOutpoint,
+          // …and what it is worth, read from Bitcoin above. Written in the SAME datum as the
+          // outpoint because they are one fact: an anchor without its value cannot be spent.
+          initialBtcTreasuryValueSat = BigInt(initialTreasuryValueSat),
           // Operational-parameter tunables (config #12–16; off-chain readers only).
           feeRateSatPerVb = BigInt(config.bridge.feeRateSatPerVb),
           perPegoutFee = BigInt(config.bridge.perPegoutFeeSat),

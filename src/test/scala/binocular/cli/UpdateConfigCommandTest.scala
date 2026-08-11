@@ -12,33 +12,18 @@ class UpdateConfigCommandTest extends AnyFunSuite {
     private def fields11: List[Data] =
         (0 to 10).map(i => Data.B(ByteString.fromHex(f"$i%02x")): Data).toList
 
-    test("rewriteFields appends field 11 and swaps field 4 on an 11-field datum") {
+    test("rewriteFields swaps field 4 on an 11-field datum") {
         val out = UpdateConfigCommand.rewriteFields(
           fields11,
           newCpoPolicy = None,
           newPegInHash = Some(ByteString.fromHex("ff")),
           newPegOutHash = None,
-          anchor = Some(ByteString.fromHex("ee"))
+          anchor = None
         )
-        assert(out.size == 12)
+        assert(out.size == 11)
         assert(out(4) == Data.B(ByteString.fromHex("ff")))
-        assert(out(11) == Data.B(ByteString.fromHex("ee")))
         // Untouched fields carried over verbatim.
         assert(out(0) == fields11(0) && out(10) == fields11(10))
-    }
-
-    test("rewriteFields replaces field 11 on a 12-field datum (re-anchoring)") {
-        val twelve = fields11 :+ (Data.B(ByteString.fromHex("aa")): Data)
-        val out = UpdateConfigCommand.rewriteFields(
-          twelve,
-          None,
-          None,
-          None,
-          Some(ByteString.fromHex("bb"))
-        )
-        assert(out.size == 12)
-        assert(out(4) == fields11(4)) // no swap requested
-        assert(out(11) == Data.B(ByteString.fromHex("bb")))
     }
 
     test("rewriteFields rejects short datums") {
@@ -48,7 +33,7 @@ class UpdateConfigCommandTest extends AnyFunSuite {
               None,
               None,
               None,
-              Some(ByteString.fromHex("bb"))
+              None
             )
         }
     }
@@ -61,13 +46,12 @@ class UpdateConfigCommandTest extends AnyFunSuite {
           newCpoPolicy = Some(ByteString.fromHex("33")),
           newPegInHash = Some(ByteString.fromHex("44")),
           newPegOutHash = Some(ByteString.fromHex("55")),
-          anchor = Some(ByteString.fromHex("ee"))
+          anchor = None
         )
-        assert(out.size == 12)
+        assert(out.size == 11)
         assert(out(3) == Data.B(ByteString.fromHex("33")))
         assert(out(4) == Data.B(ByteString.fromHex("44")))
         assert(out(5) == Data.B(ByteString.fromHex("55")))
-        assert(out(11) == Data.B(ByteString.fromHex("ee")))
         // Neighbours of the swapped fields are untouched.
         assert(out(2) == fields11(2) && out(6) == fields11(6))
     }
@@ -78,7 +62,7 @@ class UpdateConfigCommandTest extends AnyFunSuite {
           newCpoPolicy = Some(ByteString.fromHex("33")),
           newPegInHash = None,
           newPegOutHash = None,
-          anchor = Some(ByteString.fromHex("ee"))
+          anchor = None
         )
         assert(out(3) == Data.B(ByteString.fromHex("33")))
         assert(out(4) == fields11(4))
@@ -116,18 +100,91 @@ class UpdateConfigCommandTest extends AnyFunSuite {
     }
 
     test("rewriteFields carries fields beyond 11 over verbatim") {
-        val seventeen =
-            fields11 ++ (11 to 16).map(i => Data.B(ByteString.fromHex(f"$i%02x")): Data).toList
         val out = UpdateConfigCommand.rewriteFields(
-          seventeen,
+          fields24,
           newCpoPolicy = Some(ByteString.fromHex("33")),
           newPegInHash = None,
           newPegOutHash = Some(ByteString.fromHex("55")),
-          anchor = Some(ByteString.fromHex("ee"))
+          anchor = Some((ByteString.fromHex("ee"), BigInt(7)))
+        )
+        assert(out.size == 25)
+        assert(out(11) == Data.B(ByteString.fromHex("ee")))
+        assert((12 to 23).forall(i => out(i) == fields24(i)))
+    }
+
+    // --- WI-055: the anchor and its value are ONE fact -----------------------
+
+    /** The WI-068 genesis shape: 17 fields plus the federation identity (#17-#23). */
+    private def fields24: List[Data] = fields17 ++ List[Data](
+      Data.B(ByteString.fromHex("bb" * 28)), // #17 spo_bans policy
+      Data.I(BigInt(600000)), // #18
+      Data.I(BigInt(3)), // #19
+      Data.I(BigInt(3600000)), // #20
+      Data.B(ByteString.fromHex("c1" * 28)), // #21 spos_registry policy
+      Data.B(ByteString.fromHex("c2" * 28)), // #22 treasury_info policy
+      Data.B(ByteString.fromString("TMTx")) // #23 treasury_info asset name
+    )
+
+    /** Re-anchoring writes BOTH #11 and #24. The signature takes a pair, so there is no call that
+      * sets one without the other — the atomicity WI-055 asks for is in the type, not in a check a
+      * later caller could forget. An outpoint priced at the PREVIOUS anchor's value would make the
+      * genesis TM unspendable, and no Cardano validator can notice: the amount is a Bitcoin fact.
+      */
+    test("re-anchoring appends the value to a 24-field datum") {
+        val out = UpdateConfigCommand.rewriteFields(
+          fields24,
+          None,
+          None,
+          None,
+          anchor = Some((ByteString.fromHex("ee" * 36), BigInt(5_000_000)))
+        )
+        assert(out.size == 25)
+        assert(out(11) == Data.B(ByteString.fromHex("ee" * 36)))
+        assert(out(24) == Data.I(BigInt(5_000_000)))
+    }
+
+    test("re-anchoring replaces both fields on a 25-field datum") {
+        val fields25 = fields24 :+ (Data.I(BigInt(1)): Data)
+        val out = UpdateConfigCommand.rewriteFields(
+          fields25,
+          None,
+          None,
+          None,
+          anchor = Some((ByteString.fromHex("dd" * 36), BigInt(9_999)))
+        )
+        assert(out.size == 25)
+        assert(out(11) == Data.B(ByteString.fromHex("dd" * 36)))
+        assert(out(24) == Data.I(BigInt(9_999)))
+        // Everything between the pair is untouched.
+        assert((12 to 23).forall(i => out(i) == fields25(i)))
+    }
+
+    // A datum with no #24 slot cannot record what its anchor is worth, so re-anchoring it would
+    // publish an outpoint the SPOs cannot price. Refuse rather than write half the fact.
+    test("re-anchoring a datum with no room for the value is refused") {
+        for short <- List(fields11, fields17, fields24.take(23)) do
+            intercept[IllegalArgumentException] {
+                UpdateConfigCommand.rewriteFields(
+                  short,
+                  None,
+                  None,
+                  None,
+                  anchor = Some((ByteString.fromHex("ee" * 36), BigInt(1)))
+                )
+            }
+    }
+
+    test("a non-anchor edit still works on a short datum") {
+        val out = UpdateConfigCommand.rewriteFields(
+          fields17,
+          newCpoPolicy = Some(ByteString.fromHex("33")),
+          newPegInHash = None,
+          newPegOutHash = None,
+          anchor = None
         )
         assert(out.size == 17)
-        assert(out(11) == Data.B(ByteString.fromHex("ee")))
-        assert((12 to 16).forall(i => out(i) == seventeen(i)))
+        assert(out(3) == Data.B(ByteString.fromHex("33")))
+        assert(out(11) == fields17(11)) // the deployed anchor survives untouched
     }
 
     /** The deployed 17-field shape: #0-#11 plus the operational-parameter append. Field 9

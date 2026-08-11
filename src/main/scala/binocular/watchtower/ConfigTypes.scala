@@ -64,7 +64,8 @@ case class ConfigDatum(
     maxValidityWindowMs: BigInt,
     sposRegistryPolicyId: ByteString,
     treasuryInfoPolicyId: ByteString,
-    treasuryInfoAssetName: ByteString
+    treasuryInfoAssetName: ByteString,
+    initialBtcTreasuryValueSat: BigInt
 ) derives FromData,
       ToData
 

@@ -32,6 +32,17 @@ trait BitcoinRpc {
       */
     def isTxOutUnspent(txid: String, vout: Int, includeMempool: Boolean): Future[Boolean] =
         Future.failed(new UnsupportedOperationException("isTxOutUnspent not implemented"))
+
+    /** `gettxout`, returning the output's value in SATOSHI rather than merely whether it exists.
+      *
+      * Fails if the outpoint is unknown or already spent (bitcoind returns null for both), because
+      * the one caller — writing the genesis treasury value into the bridge Config — must not record
+      * a value it could not read. `includeMempool = false`: an anchor that exists only in the
+      * mempool is not yet a fact about the chain, and the value written here is immutable for the
+      * life of the bridge.
+      */
+    def getTxOutValueSat(txid: String, vout: Int): Future[Long] =
+        Future.failed(new UnsupportedOperationException("getTxOutValueSat not implemented"))
 }
 
 /** Lightweight Bitcoin RPC client using Java 11+ HTTP client
@@ -294,6 +305,26 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) ex
     override def isTxOutUnspent(txid: String, vout: Int, includeMempool: Boolean): Future[Boolean] =
         call("gettxout", ujson.Arr(txid, vout, includeMempool))
             .map(result => result != ujson.Null)
+
+    override def getTxOutValueSat(txid: String, vout: Int): Future[Long] =
+        call("gettxout", ujson.Arr(txid, vout, false)).map { result =>
+            if result == ujson.Null then
+                throw new IllegalStateException(
+                  s"gettxout $txid:$vout returned null — the outpoint is unknown to this node or " +
+                      "already spent. It cannot be a bridge's genesis treasury anchor."
+                )
+            // bitcoind reports `value` in BTC as a JSON number. Going through the decimal string
+            // rather than the double keeps the conversion exact: 0.1 BTC is not representable in
+            // binary floating point, and rounding a satoshi here would write a value no SPO can
+            // reproduce and the genesis TM would be priced wrong forever.
+            val btc = BigDecimal(result("value").toString)
+            val sats = btc * BigDecimal(100_000_000L)
+            if !sats.isWhole then
+                throw new IllegalStateException(
+                  s"gettxout $txid:$vout value $btc BTC is not a whole number of satoshi"
+                )
+            sats.toLongExact
+        }
 
     /** Broadcast a raw transaction to the Bitcoin network */
     def sendRawTransaction(hexString: String): Future[String] = {

@@ -434,7 +434,8 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
       maxValidityWindowMs = BigInt(3600000),
       sposRegistryPolicyId = ByteString.fromHex("c1" * 28),
       treasuryInfoPolicyId = ByteString.fromHex("c2" * 28),
-      treasuryInfoAssetName = ByteString.fromString("TMTx")
+      treasuryInfoAssetName = ByteString.fromString("TMTx"),
+      initialBtcTreasuryValueSat = BigInt(5_000_000)
     ).toData
 
     /** The Config reference UTxO carrying the config NFT + a config datum with the anchor at field
