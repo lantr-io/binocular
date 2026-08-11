@@ -203,23 +203,33 @@ class BifrostContractsTest extends AnyFunSuite {
       * checkout, because CI and release builds have none.
       */
     private def ftPlutusJson: Option[Path] =
-        sys.env
-            .get("BIFROST_PLUTUS_JSON")
-            .map(_.trim)
-            .filter(_.nonEmpty)
-            .map(Paths.get(_))
-            .filter(Files.isReadable)
-            .orElse(
-              List(
-                "../ft-bifrost-bridge/onchain/plutus.json",
-                "../../ft-bifrost-bridge/onchain/plutus.json",
-                "../../FluidTokens/ft-bifrost-bridge/onchain/plutus.json"
-              ).map(Paths.get(_)).find(Files.isReadable)
-            )
+        sys.env.get("BIFROST_PLUTUS_JSON").map(_.trim).filter(_.nonEmpty) match {
+            // An explicitly named blueprint that cannot be read is a broken setup, never a
+            // skip: silently falling through to a sibling checkout (or to cancel) is exactly
+            // how a stale vendored copy stays green on the one machine that could catch it.
+            case Some(p) =>
+                val path = Paths.get(p)
+                if !Files.isReadable(path) then
+                    fail(
+                      s"BIFROST_PLUTUS_JSON is set to '$p' but not readable — refusing to " +
+                          "silently skip the drift check"
+                    )
+                Some(path)
+            case None =>
+                List(
+                  "../ft-bifrost-bridge/onchain/plutus.json",
+                  "../../ft-bifrost-bridge/onchain/plutus.json",
+                  "../../FluidTokens/ft-bifrost-bridge/onchain/plutus.json"
+                ).map(Paths.get(_)).find(Files.isReadable)
+        }
 
-    test("the vendored bridge_state compiledCode is ft's current one") {
-        // Freshness against ft. Cancels without a checkout, so it guards a developer machine only —
-        // the pin above is what guards CI. Keep BOTH: the pin cannot see ft, this cannot run there.
+    test("every vendored compiledCode is ft's current one") {
+        // Freshness against ft, for the WHOLE vendored set — a stale peg_in or peg_out is just
+        // as fatal as a stale bridge_state (the watchtower derives their script hashes, and
+        // every transaction it builds against a stale hash is rejected on-chain). Cancels
+        // without a checkout, so it guards a developer machine only — the per-contract policy
+        // pins above are what guard CI. Keep BOTH: the pins cannot see ft, this cannot run
+        // there.
         ftPlutusJson match {
             case None =>
                 cancel(
@@ -227,10 +237,22 @@ class BifrostContractsTest extends AnyFunSuite {
                 )
             case Some(path) =>
                 val ft = BifrostBlueprint.fromFile(path.toString)
+                val stale = blueprint.validatorTitles.filter { title =>
+                    val ftCode =
+                        try ft.compiledCode(title)
+                        catch {
+                            case _: RuntimeException =>
+                                fail(
+                                  s"validator '$title' is vendored but absent from $path — " +
+                                      "the two blueprints no longer describe the same bridge"
+                                )
+                        }
+                    ftCode != blueprint.compiledCode(title)
+                }
                 assert(
-                  BridgeStateContract(blueprint, tmScriptHash, cpiRef).policyId ==
-                      BridgeStateContract(ft, tmScriptHash, cpiRef).policyId,
-                  s"the vendored bridge_state compiledCode is stale against $path – re-vendor it"
+                  stale.isEmpty,
+                  s"vendored compiledCode is stale against $path for: ${stale.mkString(", ")} " +
+                      "– re-vendor bifrost-plutus-min.json"
                 )
         }
     }

@@ -267,9 +267,10 @@ object TreasuryMovementValidator {
       */
     val TwoRootCommitmentScriptLength: BigInt = CpoRootOffset + RootLength
 
-    /** Asset name of the rev-5.4 bridge-state singleton NFT. The Aiken side has no constant for it
-      * yet; when `bifrost/constants.ak` gains one it MUST carry these same bytes, because the
-      * singleton is identified by `(policy, name)` on both sides.
+    /** Asset name of the rev-5.4 bridge-state singleton NFT. LOCKSTEP: the Aiken side declares the
+      * same bytes as `bifrost/constants.ak::bridge_state_asset_name` (read by `bridge-state.ak`,
+      * `peg-in.ak` and `peg-out.ak`); the two constants MUST stay identical, because the singleton
+      * is identified by `(policy, name)` on both sides.
       */
     val BridgeStateAssetName: ByteString = ByteString.fromString("BSS")
 

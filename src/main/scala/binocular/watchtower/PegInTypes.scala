@@ -103,10 +103,10 @@ case class PegInMintRedeemer(
 ) derives FromData,
       ToData
 
-// Aiken `bifrost/types/peg-in.{ActionType, PegInWithdrawRedeemer}` — the `withdraw(CompletePegIn)`
-// path of peg_in.ak. Field order is positional in the Plutus Constr; keep identical to the .ak
-// records, and keep `ActionType` variant order (Cancel = constr 0, CompletePegIn = constr 1) so the
-// wire tags line up.
+// Aiken `bifrost/types/peg-in.{ClosePegInProof, ActionType, PegInWithdrawRedeemer}` — the
+// `withdraw` path of peg_in.ak. Field order is positional in the Plutus Constr; keep identical to
+// the .ak records, and keep `ActionType` variant order (Close = constr 0, CompletePegIn = constr 1)
+// so the wire tags line up.
 //
 // Rev 5.4: CompletePegIn no longer references a `Confirmed` TM record — there is none ([OB-5]). It
 // proves the sweep against the bridge state singleton, referenced by index and authenticated by the
@@ -126,8 +126,26 @@ case class PegInMintRedeemer(
 //     singleton's `spi_root` ([CPI-9]).
 //   - configRefInputIndex (on PegInWithdrawRedeemer) : position of the config-NFT UTxO in sorted
 //     reference inputs.
+// Aiken `bifrost/types/peg-in.ClosePegInProof` — the two mutually exclusive Close branches
+// (spec §Close PegInRequest). NeverSwept = constr 0 ([CLR-5]/[CLR-6]), Duplicate = constr 1
+// ([CLR-8]).
+enum ClosePegInProof derives FromData, ToData {
+    case NeverSwept(
+        bridgeStateRefInputIndex: BigInt,
+        spiExclusionProof: ScalusList[ProofStep]
+    )
+    case Duplicate(
+        completedPegInsRefInputIndex: BigInt,
+        sweepingTmInput0: ByteString,
+        cpiMembershipProof: ScalusList[ProofStep]
+    )
+}
+
 enum PegInActionType derives FromData, ToData {
-    case Cancel(burntPegInNftAssetName: ByteString)
+    case Close(
+        burntPegInNftAssetName: ByteString,
+        proof: ClosePegInProof
+    )
     case CompletePegIn(
         recipient: Data,
         fbtcOutputIndex: BigInt,
