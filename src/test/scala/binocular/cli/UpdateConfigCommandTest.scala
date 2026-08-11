@@ -272,5 +272,106 @@ class UpdateConfigCommandTest extends AnyFunSuite {
         assert(ParamEdits.none.isEmpty && !ParamEdits.none.touchesTunables)
         assert(!ParamEdits(minStake = Some(BigInt(1))).isEmpty)
         assert(ParamEdits(schedule = Map("leader_slot_t" -> BigInt(1))).touchesTunables)
+        assert(!ParamEdits.none.touchesBans)
+        assert(ParamEdits(spoBansPolicyId = Some(ByteString.fromHex("bb" * 28))).touchesBans)
+        assert(!ParamEdits(spoBansPolicyId = Some(ByteString.fromHex("bb" * 28))).isEmpty)
+    }
+
+    // -- the ban policy, #17-#20 ---------------------------------------------
+
+    private def banEdits(policy: String = "bb" * 28) = ParamEdits(
+      spoBansPolicyId = Some(ByteString.fromHex(policy)),
+      baseBanDurationMs = Some(BigInt(600000)),
+      maxFaultsBeforePermanent = Some(BigInt(3)),
+      maxValidityWindowMs = Some(BigInt(3600000))
+    )
+
+    // The migration for the deployed bridge: no re-mint, no redeploy, one Update. After it every
+    // SPO reads the ban list from #17 and needs no ban keys of its own.
+    test("the ban policy is APPENDED to the deployed 17-field datum") {
+        val out = UpdateConfigCommand.rewriteFields(fields17, None, None, None, None, banEdits())
+        assert(out.size == 21)
+        assert(out(17) == Data.B(ByteString.fromHex("bb" * 28)))
+        assert(out(18) == Data.I(BigInt(600000)))
+        assert(out(19) == Data.I(BigInt(3)))
+        assert(out(20) == Data.I(BigInt(3600000)))
+        // Nothing below it moved — an append, not a rewrite.
+        assert(out.take(17) == fields17)
+    }
+
+    test("the ban policy is REPLACED on a 21-field datum") {
+        val twentyOne =
+            UpdateConfigCommand.rewriteFields(fields17, None, None, None, None, banEdits())
+        val out = UpdateConfigCommand.rewriteFields(
+          twentyOne,
+          None,
+          None,
+          None,
+          None,
+          banEdits("cc" * 28)
+        )
+        assert(out.size == 21)
+        assert(out(17) == Data.B(ByteString.fromHex("cc" * 28)))
+        assert(out.take(17) == fields17)
+    }
+
+    // A reader cannot tell half a written record from a bridge with no bans — and the three
+    // schedule numbers are inputs to the policy id in #17, so a new id beside an old schedule
+    // describes no deployment that exists.
+    test("a partial ban edit is refused") {
+        val err = intercept[IllegalArgumentException] {
+            UpdateConfigCommand.rewriteFields(
+              fields17,
+              None,
+              None,
+              None,
+              None,
+              ParamEdits(spoBansPolicyId = Some(ByteString.fromHex("bb" * 28)))
+            )
+        }
+        assert(err.getMessage.contains("#17-#20"))
+    }
+
+    test("the ban policy cannot be appended to a pre-tunables datum") {
+        val twelve = fields11 :+ (Data.B(ByteString.fromHex("aa")): Data)
+        val err = intercept[IllegalArgumentException] {
+            UpdateConfigCommand.rewriteFields(twelve, None, None, None, None, banEdits())
+        }
+        assert(err.getMessage.contains("fields"))
+    }
+
+    test("the ban policy composes with the other edits in one Update") {
+        val out = UpdateConfigCommand.rewriteFields(
+          fields17,
+          newCpoPolicy = Some(ByteString.fromHex("33")),
+          newPegInHash = None,
+          newPegOutHash = None,
+          anchor = None,
+          banEdits().copy(feeRateSatPerVb = Some(BigInt(9)), minStake = Some(BigInt(7)))
+        )
+        assert(out.size == 21)
+        assert(out(3) == Data.B(ByteString.fromHex("33")))
+        assert(out(9) == Data.I(BigInt(7)))
+        assert(out(12) == Data.I(BigInt(9)))
+        assert(out(17) == Data.B(ByteString.fromHex("bb" * 28)))
+    }
+
+    test("diff names the appended ban fields") {
+        val out = UpdateConfigCommand.rewriteFields(fields17, None, None, None, None, banEdits())
+        val changed = UpdateConfigCommand.diff(fields17, out)
+        assert(changed.map(_._1) == List(17, 18, 19, 20))
+        assert(changed.map(_._2).head == "spo_bans_policy_id")
+        assert(changed.head._3 == "(absent)")
+    }
+
+    // A wrong policy id derives a ban address no deployment has, and the empty list it reads back
+    // is indistinguishable from a bridge that has never banned anyone.
+    test("parseBanPolicy demands a 28-byte policy id") {
+        assert(
+          ParamEdits.parseBanPolicy("bb" * 28) == Right(ByteString.fromHex("bb" * 28))
+        )
+        assert(ParamEdits.parseBanPolicy("bb" * 27).isLeft) // too short
+        assert(ParamEdits.parseBanPolicy("bb" * 29).isLeft) // too long
+        assert(ParamEdits.parseBanPolicy("zz" * 28).isLeft) // not hex
     }
 }

@@ -4,6 +4,7 @@ import binocular.*
 import binocular.cli.commands.*
 import com.monovore.decline.*
 import cats.implicits.*
+import scalus.uplc.builtin.ByteString
 
 /** Binocular CLI Application
   *
@@ -312,8 +313,9 @@ object CliApp {
             Opts.subcommand(
               "update-config",
               "Update the deployed Config UTxO in place (governance): the operational parameters " +
-                  "(min-stake #9, fee-rate/fees/schedule #12-16), the initial-treasury anchor " +
-                  "(#11), the script hashes in fields 3, 4 and 5. Only what you name changes"
+                  "(min-stake #9, fee-rate/fees/schedule #12-16), the ban policy (#17-20), the " +
+                  "initial-treasury anchor (#11), the script hashes in fields 3, 4 and 5. Only " +
+                  "what you name changes"
             ) {
                 val anchorOpt = Opts
                     .option[String](
@@ -386,22 +388,75 @@ object CliApp {
                             .parseSchedule(args)
                             .fold(cats.data.Validated.invalidNel, cats.data.Validated.validNel)
                     )
+                // The ban policy (#17-#20). Publishing it is what removes the ban keys from every
+                // SPO's heimdall.toml: they are inputs to the policy id, so no node can derive
+                // the address it would read them from. All four together or none.
+                val banPolicyOpt: Opts[Option[ByteString]] = Opts
+                    .option[String](
+                      "spo-bans-policy",
+                      help = "config #17: the deployed spo_bans policy id (56 hex). Every SPO " +
+                          "reads its ban list from this and needs no ban config of its own"
+                    )
+                    .mapValidated(arg =>
+                        UpdateConfigCommand.ParamEdits
+                            .parseBanPolicy(arg)
+                            .fold(cats.data.Validated.invalidNel, cats.data.Validated.validNel)
+                    )
+                    .orNone
+                val baseBanDurationOpt = Opts
+                    .option[Long](
+                      "base-ban-duration-ms",
+                      help = "config #18: first ban's length (ms); the nth is base * 2^(n-1)"
+                    )
+                    .orNone
+                val maxFaultsOpt = Opts
+                    .option[Long](
+                      "max-faults-before-permanent",
+                      help = "config #19: fault count at which a pool is banned permanently"
+                    )
+                    .orNone
+                val maxValidityWindowOpt = Opts
+                    .option[Long](
+                      "max-validity-window-ms",
+                      help = "config #20: upper bound on an ApplyBan tx's validity interval (ms)"
+                    )
+                    .orNone
                 val paramsOpt: Opts[UpdateConfigCommand.ParamEdits] = (
                   minStakeOpt,
                   feeRateOpt,
                   perPegoutFeeOpt,
                   minPegOutOpt,
                   leaderRewardOpt,
-                  scheduleOpt
-                ).mapN { (minStake, feeRate, perPegoutFee, minPegOut, leaderReward, schedule) =>
-                    UpdateConfigCommand.ParamEdits(
-                      minStake = minStake.map(BigInt.apply),
-                      feeRateSatPerVb = feeRate.map(BigInt.apply),
-                      perPegoutFee = perPegoutFee.map(BigInt.apply),
-                      minPegOutFbtc = minPegOut.map(BigInt.apply),
-                      leaderReward = leaderReward.map(BigInt.apply),
-                      schedule = schedule
-                    )
+                  scheduleOpt,
+                  banPolicyOpt,
+                  baseBanDurationOpt,
+                  maxFaultsOpt,
+                  maxValidityWindowOpt
+                ).mapN {
+                    (
+                        minStake,
+                        feeRate,
+                        perPegoutFee,
+                        minPegOut,
+                        leaderReward,
+                        schedule,
+                        banPolicy,
+                        baseBanDuration,
+                        maxFaults,
+                        maxValidityWindow
+                    ) =>
+                        UpdateConfigCommand.ParamEdits(
+                          minStake = minStake.map(BigInt.apply),
+                          feeRateSatPerVb = feeRate.map(BigInt.apply),
+                          perPegoutFee = perPegoutFee.map(BigInt.apply),
+                          minPegOutFbtc = minPegOut.map(BigInt.apply),
+                          leaderReward = leaderReward.map(BigInt.apply),
+                          schedule = schedule,
+                          spoBansPolicyId = banPolicy,
+                          baseBanDurationMs = baseBanDuration.map(BigInt.apply),
+                          maxFaultsBeforePermanent = maxFaults.map(BigInt.apply),
+                          maxValidityWindowMs = maxValidityWindow.map(BigInt.apply)
+                        )
                 }
                 // Every option is applied in ONE Update tx — the trie v2 migration requires
                 // fields 3, 4 and 5 to flip together, and a params update is one signed act.

@@ -88,4 +88,32 @@ class UpdateConfigParseTest extends AnyFunSuite {
         val cmd = updateConfig("update-config")
         assert(cmd.params.isEmpty && cmd.initialBtcTreasuryUtxo.isEmpty)
     }
+
+    // Publishing the ban policy is what lets every SPO delete its ban keys, so this is the
+    // command line the migration runs.
+    test("the ban policy flags reach ParamEdits") {
+        val cmd = updateConfig(
+          "update-config",
+          "--spo-bans-policy",
+          "bb" * 28,
+          "--base-ban-duration-ms",
+          "600000",
+          "--max-faults-before-permanent",
+          "3",
+          "--max-validity-window-ms",
+          "3600000"
+        )
+        assert(cmd.params.spoBansPolicyId.map(_.toHex).contains("bb" * 28))
+        assert(cmd.params.baseBanDurationMs.contains(BigInt(600000)))
+        assert(cmd.params.maxFaultsBeforePermanent.contains(BigInt(3)))
+        assert(cmd.params.maxValidityWindowMs.contains(BigInt(3600000)))
+        assert(cmd.params.touchesBans && !cmd.params.touchesTunables)
+    }
+
+    test("a malformed ban policy id is a usage error, not a published wrong address") {
+        val err = parse("update-config", "--spo-bans-policy", "bb").swap.getOrElse(
+          fail("expected a parse failure")
+        )
+        assert(err.contains("56-hex-char policy id"))
+    }
 }
