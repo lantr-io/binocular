@@ -1,6 +1,7 @@
 package binocular.cli.commands
 
 import binocular.*
+import binocular.bitcoin.SimpleBitcoinRpc
 import binocular.oracle.*
 import binocular.watchtower.*
 import binocular.cli.{Command, CommandHelpers, Console}
@@ -56,7 +57,13 @@ import cats.syntax.either.*
   * singleton validator's hash, and the singleton it bootstraps is spendable only inside a TM
   * Confirm ([BSS-1]/[BSS-2]).
   */
-case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
+case class DeployBridgeCommand(
+    // [DEP-2] escape hatch, mirroring bootstrap-bridge-state: skip the gettxout verification of
+    // the deployment anchor. Only for a deployer whose Bitcoin node is unreachable AND whose
+    // anchor outpoint and amount were verified by hand.
+    skipBtcCheck: Boolean = false,
+    dryRun: Boolean = false
+) extends Command {
 
     // Config NFT asset name (arbitrary; recorded as config asset name).
     private val ConfigAssetName: ByteString = ByteString.fromString("BIFCFG")
@@ -181,26 +188,81 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
 
         // The bootstrap BridgeState: zero roots + the deployment anchor (spec §Why the bootstrap
         // datum is not pinned — operator-supplied, observer-verified).
+        val initialTreasuryDisplay = config.bridge.initialBtcTreasuryUtxo.trim
         val anchorOutpoint = {
-            val s = config.bridge.initialBtcTreasuryUtxo.trim
-            if s.isEmpty then {
+            if initialTreasuryDisplay.isEmpty then {
                 Console.error(
                   "bridge.initial-btc-treasury-utxo must be TXID:VOUT — the deployment anchor " +
                       "written into the singleton's bootstrap BridgeState"
                 )
                 break(1)
             }
-            try BridgeConfig.outpointFromDisplay(s)
+            try BridgeConfig.outpointFromDisplay(initialTreasuryDisplay)
             catch {
                 case e: Exception =>
                     Console.error(s"bridge.initial-btc-treasury-utxo: ${e.getMessage}"); break(1)
             }
         }
+        val anchorAmountSat = config.bridge.initialBtcTreasuryAmountSat
+
+        // [DEP-2]: verify the anchor against Bitcoin BEFORE writing it, exactly as
+        // `bootstrap-bridge-state` does. Genesis is the case that needs it MOST, not least: these
+        // two values have never been exercised by anything, they are hand-typed from a funding
+        // transaction made outside all of this tooling, and the bootstrap datum is deliberately
+        // unpinned on-chain (spec §Why the bootstrap datum is not pinned) — so nothing downstream
+        // rejects a wrong one. The mistake surfaces at the first movement, as a BIP-341 sighash
+        // committing to the wrong prevout amount and every FROST signature the roster produces
+        // being invalid, with no error naming the cause.
+        if skipBtcCheck then
+            Console.warn(
+              "[DEP-2] --skip-btc-check: the deployment anchor was NOT verified against Bitcoin. " +
+                  "A wrong outpoint or amount makes every signature over the first TM invalid."
+            )
+        else {
+            val Array(anchorTxid, anchorVoutStr) = initialTreasuryDisplay.split(':')
+            val rpc = new SimpleBitcoinRpc(config.bitcoinNode)
+            val verified =
+                try rpc.getTxOutValueSat(anchorTxid, anchorVoutStr.toInt).await(timeout)
+                catch {
+                    case e: Exception =>
+                        Console.error(
+                          s"[DEP-2] cannot verify the deployment anchor against Bitcoin (gettxout " +
+                              s"$initialTreasuryDisplay failed: ${e.getMessage}). Fix the Bitcoin " +
+                              "node configuration, or pass --skip-btc-check after verifying the " +
+                              "anchor by hand."
+                        )
+                        break(1)
+                }
+            verified match {
+                case None =>
+                    Console.error(
+                      s"[DEP-2] the deployment anchor $initialTreasuryDisplay is not an unspent " +
+                          "output on Bitcoin (spent, or never existed). A bridge anchored to it " +
+                          "can never make its first movement."
+                    )
+                    break(1)
+                case Some(sat) if sat != anchorAmountSat =>
+                    Console.error(
+                      s"[DEP-2] the anchor $initialTreasuryDisplay holds $sat sat on Bitcoin, but " +
+                          s"the bootstrap datum would record $anchorAmountSat sat. The first TM's " +
+                          "sighash would commit to the wrong prevout amount and every FROST " +
+                          s"signature over it would be invalid. Set " +
+                          s"bridge.initial-btc-treasury-amount-sat = $sat."
+                    )
+                    break(1)
+                case Some(sat) =>
+                    Console.info(
+                      "[DEP-2] anchor verified",
+                      s"$initialTreasuryDisplay = $sat sat (unspent)"
+                    )
+            }
+        }
+
         val initialState = BridgeState(
           spiRoot = EmptyRoot,
           cpoRoot = EmptyRoot,
           treasuryUtxoId = anchorOutpoint,
-          treasuryAmount = BigInt(config.bridge.initialBtcTreasuryAmountSat)
+          treasuryAmount = BigInt(anchorAmountSat)
         )
 
         // --- federation side (config indices 7-13) ---
