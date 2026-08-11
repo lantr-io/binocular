@@ -86,8 +86,8 @@ object SweptPegInsProofService {
       *   [SPI-1]/[SPI-3].
       * @param raw
       *   the verified raw transaction bytes (they hash to `txidLE`). Carried so the CPO side
-      *   ([[CpoReconstruction]]) can replay the SAME walk without re-fetching: its entries need
-      *   the TM's outputs, not its inputs.
+      *   ([[CpoReconstruction]]) can replay the SAME walk without re-fetching: its entries need the
+      *   TM's outputs, not its inputs.
       */
     final case class ConfirmedTm(
         txidLE: ByteString,

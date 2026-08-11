@@ -331,7 +331,15 @@ object CliApp {
                           "amount. Only for an unreachable Bitcoin node AND a hand-verified anchor."
                     )
                     .orFalse
-                (oneShotOpt, anchorOpt, amountOpt, spiRootOpt, cpoRootOpt, skipBtcCheckFlag, dryRunFlag)
+                (
+                  oneShotOpt,
+                  anchorOpt,
+                  amountOpt,
+                  spiRootOpt,
+                  cpoRootOpt,
+                  skipBtcCheckFlag,
+                  dryRunFlag
+                )
                     .mapN(Cmd.BootstrapBridgeState.apply)
             }
 

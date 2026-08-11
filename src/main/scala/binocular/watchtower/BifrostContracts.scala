@@ -26,8 +26,8 @@ final class BifrostBlueprint(json: ujson.Value) {
             .map(_("compiledCode").str)
             .getOrElse(throw new RuntimeException(s"validator not found in blueprint: $title"))
 
-    /** Every validator title in the blueprint, in file order. Lets the drift test iterate the
-      * WHOLE vendored set instead of naming validators one by one.
+    /** Every validator title in the blueprint, in file order. Lets the drift test iterate the WHOLE
+      * vendored set instead of naming validators one by one.
       */
     def validatorTitles: Seq[String] = json("validators").arr.toSeq.map(_("title").str)
 }

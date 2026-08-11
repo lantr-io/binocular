@@ -14,10 +14,10 @@ import scala.util.Try
   * the Scala mirror of heimdall's `src/cardano/cpo_trie.rs::reconstruct`.
   *
   * Rev 5.4 produces NO `Confirmed` record — Confirm burns the TM NFT and leaves nothing at the TM
-  * address ([CTM-24], [CTM-25]) — so the confirmed chain is recovered exactly the way the SPI
-  * proof server recovers it ([SPI-6]): harvest every spent `UnconfirmedTm` record's
-  * `signed_btc_tx`, key it by the txid RECOMPUTED from the bytes ([SPI-7]/[OB-9]), and walk the
-  * treasury spend chain BACKWARD from the singleton's `treasury_utxo_id` via input-0 ancestry
+  * address ([CTM-24], [CTM-25]) — so the confirmed chain is recovered exactly the way the SPI proof
+  * server recovers it ([SPI-6]): harvest every spent `UnconfirmedTm` record's `signed_btc_tx`, key
+  * it by the txid RECOMPUTED from the bytes ([SPI-7]/[OB-9]), and walk the treasury spend chain
+  * BACKWARD from the singleton's `treasury_utxo_id` via input-0 ancestry
   * ([[SweptPegInsProofService.walkConfirmedChain]]). A TM mined but not yet confirmed SPENDS the
   * head, so the walk never visits it — the walk's result is exactly the set the singleton's
   * attested roots cover. Invariants kept from the pre-walk implementation:
@@ -36,12 +36,12 @@ import scala.util.Try
   *      later TM to fail against at the tip.
   *
   * Invariant 1 turns on a THREE-way reading of a datum, not a two-way one. An output carrying NO
-  * datum at all is skipped even at the TM address: every TM record is created with an inline
-  * datum, so a datum-less output provably is not one. Only a datum that exists and cannot be READ
-  * is fatal. Both addresses are permissionlessly payable, so treating "no datum" as fatal let a
-  * single junk payment block every reconstruction forever — which is a denial of service, not a
-  * safety property. A datum that resolves but is not an `UnconfirmedTm` record (junk, or a legacy
-  * rev-5.1 `Confirmed` Constr-1 shape) is skipped: it is not a byte carrier for the walk.
+  * datum at all is skipped even at the TM address: every TM record is created with an inline datum,
+  * so a datum-less output provably is not one. Only a datum that exists and cannot be READ is
+  * fatal. Both addresses are permissionlessly payable, so treating "no datum" as fatal let a single
+  * junk payment block every reconstruction forever — which is a denial of service, not a safety
+  * property. A datum that resolves but is not an `UnconfirmedTm` record (junk, or a legacy rev-5.1
+  * `Confirmed` Constr-1 shape) is skipped: it is not a byte carrier for the walk.
   *
   * The asymmetry between the two addresses is intentional. An UNREADABLE output at the PEG-OUT
   * address is skipped rather than fatal, because a missing request cannot shrink the trie silently
@@ -65,8 +65,8 @@ object CpoReconstruction {
       *   the backward walk starts. The head bounds the confirmed set structurally ([SPI-6]).
       * @param onChainRoot
       *   the `cpo_root` the singleton holds. `Some` turns on the final safety net. `None` skips it
-      *   and MUST be logged loudly — only for a bridge whose singleton is not deployed yet, and
-      *   for tests.
+      *   and MUST be logged loudly — only for a bridge whose singleton is not deployed yet, and for
+      *   tests.
       */
     final case class Config(
         tmAddress: String,

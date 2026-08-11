@@ -302,9 +302,9 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) ex
         call("gettxout", ujson.Arr(txid, vout, includeMempool))
             .map(result => result != ujson.Null)
 
-    /** The outpoint's value in satoshi, `None` when spent or never existed. bitcoind reports BTC
-      * as a JSON number; every representable amount is exact in satoshi below 2^53, so the
-      * round-trip is lossless.
+    /** The outpoint's value in satoshi, `None` when spent or never existed. bitcoind reports BTC as
+      * a JSON number; every representable amount is exact in satoshi below 2^53, so the round-trip
+      * is lossless.
       */
     override def getTxOutValueSat(txid: String, vout: Int): Future[Option[Long]] =
         call("gettxout", ujson.Arr(txid, vout, false)).map {

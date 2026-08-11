@@ -361,10 +361,9 @@ object UpdateConfigCommand {
       "params"
     )
 
-    /** The governed parameter edits (config fields 7-10 and inside field 14). All optional:
-      * `None` means "carry the
-      * deployed value over". `schedule` patches individual `ScheduleParams` fields by name, leaving
-      * the rest of the nested record untouched.
+    /** The governed parameter edits (config fields 7-10 and inside field 14). All optional: `None`
+      * means "carry the deployed value over". `schedule` patches individual `ScheduleParams` fields
+      * by name, leaving the rest of the nested record untouched.
       */
     case class ParamEdits(
         feeRateSatPerVb: Option[BigInt] = None,
@@ -385,9 +384,9 @@ object UpdateConfigCommand {
 
         /** Whether the ban policy (#7-#10) is being written.
           *
-          * Unlike rev 5.1, where these were an APPEND a deployed datum might not carry yet, rev
-          * 5.4 makes them mandatory fields — so writing one is an ordinary in-place patch and
-          * needs no all-or-nothing grouping.
+          * Unlike rev 5.1, where these were an APPEND a deployed datum might not carry yet, rev 5.4
+          * makes them mandatory fields — so writing one is an ordinary in-place patch and needs no
+          * all-or-nothing grouping.
           */
         def touchesBans: Boolean =
             spoBansPolicyId.nonEmpty || baseBanDurationMs.nonEmpty ||
