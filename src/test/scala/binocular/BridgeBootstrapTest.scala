@@ -10,9 +10,10 @@ import scalus.uplc.builtin.{ByteString, Data}
 
 /** Tests for the shared bridge-bootstrap pieces.
   *
-  * The trie output shape is what `bootstrap-completed-peg-outs` and `deploy-bridge` must agree on,
-  * and it is exactly what `completed-peg-outs-merkle-tree.ak::mint` checks: one output at the
-  * policy's own script address, the single "CPO" token, and an inline datum of the all-zero root.
+  * The singleton output shape is what `bootstrap-bridge-state` and `deploy-bridge` must agree on,
+  * and it is what `bridge-state.ak::mint` checks ([BSS-5]): an output at the policy's own script
+  * address holding the single "BSS" token. The BridgeState datum is operator-supplied, not pinned
+  * on-chain (spec §Why the bootstrap datum is not pinned).
   */
 class BridgeBootstrapTest extends AnyFunSuite {
 
@@ -26,7 +27,14 @@ class BridgeBootstrapTest extends AnyFunSuite {
           ),
           BigInt(0)
         )
-    private val contract = CompletedPegOutsContract(blueprint, tmPolicy, oneShot)
+    private val contract = BridgeStateContract(blueprint, tmPolicy, oneShot)
+
+    private val bootstrapState = BridgeState(
+      spiRoot = BridgeBootstrap.EmptyRoot,
+      cpoRoot = BridgeBootstrap.EmptyRoot,
+      treasuryUtxoId = ByteString.fromHex(("aa" * 32) + "00000000"),
+      treasuryAmount = BigInt(100_000)
+    )
     private val network = Network.Testnet
 
     private def utxo(txHashByte: Int, idx: Int, lovelace: Long, assets: Boolean = false): Utxo = {
@@ -36,40 +44,43 @@ class BridgeBootstrapTest extends AnyFunSuite {
             if assets then
                 Value(Coin(lovelace)) + Value.asset(
                   contract.policyId,
-                  AssetName(CompletedPegOutsContract.assetName),
+                  AssetName(BridgeStateContract.assetName),
                   1L
                 )
             else Value(Coin(lovelace))
         Utxo(TransactionInput(hash, idx), TransactionOutput.Shelley(addr, value))
     }
 
-    // --- trie bootstrap output ---
+    // --- singleton bootstrap output ---
 
-    test("the genesis root is 32 zero bytes, the literal the Aiken mint handler pins") {
+    test("the genesis root is 32 zero bytes") {
         assert(BridgeBootstrap.EmptyRoot == ByteString.fromArray(Array.fill[Byte](32)(0)))
     }
 
-    test("the bootstrap output sits at the trie policy's own script address, no stake credential") {
-        val (addr, _, _) = BridgeBootstrap.completedPegOutsOutput(contract, network)
+    test("the bootstrap output sits at the singleton's own script address, no stake credential") {
+        val (addr, _, _) = BridgeBootstrap.bridgeStateOutput(contract, network, bootstrapState)
         assert(addr == Address(network, Credential.ScriptHash(contract.policyId)))
         assert(addr == contract.address(network))
     }
 
-    test("the bootstrap output carries exactly one \"CPO\" token plus min-ADA") {
-        val (_, value, _) = BridgeBootstrap.completedPegOutsOutput(contract, network)
-        val asset = AssetName(CompletedPegOutsContract.assetName)
+    test("the bootstrap output carries exactly one \"BSS\" token plus min-ADA ([BSS-5])") {
+        val (_, value, _) = BridgeBootstrap.bridgeStateOutput(contract, network, bootstrapState)
+        val asset = AssetName(BridgeStateContract.assetName)
         assert(value.asset(contract.policyId, asset) == 1L)
         assert(value.coin.value == BridgeBootstrap.BootstrapLovelace)
-        assert(CompletedPegOutsContract.assetName == ByteString.fromString("CPO"))
+        assert(BridgeStateContract.assetName == ByteString.fromString("BSS"))
     }
 
-    test("the bootstrap datum is the empty-root CompletedPegOutsTrieDatum") {
-        val (_, _, datum) = BridgeBootstrap.completedPegOutsOutput(contract, network)
+    test("the bootstrap datum is the operator-supplied BridgeState, encoded as Constr 0") {
+        val (_, _, datum) = BridgeBootstrap.bridgeStateOutput(contract, network, bootstrapState)
         assert(
           datum == Data.Constr(
             0,
             scalus.cardano.onchain.plutus.prelude.List(
-              Data.B(BridgeBootstrap.EmptyRoot)
+              Data.B(bootstrapState.spiRoot),
+              Data.B(bootstrapState.cpoRoot),
+              Data.B(bootstrapState.treasuryUtxoId),
+              Data.I(bootstrapState.treasuryAmount)
             )
           )
         )

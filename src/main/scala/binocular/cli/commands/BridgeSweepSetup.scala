@@ -8,60 +8,49 @@ import scalus.cardano.address.{Address, Network}
 import scalus.cardano.ledger.*
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.wallet.hd.HdAccount
-import scalus.uplc.builtin.{ByteString, Data}
+import scalus.uplc.builtin.ByteString
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.Duration
 import scala.util.Try
 import scalus.utils.await
 
-/** Wiring shared by the two commands that touch the completed-peg-outs trie: `confirm-tmtx` (which
-  * SPENDS and recreates the singleton) and `peg-out-complete` (which REFERENCES it).
+/** Wiring shared by the two commands that touch the bridge-state singleton: `confirm-tmtx` (which
+  * SPENDS and recreates it) and `peg-out-complete` (which REFERENCES it).
   *
   * It lives outside both so the manual completion command and the watchtower's automatic sweeper
-  * resolve the same UTxOs, derive the same scripts, and fail with the same messages. A divergence
-  * between them would show up as "the sweeper works but the manual command does not", which is
-  * exactly the kind of drift an operator cannot debug.
+  * resolve the same UTxOs and fail with the same messages. A divergence between them would show up
+  * as "the sweeper works but the manual command does not", which is exactly the kind of drift an
+  * operator cannot debug.
   */
 object BridgeSweepSetup {
 
-    /** Everything a Confirm or Complete transaction needs from the completed-peg-outs trie.
-      *
-      * @param configUtxo
-      *   the Config UTxO, always a reference input; validators read the trie policy from its field
-      *   3.
-      * @param trieUtxo
-      *   the UTxO carrying the `"CPO"` NFT. Confirm SPENDS and recreates it; Complete REFERENCES
-      *   it.
-      * @param trieScript
-      *   the trie validator, needed to spend `trieUtxo`. Its hash equals Config field 3.
-      * @param currentRoot
-      *   the root in `trieUtxo`'s datum.
+    /** Everything a Confirm or Complete transaction needs from the live chain: the Config UTxO
+      * (always a reference input), the singleton UTxO carrying the `(bridge_state_policy, "BSS")`
+      * NFT (Confirm SPENDS it; Complete REFERENCES it), and its decoded [[BridgeState]].
       */
-    final case class TrieContext(
+    final case class SingletonContext(
         configUtxo: Utxo,
-        trieUtxo: Utxo,
-        trieScript: Script.PlutusV3,
-        currentRoot: ByteString
+        config: ConfigDatum,
+        singletonUtxo: Utxo,
+        state: BridgeState
     )
 
-    /** Locate the Config and completed-peg-outs trie UTxOs.
+    /** Locate the Config and bridge-state singleton UTxOs.
       *
-      * The trie policy is taken from Config field 3 (RAW field read, not a typed `ConfigDatum`
-      * decode, so a deployed pre-migration datum with a different field count still works). The
-      * locally derived trie script must hash to that policy, otherwise the config still publishes
-      * the pre-migration trie and the migration Update has not run yet.
+      * The singleton policy is taken from the Config's `bridge_state_policy` at runtime ([PAR-1]) —
+      * no local script derivation, so pure READERS (the sweeper, `peg-out-complete`) need no
+      * one-shot ref. `confirm-tmtx`, which must SPEND the singleton, additionally checks its
+      * locally derived `bridge_state` script hashes to this policy.
       */
-    def loadTrieContext(
+    def loadSingletonContext(
         provider: BlockchainProvider,
         configAddress: Address,
         configNftPolicy: ScriptHash,
         configNftAsset: AssetName,
-        trieScript: Script.PlutusV3,
-        trieAssetName: AssetName,
         network: Network,
         timeout: Duration
-    )(using ExecutionContext): Either[String, TrieContext] =
+    )(using ExecutionContext): Either[String, SingletonContext] =
         for {
             configUtxos <- provider
                 .findUtxos(configAddress)
@@ -74,42 +63,31 @@ object BridgeSweepSetup {
                         Utxo(in, out)
                 }
                 .toRight(s"no UTxO carrying the config NFT at $configAddress")
-            triePolicyBytes <- configUtxo.output.inlineDatum match {
-                case Some(Data.Constr(0, fields)) =>
-                    fields.asScala.toList.lift(3) match {
-                        case Some(Data.B(p)) => Right(p)
-                        case other           => Left(s"config field 3 is not a byte string: $other")
-                    }
-                case other => Left(s"config datum is not a Constr 0 inline datum: $other")
-            }
-            _ <- Either.cond(
-              triePolicyBytes.toHex == trieScript.scriptHash.toHex,
-              (),
-              s"config field 3 publishes trie policy ${triePolicyBytes.toHex}, but the trie " +
-                  s"validator derived from (TM hash, one-shot) hashes to " +
-                  s"${trieScript.scriptHash.toHex}. Run `update-config " +
-                  s"--completed-peg-outs-policy ${trieScript.scriptHash.toHex}` (together with the " +
-                  "field 4/5 swaps) before confirming under the new TM script."
-            )
-            trieAddress = Address(network, Credential.ScriptHash(trieScript.scriptHash))
-            trieUtxos <- provider
-                .findUtxos(trieAddress)
+            cfg <- configUtxo.output.inlineDatum
+                .flatMap(d => Try(d.to[ConfigDatum]).toOption)
+                .toRight("config datum does not decode as the rev-5.4 ConfigDatum")
+            bssPolicy = ScriptHash.fromHex(cfg.bridgeStatePolicy.toHex)
+            bssAddress = Address(network, Credential.ScriptHash(bssPolicy))
+            bssAsset = AssetName(BridgeStateContract.assetName)
+            singletonUtxos <- provider
+                .findUtxos(bssAddress)
                 .await(timeout)
                 .left
-                .map(err => s"fetching trie UTxOs at $trieAddress: $err")
-            trieUtxo <- trieUtxos.toList
+                .map(err => s"fetching singleton UTxOs at $bssAddress: $err")
+            singletonUtxo <- singletonUtxos.toList
                 .collectFirst {
-                    case (in, out) if out.value.hasAsset(trieScript.scriptHash, trieAssetName) =>
-                        Utxo(in, out)
+                    case (in, out) if out.value.hasAsset(bssPolicy, bssAsset) => Utxo(in, out)
                 }
                 .toRight(
-                  s"no UTxO carrying the \"CPO\" NFT at $trieAddress — the trie has not been " +
-                      "bootstrapped under this policy"
+                  s"no UTxO carrying the \"BSS\" NFT at $bssAddress — the bridge-state singleton " +
+                      "has not been bootstrapped under this policy"
                 )
-            onChainRoot <- trieUtxo.output.inlineDatum
-                .flatMap(d => Try(d.to[CompletedPegOutsTrieDatum].root).toOption)
-                .toRight("the trie UTxO has no decodable inline root datum")
-        } yield TrieContext(configUtxo, trieUtxo, trieScript, onChainRoot)
+            state <- singletonUtxo.output.inlineDatum
+                .flatMap(d => Try(d.to[BridgeState]).toOption)
+                .toRight(
+                  "the singleton datum does not decode as the 4-field BridgeState ([LIB-1])"
+                )
+        } yield SingletonContext(configUtxo, cfg, singletonUtxo, state)
 
     /** Assemble the POR sweeper: the two scripts a Complete transaction runs, a resolver for their
       * CIP-33 reference UTxOs, the trie mirror's state directory, and the chain-history backend

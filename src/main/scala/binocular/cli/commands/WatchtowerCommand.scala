@@ -22,12 +22,29 @@ case class WatchtowerCommand(dryRun: Boolean = false) extends Command {
     override def execute(config: BinocularConfig): Int = {
         Console.header("Binocular Watchtower")
         if dryRun then Console.warn("Dry-run mode — one pass per daemon, then exit")
-        Console.info("Daemons", "oracle sync, TM relay, TM confirm")
+        val proofServerOn = config.bridge.proofServer
+        Console.info(
+          "Daemons",
+          "oracle sync, TM relay, TM confirm" +
+              (if proofServerOn then s", proof server (:${config.bridge.proofServerPort})"
+               else "")
+        )
         println()
 
         // One shared notifier for all three loops, so error debounce and the new-block height
         // dedup are coordinated across them (and there is a single background post thread).
         val notifier = Notifier.fromConfig(config.notifications)
+
+        // The proof-serving REST API ([SPI-4]/[OB-13]) rides in the same process as a fourth
+        // supervised worker: `startAndWait` blocks like the other loops, and a crash restarts the
+        // process the same way. In dry-run it resolves both proof sources once without binding
+        // (the same check `serve-proofs --dry-run` runs).
+        val proofWorker =
+            if proofServerOn then
+                List(
+                  Worker("proofs", () => { ServeProofsCommand(None, dryRun).execute(config); () })
+                )
+            else Nil
 
         val workers = List(
           Worker("oracle", () => { RunCommand(dryRun, Some(notifier)).execute(config); () }),
@@ -36,7 +53,7 @@ case class WatchtowerCommand(dryRun: Boolean = false) extends Command {
             "confirm",
             () => { ConfirmTmtxCommand(dryRun, Some(notifier)).execute(config); () }
           )
-        )
+        ) ++ proofWorker
 
         if dryRun then
             Watchtower.runOnce(workers, timeoutMs = config.oracle.transactionTimeout * 1000L)

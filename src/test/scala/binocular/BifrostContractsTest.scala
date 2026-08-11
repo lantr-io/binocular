@@ -6,6 +6,8 @@ import org.scalatest.funsuite.AnyFunSuite
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import scalus.uplc.builtin.ByteString
 
+import java.nio.file.{Files, Path, Paths}
+
 /** Tests for the F3 bridge-contract hash computation in [[BifrostContracts]].
   *
   * The known-answer cases are REGRESSION LOCKS over the CIP-57 parameter-application encoding
@@ -28,11 +30,14 @@ import scalus.uplc.builtin.ByteString
   * Refreshed again for the peg-out trie v2 rewrite: the min-json now also carries `peg_out`, and
   * both peg-out-side validators changed parameter lists — `peg_out_validator` dropped
   * `oracle_policy_id` (2 params), `completed_peg_outs_merkle_tree_validator` swapped the config NFT
-  * pair for `tm_nft_policy_id` (2 params). `config.config`, `bridged_token` and
-  * `completed_peg_ins_merkle_tree` compiledCode are byte-identical to the previous min-json, so
-  * their three pins did NOT move. `peg_in_validator`'s compiledCode did move — not from a source
-  * change (peg-in.ak is untouched) but because ft regenerated `plutus.json` with a different aiken
-  * build after the last refresh — so its pin moved with it.
+  * pair for `tm_nft_policy_id` (2 params).
+  *
+  * Refreshed again for the rev-5.4 eight-field Config datum (spec §Config datum, 2026-08): the
+  * genesis full cast in `config.config` and the getter indexes in every reader moved, so the config
+  * policy pin and everything parameterized by it cascaded. `peg_in_validator` also dropped its
+  * `tm_nft_policy_id` param (3 params now). `completed_peg_outs_merkle_tree_validator` is WITHDRAWN
+  * in the ft tree (replaced by `bridge-state.ak`); the min-json keeps its LAST published
+  * compiledCode for the interim TM Confirm trie flow, so its pin did not move.
   */
 class BifrostContractsTest extends AnyFunSuite {
 
@@ -66,51 +71,53 @@ class BifrostContractsTest extends AnyFunSuite {
 
     // --- known-answer (regression lock, re-validated at next deploy) ---
     //
-    // These moved with WI-068: ft widened ConfigDatum to 24 fields, which changed config.ak's
-    // compiled code and therefore the config NFT policy — and with it every policy parameterized
-    // by it (bridged_token, completed-peg-ins, peg_in, peg_out). They no longer describe the
-    // bridge deployed on preprod, which stays on its pre-WI-068 code; they describe the NEXT
-    // deploy. Nothing supports both at once: spending a config UTxO needs the script whose hash
-    // is its address, so a tool serving both bridges would need both compiled codes.
+    // All five moved together in the rev-5.4 federation reconciliation, and that is one cause, not
+    // five. `config.ak`'s mint handler full-casts the genesis datum, so widening ConfigDatum to
+    // fifteen fields moved the config script's own hash — which IS the config NFT policy id, and
+    // that id is a parameter to every contract below. A different config policy is a different
+    // bridge instance by construction (spec §Config UTxO), so the whole instance redeploys.
 
-    test("config NFT policy matches the value the next deploy will mint") {
+    test("config NFT policy matches the deployed value") {
         assert(
-          hex(configContract.policyId) == "5ef1dcb7268a440824000d5a2abf019baefb862dd29f5e9741501e97"
+          hex(configContract.policyId) == "647484bac34418331da0f8f8d03123ead340ed3bc204f7a80a086f44"
         )
     }
 
-    test("bridged_token policy matches the value the next deploy will mint") {
+    test("bridged_token policy matches the deployed value") {
         val bt = BridgedTokenContract(blueprint, configPolicy, configAssetName)
-        assert(hex(bt.policyId) == "fdfc28686ce2de5c7f8b4e4e90c44d0bc279af033c27533a40209897")
+        assert(hex(bt.policyId) == "dfaafc99a6109e9e27630f922d025ce5894c7cc62b7935ef71290f50")
     }
 
     test("completed-peg-ins policy + asset name match the Variant B rebuild") {
         // policyId regression lock over the Variant B rebuild. The asset name is now the constant
         // "CPI" (bytes 435049), independent of the one-shot ref and the compiledCode.
         val cpi = CompletedPegInsContract(blueprint, configPolicy, configAssetName, cpiRef)
-        assert(hex(cpi.policyId) == "20d5d3a50c5df1bea0b43a54810ccfeb8d2d5c9f609f0015b8a83a36")
+        assert(hex(cpi.policyId) == "ec46c774f46eaa177ec5bd4c42444b45464ca609a943c5c728f265a4")
         assert(CompletedPegInsContract.assetName == ByteString.fromString("CPI"))
     }
 
-    // The TM-NFT policy param peg_in.ak takes as its 4th argument (= the TreasuryMovementValidator
-    // script hash). A fixed 28-byte placeholder here — B1 has not been deployed, so this test is a
-    // regression lock over the (4-param) CIP-57 encoding, not an on-chain-validated value.
+    // The TM-NFT policy placeholder the completed-peg-outs pin below is computed against. Rev 5.4
+    // removed it from peg_in's parameter list.
     private val tmNftPolicy =
         ByteString.fromHex("11111111111111111111111111111111111111111111111111111111")
 
-    test("peg_in policy (= withdraw hash) is stable for the B1 4-param encoding") {
-        // B1 rewrite (reference Confirmed TM UTxO + embed depositor auth) + the new tm_nft_policy_id
-        // param change peg_in_validator's compiledCode and hash (was 7d66c4f3…). PIRs minted under
-        // the old policy are orphaned and must be re-minted under this one.
+    test("peg_in policy (= withdraw hash) is stable for the rev-5.4 3-param encoding") {
+        // Rev 5.4 dropped the tm_nft_policy_id param: peg_in.ak reads the bridge-state singleton
+        // through Config field 3 at runtime, so three params remain. PIRs minted under the old
+        // policy are orphaned and must be re-minted under this one.
+        //
+        // Moved again (2026-08) when `utils.get_mpf_from_output` became a TYPED decode of the CPI
+        // trie datum instead of a blind field-0 read. peg_in.ak is its only caller, so only this
+        // hash moved; ConfigDatum field 5 must name the new one at deployment.
         val pegIn =
-            PegInContract(blueprint, oraclePolicy, configPolicy, configAssetName, tmNftPolicy)
-        assert(hex(pegIn.policyId) == "4802446011a83a1b44063b71e02cb821dfc592f91144ca27fc481e69")
+            PegInContract(blueprint, oraclePolicy, configPolicy, configAssetName)
+        assert(hex(pegIn.policyId) == "23b660ba11bd04a6c9c7cb63da04ac3b7c2d835995b67d00ce359d3d")
     }
 
     test("peg_out policy (= withdraw hash) is stable for the trie-v2 2-param encoding") {
         // Trie v2 dropped `oracle_policy_id`: peg_out.ak no longer parses the TM itself, it proves
         // membership in the completed-peg-outs trie the TM Confirm wrote. Two params now, so the
-        // hash moved and ConfigDatum field 5 must be swapped by a config Update.
+        // hash moved and ConfigDatum field 6 must be swapped by a config Update.
         //
         // Moved again for rev 5.1 (2026-08): the min-json's `peg_out` compiledCode was refreshed to
         // ft's current build, in which Complete dropped its `owner_auth` check (permissionless
@@ -119,16 +126,7 @@ class BifrostContractsTest extends AnyFunSuite {
         // [[PegOutCompleteCekTest]] runs them — so the stale copy would have made every completion
         // fail on-chain. No other validator's compiledCode changed, so no other pin moved.
         val pegOut = PegOutContract(blueprint, configPolicy, configAssetName)
-        assert(hex(pegOut.policyId) == "b4e64fb5d1a0c82fa13b93a44b5d473330df2934f0b677b3e753c67e")
-    }
-
-    test("completed-peg-outs policy is stable for the trie-v2 (tm-policy, one-shot) encoding") {
-        // Trie v2 params: (tm_nft_policy_id, one_shot_input_ref). The TM policy placeholder is the
-        // same fixed 28 bytes used for peg_in above, so this is a regression lock over the CIP-57
-        // encoding, not an on-chain-validated value.
-        val cpo = CompletedPegOutsContract(blueprint, tmNftPolicy, cpiRef)
-        assert(hex(cpo.policyId) == "65bd38e83097a5a3261af50052a1ce0e93befde9aa94f38280143602")
-        assert(CompletedPegOutsContract.assetName == ByteString.fromString("CPO"))
+        assert(hex(pegOut.policyId) == "ab0f6b6a2602b6e6a135724bd004d2be01842483cea8b797da7c6edd")
     }
 
     // --- determinism + parameter-sensitivity ---
@@ -149,25 +147,123 @@ class BifrostContractsTest extends AnyFunSuite {
         assert(other.policyId != configContract.policyId)
     }
 
-    // The TM script hash is now a completed-peg-outs PARAMETER, so changing the TM validator
-    // orphans the trie: the new policy has no minted "CPO" NFT. This is the migration hazard the
-    // runbook has to sequence, so lock the sensitivity here.
-    test("a different TM policy yields a different completed-peg-outs policy") {
-        val other = CompletedPegOutsContract(
-          blueprint,
-          ByteString.fromHex("22222222222222222222222222222222222222222222222222222222"),
-          cpiRef
-        )
-        assert(other.policyId != CompletedPegOutsContract(blueprint, tmNftPolicy, cpiRef).policyId)
-    }
-
-    test("a different one-shot yields a different completed-peg-outs policy") {
-        val other = CompletedPegOutsContract(blueprint, tmNftPolicy, configRef)
-        assert(other.policyId != CompletedPegOutsContract(blueprint, tmNftPolicy, cpiRef).policyId)
-    }
-
-    test("completed-peg-ins/outs asset names are the CPI/CPO constants") {
+    test("completed-peg-ins asset name is the CPI constant") {
         assert(CompletedPegInsContract.assetName == ByteString.fromString("CPI"))
-        assert(CompletedPegOutsContract.assetName == ByteString.fromString("CPO"))
+    }
+
+    // --- rev-5.4 bridge-state singleton (spec [BSS-4], [BSS-5]) ---
+
+    private val BridgeStateMintTitle = BridgeStateContract.ValidatorTitle
+    private val BridgeStateSpendTitle = "bitcoin/bridge_state.bridge_state.spend"
+
+    // The real first parameter: the TM NFT policy IS the TreasuryMovementValidator script hash.
+    private val tmScriptHash = ByteString.fromArray(
+      TreasuryMovementContract
+          .script(oraclePolicy, configPolicy, configAssetName)
+          .scriptHash
+          .bytes
+    )
+
+    test("the vendored blueprint carries bridge_state mint and spend") {
+        // `bridge-state.ak` replaces `completed-peg-outs-merkle-tree.ak` in ft rev 5.4. The
+        // packaged min-json is the runtime DEFAULT source, so a deployed image can only derive the
+        // singleton policy if both handler titles are vendored here.
+        val codes = List(BridgeStateMintTitle, BridgeStateSpendTitle).map { title =>
+            scala.util
+                .Try(blueprint.compiledCode(title))
+                .getOrElse(
+                  fail(s"the vendored min-json has no $title – refresh it from ft's plutus.json")
+                )
+        }
+        // All handlers of one Aiken validator share a single compiledCode.
+        assert(codes.head.nonEmpty)
+        assert(codes.head == codes.last)
+    }
+
+    test("bridge-state policy is stable for the (tm-policy, one-shot) encoding") {
+        // Known-answer REGRESSION LOCK, the same kind every sibling contract above carries, and the
+        // only bridge_state check that runs on CI (the ft comparison below cancels there). Computed
+        // against the fixed 28-byte TM placeholder so it depends on the vendored `bridge_state`
+        // compiledCode and the CIP-57 param encoding ALONE, not on binocular's TM validator.
+        //
+        // If this moves, someone re-vendored `bitcoin/bridge_state.bridge_state.mint` or edited the
+        // min-json. Then the deployed image derives a policy the ConfigDatum does not name and every
+        // TM Confirm is rejected on-chain, so re-check the vendoring before you move the pin.
+        val bss = BridgeStateContract(blueprint, tmNftPolicy, cpiRef)
+        assert(hex(bss.policyId) == "0b8626761055d00dd58c99646bd379b3881f15477852755a5d74c1f8")
+        // Asset name is the constant "BSS" per [BSS-5], shared with the TM validator's mirror.
+        assert(BridgeStateContract.assetName == ByteString.fromString("BSS"))
+    }
+
+    test("BridgeStateContract applies (tm_nft_policy_id, one_shot_input_ref) in [BSS-4] order") {
+        // Param order per spec [BSS-4]: (tm_nft_policy_id, one_shot_input_ref). The first param is
+        // the TreasuryMovementValidator script hash, which is also the TM NFT policy id, so the TM
+        // script hash must be derived BEFORE the singleton at deploy.
+        val bss = BridgeStateContract(blueprint, tmScriptHash, cpiRef)
+
+        // Parameter sensitivity: both params must reach the script.
+        assert(bss.policyId != BridgeStateContract(blueprint, tmNftPolicy, cpiRef).policyId)
+        assert(bss.policyId != BridgeStateContract(blueprint, tmScriptHash, configRef).policyId)
+    }
+
+    /** An ft-bifrost-bridge checkout to compare the vendored copy against, when one is on disk.
+      *
+      * The policy-id pins above are computed from the vendored resource, so they lock it against
+      * ITSELF and say nothing about drift from ft. Only this comparison does. It cancels with no
+      * checkout, because CI and release builds have none.
+      */
+    private def ftPlutusJson: Option[Path] =
+        sys.env.get("BIFROST_PLUTUS_JSON").map(_.trim).filter(_.nonEmpty) match {
+            // An explicitly named blueprint that cannot be read is a broken setup, never a
+            // skip: silently falling through to a sibling checkout (or to cancel) is exactly
+            // how a stale vendored copy stays green on the one machine that could catch it.
+            case Some(p) =>
+                val path = Paths.get(p)
+                if !Files.isReadable(path) then
+                    fail(
+                      s"BIFROST_PLUTUS_JSON is set to '$p' but not readable — refusing to " +
+                          "silently skip the drift check"
+                    )
+                Some(path)
+            case None =>
+                List(
+                  "../ft-bifrost-bridge/onchain/plutus.json",
+                  "../../ft-bifrost-bridge/onchain/plutus.json",
+                  "../../FluidTokens/ft-bifrost-bridge/onchain/plutus.json"
+                ).map(Paths.get(_)).find(Files.isReadable)
+        }
+
+    test("every vendored compiledCode is ft's current one") {
+        // Freshness against ft, for the WHOLE vendored set — a stale peg_in or peg_out is just
+        // as fatal as a stale bridge_state (the watchtower derives their script hashes, and
+        // every transaction it builds against a stale hash is rejected on-chain). Cancels
+        // without a checkout, so it guards a developer machine only — the per-contract policy
+        // pins above are what guard CI. Keep BOTH: the pins cannot see ft, this cannot run
+        // there.
+        ftPlutusJson match {
+            case None =>
+                cancel(
+                  "no ft-bifrost-bridge checkout found (set BIFROST_PLUTUS_JSON to enable this check)"
+                )
+            case Some(path) =>
+                val ft = BifrostBlueprint.fromFile(path.toString)
+                val stale = blueprint.validatorTitles.filter { title =>
+                    val ftCode =
+                        try ft.compiledCode(title)
+                        catch {
+                            case _: RuntimeException =>
+                                fail(
+                                  s"validator '$title' is vendored but absent from $path — " +
+                                      "the two blueprints no longer describe the same bridge"
+                                )
+                        }
+                    ftCode != blueprint.compiledCode(title)
+                }
+                assert(
+                  stale.isEmpty,
+                  s"vendored compiledCode is stale against $path for: ${stale.mkString(", ")} " +
+                      "– re-vendor bifrost-plutus-min.json"
+                )
+        }
     }
 }

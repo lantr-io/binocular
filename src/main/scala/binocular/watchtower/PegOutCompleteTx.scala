@@ -15,16 +15,17 @@ import scala.concurrent.{ExecutionContext, Future}
 /** Builds the peg-out **Complete** transaction — permissionless cleanup of a PAID PegOutRequest.
   *
   * Since spec rev 5.1 completion carries no authorization and no Bitcoin proof. A confirmed Treasury
-  * Movement already paid the destination and its FROST-attested root, copied into the on-chain CPO
-  * singleton at Confirm, already binds this request to that payment. All Complete does is prove
-  * membership and burn the fBTC the request locked. Whoever does it keeps the request's MIN_ADA —
+  * Movement already paid the destination and its FROST-attested `cpo_root`, copied into the
+  * bridge-state singleton at Confirm, already binds this request to that payment. All Complete does
+  * is prove membership and burn the fBTC the request locked. Whoever does it keeps the request's MIN_ADA —
   * the cleanup incentive that stops PegOutRequest state from accumulating.
   *
   * ==Shape==
   *   - Spend: the PegOutRequest UTxO. `peg_out.ak`'s `spend` handler only requires a withdrawal from
   *     its own script hash, so its redeemer is ignored (`Data.unit`).
-  *   - References: the Config UTxO and the CPO singleton. BOTH are referenced, never spent — which
-  *     is what makes completion transactions independent of each other.
+  *   - References: the Config UTxO and the bridge-state singleton (peg_out.ak reads `cpo_root`
+  *     from its BridgeState datum BY NAME, [LIB-1]). BOTH are referenced, never spent — which is
+  *     what makes completion transactions independent of each other.
   *   - Mint: `-locked` fBTC. `bridged_token.ak` allows a burn whenever the peg-out withdraw script
   *     runs; `peg_out.ak` is what pins the amount to ALL of the locked tokens.
   *   - Withdrawal (0 ADA) from the `peg_out` reward account, carrying
@@ -52,8 +53,8 @@ object PegOutCompleteTx {
       */
     final case class ScriptRefs(pegOut: Option[Utxo], bridgedToken: Option[Utxo])
 
-    /** `pegOut` is SPENT; `config` and `completedPegOuts` are REFERENCED. */
-    final case class Inputs(pegOut: Utxo, config: Utxo, completedPegOuts: Utxo)
+    /** `pegOut` is SPENT; `config` and `bridgeState` (the singleton) are REFERENCED. */
+    final case class Inputs(pegOut: Utxo, config: Utxo, bridgeState: Utxo)
 
     def build(
         provider: BlockchainProvider,
@@ -79,7 +80,7 @@ object PegOutCompleteTx {
         val pegOutWithdrawRedeemer: Transaction => Data = tx =>
             PegOutWithdrawRedeemer(
               configRefInputIndex = refIndex(tx, inputs.config),
-              completedPegOutsRefInputIndex = refIndex(tx, inputs.completedPegOuts),
+              completedPegOutsRefInputIndex = refIndex(tx, inputs.bridgeState),
               actionType = PegOutActionType.CompletePegOut(membershipProof)
             ).toData
 
@@ -103,7 +104,7 @@ object PegOutCompleteTx {
         // `.references(...)` MUST precede any PlutusScriptAttached witness / `.mint(policyId, …)`:
         // TxBuilder verifies each attached script already has its reference input. Same ordering
         // rule as PegInCompleteTx.
-        val refs = Seq(inputs.config, inputs.completedPegOuts) ++
+        val refs = Seq(inputs.config, inputs.bridgeState) ++
             Seq(scriptRefs.pegOut, scriptRefs.bridgedToken).flatten
         val base = TxBuilder(provider.cardanoInfo)
             .references(refs.head, refs.tail*)

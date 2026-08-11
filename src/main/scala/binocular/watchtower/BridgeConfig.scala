@@ -42,47 +42,43 @@ case class BridgeConfig(
     // reconstruct the script in order to SPEND the MPF UTxO. The config NFT, by contrast, is only a
     // reference input, so it is located by its NFT and needs no script. Empty until F3 is deployed.
     completedPegInsOneShotRef: String = "",
-    // The initial Bitcoin treasury outpoint written into config field 11 (initial_btc_treasury_utxo)
-    // at deploy, in display form "TXID:VOUT" (TXID as shown by explorers; converted to internal
-    // byte order internally). The FIRST Treasury Movement must spend this outpoint; every
-    // subsequent TM chains from the previous Confirmed TM record.
-    initialBtcTreasuryUtxo: String = "",
-    // The DKG candidate-set stake threshold written into config field 9 at deploy (lovelace): a
-    // pool's epoch-snapshot active_stake must reach it to register / enter the candidate set.
-    // Read off-chain only (heimdall's register_spo R2 gate). 0 = no threshold, which is what every
-    // bridge deployed before this key existed carries — raise it with `update-config --min-stake`
-    // rather than by editing each SPO's own config, or the operators disagree about who is eligible.
-    minStakeLovelace: Long = 0L,
-    // Operational-parameter tunables written into config fields 12–15 at deploy (off-chain
-    // consensus anchors; the schedule #16 uses spec devnet defaults, replaced wholesale by a
-    // governance Update). All five are governance-updatable in place — `update-config --fee-rate`
-    // et al — which is how the bridge tracks the Bitcoin fee market. See ConfigDatum #12–16.
+    // Operational-parameter tunables written into the nested config field 7 (`params`) at deploy
+    // (off-chain consensus anchors; the schedule at params[3] uses spec devnet defaults, replaced
+    // wholesale by a governance Update). All three are governance-updatable in place —
+    // `update-config --fee-rate` et al — which is how the bridge tracks the Bitcoin fee market.
+    // See ConfigDatum field 7.
     feeRateSatPerVb: Long = 1L,
     perPegoutFeeSat: Long = 1000L,
     minPegOutSat: Long = 10000L,
-    leaderRewardLovelace: Long = 2000000L,
     // The ban schedule baked into the spo_bans policy id at genesis, and published verbatim as
-    // config #18-20. Unlike the tunables above these are NOT governance-updatable in place: they
+    // config #8-10. Unlike the tunables above these are NOT governance-updatable in place: they
     // are inputs to the policy hash, so changing one names a different ban list — which is exactly
     // why they are chosen once, here, and then read by every SPO rather than typed by each.
     banSchedule: BanScheduleConfig = BanScheduleConfig(),
-    // The completed-peg-outs one-shot fixes that validator's params (hence its policyId + NFT asset
-    // name); peg-out-complete needs it to reconstruct the script to SPEND the MPF UTxO. `Option`
-    // (not `""`): a peg-in-only bridge (e.g. the synced config) simply omits the key — pureconfig
-    // maps a missing key to `None`. The peg-out commands fail fast when a required ref is absent.
+    // The one-shot wallet UTxO (TX_HASH#INDEX) consumed when the bridge-state singleton NFT
+    // ("BSS") was minted. It fixes the bridge_state validator's parameter set — its other
+    // parameter is the TM script hash, which confirm derives — hence its policyId, which MUST
+    // equal Config field 3 (`bridge_state_policy`). `Option` (not `""`): a missing key maps to
+    // `None`, so "absent" and "present but empty" stay distinguishable.
     //
-    // REQUIRED BY `confirm-tmtx` since the peg-out trie v2 change (2026-07). Every TM Confirm tx
-    // spends and recreates the completed-peg-outs trie UTxO, so the confirm daemon must rebuild that
-    // validator too — its other parameter is the TM script hash, which confirm already derives.
-    // `confirm-tmtx` (and therefore `watchtower`) exits at startup when this key is missing, because
-    // no TM can be confirmed without the trie spend. A peg-in-only deployment must still set it.
+    // REQUIRED BY `confirm-tmtx` (rev 5.4): every TM Confirm tx spends and recreates the
+    // singleton, so the confirm daemon must rebuild that validator. `confirm-tmtx` (and therefore
+    // `watchtower`) exits at startup when this key is missing, because no TM can be confirmed
+    // without the singleton spend.
     //
-    // The heavy scripts' CIP-33 reference UTxOs (peg_in, bridged_token, completed_peg_ins, peg_out,
-    // completed_peg_outs) are no longer recorded here: deploy-script-refs publishes them to the
+    // The heavy scripts' CIP-33 reference UTxOs (peg_in, bridged_token, completed_peg_ins,
+    // peg_out, bridge_state) are not recorded here: deploy-script-refs publishes them to the
     // sponsor wallet, and the completion paths discover them by the `reference_script_hash` each
-    // carries (see CommandHelpers.refScriptUtxosByHash). A script hash not found on-chain falls back
-    // to inlining the script in the witness set (only viable for small txs).
-    completedPegOutsOneShotRef: Option[String] = None,
+    // carries (see CommandHelpers.refScriptUtxosByHash). A script hash not found on-chain falls
+    // back to inlining the script in the witness set (only viable for small txs).
+    bridgeStateOneShotRef: Option[String] = None,
+    // The initial Bitcoin treasury outpoint ("TXID:VOUT", display txid) and its satoshi amount —
+    // the deployment anchor written into the singleton's bootstrap BridgeState (spec §Why the
+    // bootstrap datum is not pinned). Nothing on Cardano verifies the amount; a wrong value is
+    // self-limiting (the first TM built from it cannot balance). Read by deploy-bridge and
+    // bootstrap-bridge-state only.
+    initialBtcTreasuryUtxo: String = "",
+    initialBtcTreasuryAmountSat: Long = 0L,
     // --- POR sweeper (spec rev 5.2) ---
     // Chain peg-out Complete after TM Confirm: after each confirmed TM the watchtower burns the
     // locked fBTC of every PAID PegOutRequest and keeps its MIN_ADA. ON by default — completion is
@@ -96,7 +92,15 @@ case class BridgeConfig(
     // Directory holding the persistent completed-peg-outs trie mirror (`cpo-trie.json`). Losing it
     // is not fatal — the sweeper reconstructs from chain history — but reconstruction reads the full
     // history of two addresses, so it should live on durable storage. `~` is expanded.
-    stateDir: String = ".binocular"
+    stateDir: String = ".binocular",
+    // --- proof server ([SPI-4]/[OB-13] REST transport) ---
+    // Serve the swept-peg-ins membership proof and the deposit-inclusion bundle over HTTP as part
+    // of the watchtower process. ON by default: serving is trustless (every proof is verified
+    // on-chain, a wrong one just fails), and [SPI-4] names binocular as the proof server the
+    // frontend depends on. Turn off to run a watchtower that serves nobody; `serve-proofs` runs
+    // the same server standalone.
+    proofServer: Boolean = true,
+    proofServerPort: Int = 9060
 ) derives ConfigReader
 
 object BridgeConfig {

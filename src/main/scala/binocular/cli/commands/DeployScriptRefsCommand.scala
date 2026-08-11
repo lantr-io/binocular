@@ -18,8 +18,9 @@ import scalus.utils.await
 import cats.syntax.either.*
 
 /** Publishes the heavy Plutus scripts the completion paths use as reference UTxOs: peg-in side
-  * (`peg_in`, `bridged_token`, `completed_peg_ins`) and peg-out side (`peg_out`,
-  * `completed_peg_outs`) — 5 in total (`bridged_token` is shared by both burns/mints).
+  * (`peg_in`, `bridged_token`, `completed_peg_ins`), peg-out side (`peg_out`), and the
+  * `bridge_state` singleton validator (spent every TM Confirm) — 5 in total (`bridged_token` is
+  * shared by both burns/mints).
   *
   * Each script gets pinned to a Babbage-era output at the sponsor's wallet address with
   * `script_ref` set. Once these outputs land on chain, pegin-/pegout-complete pass their outRefs as
@@ -74,18 +75,18 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
         val configNftAsset = ByteString.fromHex(cfg.configNftAssetName)
         val cpiRefInput = parseRef("completed-peg-ins-one-shot-ref", cfg.completedPegInsOneShotRef)
         val cpiOneShotRef = TxOutRef(TxId(cpiRefInput.transactionId), cpiRefInput.index)
-        if cfg.completedPegOutsOneShotRef.forall(_.trim.isEmpty) then {
+        if cfg.bridgeStateOneShotRef.forall(_.trim.isEmpty) then {
             Console.error(
-              "bridge.completed-peg-outs-one-shot-ref is not set — run deploy-bridge first"
+              "bridge.bridge-state-one-shot-ref is not set — run deploy-bridge first"
             )
             break(1)
         }
-        val cpoRefInput =
-            parseRef("completed-peg-outs-one-shot-ref", cfg.completedPegOutsOneShotRef.get)
-        val cpoOneShotRef = TxOutRef(TxId(cpoRefInput.transactionId), cpoRefInput.index)
+        val bssRefInput =
+            parseRef("bridge-state-one-shot-ref", cfg.bridgeStateOneShotRef.get)
+        val bssOneShotRef = TxOutRef(TxId(bssRefInput.transactionId), bssRefInput.index)
 
         // Re-derive the 5 scripts the completion paths need (peg-in: peg_in, bridged_token,
-        // completed_peg_ins; peg-out: peg_out, completed_peg_outs) — same constructor invocations
+        // completed_peg_ins; peg-out: peg_out; confirm: bridge_state) — same constructor invocations
         // DeployBridgeCommand uses, so the hashes line up exactly. (bridged_token is shared.)
         // Blueprint script() — must match DeployBridgeCommand and the watchtower exactly.
         val tmNftPolicy = ByteString.fromArray(
@@ -94,19 +95,20 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
               .scriptHash
               .bytes
         )
+        // Rev 5.4: peg_in dropped its tm_nft_policy_id param; tmNftPolicy parameterizes bridge_state.
         val pegIn =
-            PegInContract(blueprint, oraclePolicyId, configNftPolicy, configNftAsset, tmNftPolicy)
+            PegInContract(blueprint, oraclePolicyId, configNftPolicy, configNftAsset)
         val bridgedToken = BridgedTokenContract(blueprint, configNftPolicy, configNftAsset)
         val cpi =
             CompletedPegInsContract(blueprint, configNftPolicy, configNftAsset, cpiOneShotRef)
         val pegOut = PegOutContract(blueprint, configNftPolicy, configNftAsset)
-        val cpo = CompletedPegOutsContract(blueprint, tmNftPolicy, cpoOneShotRef)
+        val bss = BridgeStateContract(blueprint, tmNftPolicy, bssOneShotRef)
 
         Console.info("peg_in script hash", pegIn.policyId.toHex)
         Console.info("bridged_token script hash", bridgedToken.policyId.toHex)
         Console.info("completed_peg_ins script hash", cpi.policyId.toHex)
         Console.info("peg_out script hash", pegOut.policyId.toHex)
-        Console.info("completed_peg_outs script hash", cpo.policyId.toHex)
+        Console.info("bridge_state script hash", bss.policyId.toHex)
         println()
 
         if dryRun then {
@@ -210,7 +212,7 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
           ("bridged_token", bridgedToken.script),
           ("completed_peg_ins", cpi.script),
           ("peg_out", pegOut.script),
-          ("completed_peg_outs", cpo.script)
+          ("bridge_state", bss.script)
         )
         val deployedHashes = binocular.cli.CommandHelpers
             .refScriptUtxosByHash(config, sponsorAddress.encode.getOrElse(""))

@@ -55,11 +55,14 @@ object SposRegistryContract {
     }
 }
 
-/** `treasury_info`, parameterized by `(spos_registry policy, TM-NFT policy)`.
+/** `treasury_info`, parameterized by the `spos_registry` policy alone.
   *
-  * BOTH parameters must be applied identically by every reader or it computes a different hash, a
+  * Rev 5.4 dropped the second parameter, the TM-NFT policy: it fed only the FederationReset spend
+  * branch, which the revision withdrew (spec [UY-7]/[UY-8]).
+  *
+  * The one parameter must be applied identically by every reader or it computes a different hash, a
   * different address, and a state UTxO nobody can find — which is why bridge genesis publishes the
-  * finished policy id in the Config (#22) instead of leaving each node to re-derive it.
+  * finished policy id in the Config (#12) instead of leaving each node to re-derive it.
   */
 final case class TreasuryInfoContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash
@@ -72,13 +75,11 @@ object TreasuryInfoContract {
 
     def apply(
         blueprint: BifrostBlueprint,
-        sposRegistryPolicyId: ByteString,
-        tmNftPolicyId: ByteString
+        sposRegistryPolicyId: ByteString
     ): TreasuryInfoContract = {
         val applied = Program
             .fromCborHex(blueprint.compiledCode(ValidatorTitle))
             .$(Data.B(sposRegistryPolicyId))
-            .$(Data.B(tmNftPolicyId))
         TreasuryInfoContract(Script.PlutusV3(applied.cborByteString))
     }
 }

@@ -25,9 +25,9 @@ import scala.util.Try
   * undone, paid PegOutRequest UTxOs accumulate forever.
   *
   * ==What one sweep does==
-  *   1. CATCH UP the local trie mirror to the root the on-chain CPO singleton holds, using the data
-  *      -availability hints recorded at each confirm ([[recordConfirmed]]). If the hints cannot
-  *      explain the on-chain root, reconstruct from chain history; if that fails too, HALT.
+  *   1. CATCH UP the local trie mirror to the `cpo_root` the bridge-state singleton holds, using
+  *      the data-availability hints recorded at each confirm ([[recordConfirmed]]). If the hints
+  *      cannot explain the on-chain root, reconstruct from chain history; if that fails too, HALT.
   *   1. COMPLETE every request at the peg-out address whose POR id the mirror records, one
   *      transaction each.
   *
@@ -147,32 +147,33 @@ final class PorSweeper(
         persistPending()
     }
 
-    /** Catch the mirror up to `trieUtxo`'s root, then complete every completable request.
+    /** Catch the mirror up to the singleton's `cpo_root`, then complete every completable request.
       *
-      * `configUtxo` and `trieUtxo` are the LIVE reference inputs, re-read by the caller each cycle.
+      * `configUtxo` and `singletonUtxo` are the LIVE reference inputs, re-read by the caller each
+      * cycle.
       */
-    def sweep(configUtxo: Utxo, trieUtxo: Utxo, only: Option[String] = None): Unit = {
+    def sweep(configUtxo: Utxo, singletonUtxo: Utxo, only: Option[String] = None): Unit = {
         haltReason match {
             case Some(why) => Console.logWarn(s"    sweeper: HALTED — skipping. $why")
-            case None      => sweepUnhalted(configUtxo, trieUtxo, only)
+            case None      => sweepUnhalted(configUtxo, singletonUtxo, only)
         }
     }
 
-    private def sweepUnhalted(configUtxo: Utxo, trieUtxo: Utxo, only: Option[String]): Unit =
+    private def sweepUnhalted(configUtxo: Utxo, singletonUtxo: Utxo, only: Option[String]): Unit =
         verifyAgainstConfig(configUtxo, ctx) match {
             // A deployment/migration state, not a defect: the deployed Config still publishes other
             // scripts than the ones derived here, so any completion we built would be rejected.
             // Report and skip; confirming is unaffected, and the next config Update fixes it with no
             // restart.
             case Left(err) => Console.logWarn(s"    sweeper: not sweeping — $err")
-            case Right(()) => sweepVerified(configUtxo, trieUtxo, only)
+            case Right(()) => sweepVerified(configUtxo, singletonUtxo, only)
         }
 
-    private def sweepVerified(configUtxo: Utxo, trieUtxo: Utxo, only: Option[String]): Unit =
-        onChainRoot(trieUtxo) match {
+    private def sweepVerified(configUtxo: Utxo, singletonUtxo: Utxo, only: Option[String]): Unit =
+        bridgeState(singletonUtxo) match {
             case Left(err) => Console.logError(s"    sweeper: $err")
-            case Right(root) =>
-                catchUp(root) match {
+            case Right(state) =>
+                catchUp(state.cpoRoot, state.treasuryUtxoId) match {
                     // Transient: the backend was busy or unreachable. It says nothing about the
                     // trie, so the next tick simply tries again. Latching here would trade a
                     // seconds-long outage for a process-lifetime one.
@@ -195,7 +196,7 @@ final class PorSweeper(
                             .foreach(e =>
                                 Console.logWarn(s"    sweeper: persisting the trie mirror: $e")
                             )
-                        completeAll(m, configUtxo, trieUtxo, only)
+                        completeAll(m, configUtxo, singletonUtxo, only)
                 }
         }
 
@@ -206,7 +207,10 @@ final class PorSweeper(
       * it: consuming first would mean a transient backend error costs the cheap path back and
       * forces the next attempt into a full reconstruction.
       */
-    private def catchUp(target: ByteString): Either[HistoryError, CpoTrieMirror] =
+    private def catchUp(
+        target: ByteString,
+        headUtxoId: ByteString
+    ): Either[HistoryError, CpoTrieMirror] =
         ensureLoaded().left.map(HistoryError.permanent).flatMap { start =>
             val queued = pending.toIndexedSeq
             var current = start
@@ -233,7 +237,7 @@ final class PorSweeper(
                 }
             }
             error match {
-                case Some(err) => recover(target, err)
+                case Some(err) => recover(target, headUtxoId, err)
                 case None if current.root == target =>
                     if consumed > 0 then {
                         pending.remove(0, consumed)
@@ -243,6 +247,7 @@ final class PorSweeper(
                 case None =>
                     recover(
                       target,
+                      headUtxoId,
                       s"the mirror holds ${current.root.toHex} and no recorded hint explains the " +
                           s"on-chain root ${target.toHex} (a TM confirmed by another party)"
                     )
@@ -256,7 +261,11 @@ final class PorSweeper(
       * back, and discarding them before knowing the expensive path worked would guarantee a full
       * reconstruction on the next attempt too.
       */
-    private def recover(target: ByteString, why: String): Either[HistoryError, CpoTrieMirror] =
+    private def recover(
+        target: ByteString,
+        headUtxoId: ByteString,
+        why: String
+    ): Either[HistoryError, CpoTrieMirror] =
         historySource match {
             case None =>
                 Left(
@@ -266,7 +275,7 @@ final class PorSweeper(
                 )
             case Some(source) =>
                 Console.logWarn(s"    sweeper: reconstructing the trie mirror — $why")
-                reconstructConfig(target) match {
+                reconstructConfig(target, headUtxoId) match {
                     case Left(err) => Left(HistoryError.permanent(err))
                     case Right(cfg) =>
                         CpoReconstruction.reconstruct(
@@ -295,7 +304,10 @@ final class PorSweeper(
       * to become the empty string, which the backend answers with an EMPTY history — and an empty
       * history reconstructs a confidently empty trie. Fail loudly instead.
       */
-    private def reconstructConfig(target: ByteString): Either[String, CpoReconstruction.Config] =
+    private def reconstructConfig(
+        target: ByteString,
+        headUtxoId: ByteString
+    ): Either[String, CpoReconstruction.Config] =
         for {
             tm <- ctx.tmAddress.encode.toEither.left
                 .map(e => s"the TM address does not encode to bech32: ${e.getMessage}")
@@ -306,6 +318,7 @@ final class PorSweeper(
           pegOutAddress = por,
           fbtcPolicyHex = ctx.bridgedTokenPolicy.toHex,
           fbtcAssetNameHex = ctx.bridgedTokenAsset.bytes.toHex,
+          headUtxoId = headUtxoId,
           onChainRoot = Some(target)
         )
 
@@ -359,7 +372,7 @@ final class PorSweeper(
     private def completeAll(
         m: CpoTrieMirror,
         configUtxo: Utxo,
-        trieUtxo: Utxo,
+        singletonUtxo: Utxo,
         only: Option[String]
     ): Unit = {
         val utxos = provider.findUtxos(ctx.pegOutAddress).await(timeout) match {
@@ -405,7 +418,7 @@ final class PorSweeper(
                         )
                         PegOutCompleteTx.ScriptRefs(None, None)
                 }
-            ready.foreach(c => completeOne(c, m, configUtxo, trieUtxo, scriptRefs))
+            ready.foreach(c => completeOne(c, m, configUtxo, singletonUtxo, scriptRefs))
         }
     }
 
@@ -414,7 +427,7 @@ final class PorSweeper(
         c: Completable,
         m: CpoTrieMirror,
         configUtxo: Utxo,
-        trieUtxo: Utxo,
+        singletonUtxo: Utxo,
         scriptRefs: PegOutCompleteTx.ScriptRefs
     ): Unit = {
         val ref = c.ref
@@ -434,7 +447,7 @@ final class PorSweeper(
                           scripts =
                               PegOutCompleteTx.Scripts(ctx.pegOutScript, ctx.bridgedTokenScript),
                           scriptRefs = scriptRefs,
-                          inputs = PegOutCompleteTx.Inputs(c.utxo, configUtxo, trieUtxo),
+                          inputs = PegOutCompleteTx.Inputs(c.utxo, configUtxo, singletonUtxo),
                           membershipProof = proof,
                           lockedFbtc = c.locked,
                           bridgedTokenPolicy = ctx.bridgedTokenPolicy,
@@ -466,10 +479,15 @@ final class PorSweeper(
         }
     }
 
-    private def onChainRoot(trieUtxo: Utxo): Either[String, ByteString] =
-        trieUtxo.output.inlineDatum
-            .flatMap(d => Try(d.to[CompletedPegOutsTrieDatum].root).toOption)
-            .toRight("the CPO singleton UTxO has no decodable inline root datum")
+    // Rev 5.4: the completed-peg-outs root lives in the bridge-state singleton, decoded as the
+    // 4-field BridgeState and read BY NAME ([LIB-1]) — a bare field-0 read would return spi_root
+    // where this caller wants cpo_root, and a wrong root makes `mpf.miss` SUCCEED, cancelling a
+    // paid PegOutRequest. The head (`treasury_utxo_id`) is read alongside: it is where a
+    // reconstruction's treasury-chain walk starts ([OB-2]).
+    private def bridgeState(singletonUtxo: Utxo): Either[String, BridgeState] =
+        singletonUtxo.output.inlineDatum
+            .flatMap(d => Try(d.to[BridgeState]).toOption)
+            .toRight("the bridge-state singleton has no decodable BridgeState datum ([LIB-1])")
 }
 
 object PorSweeper {
@@ -601,28 +619,29 @@ object PorSweeper {
 
     /** The scripts this sweeper would use MUST be the ones the deployed Config publishes.
       *
-      * Field 5 is `peg_out_withdraw_script_hash` — the script whose reward account the Complete
-      * transaction withdraws from and whose address holds the requests. Fields 0/1 are the
-      * bridged-token policy and asset name, the tokens the completion burns. A mismatch on any of
+      * Rev-5.4 layout: field 6 is `peg_out_script_hash` — the script whose reward account the
+      * Complete transaction withdraws from and whose address holds the requests. Field 1 is the
+      * bridged-token policy, the token the completion burns; its asset name is the [CFG-1] constant
+      * `"fSAT"` ([[ConfigDatum.BridgedTokenAssetName]]), not a Config field. A mismatch on any of
       * them means the derived scripts are not the live ones and every completion would be rejected.
       */
     def verifyAgainstConfig(configUtxo: Utxo, ctx: Context): Either[String, Unit] =
         for {
-            pegOut <- configField(configUtxo, 5)
-            policy <- configField(configUtxo, 0)
-            asset <- configField(configUtxo, 1)
+            pegOut <- configField(configUtxo, 6)
+            policy <- configField(configUtxo, 1)
             _ <- Either.cond(
               pegOut.toHex == ctx.pegOutScript.scriptHash.toHex,
               (),
-              s"config field 5 publishes peg-out withdraw hash ${pegOut.toHex}, but the derived " +
+              s"config field 6 publishes peg-out withdraw hash ${pegOut.toHex}, but the derived " +
                   s"peg_out validator hashes to ${ctx.pegOutScript.scriptHash.toHex} — run the " +
                   "`update-config --peg-out-withdraw-hash` migration before sweeping"
             )
             _ <- Either.cond(
               policy.toHex == ctx.bridgedTokenPolicy.toHex &&
-                  asset.toHex == ctx.bridgedTokenAsset.bytes.toHex,
+                  ctx.bridgedTokenAsset.bytes.toHex == ConfigDatum.BridgedTokenAssetName.toHex,
               (),
-              s"config publishes bridged token ${policy.toHex}.${asset.toHex}, but the sweeper is " +
+              s"config publishes bridged token policy ${policy.toHex} (asset is the [CFG-1] " +
+                  s"constant ${ConfigDatum.BridgedTokenAssetName.toHex}), but the sweeper is " +
                   s"configured for ${ctx.bridgedTokenPolicy.toHex}.${ctx.bridgedTokenAsset.bytes.toHex}"
             )
         } yield ()

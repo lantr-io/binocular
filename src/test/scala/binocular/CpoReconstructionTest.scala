@@ -47,9 +47,12 @@ class CpoReconstructionTest extends AnyFunSuite {
 
     // --- Bitcoin TM fixtures --------------------------------------------------------------------
 
-    /** `OP_RETURN OP_PUSHBYTES_37 "CPOR1" <root>` — the 39-byte commitment scriptPubKey. */
+    /** `OP_RETURN OP_PUSHBYTES_69 "BTMR1" <spi> <cpo>` — the 71-byte two-root commitment
+      * scriptPubKey. Reconstruction reads the CPO side; the SPI side is a fixed placeholder here.
+      */
     private def commitment(root: ByteString): ByteString =
-        ByteString.fromHex("6a2543504f5231") ++ root
+        ByteString.fromHex("6a4542544d5231") ++
+            ByteString.fromArray(Array.fill[Byte](32)(0x0f)) ++ root
 
     /** A 1-input segwit transaction with the given outputs. `inOutpoint` is the treasury input, so
       * a TM can be chained onto its predecessor's output 0.
@@ -72,17 +75,42 @@ class CpoReconstructionTest extends AnyFunSuite {
 
     // --- Cardano fixtures -----------------------------------------------------------------------
 
+    /** A LEGACY rev-5.1 `Confirmed` record datum, built as raw Data: the typed layer no longer has
+      * the variant (rev 5.4 produces no Confirmed record), but old history could still carry these
+      * Constr-1 shapes. Reconstruction must SKIP them — they are not byte carriers for the walk.
+      */
     private def confirmedOutput(raw: ByteString, index: Long = 0): ChainOutput = {
-        val datum: Data = (TmDatum.Confirmed(
-          BitcoinHelpers.getTxHash(raw),
-          TreasuryMovementValidator.allInputOutpoints(raw),
-          TreasuryMovementValidator.allOutputs(raw),
-          false,
-          PubKeyHash(filled(0x0c, 28)),
-          BigInt(0),
-          BigInt(0),
-          BigInt(0)
-        ): TmDatum).toData
+        val datum: Data = Data.Constr(
+          1,
+          PList.from(
+            List[Data](
+              Data.B(BitcoinHelpers.getTxHash(raw)),
+              Data.List(
+                PList.from(
+                  TreasuryMovementValidator
+                      .allInputOutpoints(raw)
+                      .asScala
+                      .toList
+                      .map(b => Data.B(b): Data)
+                )
+              ),
+              Data.List(
+                PList.from(
+                  TreasuryMovementValidator
+                      .allOutputs(raw)
+                      .asScala
+                      .toList
+                      .map(e =>
+                          Data.Constr(
+                            0,
+                            PList.from(List[Data](Data.B(e.scriptPubKey), Data.I(e.amount)))
+                          ): Data
+                      )
+                )
+              )
+            )
+          )
+        )
         ChainOutput(filled(0xc1 + index.toInt, 32), index, Some(datum), Map.empty)
     }
 
@@ -91,14 +119,12 @@ class CpoReconstructionTest extends AnyFunSuite {
         hints: Seq[ByteString],
         seed: Int = 0xe0
     ): ChainOutput = {
-        val datum: Data = (TmDatum.Unconfirmed(
+        val datum: Data = UnconfirmedTm(
           raw,
           PubKeyHash(filled(0x0c, 28)),
           BigInt(0),
-          BigInt(0),
-          BigInt(0),
           PList.from(hints.toList)
-        ): TmDatum).toData
+        ).toData
         ChainOutput(filled(seed, 32), 0, Some(datum), Map.empty)
     }
 
@@ -130,11 +156,15 @@ class CpoReconstructionTest extends AnyFunSuite {
     private def hintOf(por: ChainOutput): ByteString =
         CpoTrieMirror.hintBytes(por.txHash, por.outputIndex)
 
-    private def cfg(onChainRoot: Option[ByteString]) = CpoReconstruction.Config(
+    private def cfg(
+        onChainRoot: Option[ByteString],
+        head: => ByteString = treasuryOutpointOf(tm2)
+    ) = CpoReconstruction.Config(
       tmAddress = tmAddress,
       pegOutAddress = pegOutAddress,
       fbtcPolicyHex = fbtcPolicy,
       fbtcAssetNameHex = fbtcAsset,
+      headUtxoId = head,
       onChainRoot = onChainRoot
     )
 
@@ -164,9 +194,8 @@ class CpoReconstructionTest extends AnyFunSuite {
       Map(tmAddress -> tmOutputs, pegOutAddress -> Seq(por1, por2))
     )
 
+    // Rev 5.4: the spent `UnconfirmedTm` records ARE the history — no Confirmed record exists.
     private val honestTmOutputs = Seq(
-      confirmedOutput(tm1, 0),
-      confirmedOutput(tm2, 1),
       unconfirmedOutput(tm1, Seq(hintOf(por1)), 0xe1),
       unconfirmedOutput(tm2, Seq(hintOf(por2)), 0xe2)
     )
@@ -184,7 +213,10 @@ class CpoReconstructionTest extends AnyFunSuite {
     test("a missing hint falls back to matching the TM's payments") {
         // Payment outputs are (spk, net) pairs; each is matched against the requests in history and
         // the assignment is accepted only if it reproduces the attested root.
-        val noHints = honestTmOutputs.take(2)
+        val noHints = Seq(
+          unconfirmedOutput(tm1, Seq.empty, 0xe1),
+          unconfirmedOutput(tm2, Seq.empty, 0xe2)
+        )
         val m = CpoReconstruction
             .reconstruct(history(noHints), cfg(Some(root2)))
             .fold(e => fail(e.message), identity)
@@ -203,8 +235,6 @@ class CpoReconstructionTest extends AnyFunSuite {
 
     test("a garbled hint for every record still reconstructs via the fallback") {
         val garbled = Seq(
-          confirmedOutput(tm1, 0),
-          confirmedOutput(tm2, 1),
           unconfirmedOutput(tm1, Seq(ByteString.fromHex("dead")), 0xe1),
           unconfirmedOutput(tm2, Seq(hintOf(por1)), 0xe2) // points at the WRONG request
         )
@@ -285,7 +315,7 @@ class CpoReconstructionTest extends AnyFunSuite {
 
     test("a TM whose payments match no request in history names that TM") {
         val orphanHistory = new FakeHistory(
-          Map(tmAddress -> honestTmOutputs.take(2), pegOutAddress -> Seq(por1))
+          Map(tmAddress -> honestTmOutputs, pegOutAddress -> Seq(por1))
         )
         val err = CpoReconstruction
             .reconstruct(orphanHistory, cfg(Some(root2)))
@@ -315,22 +345,56 @@ class CpoReconstructionTest extends AnyFunSuite {
         assert(warned)
     }
 
-    test("chainOrder follows the treasury linkage regardless of input order") {
-        val a = CpoReconstruction
-            .parseConfirmed(confirmedOutput(tm1).inlineDatum.get)
-            .getOrElse(fail("tm1"))
-        val b = CpoReconstruction
-            .parseConfirmed(confirmedOutput(tm2).inlineDatum.get)
-            .getOrElse(fail("tm2"))
-        assert(CpoReconstruction.chainOrder(Seq(b, a)).map(_.btcTxid) == Seq(a.btcTxid, b.btcTxid))
-        assert(CpoReconstruction.chainOrder(Seq(a, b)).map(_.btcTxid) == Seq(a.btcTxid, b.btcTxid))
+    test("the walk orders the chain regardless of the history's output order") {
+        val reversed = honestTmOutputs.reverse
+        val m = CpoReconstruction
+            .reconstruct(history(reversed), cfg(Some(root2)))
+            .fold(e => fail(e.message), identity)
+        assert(m.root == root2)
     }
 
-    test("a duplicate Confirmed record for the same TM is replayed once") {
-        val duplicated = honestTmOutputs :+ confirmedOutput(tm2, 2)
+    test("a legacy rev-5.1 Confirmed record in history is skipped, not replayed") {
+        // Old history can carry Constr-1 Confirmed shapes; they resolve but are not byte carriers.
+        val withLegacy = confirmedOutput(tm1, 0) +: honestTmOutputs :+ confirmedOutput(tm2, 1)
+        val m = CpoReconstruction
+            .reconstruct(history(withLegacy), cfg(Some(root2)))
+            .fold(e => fail(e.message), identity)
+        assert(m.root == root2)
+        assert(m.size == 2)
+    }
+
+    test("a duplicate record for the same TM is harvested once") {
+        val duplicated = honestTmOutputs :+ unconfirmedOutput(tm2, Seq(hintOf(por2)), 0xe4)
         val m = CpoReconstruction
             .reconstruct(history(duplicated), cfg(Some(root2)))
             .fold(e => fail(e.message), identity)
+        assert(m.size == 2)
+    }
+
+    test("a mined-but-unconfirmed TM past the head is never replayed ([SPI-6] boundary)") {
+        // tm3 spends tm2's treasury output and its record is posted, but the singleton's head
+        // still names tm2's outpoint: the backward walk cannot reach tm3.
+        val por3 = porOutput(0x53, 1, spk(0x44), 30_000L, 1_000L)
+        val entry3 = entryOf(por3, spk(0x44), 29_000L)
+        val root3 = mirrorOf(Seq(entry1, entry2, entry3)).root
+        val tm3 = rawTx(
+          treasuryOutpointOf(tm2),
+          Seq(
+            spk(0x11) -> BigInt(300_000),
+            spk(0x44) -> BigInt(29_000),
+            commitment(root3) -> BigInt(0)
+          )
+        )
+        val src = new FakeHistory(
+          Map(
+            tmAddress -> (honestTmOutputs :+ unconfirmedOutput(tm3, Seq(hintOf(por3)), 0xe5)),
+            pegOutAddress -> Seq(por1, por2, por3)
+          )
+        )
+        val m = CpoReconstruction
+            .reconstruct(src, cfg(Some(root2)))
+            .fold(e => fail(e.message), identity)
+        assert(m.root == root2)
         assert(m.size == 2)
     }
 
@@ -351,6 +415,7 @@ class CpoReconstructionTest extends AnyFunSuite {
         )
         val parsed = CpoReconstruction.parseUnconfirmedHint(old).getOrElse(fail("expected a parse"))
         assert(parsed._1 == BitcoinHelpers.getTxHash(tm1))
-        assert(parsed._2.isEmpty)
+        assert(parsed._2 == tm1)
+        assert(parsed._3.isEmpty)
     }
 }

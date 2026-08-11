@@ -25,6 +25,11 @@ final class BifrostBlueprint(json: ujson.Value) {
             .find(_("title").str == title)
             .map(_("compiledCode").str)
             .getOrElse(throw new RuntimeException(s"validator not found in blueprint: $title"))
+
+    /** Every validator title in the blueprint, in file order. Lets the drift test iterate the
+      * WHOLE vendored set instead of naming validators one by one.
+      */
+    def validatorTitles: Seq[String] = json("validators").arr.toSeq.map(_("title").str)
 }
 
 object BifrostBlueprint {
@@ -54,8 +59,8 @@ object BifrostBlueprint {
       * binocular built would have been rejected on-chain.
       *
       * Two things do guard it, and both must be kept:
-      *   - `BifrostBlueprintSourceTest` diffs this resource against a sibling ft checkout's
-      *     `plutus.json` when one is present, and skips when it is not (CI has no ft checkout).
+      *   - `BifrostContractsTest` compares this resource against a sibling ft checkout's
+      *     `plutus.json` when one is present, and cancels when it is not (CI has no ft checkout).
       *   - The CEK suites (`PegOutCompleteCekTest`) EVALUATE these bytes, so a validator whose
       *     semantics moved fails on behaviour rather than on a hash.
       *
@@ -90,8 +95,12 @@ object BifrostBlueprint {
     }
 }
 
-/** The `peg_in_validator` parameterized with its three on-chain params. The script hash is the
-  * peg-in NFT `policyId` and the address that `PegInRequest` UTxOs are locked at.
+/** The `peg_in_validator` parameterized with its on-chain params. The script hash is the peg-in NFT
+  * `policyId` and the address that `PegInRequest` UTxOs are locked at.
+  *
+  * Rev 5.4: the `tm_nft_policy_id` parameter is GONE — `peg_in.ak` reads the bridge-state singleton
+  * through Config field 3 at runtime instead of referencing a Confirmed TM record, so three params
+  * remain: `(oracle_policy_id, config_nft_policy_id, config_nft_asset_name)`.
   */
 final case class PegInContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash
@@ -108,15 +117,13 @@ object PegInContract {
         blueprint: BifrostBlueprint,
         oraclePolicyId: ByteString,
         configNftPolicyId: ByteString,
-        configNftAssetName: ByteString,
-        tmNftPolicyId: ByteString
+        configNftAssetName: ByteString
     ): PegInContract = {
         val base = Program.fromCborHex(blueprint.compiledCode(ValidatorTitle))
         val applied = base
             .$(Data.B(oraclePolicyId))
             .$(Data.B(configNftPolicyId))
             .$(Data.B(configNftAssetName))
-            .$(Data.B(tmNftPolicyId))
         PegInContract(Script.PlutusV3(applied.cborByteString))
     }
 
@@ -159,7 +166,7 @@ object ConfigContract {
 }
 
 /** The `bridged_token` (fBTC/fSAT) mint policy: params `(configNFTPolicyId, configNFTAssetName)`.
-  * The script hash is the token policyId = ConfigDatum index 0. It reads the ConfigDatum from the
+  * The script hash is the token policyId = ConfigDatum index 1. It reads the ConfigDatum from the
   * config ref input and enforces the Variant B mint/burn rules against the peg-in / peg-out
   * withdrawals directly.
   */
@@ -184,9 +191,10 @@ object BridgedTokenContract {
 }
 
 /** The `completed_peg_ins_merkle_tree` one-shot NFT policy + state validator: params
-  * `(configNFTPolicyId, configNFTAssetName, one_shot_input_ref)`. policyId = ConfigDatum index 2;
-  * asset name = the constant `"CPI"`. The MPF state UTxO (datum = root, empty `0x00*32` at mint)
-  * lives at this script's address and is spent+recreated on each completion.
+  * `(configNFTPolicyId, configNFTAssetName, one_shot_input_ref)`. policyId = ConfigDatum index 2
+  * (`completed_peg_ins_policy`); asset name = the constant `"CPI"`. The MPF state UTxO (datum =
+  * root, empty `0x00*32` at mint) lives at this script's address and is spent+recreated on each
+  * completion.
   */
 final case class CompletedPegInsContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash
@@ -217,7 +225,7 @@ object CompletedPegInsContract {
 }
 
 /** The `peg_out_validator` parameterized with `(config_nft_policy_id, config_nft_asset_name)`. The
-  * script hash is the peg-out withdraw script hash = ConfigDatum index 5, and the address that
+  * script hash is the peg-out withdraw script hash = ConfigDatum index 6, and the address that
   * `PegOut` UTxOs are locked at. The completion path is a `withdraw` (`CompletePegOut`); creation
   * is a plain pay-to-this-address output.
   *
@@ -225,7 +233,7 @@ object CompletedPegInsContract {
   * its own SPV parse of the Treasury Movement. Which Bitcoin payment settles which peg-out request
   * is recorded in the completed-peg-outs trie at TM Confirm, so completion is a single MPF
   * membership proof against a trie reference input and needs no oracle. Dropping the parameter
-  * CHANGES this script's hash, so ConfigDatum field 5 must be swapped by a config Update (see
+  * CHANGES this script's hash, so ConfigDatum field 6 must be swapped by a config Update (see
   * `update-config --peg-out-withdraw-hash`) before any peg-out completes.
   */
 final case class PegOutContract(script: Script.PlutusV3) {
@@ -251,43 +259,46 @@ object PegOutContract {
     }
 }
 
-/** The `completed_peg_outs_merkle_tree` one-shot NFT policy + state validator: params
-  * `(tm_nft_policy_id, one_shot_input_ref)`. policyId = ConfigDatum index 3; asset name = the
-  * constant `"CPO"`. The MPF state UTxO (datum = root, empty `0x00*32` at mint) lives at this
-  * script's address.
+/** The `bridge_state` one-shot NFT policy + singleton validator: params `(tm_nft_policy_id,
+  * one_shot_input_ref)` per spec [BSS-4]. policyId = the bridge-state policy the ConfigDatum names;
+  * asset name = the constant `"BSS"`. The singleton UTxO carries that NFT and the `BridgeState`
+  * datum (both roots), and lives at this script's address.
   *
-  * Trie v2 (2026-07): the first parameter is the TM NFT policy (= the [[TreasuryMovementValidator]]
-  * script hash), NOT the config NFT pair. The trie is now written at TM **Confirm**, keyed by POR
-  * id, so its spend handler gates on a TM `Unconfirmed -> Confirmed` transition in the same tx and
-  * needs the TM NFT policy directly. There is no parameterization cycle: the TM script hash is
-  * computable first (oracle hash + config NFT), and the TM validator finds THIS policy at runtime
-  * through Config field 3.
+  * Rev 5.4 replaces `completed-peg-outs-merkle-tree.ak` with this validator: one UTxO now holds the
+  * completed-peg-outs root and the swept-peg-ins root together, so a TM Confirm updates both in a
+  * single spend.
   *
-  * Consequence for deploy ordering: the TM script hash must be derived BEFORE this contract, and
-  * the genesis ConfigDatum field 3 must carry the policy this constructor yields.
+  * The first parameter is the TM NFT policy = the [[TreasuryMovementValidator]] script hash,
+  * because the spend handler gates on a TM Confirm spend in the same transaction. There is no
+  * parameterization cycle: the TM script hash is computable first (oracle hash + config NFT pair),
+  * and the TM validator finds THIS policy at runtime through the ConfigDatum.
+  *
+  * Consequence for deploy ordering: derive the TM script hash BEFORE this contract, and put the
+  * policy this constructor yields into the genesis ConfigDatum.
   */
-final case class CompletedPegOutsContract(script: Script.PlutusV3) {
+final case class BridgeStateContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash
     def address(network: Network): Address =
         Address(network, Credential.ScriptHash(script.scriptHash))
 }
 
-object CompletedPegOutsContract {
-    val ValidatorTitle =
-        "bitcoin/completed_peg_outs_merkle_tree.completed_peg_outs_merkle_tree_validator.mint"
+object BridgeStateContract {
+
+    // All handlers share one compiledCode; any title for the validator works.
+    val ValidatorTitle = "bitcoin/bridge_state.bridge_state.mint"
 
     def apply(
         blueprint: BifrostBlueprint,
         tmNftPolicyId: ByteString,
         oneShotInputRef: TxOutRef
-    ): CompletedPegOutsContract = {
+    ): BridgeStateContract = {
         val applied = Program
             .fromCborHex(blueprint.compiledCode(ValidatorTitle))
             .$(Data.B(tmNftPolicyId))
             .$(oneShotInputRef.toData)
-        CompletedPegOutsContract(Script.PlutusV3(applied.cborByteString))
+        BridgeStateContract(Script.PlutusV3(applied.cborByteString))
     }
 
-    /** Constant per completed-peg-outs-merkle-tree.ak. */
-    val assetName: ByteString = ByteString.fromString("CPO")
+    /** Constant per `bridge-state.ak`, mirrored by the TM validator's own copy. */
+    val assetName: ByteString = TreasuryMovementValidator.BridgeStateAssetName
 }

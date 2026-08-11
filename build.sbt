@@ -150,7 +150,11 @@ lazy val coreDependencies = Seq(
     ExclusionRule(organization = "com.lihaoyi", name = "geny_2.13")
   ),
   "org.scalus" %% "scalus-testkit" % scalusVersion,
-  "com.monovore" %% "decline" % "2.6.0"
+  "com.monovore" %% "decline" % "2.6.0",
+  // Tapir for the proof-serving REST API ([SPI-4]/[OB-13]); netty-sync = virtual-thread
+  // (Identity) server, no effect system — same stack as the scalus-starter example.
+  "com.softwaremill.sttp.tapir" %% "tapir-netty-server-sync" % "1.13.22",
+  "com.softwaremill.sttp.tapir" %% "tapir-swagger-ui-bundle" % "1.13.22"
 )
 
 // Unit test dependencies

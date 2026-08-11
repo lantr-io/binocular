@@ -8,18 +8,19 @@ import scalus.crypto.trie.MerklePatriciaForestry as OffChainMPF
 import scalus.uplc.builtin.ByteString
 import scalus.uplc.builtin.ByteString.hex
 
-/** Unit tests for the off-chain completed-peg-outs trie helpers.
+/** Unit tests for the off-chain completed-peg-outs trie helpers and the `"BTMR1"` two-root
+  * commitment reader.
   *
   * The important ones are the CROSS-CHECKS: they feed the same parsed TM outputs to
-  * [[CompletedPegOutsTrie.committedRoot]] and to the on-chain
-  * [[TreasuryMovementValidator.committedRoot]] and require the two to agree — accept the same
-  * outputs, reject the same outputs, and return the same 32 bytes. That equality is what makes the
-  * confirm builder's trie output datum the one the validator will accept (the on-chain reader is
+  * [[SweptPegInsTrie.committedRoots]] and to the on-chain
+  * [[TreasuryMovementValidator.committedRoots]] and require the two to agree — accept the same
+  * outputs, reject the same outputs, and return the same 2×32 bytes. That equality is what makes
+  * the confirm builder's singleton datum the one the validator will accept (the on-chain reader is
   * plain Scala here; only the UPLC compilation is skipped).
   */
 class CompletedPegOutsTrieTest extends AnyFunSuite {
 
-    private val CommitmentPrefix = hex"6a2543504f5231"
+    private val CommitmentPrefix = hex"6a4542544d5231"
 
     private def root(b: Int): ByteString =
         ByteString.fromArray(Array.fill[Byte](32)(b.toByte))
@@ -27,82 +28,93 @@ class CompletedPegOutsTrieTest extends AnyFunSuite {
     private def porId(b: Int): ByteString =
         ByteString.fromArray(Array.fill[Byte](32)(b.toByte))
 
-    private def commitment(r: ByteString): PegOutEntry = PegOutEntry(CommitmentPrefix ++ r, 0)
+    /** A "BTMR1" commitment of `(spi, cpo)`. Tests that only care about the CPO side pass a fixed
+      * spi root.
+      */
+    private def commitment(cpo: ByteString, spi: ByteString = root(0x0f)): PegOutEntry =
+        PegOutEntry(CommitmentPrefix ++ spi ++ cpo, 0)
 
     private def payment(spkByte: Int, sats: Long): PegOutEntry =
         PegOutEntry(ByteString.fromArray(Array.fill[Byte](22)(spkByte.toByte)), BigInt(sats))
 
     private val change = PegOutEntry(hex"0014aabbccddeeff00112233445566778899aabbcc", BigInt(999))
 
-    /** `[change, payment*, commitment]` — the rev-5.1 TM output layout. */
+    /** `[change, payment*, commitment]` — the TM output layout heimdall emits. */
     private def tm(r: ByteString, payments: (Int, Long)*): Seq[PegOutEntry] =
         (change +: payments.map { case (spk, sats) => payment(spk, sats) }) :+ commitment(r)
 
-    /** The ON-CHAIN reader over the same outputs: `Right(root)`, or `Left` for a rejection. */
-    private def onChainRoot(outs: Seq[PegOutEntry]): Either[String, ByteString] =
-        try Right(TreasuryMovementValidator.committedRoot(ScalusList.from(outs)))
+    /** The ON-CHAIN reader over the same outputs: `Right((spi, cpo))`, or `Left` for a rejection.
+      */
+    private def onChainRoots(outs: Seq[PegOutEntry]): Either[String, (ByteString, ByteString)] =
+        try Right(TreasuryMovementValidator.committedRoots(ScalusList.from(outs)))
         catch { case t: Throwable => Left(Option(t.getMessage).getOrElse(t.toString)) }
 
     /** Assert both readers agree, and return what they read. */
-    private def bothAgree(outs: Seq[PegOutEntry]): Either[String, ByteString] = {
-        val off = CompletedPegOutsTrie.committedRoot(outs)
-        val on = onChainRoot(outs)
+    private def bothAgree(outs: Seq[PegOutEntry]): Either[String, (ByteString, ByteString)] = {
+        val off = SweptPegInsTrie.committedRoots(outs)
+        val on = onChainRoots(outs)
         assert(
           off.isRight == on.isRight,
           s"off-chain said $off but the on-chain reader said $on"
         )
-        assert(off.toOption == on.toOption, s"root mismatch: off-chain $off, on-chain $on")
+        assert(off.toOption == on.toOption, s"roots mismatch: off-chain $off, on-chain $on")
         off
     }
 
     // --- root extraction, cross-checked against the on-chain reader ---
 
-    test("committedRoot reads the root of the single \"CPOR1\" output") {
-        assert(bothAgree(tm(root(0x5a), (0xaa, 2000L))) == Right(root(0x5a)))
+    test("committedRoots reads both roots of the single \"BTMR1\" output") {
+        assert(
+          bothAgree(tm(root(0x5a), (0xaa, 2000L))) == Right((root(0x0f), root(0x5a)))
+        )
     }
 
-    test("committedRoot accepts a zero-peg-out TM (change + commitment only)") {
-        assert(bothAgree(Seq(change, commitment(root(0x11)))) == Right(root(0x11)))
+    test("committedRoots accepts a zero-peg-out TM (change + commitment only)") {
+        assert(bothAgree(Seq(change, commitment(root(0x11)))) == Right((root(0x0f), root(0x11))))
     }
 
-    test("committedRoot finds the commitment at any position, including output 0") {
-        assert(bothAgree(Seq(commitment(root(0x22)), change)) == Right(root(0x22)))
+    test("committedRoots finds the commitment at any position, including output 0") {
+        assert(bothAgree(Seq(commitment(root(0x22)), change)) == Right((root(0x0f), root(0x22))))
     }
 
-    test("committedRoot rejects a TM with no commitment output") {
+    test("committedRoots rejects a TM with no commitment output") {
         assert(bothAgree(Seq(change, payment(0xaa, 2000L))).isLeft)
     }
 
-    test("committedRoot rejects a TM with no outputs at all") {
+    test("committedRoots rejects a TM with no outputs at all") {
         assert(bothAgree(Seq.empty).isLeft)
     }
 
-    test("committedRoot rejects two commitment outputs, even of the same root") {
+    test("committedRoots rejects two commitment outputs, even of the same roots") {
         assert(bothAgree(Seq(change, commitment(root(1)), commitment(root(2)))).isLeft)
         assert(bothAgree(Seq(change, commitment(root(1)), commitment(root(1)))).isLeft)
     }
 
-    test("committedRoot ignores an output with the wrong prefix") {
-        // "CPOR2": right length, right OP_RETURN push, wrong tag.
-        val wrongTag = PegOutEntry(hex"6a2543504f5232" ++ root(3), 0)
+    test("committedRoots ignores an output with the wrong prefix") {
+        // "BTMR2": right length, right OP_RETURN push, wrong tag.
+        val wrongTag = PegOutEntry(hex"6a4542544d5232" ++ root(0x0f) ++ root(3), 0)
         assert(bothAgree(Seq(change, wrongTag)).isLeft)
-        assert(bothAgree(Seq(change, wrongTag, commitment(root(4)))) == Right(root(4)))
+        assert(
+          bothAgree(Seq(change, wrongTag, commitment(root(4)))) == Right((root(0x0f), root(4)))
+        )
     }
 
-    test("committedRoot ignores a right-prefix output of the wrong length") {
-        // 38 bytes: without the length check the slice would read past the payload.
-        val short = PegOutEntry(commitment(root(5)).scriptPubKey.slice(0, 38), 0)
+    test("committedRoots ignores a right-prefix output of the wrong length") {
+        // 70 bytes: without the length check the slice would read past the payload.
+        val short = PegOutEntry(commitment(root(5)).scriptPubKey.slice(0, 70), 0)
         assert(bothAgree(Seq(change, short)).isLeft)
     }
 
-    test("committedRoot ignores a peg-in \"BFR\" OP_RETURN") {
+    test("committedRoots ignores a peg-in \"BFR\" OP_RETURN and the old \"CPOR1\" form") {
         val bfr = PegOutEntry(hex"6a23424652" ++ porId(1), 0)
         assert(bothAgree(Seq(change, bfr)).isLeft)
+        val cpor1 = PegOutEntry(hex"6a2543504f5231" ++ root(6), 0)
+        assert(bothAgree(Seq(change, cpor1)).isLeft)
     }
 
-    test("committedRoot ignores a 39-byte payment script") {
-        val payment39 = PegOutEntry(ByteString.fromArray(Array.fill[Byte](39)(0x51)), BigInt(1))
-        assert(bothAgree(Seq(change, payment39)).isLeft)
+    test("committedRoots ignores a 71-byte payment script") {
+        val payment71 = PegOutEntry(ByteString.fromArray(Array.fill[Byte](71)(0x51)), BigInt(1))
+        assert(bothAgree(Seq(change, payment71)).isLeft)
     }
 
     // --- trie value + set-to-root builder ---
