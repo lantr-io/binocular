@@ -810,14 +810,15 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         assert(result.isSuccess, s"Expected success, got: $result")
     }
 
-    test("deployed blueprint .script matches .contract on a valid confirm (untagged param apply)") {
+    test("deployed blueprint .script matches .contract on a valid confirm (tagged param apply)") {
         // Regression for the `_scalusTag` bug: the DEPLOYED script is TreasuryMovementContract.script
         // — the blueprint compiledCode with the 3 ByteString params applied at the UPLC level
         // (BinocularBlueprint.bytesParam), NOT the typed `.contract` form that the other tests eval.
-        // With plain Options.release those two DIVERGED: `.contract` accepted a valid confirm while
-        // the deployed `.script` ERRORED ("Error evaluated") on the spend branch — so no deployed TM
-        // could ever be confirmed. Options.releaseUntagged makes UPLC-level application land the
-        // params correctly, so the two agree. Assert that invariant here.
+        // On a pre-1.0 Scalus those two DIVERGED under Options.release: `.contract` accepted a
+        // valid confirm while the deployed `.script` ERRORED ("Error evaluated") on the spend
+        // branch — so no deployed TM could ever be confirmed. Scalus 1.0.0 evaluates the tagged
+        // shape correctly, so the contract compiles TAGGED again; this test evaluating the
+        // DEPLOYED form is the guard that keeps that decision honest.
         val ctx = scriptContext(confirmRdmr()).toData
 
         // The typed `.contract` form (what other tests exercise) — must accept.
