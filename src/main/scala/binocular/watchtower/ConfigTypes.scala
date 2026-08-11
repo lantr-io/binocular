@@ -24,8 +24,22 @@ import scalus.uplc.builtin.Data.{FromData, ToData}
 // fee_rate_sat_per_vb, 13 per_pegout_fee, 14 min_peg_out_fbtc, 15 leader_reward, 16 schedule (nested
 // ScheduleParams). These are OFF-CHAIN consensus anchors / pinned-copy sources — no Aiken validator
 // reads a current value; the TM validator is the Scalus contract here, and the leader_reward pin is
-// enforced there when N9 lands. Must mirror ft `config.ak::ConfigDatum` (17 fields), because
-// `config.config`'s genesis path full-casts the datum, so deploy-bridge must write all of them.
+// enforced there when N9 lands.
+//
+// Indices 17-23 are the FEDERATION IDENTITY (WI-068): 17 spo_bans_policy_id, 18
+// base_ban_duration_ms, 19 max_faults_before_permanent, 20 max_validity_window_ms, 21
+// spos_registry_policy_id, 22 treasury_info_policy_id, 23 treasury_info_asset_name. Also
+// off-chain-only, and published for a sharper reason than the tunables: every value that would
+// otherwise locate the ban list or the registry is an INPUT to the policy id it identifies, so no
+// node can derive the address it would read them from, and one wrong input gives a well-formed
+// address holding NOTHING rather than an error. Since the eligible DKG roster is the registry minus
+// active bans, that silently splits the roster. treasury_info (#22) is published even though it is
+// a pure function of (#21, TM-NFT policy), because every reader must apply BOTH parameters
+// identically or the state UTxO is unfindable; #23 is derivable from nothing at all, being a name
+// chosen at bootstrap.
+//
+// Must mirror ft `config.ak::ConfigDatum` (24 fields), because `config.config`'s genesis path
+// full-casts the datum, so deploy-bridge must write all of them.
 case class ConfigDatum(
     bridgedTokenPolicyId: ByteString,
     bridgedTokenAssetName: ByteString,
@@ -43,7 +57,14 @@ case class ConfigDatum(
     perPegoutFee: BigInt,
     minPegOutFbtc: BigInt,
     leaderReward: BigInt,
-    schedule: ScheduleParams
+    schedule: ScheduleParams,
+    spoBansPolicyId: ByteString,
+    baseBanDurationMs: BigInt,
+    maxFaultsBeforePermanent: BigInt,
+    maxValidityWindowMs: BigInt,
+    sposRegistryPolicyId: ByteString,
+    treasuryInfoPolicyId: ByteString,
+    treasuryInfoAssetName: ByteString
 ) derives FromData,
       ToData
 

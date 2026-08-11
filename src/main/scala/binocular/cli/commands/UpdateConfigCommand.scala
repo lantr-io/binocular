@@ -40,6 +40,14 @@ import cats.syntax.either.*
   *     TM builder reads them at its batch snapshot slot, so an update here changes the bytes every
   *     heimdall builds — deliberately, and for all of them at once. It takes effect from the next
   *     batch, never retroactively; the schedule (#16) from the next epoch boundary.
+  *   - optionally publishes the **ban policy** — `--spo-bans-policy` plus the three ban-schedule
+  *     numbers (fields 17-20). This is the migration for a bridge deployed before those fields
+  *     existed, and it is what lets every SPO drop its `cardano.ban_bootstrap`,
+  *     `fault_proof_policies` and `*_ban_*` keys: the finished `spo_bans` policy id is an input to
+  *     nothing an SPO must compute, and the ban script address follows from it. Publishing it here
+  *     changes no on-chain behaviour — it changes which roster the off-chain nodes agree on, since
+  *     the eligible set is the registry MINUS active bans. Appended to a 17-field datum, replaced
+  *     on a 21-field one; no re-mint, no redeploy.
   *
   * ALL of the above happen in ONE transaction. That is load-bearing for the peg-out trie v2
   * migration: fields 3, 4 and 5 must flip together, in the same Update that precedes the first use
@@ -118,7 +126,7 @@ case class UpdateConfigCommand(
               "Nothing to update. Pass at least one of --initial-btc-treasury-utxo, " +
                   "--completed-peg-outs-policy, --peg-in-withdraw-hash, --peg-out-withdraw-hash, " +
                   "--min-stake, --fee-rate, --per-pegout-fee, --min-peg-out, --leader-reward, " +
-                  "--schedule."
+                  "--schedule, --spo-bans-policy."
             )
             break(1)
         }
@@ -230,6 +238,13 @@ case class UpdateConfigCommand(
         newCpoPolicy.foreach(h => Console.info("new completed-peg-outs policy (field 3)", h.toHex))
         newPegInHash.foreach(h => Console.info("new peg-in hash (field 4)", h.toHex))
         newPegOutHash.foreach(h => Console.info("new peg-out hash (field 5)", h.toHex))
+        params.spoBansPolicyId.foreach { p =>
+            Console.info("ban policy (field 17)", p.toHex)
+            Console.info(
+              "  effect",
+              "every SPO reads its ban list from this policy and needs no ban keys"
+            )
+        }
         Console.info("update_auth pkh", updateAuthPkh.toHex)
         // Every changed field, old -> new. The operational parameters are consensus inputs for
         // every SPO's TM builder, so an accidental edit is worth seeing before it is signed.
@@ -305,11 +320,13 @@ object UpdateConfigCommand {
       * @param newPegOutHash
       *   field 5, `peg_out_withdraw_script_hash`.
       * @param params
-      *   the governed operational parameters: field 9 and fields 12-16. Each is optional and
-      *   overwrites only the field it names. Editing 12-16 requires a datum that already carries
-      *   them (17 fields): `config.config`'s genesis path full-casts the datum, so a partial append
-      *   is a datum no reader accepts, and inventing values for the fields the operator did not
-      *   name is not governance. Redeploy (deploy-bridge writes all 17) instead.
+      *   the governed operational parameters: field 9, fields 12-16 and the ban policy 17-20. Each
+      *   is optional and overwrites only the field it names. Editing 12-16 requires a datum that
+      *   already carries them (17 fields): `config.config`'s genesis path full-casts the datum, so
+      *   a partial append is a datum no reader accepts, and inventing values for the fields the
+      *   operator did not name is not governance. Redeploy (deploy-bridge writes all 17) instead.
+      *   Fields 17-20 are APPENDED to a 17-field datum — that is the migration path for a bridge
+      *   deployed before the ban policy was published — and replaced on a 21-field one.
       */
     def rewriteFields(
         fields: List[Data],
@@ -326,6 +343,19 @@ object UpdateConfigCommand {
               s"which only exist on a $FieldsWithTunables-field datum. Redeploy the bridge " +
               "(deploy-bridge writes all of them) rather than appending half a record here"
         )
+        require(
+          !params.touchesBans || params.banFields.nonEmpty,
+          "the ban policy is fields #17-#20 and they landed as one append — set all of " +
+              "--spo-bans-policy, --base-ban-duration-ms, --max-faults-before-permanent and " +
+              "--max-validity-window-ms, or none. A reader cannot tell a half-written record " +
+              "from a bridge with no bans"
+        )
+        require(
+          !params.touchesBans || fields.size == FieldsWithTunables || fields.size >= FieldsWithBans,
+          s"config datum has ${fields.size} fields — the ban policy can be appended to a " +
+              s"$FieldsWithTunables-field datum or replaced on a $FieldsWithBans-field one, but " +
+              "this datum is already partially through that append"
+        )
         val swaps = List(3 -> newCpoPolicy, 4 -> newPegInHash, 5 -> newPegOutHash)
         val swapped = swaps.foldLeft(fields) { case (fs, (idx, v)) =>
             v.fold(fs)(h => fs.updated(idx, Data.B(h)))
@@ -340,12 +370,21 @@ object UpdateConfigCommand {
           14 -> params.minPegOutFbtc,
           15 -> params.leaderReward
         ).foldLeft(anchored) { case (fs, (idx, v)) => v.fold(fs)(x => fs.updated(idx, Data.I(x))) }
-        if params.schedule.isEmpty then withScalars
-        else withScalars.updated(16, patchSchedule(withScalars(16), params.schedule))
+        val withSchedule =
+            if params.schedule.isEmpty then withScalars
+            else withScalars.updated(16, patchSchedule(withScalars(16), params.schedule))
+        params.banFields match {
+            case Nil                                            => withSchedule
+            case ban if withSchedule.size == FieldsWithTunables => withSchedule ++ ban
+            case ban => withSchedule.patch(FieldsWithTunables, ban, ban.size)
+        }
     }
 
     /** Field count of a Config datum carrying the operational-parameter append (#12-#16). */
     val FieldsWithTunables = 17
+
+    /** Field count of a Config datum carrying the ban-policy append (#17-#20). */
+    val FieldsWithBans = 21
 
     /** `ScheduleParams` field names, in record order — the `--schedule name=value` keys and the
       * positions inside the nested Constr at config #16.
@@ -381,12 +420,21 @@ object UpdateConfigCommand {
       "per_pegout_fee",
       "min_peg_out_fbtc",
       "leader_reward",
-      "schedule"
+      "schedule",
+      "spo_bans_policy_id",
+      "base_ban_duration_ms",
+      "max_faults_before_permanent",
+      "max_validity_window_ms"
     )
 
-    /** The governed parameter edits (config #9 and #12-#16). All optional: `None` means "carry the
-      * deployed value over". `schedule` patches individual `ScheduleParams` fields by name, leaving
-      * the rest of the nested record untouched.
+    /** The governed parameter edits (config #9, #12-#16 and #17-#20). All optional: `None` means
+      * "carry the deployed value over". `schedule` patches individual `ScheduleParams` fields by
+      * name, leaving the rest of the nested record untouched.
+      *
+      * The four ban fields are all-or-nothing rather than individually optional. They identify ONE
+      * thing — the deployed `spo_bans` policy, whose id is derived from the schedule numbers among
+      * them — so a datum carrying a new policy id beside an old schedule describes no deployment
+      * that exists.
       */
     case class ParamEdits(
         minStake: Option[BigInt] = None,
@@ -394,18 +442,51 @@ object UpdateConfigCommand {
         perPegoutFee: Option[BigInt] = None,
         minPegOutFbtc: Option[BigInt] = None,
         leaderReward: Option[BigInt] = None,
-        schedule: Map[String, BigInt] = Map.empty
+        schedule: Map[String, BigInt] = Map.empty,
+        spoBansPolicyId: Option[ByteString] = None,
+        baseBanDurationMs: Option[BigInt] = None,
+        maxFaultsBeforePermanent: Option[BigInt] = None,
+        maxValidityWindowMs: Option[BigInt] = None
     ) {
-        def isEmpty: Boolean = minStake.isEmpty && !touchesTunables
+        def isEmpty: Boolean = minStake.isEmpty && !touchesTunables && !touchesBans
 
         /** Whether any of #12-#16 is edited — the fields that only exist post-append. */
         def touchesTunables: Boolean =
             feeRateSatPerVb.nonEmpty || perPegoutFee.nonEmpty || minPegOutFbtc.nonEmpty ||
                 leaderReward.nonEmpty || schedule.nonEmpty
+
+        /** Whether the ban policy (#17-#20) is being written. */
+        def touchesBans: Boolean =
+            spoBansPolicyId.nonEmpty || baseBanDurationMs.nonEmpty ||
+                maxFaultsBeforePermanent.nonEmpty || maxValidityWindowMs.nonEmpty
+
+        /** #17-#20 as datum fields, or `Nil` unless all four are given. */
+        def banFields: List[Data] =
+            (
+              spoBansPolicyId,
+              baseBanDurationMs,
+              maxFaultsBeforePermanent,
+              maxValidityWindowMs
+            ) match {
+                case (Some(policy), Some(base), Some(maxFaults), Some(window)) =>
+                    List(Data.B(policy), Data.I(base), Data.I(maxFaults), Data.I(window))
+                case _ => Nil
+            }
     }
 
     object ParamEdits {
         val none: ParamEdits = ParamEdits()
+
+        /** Parse the `--spo-bans-policy` argument: a 28-byte policy id. Anything else derives a ban
+          * address no deployment has, and the resulting empty list reads exactly like a bridge that
+          * has never banned anyone — so reject it here rather than publish it.
+          */
+        def parseBanPolicy(arg: String): Either[String, ByteString] = {
+            val h = arg.trim
+            if h.length == 56 && h.forall(c => "0123456789abcdefABCDEF".contains(c)) then
+                Right(ByteString.fromHex(h))
+            else Left(s"--spo-bans-policy must be a 56-hex-char policy id, got '$arg'")
+        }
 
         /** Parse repeated `--schedule name=value` arguments against [[ScheduleFields]]. */
         def parseSchedule(args: List[String]): Either[String, Map[String, BigInt]] =

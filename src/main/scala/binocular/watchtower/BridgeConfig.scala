@@ -18,6 +18,18 @@ import pureconfig.*
   *
   * Loaded by PureConfig from reference.conf / application.conf / env vars.
   */
+/** The `spo_bans` ban schedule, fixed at bridge genesis.
+  *
+  * `base_ban_duration_ms * 2^(n-1)` is the nth ban's length; a pool is banned permanently at
+  * `max_faults_before_permanent`; `max_validity_window_ms` bounds an ApplyBan tx's validity
+  * interval. Defaults are the preprod values.
+  */
+case class BanScheduleConfig(
+    baseBanDurationMs: Long = 600000L,
+    maxFaultsBeforePermanent: Long = 3L,
+    maxValidityWindowMs: Long = 3600000L
+)
+
 case class BridgeConfig(
     plutusJson: String = "../../FluidTokens/ft-bifrost-bridge/onchain/plutus.json",
     configNftPolicyId: String = "00000000000000000000000000000000000000000000000000000000",
@@ -49,6 +61,11 @@ case class BridgeConfig(
     perPegoutFeeSat: Long = 1000L,
     minPegOutSat: Long = 10000L,
     leaderRewardLovelace: Long = 2000000L,
+    // The ban schedule baked into the spo_bans policy id at genesis, and published verbatim as
+    // config #18-20. Unlike the tunables above these are NOT governance-updatable in place: they
+    // are inputs to the policy hash, so changing one names a different ban list — which is exactly
+    // why they are chosen once, here, and then read by every SPO rather than typed by each.
+    banSchedule: BanScheduleConfig = BanScheduleConfig(),
     // The completed-peg-outs one-shot fixes that validator's params (hence its policyId + NFT asset
     // name); peg-out-complete needs it to reconstruct the script to SPEND the MPF UTxO. `Option`
     // (not `""`): a peg-in-only bridge (e.g. the synced config) simply omits the key — pureconfig

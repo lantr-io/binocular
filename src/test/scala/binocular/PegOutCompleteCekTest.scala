@@ -103,7 +103,14 @@ class PegOutCompleteCekTest extends AnyFunSuite {
       perPegoutFee = BigInt(fee),
       minPegOutFbtc = BigInt(0),
       leaderReward = BigInt(0),
-      schedule = ScheduleParams(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+      schedule = ScheduleParams(0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+      spoBansPolicyId = ByteString.fromHex("bb" * 28),
+      baseBanDurationMs = BigInt(600000),
+      maxFaultsBeforePermanent = BigInt(3),
+      maxValidityWindowMs = BigInt(3600000),
+      sposRegistryPolicyId = ByteString.fromHex("c1" * 28),
+      treasuryInfoPolicyId = ByteString.fromHex("c2" * 28),
+      treasuryInfoAssetName = ByteString.fromString("TMTx")
     ).toData
 
     private def configRefInput = TxInInfo(

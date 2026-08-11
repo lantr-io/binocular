@@ -35,7 +35,15 @@ class BifrostBlueprintSourceTest extends AnyFunSuite {
       "bitcoin/completed_peg_ins_merkle_tree.completed_peg_ins_merkle_tree_validator.mint",
       "bitcoin/completed_peg_outs_merkle_tree.completed_peg_outs_merkle_tree_validator.mint",
       "bitcoin/peg_in.peg_in_validator.mint",
-      "bitcoin/peg_out.peg_out_validator.withdraw"
+      "bitcoin/peg_out.peg_out_validator.withdraw",
+      // Bridge genesis (WI-068) derives the federation policies from these: the registry, the ban
+      // list parameterized by it, treasury_info, and the three fault verifiers spo_bans authorizes.
+      "bitcoin/spos_registry.spo_registry.mint",
+      "bitcoin/spo_bans.spo_bans.mint",
+      "bitcoin/treasury.treasury_info.mint",
+      "bitcoin/fault_verifier_round1.fault_verifier_round1.mint",
+      "bitcoin/fault_verifier_round2.fault_verifier_round2.mint",
+      "bitcoin/fault_verifier_equivocation.fault_verifier_equivocation.mint"
     )
 
     private val PinFile = "src/test/resources/ft-blueprint-pin.conf"
@@ -43,6 +51,12 @@ class BifrostBlueprintSourceTest extends AnyFunSuite {
     private lazy val pinRecord = ConfigFactory.parseResources("ft-blueprint-pin.conf")
 
     private def recordedPlutusJsonSha: String = pinRecord.getString("plutus-json-sha256")
+
+    /** Validators the vendored copy deliberately keeps BEHIND ft, title -> reason. */
+    private lazy val heldBack: Map[String, String] = {
+        val obj = pinRecord.getObject("held-back")
+        obj.keySet.toArray.map(k => k.toString -> obj.get(k.toString).unwrapped.toString).toMap
+    }
 
     /** Looked up through the `ConfigObject` map, not by path: the titles contain dots. */
     private def recordedCompiledCodeSha(title: String): String = {
@@ -156,12 +170,24 @@ class BifrostBlueprintSourceTest extends AnyFunSuite {
             case Right(path) =>
                 val ft = BifrostBlueprint.fromFile(path.toString)
                 val packaged = BifrostBlueprint.packaged
-                val stale = titles.filter(t => ft.compiledCode(t) != packaged.compiledCode(t))
+                val stale = titles
+                    .filter(t => ft.compiledCode(t) != packaged.compiledCode(t))
+                    .filterNot(heldBack.contains)
                 assert(
                   stale.isEmpty,
                   s"src/main/resources/bifrost-plutus-min.json has fallen behind $path for: " +
                       s"${stale.mkString(", ")}. Copy the compiledCode across and move the " +
                       "affected pins in BifrostContractsTest in the same commit."
+                )
+                // A hold-back is a promise to come back. Once ft and the vendored copy agree the
+                // exception is not merely redundant, it is a lie the next reader will believe --
+                // so it fails here rather than quietly outliving its reason.
+                val caughtUp =
+                    heldBack.keys.filter(t => ft.compiledCode(t) == packaged.compiledCode(t))
+                assert(
+                  caughtUp.isEmpty,
+                  s"$PinFile holds these back but they already match $path: " +
+                      s"${caughtUp.mkString(", ")}. Delete the held-back entries."
                 )
         }
     }
@@ -181,7 +207,9 @@ class BifrostBlueprintSourceTest extends AnyFunSuite {
                 if actual != recordedPlutusJsonSha then {
                     val ft = BifrostBlueprint.fromFile(path.toString)
                     val packaged = BifrostBlueprint.packaged
-                    val drifted = titles.filter(t => ft.compiledCode(t) != packaged.compiledCode(t))
+                    val drifted = titles
+                        .filter(t => ft.compiledCode(t) != packaged.compiledCode(t))
+                        .filterNot(heldBack.contains)
                     if drifted.isEmpty then
                         fail(
                           s"ft's plutus.json was regenerated but no tracked validator changed — " +

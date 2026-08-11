@@ -25,7 +25,9 @@ class ConfigDatumEncodingTest extends AnyFunSuite {
         assert(none.toData == Data.Constr(1, PList()))
     }
 
-    test("ConfigDatum has 17 positional fields; update_auth is 10, anchor 11, tunables 12–16") {
+    test(
+      "ConfigDatum has 24 positional fields; update_auth 10, anchor 11, tunables 12–16, federation 17–23"
+    ) {
         val anchor = ByteString.fromHex("bb" * 32 + "01000000")
         val sched = ScheduleParams(
           dkgR1Deadline = BigInt(3600),
@@ -56,16 +58,32 @@ class ConfigDatumEncodingTest extends AnyFunSuite {
           perPegoutFee = BigInt(1000),
           minPegOutFbtc = BigInt(10000),
           leaderReward = BigInt(2000000),
-          schedule = sched
+          schedule = sched,
+          spoBansPolicyId = ByteString.fromHex("bb" * 28),
+          baseBanDurationMs = BigInt(600000),
+          maxFaultsBeforePermanent = BigInt(3),
+          maxValidityWindowMs = BigInt(3600000),
+          sposRegistryPolicyId = ByteString.fromHex("c1" * 28),
+          treasuryInfoPolicyId = ByteString.fromHex("c2" * 28),
+          treasuryInfoAssetName = ByteString.fromString("TMTx")
         )
         d.toData match {
             case Data.Constr(0, fields) =>
                 val fs = fields.asScala.toIndexedSeq
-                assert(fs.size == 17)
+                assert(fs.size == 24)
                 assert(fs(10) == Data.Constr(1, PList()))
                 assert(fs(11) == Data.B(anchor))
                 assert(fs(15) == Data.I(BigInt(2000000)))
                 assert(fs(16) == sched.toData)
+                // Federation identity (#17-23). Positions are a frozen contract — heimdall reads
+                // them by index off the raw datum — so pin each one, not just the arity.
+                assert(fs(17) == Data.B(ByteString.fromHex("bb" * 28)))
+                assert(fs(18) == Data.I(BigInt(600000)))
+                assert(fs(19) == Data.I(BigInt(3)))
+                assert(fs(20) == Data.I(BigInt(3600000)))
+                assert(fs(21) == Data.B(ByteString.fromHex("c1" * 28)))
+                assert(fs(22) == Data.B(ByteString.fromHex("c2" * 28)))
+                assert(fs(23) == Data.B(ByteString.fromString("TMTx")))
             case other => fail(s"expected Constr 0, got $other")
         }
     }
