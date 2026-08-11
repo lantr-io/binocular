@@ -120,6 +120,33 @@ class FederationContractsTest extends AnyFunSuite {
         intercept[IllegalArgumentException](build(List(p.head, p.head, p(1))))
     }
 
+    // -- genesis root elements ------------------------------------------------
+
+    // Byte-exact against heimdall's encoder, because heimdall READS these bytes back when it walks
+    // the linked list: `Element = Constr(0, [Root{RootData}, None])`. Both lists share the shape.
+    test("the root element datum is byte-identical to heimdall's") {
+        val cbor = scalus.uplc.builtin.Builtins.serialiseData(FederationRoot.Datum).toHex
+        assert(cbor == "d8799fd8799fd87980ffd87a80ff")
+    }
+
+    test("the root asset names are the on-chain constants") {
+        assert(SposRegistryContract.RootAssetName.toHex == "7265672d726f6f74") // "reg-root"
+        assert(SpoBansContract.RootAssetName.toHex == "62616e2d726f6f74") // "ban-root"
+    }
+
+    // spos_registry's Bootstrap is field-less; spo_bans' carries the outref, and the validator
+    // checks it equals the one baked into its own policy id — so the two bootstraps are NOT
+    // interchangeable even though they look alike.
+    test("the two bootstrap redeemers differ exactly where the validators do") {
+        import scalus.uplc.builtin.Builtins.serialiseData
+        assert(serialiseData(FederationRoot.RegistryBootstrapRedeemer).toHex == "d87980")
+        val banRedeemer = FederationRoot.banBootstrapRedeemer(oneShot, oneShotIndex)
+        assert(
+          serialiseData(banRedeemer).toHex ==
+              "d8799fd8799f5820" + ("bb" * 32) + "02ffff"
+        )
+    }
+
     // The derivation chain is strictly ordered: a different one-shot changes the registry, which
     // changes the fault verifiers, which changes the ban policy.
     test("the one-shot outref propagates through the whole chain") {

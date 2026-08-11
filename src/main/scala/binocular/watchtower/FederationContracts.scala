@@ -40,7 +40,7 @@ object SposRegistryContract {
     val ValidatorTitle = "bitcoin/spos_registry.spo_registry.mint"
 
     /** Asset name of the registry's linked-list root element (`registration_root_key`). */
-    val RootAssetName: ByteString = ByteString.fromString("registration-root")
+    val RootAssetName: ByteString = ByteString.fromString("reg-root")
 
     def apply(
         blueprint: BifrostBlueprint,
@@ -128,6 +128,32 @@ final case class SpoBansContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash
     def address(network: Network): Address =
         Address(network, Credential.ScriptHash(script.scriptHash))
+}
+
+object FederationRoot {
+
+    /** The linked-list ROOT element datum, shared by `spos_registry` and `spo_bans`:
+      * `Element = Constr(0, [ElementData, Link])` with `ElementData = Root{RootData}` =
+      * `Constr(0, [Constr(0, [])])` and `Link = None` = `Constr(1, [])`.
+      *
+      * Byte-exactness matters: `linked_list.init` re-derives this shape on chain, and heimdall
+      * reads the same bytes back when it walks the list.
+      */
+    val Datum: Data = Data.Constr(
+      0,
+      PList(Data.Constr(0, PList(Data.Constr(0, PList()))), Data.Constr(1, PList()))
+    )
+
+    /** `spos_registry`'s `Bootstrap` mint redeemer: field-less, `Constr(0, [])`. */
+    val RegistryBootstrapRedeemer: Data = Data.Constr(0, PList())
+
+    /** `spo_bans`' `Bootstrap { input_ref }` mint redeemer — the one material difference from the
+      * registry's. `spo_bans` checks `input_ref == OutputReference(bootstrap_tx_id,
+      * bootstrap_output_index)`, i.e. the redeemer must restate the outref already baked into its
+      * own policy id, so passing the wrong one fails on chain rather than silently.
+      */
+    def banBootstrapRedeemer(bootstrapTxId: ByteString, bootstrapIndex: BigInt): Data =
+        Data.Constr(0, PList(Data.Constr(0, PList(Data.B(bootstrapTxId), Data.I(bootstrapIndex)))))
 }
 
 object SpoBansContract {

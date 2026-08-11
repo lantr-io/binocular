@@ -358,11 +358,68 @@ case class DeployBridgeCommand(dryRun: Boolean = false) extends Command {
             break(0)
         }
 
+        // --- Federation tx, FIRST: spend the federation one-shot and mint both linked-list
+        //     roots. It cannot be merged into the bootstrap tx below — config + cpi + cpo +
+        //     spos_registry + spo_bans is 17.6 kB of script against a 16 kB max_tx_size — and it
+        //     must PRECEDE it, because the config NFT is the bridge's identity: minting the roots
+        //     first is what makes "a bridge cannot exist without a ban list" true by construction
+        //     rather than by procedure. A crash between the two leaves an orphan registry and ban
+        //     list, which costs a few ADA and is simply re-run; the reverse order would leave a
+        //     live bridge whose published addresses hold nothing.
+        //
+        //     Neither mint handler constrains output ORDER (both locate their root by script
+        //     address + asset via find_singleton_asset_output_at_script), unlike config.ak. ---
+        Console.step(1, "Bootstrapping the federation (registry + ban roots) in one tx")
+        val registryRootAsset = AssetName(SposRegistryContract.RootAssetName)
+        val banRootAsset = AssetName(SpoBansContract.RootAssetName)
+        val registryRootValue =
+            Value.lovelace(2_000_000L) +
+                Value.asset(registryContract.policyId, registryRootAsset, 1L)
+        val banRootValue =
+            Value.lovelace(2_000_000L) + Value.asset(spoBansContract.policyId, banRootAsset, 1L)
+        val federationTx =
+            try
+                TxBuilder(provider.cardanoInfo)
+                    .spend(federationUtxo)
+                    .mint(
+                      registryContract.script,
+                      Map(registryRootAsset -> 1L),
+                      FederationRoot.RegistryBootstrapRedeemer
+                    )
+                    .mint(
+                      spoBansContract.script,
+                      Map(banRootAsset -> 1L),
+                      FederationRoot.banBootstrapRedeemer(federationRef.id.hash, federationRef.idx)
+                    )
+                    .payTo(
+                      registryContract.address(network),
+                      registryRootValue,
+                      FederationRoot.Datum
+                    )
+                    .payTo(spoBansContract.address(network), banRootValue, FederationRoot.Datum)
+                    .complete(provider, sponsorAddress)
+                    .await(timeout)
+                    .sign(signer)
+                    .transaction
+            catch {
+                case e: Exception =>
+                    Console.error(s"Building federation tx: ${e.getMessage}")
+                    Option(e.getCause).foreach(c => Console.error(s"Cause: ${c.getMessage}"))
+                    break(1)
+            }
+        // submitAndConfirm does not return until this is on chain, which is the ordering guarantee:
+        // the config tx below is never built against a federation that failed to materialise.
+        val federationTxHash = submitAndConfirm(provider, federationTx, timeout)
+        Console.success(s"Federation bootstrapped: $federationTxHash")
+        Console.info("registry address", registryContract.address(network).encode.getOrElse("?"))
+        Console.info("ban list address", spoBansContract.address(network).encode.getOrElse("?"))
+        println()
+
         // --- Single bootstrap tx: spend the one-shot, mint all three protocol NFTs, and create
         //     every protocol UTxO in one atomic tx. config.ak::mint checks self.outputs[0] is the
         //     config UTxO, so the config output MUST be first. cpi/cpo mint handlers each find
         //     their own output by script address and see the shared one-shot consumed. ---
-        Console.step(1, "Bootstrapping bridge (config + cpi + cpo) in one tx")
+        Console.step(2, "Bootstrapping bridge (config + cpi + cpo) in one tx")
         val configAsset = AssetName(ConfigAssetName)
         val cpiAsset = AssetName(cpiAssetName)
         val cpoAsset = AssetName(cpoAssetName)
