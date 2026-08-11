@@ -54,6 +54,11 @@ case class BootstrapBridgeStateCommand(
     // Non-zero roots for a §Recovery replacement of a bridge with history. Hex, 32 bytes each.
     spiRoot: Option[String] = None,
     cpoRoot: Option[String] = None,
+    // [DEP-2] escape hatch: skip the gettxout verification of the anchor. The datum is unpinned
+    // on-chain, so a wrong outpoint or amount surfaces only at first-movement signing — weeks
+    // later, as an invalid FROST signature. Only for a bridge whose Bitcoin node is unreachable
+    // AND whose anchor was verified by hand.
+    skipBtcCheck: Boolean = false,
     dryRun: Boolean = false
 ) extends Command {
 
@@ -109,12 +114,61 @@ case class BootstrapBridgeStateCommand(
         val anchorOutpoint =
             try BridgeConfig.outpointFromDisplay(anchorDisplay)
             catch { case e: Exception => Console.error(s"anchor: ${e.getMessage}"); break(1) }
+        val stateAmountSat = amountSat.getOrElse(config.bridge.initialBtcTreasuryAmountSat)
         val state = BridgeState(
           spiRoot = rootArg("--spi-root", spiRoot),
           cpoRoot = rootArg("--cpo-root", cpoRoot),
           treasuryUtxoId = anchorOutpoint,
-          treasuryAmount = BigInt(amountSat.getOrElse(config.bridge.initialBtcTreasuryAmountSat))
+          treasuryAmount = BigInt(stateAmountSat)
         )
+
+        // [DEP-2]: verify the anchor outpoint and its satoshi amount against Bitcoin BEFORE the
+        // bootstrap. The datum is deliberately unpinned on-chain, so this command is the last
+        // place a typoed vout, a wrong amount, or an already-spent anchor fails loudly — after
+        // it, the mistake surfaces only when the first TM's BIP-341 sighash commits to the wrong
+        // prevout and every FROST signature the roster produces is invalid.
+        if skipBtcCheck then
+            Console.warn(
+              "[DEP-2] --skip-btc-check: the anchor was NOT verified against Bitcoin. A wrong " +
+                  "outpoint or amount makes every signature over the first TM invalid."
+            )
+        else {
+            val Array(anchorTxid, anchorVoutStr) = anchorDisplay.split(':')
+            val anchorVout = anchorVoutStr.toInt
+            val rpc = new binocular.bitcoin.SimpleBitcoinRpc(config.bitcoinNode)
+            val verified =
+                try rpc.getTxOutValueSat(anchorTxid, anchorVout).await(timeout)
+                catch {
+                    case e: Exception =>
+                        Console.error(
+                          s"[DEP-2] cannot verify the anchor against Bitcoin (gettxout " +
+                              s"$anchorDisplay failed: ${e.getMessage}). Fix the Bitcoin node " +
+                              "configuration, or pass --skip-btc-check after verifying the " +
+                              "anchor by hand."
+                        )
+                        break(1)
+                }
+            verified match {
+                case None =>
+                    Console.error(
+                      s"[DEP-2] the anchor $anchorDisplay is not an unspent output on Bitcoin " +
+                          "(spent, or never existed). A singleton anchored to it can never " +
+                          "advance: no TM spending it can be built."
+                    )
+                    break(1)
+                case Some(sat) if sat != stateAmountSat =>
+                    Console.error(
+                      s"[DEP-2] the anchor $anchorDisplay holds $sat sat on Bitcoin, but the " +
+                          s"bootstrap datum would record $stateAmountSat sat. The first TM's " +
+                          "sighash would commit to the wrong prevout amount and every FROST " +
+                          "signature over it would be invalid. Pass --amount-sat $sat (or fix " +
+                          "bridge.initial-btc-treasury-amount-sat)."
+                    )
+                    break(1)
+                case Some(sat) =>
+                    Console.info("[DEP-2] anchor verified", s"$anchorDisplay = $sat sat (unspent)")
+            }
+        }
 
         val walletUtxos = provider.findUtxos(sponsorAddress).await(timeout) match {
             case Right(utxos) => utxos.toList.map { case (i, o) => Utxo(i, o) }

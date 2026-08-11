@@ -43,6 +43,7 @@ object CliApp {
             amountSat: Option[Long],
             spiRoot: Option[String],
             cpoRoot: Option[String],
+            skipBtcCheck: Boolean,
             dryRun: Boolean
         )
         case UpdateConfig(
@@ -322,7 +323,14 @@ object CliApp {
                           "Initial completed-peg-outs root, 64 hex chars (default: 32 zero bytes)"
                     )
                     .orNone
-                (oneShotOpt, anchorOpt, amountOpt, spiRootOpt, cpoRootOpt, dryRunFlag)
+                val skipBtcCheckFlag = Opts
+                    .flag(
+                      "skip-btc-check",
+                      help = "Skip the [DEP-2] gettxout verification of the anchor outpoint and " +
+                          "amount. Only for an unreachable Bitcoin node AND a hand-verified anchor."
+                    )
+                    .orFalse
+                (oneShotOpt, anchorOpt, amountOpt, spiRootOpt, cpoRootOpt, skipBtcCheckFlag, dryRunFlag)
                     .mapN(Cmd.BootstrapBridgeState.apply)
             }
 
@@ -657,6 +665,7 @@ object CliApp {
                               amountSat,
                               spiRoot,
                               cpoRoot,
+                              skipBtcCheck,
                               dryRun
                             ) =>
                             BootstrapBridgeStateCommand(
@@ -665,6 +674,7 @@ object CliApp {
                               amountSat,
                               spiRoot,
                               cpoRoot,
+                              skipBtcCheck,
                               dryRun
                             )
                         case Cmd.UpdateConfig(

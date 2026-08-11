@@ -32,6 +32,13 @@ trait BitcoinRpc {
       */
     def isTxOutUnspent(txid: String, vout: Int, includeMempool: Boolean): Future[Boolean] =
         Future.failed(new UnsupportedOperationException("isTxOutUnspent not implemented"))
+
+    /** `gettxout`: the outpoint's value in satoshi, `None` for spent AND for never-existed
+      * outpoints (bitcoind returns null for both). The default fails so callers on non-node
+      * implementations treat the answer as unknown rather than as "spent".
+      */
+    def getTxOutValueSat(txid: String, vout: Int): Future[Option[Long]] =
+        Future.failed(new UnsupportedOperationException("getTxOutValueSat not implemented"))
 }
 
 /** Lightweight Bitcoin RPC client using Java 11+ HTTP client
@@ -294,6 +301,16 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) ex
     override def isTxOutUnspent(txid: String, vout: Int, includeMempool: Boolean): Future[Boolean] =
         call("gettxout", ujson.Arr(txid, vout, includeMempool))
             .map(result => result != ujson.Null)
+
+    /** The outpoint's value in satoshi, `None` when spent or never existed. bitcoind reports BTC
+      * as a JSON number; every representable amount is exact in satoshi below 2^53, so the
+      * round-trip is lossless.
+      */
+    override def getTxOutValueSat(txid: String, vout: Int): Future[Option[Long]] =
+        call("gettxout", ujson.Arr(txid, vout, false)).map {
+            case ujson.Null => None
+            case result     => Some(math.round(result("value").num * 100_000_000L))
+        }
 
     /** Broadcast a raw transaction to the Bitcoin network */
     def sendRawTransaction(hexString: String): Future[String] = {
