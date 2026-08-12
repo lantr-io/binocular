@@ -126,7 +126,7 @@ case class CardanoConfig(
     /** Validate configuration */
     def validate(): Either[String, Unit] = {
         backend.toLowerCase match {
-            case "yaci" => Right(())
+            case "yaci"       => Right(())
             case "blockfrost" =>
                 // A self-hosted backend needs no project ID; only the hosted service does.
                 if blockfrostUrl.isEmpty && (blockfrostProjectId.isEmpty || blockfrostProjectId == "changeme")

@@ -136,7 +136,10 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
                 case Some(refStr) =>
                     val fedInput = parseRef("federation-one-shot-ref", refStr)
                     val configAddress =
-                        Address(network, Credential.ScriptHash(ScriptHash.fromHex(cfg.configNftPolicyId)))
+                        Address(
+                          network,
+                          Credential.ScriptHash(ScriptHash.fromHex(cfg.configNftPolicyId))
+                        )
                     val (_, deployed) = BridgeSweepSetup
                         .loadConfig(
                           provider,
@@ -145,7 +148,9 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
                           AssetName(configNftAsset),
                           timeout
                         )
-                        .valueOr { err => Console.error(err); break(1) }
+                        .valueOr { err =>
+                            Console.error(err); break(1)
+                        }
                     val federation = FederationScripts.derive(
                       blueprint,
                       ByteString.fromArray(fedInput.transactionId.bytes),
@@ -159,7 +164,9 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
                     )
                     FederationScripts
                         .verifyAgainstConfig(federation, deployed)
-                        .valueOr { err => Console.error(err); break(1) }
+                        .valueOr { err =>
+                            Console.error(err); break(1)
+                        }
                     Console.info("spos_registry script hash", federation.registry.policyId.toHex)
                     Console.info("spo_bans script hash", federation.bans.policyId.toHex)
                     Console.info("(verified against the deployed Config)", "#8 / #9 / #10")
@@ -170,8 +177,16 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
                     ("spos_registry", federation.registry.script) ::
                         ("spo_bans", federation.bans.script) ::
                         FaultVerifierContract.Titles.zipWithIndex.map { case (title, i) =>
-                            val label = List("fault_round1", "fault_round2", "fault_equivocation")(i)
-                            (label, FaultVerifierContract(blueprint, title, ByteString.fromArray(federation.registry.policyId.bytes)).script)
+                            val label =
+                                List("fault_round1", "fault_round2", "fault_equivocation")(i)
+                            (
+                              label,
+                              FaultVerifierContract(
+                                blueprint,
+                                title,
+                                ByteString.fromArray(federation.registry.policyId.bytes)
+                              ).script
+                            )
                         }
             }
 

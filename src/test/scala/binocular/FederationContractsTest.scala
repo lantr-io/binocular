@@ -35,7 +35,8 @@ class FederationContractsTest extends AnyFunSuite {
         TreasuryInfoContract(blueprint, oneShot, oneShotIndex, configPolicyForTest)
     private def treasuryPolicyForTest = ByteString.fromArray(treasuryInfo.policyId.bytes)
 
-    private def registry = SposRegistryContract(blueprint, oneShot, oneShotIndex, treasuryPolicyForTest)
+    private def registry =
+        SposRegistryContract(blueprint, oneShot, oneShotIndex, treasuryPolicyForTest)
     private def registryPolicy = ByteString.fromArray(registry.policyId.bytes)
 
     test("spos_registry policy matches heimdall's derivation") {
@@ -161,7 +162,12 @@ class FederationContractsTest extends AnyFunSuite {
     // The derivation chain is strictly ordered: a different one-shot changes the registry, which
     // changes the fault verifiers, which changes the ban policy.
     test("the one-shot outref propagates through the whole chain") {
-        val other = SposRegistryContract(blueprint, ByteString.fromHex("cc" * 32), oneShotIndex, treasuryPolicyForTest)
+        val other = SposRegistryContract(
+          blueprint,
+          ByteString.fromHex("cc" * 32),
+          oneShotIndex,
+          treasuryPolicyForTest
+        )
         val otherPolicy = ByteString.fromArray(other.policyId.bytes)
         assert(other.policyId.toHex != registry.policyId.toHex)
         assert(
@@ -187,8 +193,12 @@ class FederationContractsTest extends AnyFunSuite {
 
     test("FederationScripts.derive reproduces every pinned policy id") {
         val f = derived
-        assert(f.treasury.policyId.toHex == "f7ccdddf9f4e4bb4c75064cd4b454223e012f086a56a50181320a10b")
-        assert(f.registry.policyId.toHex == "1ea9b8e092ae17f7de3d7bfbe477e89df7c72caccbd338c027fa933b")
+        assert(
+          f.treasury.policyId.toHex == "f7ccdddf9f4e4bb4c75064cd4b454223e012f086a56a50181320a10b"
+        )
+        assert(
+          f.registry.policyId.toHex == "1ea9b8e092ae17f7de3d7bfbe477e89df7c72caccbd338c027fa933b"
+        )
         assert(f.bans.policyId.toHex == "3dda71f07642ae9864c693295bbe896f4bfed2b0643b0dbd13a09301")
         assert(f.faultPolicies == FaultVerifierContract.all(blueprint, registryPolicy))
     }
@@ -198,8 +208,16 @@ class FederationContractsTest extends AnyFunSuite {
       updateAuth = scalus.cardano.onchain.plutus.prelude.Option.None,
       params = ConfigParams(
         schedule = ScheduleParams(
-          BigInt(3600), BigInt(7200), BigInt(10800), BigInt(21600), BigInt(1800),
-          BigInt(1800), BigInt(600), BigInt(129600), BigInt(345600), BigInt(129600)
+          BigInt(3600),
+          BigInt(7200),
+          BigInt(10800),
+          BigInt(21600),
+          BigInt(1800),
+          BigInt(1800),
+          BigInt(600),
+          BigInt(129600),
+          BigInt(345600),
+          BigInt(129600)
         ),
         feeRateSatPerVb = BigInt(1),
         perPegoutFee = BigInt(1000),

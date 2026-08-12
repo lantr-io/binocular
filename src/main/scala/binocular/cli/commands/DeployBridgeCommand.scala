@@ -348,7 +348,8 @@ case class DeployBridgeCommand(
                 break(1)
             }
         }
-        if config.bridge.federationCsvBlocks <= 0 || config.bridge.federationCsvBlocks > 65535 then {
+        if config.bridge.federationCsvBlocks <= 0 || config.bridge.federationCsvBlocks > 65535
+        then {
             Console.error(
               "bridge.federation-csv-blocks must be 1..65535 — it is params[7], the relative " +
                   "timelock in the federation recovery leaf, and a wider value truncates into a " +

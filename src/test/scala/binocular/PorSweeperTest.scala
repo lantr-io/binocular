@@ -253,7 +253,8 @@ class PorSweeperTest extends AnyFunSuite {
             scriptRef = None
           )
         )
-        val err = PorSweeper.verifyAgainstConfig(u, ctx).swap.getOrElse(fail("expected a decode failure"))
+        val err =
+            PorSweeper.verifyAgainstConfig(u, ctx).swap.getOrElse(fail("expected a decode failure"))
         assert(err.contains("does not decode as a ConfigDatum"))
     }
 

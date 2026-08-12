@@ -111,7 +111,7 @@ class BifrostContractsTest extends AnyFunSuite {
         // hash moved; ConfigDatum field 5 must name the new one at deployment.
         val pegIn =
             PegInContract(blueprint, oraclePolicy, configPolicy)
-        assert(hex(pegIn.policyId) == "7a37a1d3e5c7159b3a0328962d8c0124a313ce5c6138081b03cbcc67")
+        assert(hex(pegIn.policyId) == "1510d62783c1f3511d009162aa5bef425f8e1f895f7aca80bd66e035")
     }
 
     test("peg_out policy (= withdraw hash) is stable for the trie-v2 2-param encoding") {
@@ -233,6 +233,29 @@ class BifrostContractsTest extends AnyFunSuite {
                 ).map(Paths.get(_)).find(Files.isReadable)
         }
 
+    /** Validators whose vendored bytes are allowed to differ from ft's committed `plutus.json`,
+      * because the difference is BUILD DRIFT and not a source change.
+      *
+      * ft's `plutus.json` does not reproduce from its own source: the committed copy was built by a
+      * local `aiken v1.1.23+unknown` while CI installs `v1.1.23+8949565`, and the two emit
+      * different bytes for the same validators. So every ft commit that rebuilds the blueprint
+      * moves `config` and `treasury` whether or not anything in `config.ak` / `treasury.ak` changed
+      * — WI-073 is the case in point: `git diff ad04ecb..ft-main -- onchain/` touches only
+      * `bitcoin.ak` and `peg-in.ak`, yet both these hashes moved with it.
+      *
+      * Taking those bytes anyway is not free. `config`'s hash IS the config NFT policy id, and that
+      * id parameterizes bridged_token, completed_peg_ins, peg_in and peg_out, so vendoring a
+      * rebuild-only change re-identifies the entire bridge and forces a redeploy for no semantic
+      * reason. Until ft's blueprint builds deterministically, the honest position is to carry the
+      * bytes we deployed against and exempt them HERE, in the open, rather than let the check go
+      * green by accident.
+      *
+      * REMOVE both entries the moment ft pins its aiken build — at that point a difference here is
+      * real again.
+      */
+    private val RebuildDrift: Set[String] =
+        Set("bitcoin/config.config.mint", "bitcoin/treasury.treasury_info.mint")
+
     test("every vendored compiledCode is ft's current one") {
         // Freshness against ft, for the WHOLE vendored set — a stale peg_in or peg_out is just
         // as fatal as a stale bridge_state (the watchtower derives their script hashes, and
@@ -247,18 +270,19 @@ class BifrostContractsTest extends AnyFunSuite {
                 )
             case Some(path) =>
                 val ft = BifrostBlueprint.fromFile(path.toString)
-                val stale = blueprint.validatorTitles.filter { title =>
-                    val ftCode =
-                        try ft.compiledCode(title)
-                        catch {
-                            case _: RuntimeException =>
-                                fail(
-                                  s"validator '$title' is vendored but absent from $path — " +
-                                      "the two blueprints no longer describe the same bridge"
-                                )
-                        }
-                    ftCode != blueprint.compiledCode(title)
-                }
+                val stale =
+                    blueprint.validatorTitles.filterNot(RebuildDrift.contains).filter { title =>
+                        val ftCode =
+                            try ft.compiledCode(title)
+                            catch {
+                                case _: RuntimeException =>
+                                    fail(
+                                      s"validator '$title' is vendored but absent from $path — " +
+                                          "the two blueprints no longer describe the same bridge"
+                                    )
+                            }
+                        ftCode != blueprint.compiledCode(title)
+                    }
                 assert(
                   stale.isEmpty,
                   s"vendored compiledCode is stale against $path for: ${stale.mkString(", ")} " +

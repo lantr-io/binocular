@@ -85,9 +85,9 @@ class PegOutCompleteCekTest extends AnyFunSuite {
     private def porId(ref: TxOutRef): ByteString =
         CpoTrieMirror.porId(ref.id.hash, ref.idx.toLong)
 
-    /** The rev-5.5 twelve-field ConfigDatum. The withdraw reads fields 2 (bridged token policy)
-      * and 4 (bridge_state_policy) — both shifted up by one when `params` moved to index 1 — and
-      * the asset name is the [CFG-1] constant.
+    /** The rev-5.5 twelve-field ConfigDatum. The withdraw reads fields 2 (bridged token policy) and
+      * 4 (bridge_state_policy) — both shifted up by one when `params` moved to index 1 — and the
+      * asset name is the [CFG-1] constant.
       */
     private def configDatum: Data = ConfigDatum(
       updateAuth = Option.None,
