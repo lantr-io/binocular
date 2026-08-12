@@ -298,29 +298,25 @@ case class DeployBridgeCommand(
         // is why spos_registry could never pin the UTxO it updates ([REG-6]). The treasury's own
         // one-shot is the federation UTxO, the same outpoint the registry root consumes — one
         // transaction, so one outpoint parameterizes both.
-        val treasuryInfoContract =
-            TreasuryInfoContract(blueprint, federationRef.id.hash, federationRef.idx, configPolicy)
-        val treasuryPolicy = ByteString.fromArray(treasuryInfoContract.policyId.bytes)
-        val registryContract =
-            SposRegistryContract(
-              blueprint,
-              federationRef.id.hash,
-              federationRef.idx,
-              treasuryPolicy
-            )
-        val registryPolicy = ByteString.fromArray(registryContract.policyId.bytes)
-        val faultPolicies = FaultVerifierContract.all(blueprint, registryPolicy)
         val banSchedule = config.bridge.banSchedule
-        val spoBansContract = SpoBansContract(
+        // Genesis is the ONE caller that reads the ban schedule from local config: the values are
+        // inputs to the ban policy id, so from here on they are only readable back off the chain.
+        val federation = FederationScripts.derive(
           blueprint,
-          registryPolicy,
-          faultPolicies,
-          baseBanDurationMs = BigInt(banSchedule.baseBanDurationMs),
-          maxFaultsBeforePermanent = BigInt(banSchedule.maxFaultsBeforePermanent),
-          maxValidityWindowMs = BigInt(banSchedule.maxValidityWindowMs),
-          bootstrapTxId = federationRef.id.hash,
-          bootstrapIndex = federationRef.idx
+          federationRef.id.hash,
+          federationRef.idx,
+          configPolicy,
+          (
+            BigInt(banSchedule.baseBanDurationMs),
+            BigInt(banSchedule.maxFaultsBeforePermanent),
+            BigInt(banSchedule.maxValidityWindowMs)
+          )
         )
+        val treasuryInfoContract = federation.treasury
+        val treasuryPolicy = ByteString.fromArray(treasuryInfoContract.policyId.bytes)
+        val registryContract = federation.registry
+        val registryPolicy = ByteString.fromArray(registryContract.policyId.bytes)
+        val spoBansContract = federation.bans
         // config Update/Retire authority = the binocular owner key (oracle.owner-pkh),
         // so the same operator that runs the oracle governs the bridge config.
         val updateAuthPkh = {
@@ -565,15 +561,25 @@ case class DeployBridgeCommand(
                     .payTo(configContract.address(network), configValue, configDatum.toData)
                     .payTo(cpiContract.address(network), cpiValue, cpiDatum.toData)
                     .payTo(bssAddress, bssValue, bssDatum)
-                    // Register the peg_in / peg_out withdraw reward accounts here (deposit-less
-                    // Shelley RegCert, no script execution) so completion txs can withdraw. Both
-                    // hashes are fresh per deploy (they derive from this deploy's config policy), so
-                    // this is always a first-time registration - safe in an atomic tx. These two
-                    // are the ONLY reward accounts the protocol uses (the rev-5.1 verifier slots
-                    // are gone from the rev-5.4 datum). `register-bridge-creds` (idempotent)
-                    // re-runs the same two registrations if this tx is ever partial.
+                    // Register the withdraw reward accounts here (deposit-less Shelley RegCert, no
+                    // script execution) so the paths that authorize by withdraw-zero can run. Every
+                    // hash is fresh per deploy (each derives from this deploy's config policy or
+                    // federation one-shot), so this is always a first-time registration - safe in
+                    // an atomic tx. `register-bridge-creds` (idempotent) re-runs them if this tx is
+                    // ever partial.
+                    //
+                    // These are ALL THREE validators with a `withdraw` handler. Conway rejects a
+                    // withdrawal from an unregistered reward account, and certificates validate
+                    // against the PRE-transaction ledger state, so none of them can be folded into
+                    // the transaction that needs it. spo_bans is registered here rather than by
+                    // heimdall's `init-scripts` because genesis already mints its root: a bridge
+                    // whose ban list exists but whose ApplyBan can never be submitted is not a
+                    // deployed bridge.
                     .registerStake(StakeAddress(network, StakePayload.Script(pegIn.policyId)))
                     .registerStake(StakeAddress(network, StakePayload.Script(pegOut.policyId)))
+                    .registerStake(
+                      StakeAddress(network, StakePayload.Script(spoBansContract.policyId))
+                    )
                     .complete(provider, sponsorAddress)
                     .await(timeout)
                     .sign(signer)
@@ -626,6 +632,13 @@ case class DeployBridgeCommand(
         // one-shot this deploy already spent: heimdall re-derives the registry and treasury policy
         // ids from it, it does not mint against it. `bootstrap-treasury-info` and
         // `bootstrap-registry` are legacy for a bridge deployed here — step 1 minted both.
+        // `deploy-script-refs` reproduces the federation SCRIPTS from this outpoint to publish
+        // them; the Config's published policy ids identify those UTxOs but cannot rebuild the
+        // scripts. Same value heimdall takes as registry_bootstrap / treasury_bootstrap.
+        Console.info(
+          "federation-one-shot-ref",
+          s"${federationRef.id.hash.toHex}#${federationRef.idx}"
+        )
         Console.info(
           "heimdall registry_bootstrap / treasury_bootstrap",
           s"${federationRef.id.hash.toHex}:${federationRef.idx}"

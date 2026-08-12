@@ -5,8 +5,8 @@ import binocular.oracle.*
 import binocular.watchtower.*
 import binocular.cli.{Command, CommandHelpers, Console}
 
-import scalus.cardano.address.{StakeAddress, StakePayload}
-import scalus.cardano.ledger.{ScriptHash, TransactionHash}
+import scalus.cardano.address.{Address, StakeAddress, StakePayload}
+import scalus.cardano.ledger.{AssetName, Credential, ScriptHash, TransactionHash, TransactionInput}
 import scalus.cardano.node.TransactionStatus
 import scalus.cardano.txbuilder.TxBuilder
 import scalus.uplc.builtin.ByteString
@@ -21,19 +21,21 @@ import cats.syntax.either.*
 /** Register the reward (stake) credentials of the bridge withdraw scripts the completion txs use,
   * so Conway will accept their 0-ADA withdrawals.
   *
-  * Exactly TWO reward accounts exist under spec rev 5.1, and both are registered here:
-  *   - `peg_in` (config[4]) – `withdraw(CompletePegIn)` runs it as the single rewarding script (the
+  * THREE validators declare a `withdraw` handler, and all three are registered here:
+  *   - `peg_in` (config #6) – `withdraw(CompletePegIn)` runs it as the single rewarding script (the
   *     stake-validator delegation pattern: the PIR + completed-peg-ins spends require a withdrawal
   *     from the peg_in script). The `bridged_token` policy reads the ConfigDatum and enforces the
   *     mint against this same withdrawal directly (Variant B – no separate mint checker).
-  *   - `peg_out` (config[5]) – `withdraw(CompletePegOut)` runs it as the single rewarding script,
+  *   - `peg_out` (config #7) – `withdraw(CompletePegOut)` runs it as the single rewarding script,
   *     and the PegOutRequest spend delegates to it.
+  *   - `spo_bans` (config #8) – `withdraw(ApplyBan)` writes the ban-list node. Unlike the other two
+  *     its hash is not config-derived, so it needs `bridge.federation-one-shot-ref` and is skipped
+  *     with a warning when that key is absent.
   *
-  * Nothing else is registered. The produced verifier (config[7]) and the not-produced verifier
-  * (config[8]) are RETIRED under the attested-root scheme: the rewritten `peg_out.ak` proves
-  * payment against the quorum-attested completed-peg-outs trie root and never delegates to either,
-  * so neither is ever withdrawn from and neither needs a reward account. `deploy-bridge` still
-  * writes their hashes into the config datum only because the datum shape kept those slots.
+  * Nothing else is registered. The rev-5.1 produced / not-produced verifiers are RETIRED under the
+  * attested-root scheme — the rewritten `peg_out.ak` proves payment against the quorum-attested
+  * completed-peg-outs trie root and never delegates to either — and rev 5.4 removed their Config
+  * slots entirely.
   *
   * Conway rejects a withdrawal whose reward account is not registered, and certificates validate
   * against the *pre-transaction* ledger state, so registration must happen in an earlier tx – it
@@ -45,7 +47,7 @@ import cats.syntax.either.*
   * `registerBanWithdrawCredential`.)
   *
   * Run after the bridge config + the (re-minted) peg_in policy are fixed. `deploy-bridge` already
-  * registers both accounts inside its bootstrap tx, so this command is the idempotent repair path:
+  * registers all three inside its bootstrap tx, so this command is the idempotent repair path:
   * each credential is registered in its OWN tx and an already-registered one is skipped (not
   * fatal), so a partially-registered deployment converges instead of failing wholesale. The command
   * is therefore safe to re-run. It does NOT touch the config / completed-peg-ins /
@@ -60,6 +62,13 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
 
         given ec: ExecutionContext = ExecutionContext.global
         val timeout = config.oracle.transactionTimeout.seconds
+
+        def parseRef(label: String, s: String): TransactionInput = s.split("#") match {
+            case Array(h, i) if i.toIntOption.isDefined =>
+                TransactionInput(TransactionHash.fromHex(h), i.toInt)
+            case _ =>
+                Console.error(s"Invalid $label: expected TX_HASH#INDEX, got '$s'"); break(1)
+        }
 
         def hexBytes(label: String, s: String, expectedChars: Option[Int]): ByteString = {
             val isHex = s.length % 2 == 0 && s.forall(c => "0123456789abcdefABCDEF".contains(c))
@@ -104,10 +113,54 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
         val pegOut = PegOutContract(blueprint, configNftPolicy)
         val pegOutHash = pegOut.policyId
 
+        // The ban list is the third and last validator with a `withdraw` handler: ApplyBan
+        // authorizes through withdraw-zero from `spo_bans` itself. Its hash is not config-derived
+        // like the two above — it comes off the federation one-shot through the registry and the
+        // three fault verifiers — so it needs that key, and its ban schedule is read back from the
+        // deployed Config, which is the authority on the values baked into the policy id.
+        val banCred: List[(String, ScriptHash)] =
+            config.bridge.federationOneShotRef.map(_.trim).filter(_.nonEmpty) match {
+                case None =>
+                    Console.warn(
+                      "bridge.federation-one-shot-ref is not set — skipping spo_bans. ApplyBan " +
+                          "withdraws from it, so a bridge whose ban list is bootstrapped needs it " +
+                          "registered; set the key deploy-bridge printed and re-run."
+                    )
+                    Nil
+                case Some(refStr) =>
+                    val fedInput = parseRef("bridge.federation-one-shot-ref", refStr)
+                    val configAddress =
+                        Address(network, Credential.ScriptHash(ScriptHash.fromHex(configNftPolicy.toHex)))
+                    val (_, deployed) = BridgeSweepSetup
+                        .loadConfig(
+                          provider,
+                          configAddress,
+                          ScriptHash.fromHex(configNftPolicy.toHex),
+                          AssetName(configNftAsset),
+                          timeout
+                        )
+                        .valueOr { err => Console.error(err); break(1) }
+                    val federation = FederationScripts.derive(
+                      blueprint,
+                      ByteString.fromArray(fedInput.transactionId.bytes),
+                      BigInt(fedInput.index),
+                      configNftPolicy,
+                      (
+                        deployed.params.baseBanDurationMs,
+                        deployed.params.maxFaultsBeforePermanent,
+                        deployed.params.maxValidityWindowMs
+                      )
+                    )
+                    FederationScripts
+                        .verifyAgainstConfig(federation, deployed)
+                        .valueOr { err => Console.error(err); break(1) }
+                    List("spo_bans" -> federation.bans.policyId)
+            }
+
         val creds: List[(String, ScriptHash)] = List(
           "peg_in" -> pegInHash,
           "peg_out" -> pegOutHash
-        )
+        ) ++ banCred
 
         Console.info("Oracle policy", oraclePolicyId.toHex)
         creds.foreach { case (name, h) =>

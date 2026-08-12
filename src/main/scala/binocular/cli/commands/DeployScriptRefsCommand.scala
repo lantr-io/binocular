@@ -4,7 +4,8 @@ import binocular.*
 import binocular.watchtower.*
 import binocular.cli.{Command, Console}
 
-import scalus.cardano.ledger.{Coin, Script, ScriptRef, Transaction, TransactionHash, TransactionInput, TransactionOutput, Value}
+import scalus.cardano.address.Address
+import scalus.cardano.ledger.{AssetName, Coin, Credential, Script, ScriptHash, ScriptRef, Transaction, TransactionHash, TransactionInput, TransactionOutput, Value}
 import scalus.cardano.node.TransactionStatus
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import scalus.cardano.txbuilder.{TransactionBuilderStep, TxBuilder}
@@ -17,10 +18,15 @@ import boundary.break
 import scalus.utils.await
 import cats.syntax.either.*
 
-/** Publishes the heavy Plutus scripts the completion paths use as reference UTxOs: peg-in side
-  * (`peg_in`, `bridged_token`, `completed_peg_ins`), peg-out side (`peg_out`), and the
-  * `bridge_state` singleton validator (spent every TM Confirm) — 5 in total (`bridged_token` is
-  * shared by both burns/mints).
+/** Publishes every heavy Plutus script the bridge's transactions would otherwise inline, as
+  * reference UTxOs.
+  *
+  *   - completion half (5): peg-in side (`peg_in`, `bridged_token`, `completed_peg_ins`), peg-out
+  *     side (`peg_out`), and the `bridge_state` singleton validator (spent every TM Confirm).
+  *     `bridged_token` is shared by both burns/mints.
+  *   - federation half (5): `spos_registry`, `spo_bans` and the three DKG fault verifiers. These
+  *     need `bridge.federation-one-shot-ref`; without it the command publishes the completion half
+  *     and says so. `register_spo` would otherwise carry the registry script twice.
   *
   * Each script gets pinned to a Babbage-era output at the sponsor's wallet address with
   * `script_ref` set. Once these outputs land on chain, pegin-/pegout-complete pass their outRefs as
@@ -110,6 +116,64 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
         Console.info("peg_out script hash", pegOut.policyId.toHex)
         Console.info("bridge_state script hash", bss.policyId.toHex)
         println()
+
+        // --- the federation half ---
+        //
+        // `register_spo` would otherwise carry the ~6.7 kB registry script twice and miss the 16 kB
+        // limit, and `apply-ban` carries spo_bans plus a fault verifier. Their scripts cannot be
+        // rebuilt from the Config, which publishes only the finished policy ids, so this needs the
+        // federation one-shot — and the ban schedule, which is an INPUT to the ban policy id and is
+        // therefore read back from the deployed Config rather than from local config.
+        val federationScripts: List[(String, Script.PlutusV3)] =
+            config.bridge.federationOneShotRef.map(_.trim).filter(_.nonEmpty) match {
+                case None =>
+                    Console.warn(
+                      "bridge.federation-one-shot-ref is not set — publishing the completion half " +
+                          "only. The SPO half (spos_registry, spo_bans, 3 fault verifiers) needs " +
+                          "it; set it to the outpoint deploy-bridge printed and re-run."
+                    )
+                    Nil
+                case Some(refStr) =>
+                    val fedInput = parseRef("federation-one-shot-ref", refStr)
+                    val configAddress =
+                        Address(network, Credential.ScriptHash(ScriptHash.fromHex(cfg.configNftPolicyId)))
+                    val (_, deployed) = BridgeSweepSetup
+                        .loadConfig(
+                          provider,
+                          configAddress,
+                          ScriptHash.fromHex(cfg.configNftPolicyId),
+                          AssetName(configNftAsset),
+                          timeout
+                        )
+                        .valueOr { err => Console.error(err); break(1) }
+                    val federation = FederationScripts.derive(
+                      blueprint,
+                      ByteString.fromArray(fedInput.transactionId.bytes),
+                      BigInt(fedInput.index),
+                      configNftPolicy,
+                      (
+                        deployed.params.baseBanDurationMs,
+                        deployed.params.maxFaultsBeforePermanent,
+                        deployed.params.maxValidityWindowMs
+                      )
+                    )
+                    FederationScripts
+                        .verifyAgainstConfig(federation, deployed)
+                        .valueOr { err => Console.error(err); break(1) }
+                    Console.info("spos_registry script hash", federation.registry.policyId.toHex)
+                    Console.info("spo_bans script hash", federation.bans.policyId.toHex)
+                    Console.info("(verified against the deployed Config)", "#8 / #9 / #10")
+                    println()
+                    // treasury_info is NOT published: nothing ever spends it with the script
+                    // inlined at size — its spend paths are small, and the state UTxO is read as a
+                    // reference input everywhere else.
+                    ("spos_registry", federation.registry.script) ::
+                        ("spo_bans", federation.bans.script) ::
+                        FaultVerifierContract.Titles.zipWithIndex.map { case (title, i) =>
+                            val label = List("fault_round1", "fault_round2", "fault_equivocation")(i)
+                            (label, FaultVerifierContract(blueprint, title, ByteString.fromArray(federation.registry.policyId.bytes)).script)
+                        }
+            }
 
         if dryRun then {
             Console.success("Dry-run complete (computed hashes, not submitting)")
@@ -213,7 +277,7 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
           ("completed_peg_ins", cpi.script),
           ("peg_out", pegOut.script),
           ("bridge_state", bss.script)
-        )
+        ) ++ federationScripts
         val deployedHashes = binocular.cli.CommandHelpers
             .refScriptUtxosByHash(config, sponsorAddress.encode.getOrElse(""))
             .keySet

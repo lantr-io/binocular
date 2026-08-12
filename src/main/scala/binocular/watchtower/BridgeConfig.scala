@@ -84,6 +84,18 @@ case class BridgeConfig(
     // carries (see CommandHelpers.refScriptUtxosByHash). A script hash not found on-chain falls
     // back to inlining the script in the witness set (only viable for small txs).
     bridgeStateOneShotRef: Option[String] = None,
+    // The SECOND one-shot wallet UTxO (TX_HASH#INDEX) deploy-bridge consumed: the federation
+    // outpoint that parameterizes `treasury_info`, `spos_registry` and — through the registry and
+    // the three fault verifiers — `spo_bans`. It is spent, but it stays the INPUT that reproduces
+    // all four script hashes.
+    //
+    // REQUIRED BY `deploy-script-refs` to publish the federation half's reference scripts, and by
+    // heimdall as `cardano.registry_bootstrap` / `cardano.treasury_bootstrap`. The Config publishes
+    // the finished POLICY IDS (#8/#9/#10), which is enough to READ those UTxOs; reproducing the
+    // SCRIPTS needs this. `Option` (not `""`) for the same reason as the key above: a bridge
+    // deployed before this key existed maps to `None`, and the command says so instead of
+    // deriving a policy from an empty outref.
+    federationOneShotRef: Option[String] = None,
     // The initial Bitcoin treasury outpoint ("TXID:VOUT", display txid) and its satoshi amount —
     // the deployment anchor written into the singleton's bootstrap BridgeState (spec §Why the
     // bootstrap datum is not pinned). Nothing on Cardano verifies the amount; a wrong value is

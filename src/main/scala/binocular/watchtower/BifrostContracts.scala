@@ -306,6 +306,89 @@ object BridgeStateContract {
 // an SPO handed a wrong one derives a well-formed address holding nothing rather than an error.
 // That is what genesis publishing the finished ids in the Config is for.
 
+/** Every federation script, derived from the two inputs that fix them all.
+  *
+  * The chain is strictly ordered and each step needs the one before it:
+  * {{{
+  *   (federation one-shot, config policy) -> treasury_info -> spos_registry
+  *                                        -> 3 fault verifiers -> spo_bans
+  * }}}
+  * Rev 5.5 inverted the first hop. `treasury_info` used to take `registry_policy_id`, which made
+  * the dependency a cycle and the [REG-6] pin impossible; it takes the Config policy now ([PRE-3])
+  * and `treasury.ak` reads the registry policy from Config #9 at run time ([PRE-4]).
+  *
+  * It lives in one place because three commands need the same answer — genesis mints these
+  * policies, `deploy-script-refs` publishes their scripts, `register-bridge-creds` registers the
+  * ban list's reward account — and a chain applied in a different order, or with one parameter off,
+  * yields well-formed addresses holding nothing rather than an error.
+  */
+final case class FederationScripts(
+    treasury: TreasuryInfoContract,
+    registry: SposRegistryContract,
+    faultPolicies: List[ByteString],
+    bans: SpoBansContract
+)
+
+object FederationScripts {
+
+    /** @param banSchedule
+      *   `(base_ban_duration_ms, max_faults_before_permanent, max_validity_window_ms)`. These are
+      *   INPUTS to the ban policy id, so they are not governance-updatable in place: genesis reads
+      *   them from local config, every later caller MUST read them back from the deployed Config's
+      *   `params` (indices 4..6) rather than from its own file, or it derives a ban list that is
+      *   not the bridge's.
+      */
+    def derive(
+        blueprint: BifrostBlueprint,
+        federationTxId: ByteString,
+        federationIndex: BigInt,
+        configPolicyId: ByteString,
+        banSchedule: (BigInt, BigInt, BigInt)
+    ): FederationScripts = {
+        val treasury =
+            TreasuryInfoContract(blueprint, federationTxId, federationIndex, configPolicyId)
+        val treasuryPolicy = ByteString.fromArray(treasury.policyId.bytes)
+        val registry =
+            SposRegistryContract(blueprint, federationTxId, federationIndex, treasuryPolicy)
+        val registryPolicy = ByteString.fromArray(registry.policyId.bytes)
+        val faultPolicies = FaultVerifierContract.all(blueprint, registryPolicy)
+        val (baseBanDurationMs, maxFaultsBeforePermanent, maxValidityWindowMs) = banSchedule
+        val bans = SpoBansContract(
+          blueprint,
+          registryPolicy,
+          faultPolicies,
+          baseBanDurationMs = baseBanDurationMs,
+          maxFaultsBeforePermanent = maxFaultsBeforePermanent,
+          maxValidityWindowMs = maxValidityWindowMs,
+          bootstrapTxId = federationTxId,
+          bootstrapIndex = federationIndex
+        )
+        FederationScripts(treasury, registry, faultPolicies, bans)
+    }
+
+    /** Check a derivation against what the deployed Config publishes (#8 bans, #9 registry, #10
+      * treasury).
+      *
+      * The federation one-shot is operator-supplied config, and a wrong one derives three
+      * well-formed policies that name nothing. The Config is the authority on all three ids, so
+      * comparing closes the loop before anything is published or registered against them.
+      */
+    def verifyAgainstConfig(scripts: FederationScripts, config: ConfigDatum): Either[String, Unit] = {
+        def cmp(what: String, derived: ScriptHash, published: ByteString): Either[String, Unit] =
+            Either.cond(
+              derived.toHex == published.toHex,
+              (),
+              s"derived $what policy ${derived.toHex} does not match the Config's ${published.toHex} " +
+                  "— bridge.federation-one-shot-ref is not the outpoint this bridge was deployed from"
+            )
+        for {
+            _ <- cmp("treasury_info", scripts.treasury.policyId, config.treasuryInfoPolicyId)
+            _ <- cmp("spos_registry", scripts.registry.policyId, config.sposRegistryPolicyId)
+            _ <- cmp("spo_bans", scripts.bans.policyId, config.spoBansPolicyId)
+        } yield ()
+    }
+}
+
 /** `spos_registry`, the on-chain registry of registered SPOs.
   *
   * ==Derivation order==

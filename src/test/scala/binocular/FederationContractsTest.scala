@@ -169,4 +169,91 @@ class FederationContractsTest extends AnyFunSuite {
               FaultVerifierContract.all(blueprint, registryPolicy)
         )
     }
+
+    // --- the whole chain in one call ---
+    //
+    // Three commands derive this chain (genesis mints the policies, deploy-script-refs publishes
+    // the scripts, register-bridge-creds registers the ban reward account). They call
+    // FederationScripts.derive so they cannot drift; these tests are what says derive() IS the
+    // chain the pinned vectors above describe.
+
+    private def derived = FederationScripts.derive(
+      blueprint,
+      oneShot,
+      oneShotIndex,
+      configPolicyForTest,
+      (BigInt(600000), BigInt(3), BigInt(3600000))
+    )
+
+    test("FederationScripts.derive reproduces every pinned policy id") {
+        val f = derived
+        assert(f.treasury.policyId.toHex == "f7ccdddf9f4e4bb4c75064cd4b454223e012f086a56a50181320a10b")
+        assert(f.registry.policyId.toHex == "1ea9b8e092ae17f7de3d7bfbe477e89df7c72caccbd338c027fa933b")
+        assert(f.bans.policyId.toHex == "3dda71f07642ae9864c693295bbe896f4bfed2b0643b0dbd13a09301")
+        assert(f.faultPolicies == FaultVerifierContract.all(blueprint, registryPolicy))
+    }
+
+    /** A Config publishing the ids `derived` produces. */
+    private def configFor(f: FederationScripts): ConfigDatum = ConfigDatum(
+      updateAuth = scalus.cardano.onchain.plutus.prelude.Option.None,
+      params = ConfigParams(
+        schedule = ScheduleParams(
+          BigInt(3600), BigInt(7200), BigInt(10800), BigInt(21600), BigInt(1800),
+          BigInt(1800), BigInt(600), BigInt(129600), BigInt(345600), BigInt(129600)
+        ),
+        feeRateSatPerVb = BigInt(1),
+        perPegoutFee = BigInt(1000),
+        minPegOutFbtc = BigInt(10000),
+        baseBanDurationMs = BigInt(600000),
+        maxFaultsBeforePermanent = BigInt(3),
+        maxValidityWindowMs = BigInt(3600000),
+        federationCsvBlocks = BigInt(144)
+      ),
+      bridgedTokenPolicy = ByteString.empty,
+      completedPegInsPolicy = ByteString.empty,
+      bridgeStatePolicy = ByteString.empty,
+      tmScriptHash = ByteString.empty,
+      pegInScriptHash = ByteString.empty,
+      pegOutScriptHash = ByteString.empty,
+      spoBansPolicyId = ByteString.fromArray(f.bans.policyId.bytes),
+      sposRegistryPolicyId = ByteString.fromArray(f.registry.policyId.bytes),
+      treasuryInfoPolicyId = ByteString.fromArray(f.treasury.policyId.bytes),
+      yFederation = ByteString.empty
+    )
+
+    test("verifyAgainstConfig accepts the derivation the Config was deployed from") {
+        assert(FederationScripts.verifyAgainstConfig(derived, configFor(derived)) == Right(()))
+    }
+
+    test("verifyAgainstConfig rejects a wrong federation one-shot") {
+        // The failure this guards: an operator copies the wrong outpoint into
+        // bridge.federation-one-shot-ref and deploy-script-refs publishes 40 kB of reference
+        // scripts no transaction will ever reference, or register-bridge-creds registers a reward
+        // account that is not the bridge's ban list.
+        val wrong = FederationScripts.derive(
+          blueprint,
+          ByteString.fromHex("cc" * 32),
+          oneShotIndex,
+          configPolicyForTest,
+          (BigInt(600000), BigInt(3), BigInt(3600000))
+        )
+        val err = FederationScripts
+            .verifyAgainstConfig(wrong, configFor(derived))
+            .swap
+            .getOrElse(fail("expected a mismatch"))
+        assert(err.contains("bridge.federation-one-shot-ref"))
+    }
+
+    test("verifyAgainstConfig rejects a ban schedule the Config did not fix") {
+        // The schedule is an INPUT to the ban policy id, so a caller reading it from its own file
+        // instead of from the deployed Config derives a different ban list.
+        val other = FederationScripts.derive(
+          blueprint,
+          oneShot,
+          oneShotIndex,
+          configPolicyForTest,
+          (BigInt(600001), BigInt(3), BigInt(3600000))
+        )
+        assert(FederationScripts.verifyAgainstConfig(other, configFor(derived)).isLeft)
+    }
 }

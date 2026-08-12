@@ -43,14 +43,20 @@ object BridgeSweepSetup {
       * one-shot ref. `confirm-tmtx`, which must SPEND the singleton, additionally checks its
       * locally derived `bridge_state` script hashes to this policy.
       */
-    def loadSingletonContext(
+    /** The live Config UTxO, located by its NFT, and its decoded datum.
+      *
+      * Split out of [[loadSingletonContext]] because commands that touch no singleton still need
+      * the deployed Config as the authority on the bridge's own parameters — `deploy-script-refs`
+      * takes the ban schedule and the three federation policy ids from it rather than from local
+      * config, which can drift from the deployment it claims to describe.
+      */
+    def loadConfig(
         provider: BlockchainProvider,
         configAddress: Address,
         configNftPolicy: ScriptHash,
         configNftAsset: AssetName,
-        network: Network,
         timeout: Duration
-    )(using ExecutionContext): Either[String, SingletonContext] =
+    )(using ExecutionContext): Either[String, (Utxo, ConfigDatum)] =
         for {
             configUtxos <- provider
                 .findUtxos(configAddress)
@@ -65,7 +71,20 @@ object BridgeSweepSetup {
                 .toRight(s"no UTxO carrying the config NFT at $configAddress")
             cfg <- configUtxo.output.inlineDatum
                 .flatMap(d => Try(d.to[ConfigDatum]).toOption)
-                .toRight("config datum does not decode as the rev-5.4 ConfigDatum")
+                .toRight("config datum does not decode as the rev-5.5 ConfigDatum")
+        } yield (configUtxo, cfg)
+
+    def loadSingletonContext(
+        provider: BlockchainProvider,
+        configAddress: Address,
+        configNftPolicy: ScriptHash,
+        configNftAsset: AssetName,
+        network: Network,
+        timeout: Duration
+    )(using ExecutionContext): Either[String, SingletonContext] =
+        for {
+            loaded <- loadConfig(provider, configAddress, configNftPolicy, configNftAsset, timeout)
+            (configUtxo, cfg) = loaded
             bssPolicy = ScriptHash.fromHex(cfg.bridgeStatePolicy.toHex)
             bssAddress = Address(network, Credential.ScriptHash(bssPolicy))
             bssAsset = AssetName(BridgeStateContract.assetName)

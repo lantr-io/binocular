@@ -36,4 +36,13 @@ class ReferenceConfTest extends AnyFunSuite {
         assert(cfg.bridge.yFederationHex.isEmpty)
         assert(cfg.bridge.federationCsvBlocks == 144)
     }
+
+    test("the one-shot refs stay None when absent, never Some(\"\")") {
+        // deploy-script-refs and confirm-tmtx branch on absent-vs-set. A "" default would make a
+        // bridge deployed before the key existed look configured, and they would derive a policy
+        // from an empty outref instead of saying the key is missing.
+        val cfg = ConfigSource.defaultReference.at("binocular").loadOrThrow[BinocularConfig]
+        assert(cfg.bridge.federationOneShotRef.isEmpty)
+        assert(cfg.bridge.bridgeStateOneShotRef.isEmpty)
+    }
 }
