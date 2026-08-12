@@ -92,20 +92,16 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
         val configNftAsset =
             hexBytes("bridge.config-nft-asset-name", config.bridge.configNftAssetName, None)
 
-        // peg_in withdraw script (= peg_in policy) – config[5]. Rev 5.4: peg_in dropped its
-        // tm_nft_policy_id param, so the hash depends only on the oracle + config NFT pair.
-        val pegIn = PegInContract(
-          blueprint,
-          oraclePolicyId,
-          configNftPolicy,
-          configNftAsset
-        )
+        // peg_in withdraw script (= peg_in policy) – config[6] since the rev-5.5 re-index. Rev
+        // 5.4 dropped its tm_nft_policy_id param and rev 5.5 dropped the config NFT asset name
+        // ([CFG-7]), so the hash depends only on the oracle and the config NFT policy.
+        val pegIn = PegInContract(blueprint, oraclePolicyId, configNftPolicy)
         val pegInHash = pegIn.policyId
 
         // Peg-out completion (`peg_out.ak::CompletePegOut`) withdraws from exactly ONE script: the
-        // peg_out withdraw validator itself (config[6]). The rev-5.1 verifier slots are gone from
-        // the rev-5.4 datum, so nothing else is ever withdrawn from or registered.
-        val pegOut = PegOutContract(blueprint, configNftPolicy, configNftAsset)
+        // peg_out withdraw validator itself (config[7] after the rev-5.5 re-index). The rev-5.1
+        // verifier slots are gone, so nothing else is ever withdrawn from or registered.
+        val pegOut = PegOutContract(blueprint, configNftPolicy)
         val pegOutHash = pegOut.policyId
 
         val creds: List[(String, ScriptHash)] = List(

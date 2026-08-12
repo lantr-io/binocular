@@ -26,30 +26,40 @@ class FederationContractsTest extends AnyFunSuite {
     private val oneShot = ByteString.fromHex("bb" * 32)
     private val oneShotIndex = BigInt(2)
 
-    private def registry = SposRegistryContract(blueprint, oneShot, oneShotIndex)
+    /** Rev 5.5 derivation order: Config -> treasury_info -> spos_registry. The registry is
+      * parameterized by the treasury policy it PINS ([REG-6]), so the chain starts at the Config
+      * identity rather than ending at the treasury.
+      */
+    private val configPolicyForTest = ByteString.fromHex("77" * 28)
+    private def treasuryInfo =
+        TreasuryInfoContract(blueprint, oneShot, oneShotIndex, configPolicyForTest)
+    private def treasuryPolicyForTest = ByteString.fromArray(treasuryInfo.policyId.bytes)
+
+    private def registry = SposRegistryContract(blueprint, oneShot, oneShotIndex, treasuryPolicyForTest)
     private def registryPolicy = ByteString.fromArray(registry.policyId.bytes)
 
     test("spos_registry policy matches heimdall's derivation") {
         assert(
-          registry.policyId.toHex == "55c7620a3ccedc1bcc4c1dac278a6f4d2df5eaf01e886a4d8c640d28"
+          registry.policyId.toHex == "1ea9b8e092ae17f7de3d7bfbe477e89df7c72caccbd338c027fa933b"
         )
     }
 
     test("the three fault verifiers match heimdall's derivation, in spo_bans order") {
         assert(
           FaultVerifierContract.all(blueprint, registryPolicy).map(_.toHex) == List(
-            "f8fbc8fa8382b9c34225fe377b874f781ef91a8285eecbcd6fdd7ba1",
-            "cea188d392a812a0d47ec4982c822d635981e3d7a4b5b0a30430121e",
-            "0d902a1dc650eefc54ff807ae0cb6edc6890a364799cf473d068f963"
+            "64b5d7226741b0fa8ee739f61486dd61c8f2ba7c6be389e9391f949d",
+            "1da48632d6cf405ec035097aa505820f75e3a4b4cb51de9c62af8286",
+            "f36deb1861a374943c4ef43172d968c1cdead2ac62d3f1c127f8f505"
           )
         )
     }
 
     test("treasury_info policy matches heimdall's derivation") {
-        // Rev 5.4: the registry policy is the ONLY parameter — the TM-NFT policy went with the
-        // FederationReset branch that was its only reader, so the pinned hash moved with it.
-        val ti = TreasuryInfoContract(blueprint, registryPolicy)
-        assert(ti.policyId.toHex == "486203df4a4c88fa9f7c2d12f9d6b630faa9155837b39293c396c8e6")
+        // Rev 5.5: (one-shot txid, index, config policy). It no longer takes the registry policy
+        // at all — that parameter made the dependency a cycle and so made the [REG-6] pin
+        // impossible — so the pinned hash moved with it.
+        val ti = treasuryInfo
+        assert(ti.policyId.toHex == "f7ccdddf9f4e4bb4c75064cd4b454223e012f086a56a50181320a10b")
     }
 
     // The seven-parameter application, including the indefinite-array List<PolicyId>.
@@ -64,7 +74,7 @@ class FederationContractsTest extends AnyFunSuite {
           bootstrapTxId = oneShot,
           bootstrapIndex = oneShotIndex
         )
-        assert(bans.policyId.toHex == "de3287969e62db24075af0af309ed7ca595b9990b6b4dc89bfd2f957")
+        assert(bans.policyId.toHex == "3dda71f07642ae9864c693295bbe896f4bfed2b0643b0dbd13a09301")
     }
 
     // The fault-policy list is baked in UNSORTED, so a permutation is a different bridge. Worth a
@@ -151,7 +161,7 @@ class FederationContractsTest extends AnyFunSuite {
     // The derivation chain is strictly ordered: a different one-shot changes the registry, which
     // changes the fault verifiers, which changes the ban policy.
     test("the one-shot outref propagates through the whole chain") {
-        val other = SposRegistryContract(blueprint, ByteString.fromHex("cc" * 32), oneShotIndex)
+        val other = SposRegistryContract(blueprint, ByteString.fromHex("cc" * 32), oneShotIndex, treasuryPolicyForTest)
         val otherPolicy = ByteString.fromArray(other.policyId.bytes)
         assert(other.policyId.toHex != registry.policyId.toHex)
         assert(

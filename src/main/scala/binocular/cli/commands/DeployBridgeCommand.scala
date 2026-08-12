@@ -143,14 +143,14 @@ case class DeployBridgeCommand(
 
         // --- compute the deterministic hash chain ---
         val configContract =
-            ConfigContract(blueprint, configRef.id.hash, configRef.idx, ConfigAssetName)
+            ConfigContract(blueprint, configRef.id.hash, configRef.idx)
         val configPolicy = configContract.policyId
 
-        val bridgedToken = BridgedTokenContract(blueprint, configPolicy, ConfigAssetName)
+        val bridgedToken = BridgedTokenContract(blueprint, configPolicy)
         val bridgedTokenPolicy = bridgedToken.policyId
 
         val cpiContract =
-            CompletedPegInsContract(blueprint, configPolicy, ConfigAssetName, cpiRef)
+            CompletedPegInsContract(blueprint, configPolicy, cpiRef)
         val cpiPolicy = cpiContract.policyId
         val cpiAssetName = CompletedPegInsContract.assetName
 
@@ -170,11 +170,11 @@ case class DeployBridgeCommand(
         // Rev 5.4: peg_in no longer takes the TM NFT policy — it reads the singleton through
         // Config field 3 at runtime. `tmNftPolicy` still parameterizes the trie below and is
         // published as Config field 4 (`tm_script_hash`, spec [CFG-2]).
-        val pegIn = PegInContract(blueprint, oraclePolicyId, configPolicy, ConfigAssetName)
+        val pegIn = PegInContract(blueprint, oraclePolicyId, configPolicy)
         val pegInWithdrawHash = pegIn.policyId
 
         // --- peg-out side (config index 6 = peg_out script hash) ---
-        val pegOut = PegOutContract(blueprint, configPolicy, ConfigAssetName)
+        val pegOut = PegOutContract(blueprint, configPolicy)
         val pegOutWithdrawHash = pegOut.policyId
 
         // The bridge_state validator takes the TM NFT policy, not the config NFT pair, so it MUST
@@ -293,8 +293,21 @@ case class DeployBridgeCommand(
                 break(1)
             }
         val federationRef = refOf(federationUtxo)
+        // Rev 5.5 derivation order: Config -> treasury_info -> spos_registry. It ran the other way
+        // until [PRE-4] moved the registry policy out of treasury_info's parameter list; that cycle
+        // is why spos_registry could never pin the UTxO it updates ([REG-6]). The treasury's own
+        // one-shot is the federation UTxO, the same outpoint the registry root consumes — one
+        // transaction, so one outpoint parameterizes both.
+        val treasuryInfoContract =
+            TreasuryInfoContract(blueprint, federationRef.id.hash, federationRef.idx, configPolicy)
+        val treasuryPolicy = ByteString.fromArray(treasuryInfoContract.policyId.bytes)
         val registryContract =
-            SposRegistryContract(blueprint, federationRef.id.hash, federationRef.idx)
+            SposRegistryContract(
+              blueprint,
+              federationRef.id.hash,
+              federationRef.idx,
+              treasuryPolicy
+            )
         val registryPolicy = ByteString.fromArray(registryContract.policyId.bytes)
         val faultPolicies = FaultVerifierContract.all(blueprint, registryPolicy)
         val banSchedule = config.bridge.banSchedule
@@ -308,10 +321,6 @@ case class DeployBridgeCommand(
           bootstrapTxId = federationRef.id.hash,
           bootstrapIndex = federationRef.idx
         )
-        // Rev 5.4: treasury_info takes the registry policy alone — the TM-NFT parameter went with
-        // the FederationReset branch that was its only reader.
-        val treasuryInfoContract = TreasuryInfoContract(blueprint, registryPolicy)
-
         // config Update/Retire authority = the binocular owner key (oracle.owner-pkh),
         // so the same operator that runs the oracle governs the bridge config.
         val updateAuthPkh = {
@@ -327,34 +336,50 @@ case class DeployBridgeCommand(
             }
         }
 
+        // Config #11, the federation fallback key. REQUIRED and never defaulted: it is an input
+        // to the treasury's Bitcoin address, so a guess yields a well-formed address holding
+        // nothing, and treasury.ak reads this exact copy for the [UY-5] recovery branch.
+        val yFederation = {
+            val h = config.bridge.yFederationHex.trim
+            if h.length == 64 && h.forall(c => "0123456789abcdefABCDEF".contains(c)) then
+                ByteString.fromHex(h)
+            else {
+                Console.error(
+                  "bridge.y-federation-hex must be a 32-byte (64 hex) x-only key — it is Config " +
+                      "#11, the federation leaf key of both Taproot trees, and there is no safe " +
+                      "default: a wrong value derives a treasury address that holds nothing"
+                )
+                break(1)
+            }
+        }
+        if config.bridge.federationCsvBlocks <= 0 || config.bridge.federationCsvBlocks > 65535 then {
+            Console.error(
+              "bridge.federation-csv-blocks must be 1..65535 — it is params[7], the relative " +
+                  "timelock in the federation recovery leaf, and a wider value truncates into a " +
+                  "different Taproot tree"
+            )
+            break(1)
+        }
+
         val configDatum = ConfigDatum(
           // Governance: the binocular owner key (oracle.owner-pkh) may Update/Retire
           // the config (progressive decentralization rotates this via a later update).
           updateAuth = POption.Some(
             AuthorizationMethod.CardanoSignature(updateAuthPkh)
           ),
-          bridgedTokenPolicy = bridgedTokenPolicy,
-          completedPegInsPolicy = cpiPolicy,
-          bridgeStatePolicy = bssPolicy,
-          // spec [CFG-2]: published so off-chain readers can locate the TM address; no on-chain
-          // reader.
-          tmScriptHash = tmNftPolicy,
-          pegInScriptHash = pegInWithdrawHash,
-          pegOutScriptHash = pegOutWithdrawHash,
-          // Federation identity (config #7-13; off-chain readers only, spec [CFG-3]). Publishing
-          // these is what lets an SPO join this bridge with NO ban or registry configuration.
-          spoBansPolicyId = ByteString.fromArray(spoBansContract.policyId.bytes),
-          baseBanDurationMs = BigInt(banSchedule.baseBanDurationMs),
-          maxFaultsBeforePermanent = BigInt(banSchedule.maxFaultsBeforePermanent),
-          maxValidityWindowMs = BigInt(banSchedule.maxValidityWindowMs),
-          sposRegistryPolicyId = registryPolicy,
-          treasuryInfoPolicyId = ByteString.fromArray(treasuryInfoContract.policyId.bytes),
-          treasuryInfoAssetName = TreasuryInfoAssetName,
-          // Operational-parameter tunables (config field 14, nested; off-chain readers only).
+          // Every value with NO on-chain reader, nested at field 1 ([CFG-6]).
           params = ConfigParams(
             feeRateSatPerVb = BigInt(config.bridge.feeRateSatPerVb),
             perPegoutFee = BigInt(config.bridge.perPegoutFeeSat),
             minPegOutFbtc = BigInt(config.bridge.minPegOutSat),
+            // The ban schedule moved in from the top level in rev 5.5: [CFG-6] keeps identities
+            // top level and tunable numbers here.
+            baseBanDurationMs = BigInt(banSchedule.baseBanDurationMs),
+            maxFaultsBeforePermanent = BigInt(banSchedule.maxFaultsBeforePermanent),
+            maxValidityWindowMs = BigInt(banSchedule.maxValidityWindowMs),
+            // params[7]: the CSV delay in the federation recovery leaf of both Taproot trees. A
+            // block count, so [CFG-6] puts it here and not beside yFederation.
+            federationCsvBlocks = BigInt(config.bridge.federationCsvBlocks),
             // Devnet-scale schedule defaults (spec §TM batches — governance replaces the record
             // wholesale, effective next epoch, so creation values only need to be sane).
             schedule = ScheduleParams(
@@ -369,7 +394,24 @@ case class DeployBridgeCommand(
               finalTmCutoff = BigInt(345600),
               stabilityWindow = BigInt(129600)
             )
-          )
+          ),
+          bridgedTokenPolicy = bridgedTokenPolicy,
+          completedPegInsPolicy = cpiPolicy,
+          bridgeStatePolicy = bssPolicy,
+          // spec [CFG-2]: published so off-chain readers can locate the TM address; no on-chain
+          // reader.
+          tmScriptHash = tmNftPolicy,
+          pegInScriptHash = pegInWithdrawHash,
+          pegOutScriptHash = pegOutWithdrawHash,
+          // Federation identity (config #8-11; publishing these is what lets an SPO join this
+          // bridge with NO ban or registry configuration, spec [CFG-3]).
+          spoBansPolicyId = ByteString.fromArray(spoBansContract.policyId.bytes),
+          sposRegistryPolicyId = registryPolicy,
+          treasuryInfoPolicyId = ByteString.fromArray(treasuryInfoContract.policyId.bytes),
+          // #11: read ON-CHAIN by treasury.ak's Update-Y federation branch ([UY-5]). Every SPO
+          // also rebuilds the treasury Taproot tree from it, so a wrong value derives a
+          // well-formed address holding nothing.
+          yFederation = yFederation
         )
 
         Console.info("Oracle policy", oraclePolicyId.toHex)

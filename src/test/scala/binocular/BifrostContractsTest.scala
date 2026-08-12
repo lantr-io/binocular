@@ -66,7 +66,7 @@ class BifrostContractsTest extends AnyFunSuite {
     private def hex(c: scalus.cardano.ledger.ScriptHash): String = c.toHex
 
     private def configContract =
-        ConfigContract(blueprint, configRef.id.hash, configRef.idx, configAssetName)
+        ConfigContract(blueprint, configRef.id.hash, configRef.idx)
     private def configPolicy = ByteString.fromArray(configContract.policyId.bytes)
 
     // --- known-answer (regression lock, re-validated at next deploy) ---
@@ -79,20 +79,20 @@ class BifrostContractsTest extends AnyFunSuite {
 
     test("config NFT policy matches the deployed value") {
         assert(
-          hex(configContract.policyId) == "647484bac34418331da0f8f8d03123ead340ed3bc204f7a80a086f44"
+          hex(configContract.policyId) == "1e442c11fa84a722a5c9a4e59b23a72945124399fb6c4090744a24dd"
         )
     }
 
     test("bridged_token policy matches the deployed value") {
-        val bt = BridgedTokenContract(blueprint, configPolicy, configAssetName)
-        assert(hex(bt.policyId) == "dfaafc99a6109e9e27630f922d025ce5894c7cc62b7935ef71290f50")
+        val bt = BridgedTokenContract(blueprint, configPolicy)
+        assert(hex(bt.policyId) == "231e3baf3e8921534c1bb59fe70fa69947ff970fe1187b8d60a83330")
     }
 
     test("completed-peg-ins policy + asset name match the Variant B rebuild") {
         // policyId regression lock over the Variant B rebuild. The asset name is now the constant
         // "CPI" (bytes 435049), independent of the one-shot ref and the compiledCode.
-        val cpi = CompletedPegInsContract(blueprint, configPolicy, configAssetName, cpiRef)
-        assert(hex(cpi.policyId) == "ec46c774f46eaa177ec5bd4c42444b45464ca609a943c5c728f265a4")
+        val cpi = CompletedPegInsContract(blueprint, configPolicy, cpiRef)
+        assert(hex(cpi.policyId) == "7567b9ff44e7c51dea69683da0f45accffd3b9ea0903b37cc20e6a86")
         assert(CompletedPegInsContract.assetName == ByteString.fromString("CPI"))
     }
 
@@ -110,8 +110,8 @@ class BifrostContractsTest extends AnyFunSuite {
         // trie datum instead of a blind field-0 read. peg_in.ak is its only caller, so only this
         // hash moved; ConfigDatum field 5 must name the new one at deployment.
         val pegIn =
-            PegInContract(blueprint, oraclePolicy, configPolicy, configAssetName)
-        assert(hex(pegIn.policyId) == "23b660ba11bd04a6c9c7cb63da04ac3b7c2d835995b67d00ce359d3d")
+            PegInContract(blueprint, oraclePolicy, configPolicy)
+        assert(hex(pegIn.policyId) == "7a37a1d3e5c7159b3a0328962d8c0124a313ce5c6138081b03cbcc67")
     }
 
     test("peg_out policy (= withdraw hash) is stable for the trie-v2 2-param encoding") {
@@ -125,25 +125,25 @@ class BifrostContractsTest extends AnyFunSuite {
         // `completed_peg_outs_ref_input_index`. The POR sweeper builds against exactly these bytes —
         // [[PegOutCompleteCekTest]] runs them — so the stale copy would have made every completion
         // fail on-chain. No other validator's compiledCode changed, so no other pin moved.
-        val pegOut = PegOutContract(blueprint, configPolicy, configAssetName)
-        assert(hex(pegOut.policyId) == "ab0f6b6a2602b6e6a135724bd004d2be01842483cea8b797da7c6edd")
+        val pegOut = PegOutContract(blueprint, configPolicy)
+        assert(hex(pegOut.policyId) == "a5a39919b3a0fb699e0f44d98a6039825c21d317f4cbe24fd54cf143")
     }
 
     // --- determinism + parameter-sensitivity ---
 
     test("hash computation is deterministic") {
-        val a = ConfigContract(blueprint, configRef.id.hash, configRef.idx, configAssetName)
-        val b = ConfigContract(blueprint, configRef.id.hash, configRef.idx, configAssetName)
+        val a = ConfigContract(blueprint, configRef.id.hash, configRef.idx)
+        val b = ConfigContract(blueprint, configRef.id.hash, configRef.idx)
         assert(a.policyId == b.policyId)
     }
 
     test("a different one-shot yields a different config policy") {
-        val other = ConfigContract(blueprint, cpiRef.id.hash, BigInt(0), configAssetName)
+        val other = ConfigContract(blueprint, cpiRef.id.hash, BigInt(0))
         assert(other.policyId != configContract.policyId)
     }
 
     test("a different index yields a different config policy") {
-        val other = ConfigContract(blueprint, configRef.id.hash, BigInt(1), configAssetName)
+        val other = ConfigContract(blueprint, configRef.id.hash, BigInt(1))
         assert(other.policyId != configContract.policyId)
     }
 

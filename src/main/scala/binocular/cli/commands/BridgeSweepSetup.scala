@@ -123,8 +123,8 @@ object BridgeSweepSetup {
     )(using ExecutionContext): Either[String, PorSweeper] = Try {
         val configNftPolicyBs = ByteString.fromArray(configNftPolicy.bytes)
         val configNftAssetBs = configNftAsset.bytes
-        val pegOut = PegOutContract(blueprint, configNftPolicyBs, configNftAssetBs)
-        val bridgedToken = BridgedTokenContract(blueprint, configNftPolicyBs, configNftAssetBs)
+        val pegOut = PegOutContract(blueprint, configNftPolicyBs)
+        val bridgedToken = BridgedTokenContract(blueprint, configNftPolicyBs)
         val ctx = PorSweeper.Context(
           network = network,
           tmAddress = tmAddress,

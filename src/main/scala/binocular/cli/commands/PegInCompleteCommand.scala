@@ -130,12 +130,12 @@ case class PegInCompleteCommand(
 
         val oraclePolicyBS = ByteString.fromArray(oracleScriptHash.bytes)
         val pegIn =
-            PegInContract(blueprint, oraclePolicyBS, configNftPolicy, configNftAsset)
+            PegInContract(blueprint, oraclePolicyBS, configNftPolicy)
         val cpiContract =
-            CompletedPegInsContract(blueprint, configNftPolicy, configNftAsset, cpiRef)
+            CompletedPegInsContract(blueprint, configNftPolicy, cpiRef)
         val cpiPolicy = cpiContract.policyId
         val cpiAsset = AssetName(CompletedPegInsContract.assetName)
-        val bridgedToken = BridgedTokenContract(blueprint, configNftPolicy, configNftAsset)
+        val bridgedToken = BridgedTokenContract(blueprint, configNftPolicy)
 
         Console.info("Peg-in policy", pegIn.policyId.toHex)
         Console.info("fBTC policy", bridgedToken.policyId.toHex)

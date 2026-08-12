@@ -36,13 +36,14 @@ class UpdateConfigCommandTest extends AnyFunSuite {
       pegInScriptHash = ByteString.fromHex("05"),
       pegOutScriptHash = ByteString.fromHex("06"),
       spoBansPolicyId = ByteString.fromHex("07"),
-      baseBanDurationMs = 600000,
-      maxFaultsBeforePermanent = 3,
-      maxValidityWindowMs = 3600000,
       sposRegistryPolicyId = ByteString.fromHex("11"),
       treasuryInfoPolicyId = ByteString.fromHex("12"),
-      treasuryInfoAssetName = ByteString.fromString("TMTx"),
+      yFederation = ByteString.fromHex("f9" * 32),
       params = ConfigParams(
+        baseBanDurationMs = BigInt(0),
+        maxFaultsBeforePermanent = BigInt(0),
+        maxValidityWindowMs = BigInt(0),
+        federationCsvBlocks = BigInt(144),
         feeRateSatPerVb = 2,
         perPegoutFee = 1000,
         minPegOutFbtc = 10000,
@@ -130,22 +131,22 @@ class UpdateConfigCommandTest extends AnyFunSuite {
         assert(out.params.feeRateSatPerVb == BigInt(9))
     }
 
-    test("decodeDeployed round-trips the rev-5.4 datum") {
+    test("decodeDeployed round-trips the rev-5.5 datum") {
         assert(UpdateConfigCommand.decodeDeployed(config.toData) == Right(config))
     }
 
     // Appending is the legal datum evolution (config.ak's Update accepts any datum), and READERS
     // ignore unknown trailing fields — but this command re-encodes the whole datum, so rewriting a
     // grown datum would silently truncate it. It must be refused, not carried.
-    test("decodeDeployed refuses a datum that grew past the rev-5.4 layout") {
-        val sixteen = config.toData match {
+    test("decodeDeployed refuses a datum that grew past the rev-5.5 layout") {
+        val grown = config.toData match {
             case Data.Constr(0, fields) =>
                 Data.Constr(0, PList.from(fields.asScala.toList :+ (Data.I(BigInt(99)): Data)))
             case other => fail(s"config datum is not a Constr 0: $other")
         }
-        val out = UpdateConfigCommand.decodeDeployed(sixteen)
+        val out = UpdateConfigCommand.decodeDeployed(grown)
         assert(out.isLeft)
-        assert(out.swap.toOption.get.contains("16 fields"))
+        assert(out.swap.toOption.get.contains("13 fields"))
     }
 
     test("decodeDeployed refuses short and non-record datums") {
@@ -178,6 +179,7 @@ class UpdateConfigCommandTest extends AnyFunSuite {
           ParamEdits(feeRateSatPerVb = Some(BigInt(9)))
         )
         val d = UpdateConfigCommand.diff(config.toData, out.toData)
-        assert(d.map(x => (x._1, x._2)).toSet == Set((3, "bridge_state_policy"), (14, "params")))
+        // Rev 5.5 indexes: params moved to 1, so bridge_state_policy is 4.
+        assert(d.map(x => (x._1, x._2)).toSet == Set((4, "bridge_state_policy"), (1, "params")))
     }
 }

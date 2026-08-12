@@ -41,14 +41,19 @@ class ConfigDatumEncodingTest extends AnyFunSuite {
           stabilityWindow = BigInt(129600)
         )
         val params = ConfigParams(
+          schedule = sched,
           feeRateSatPerVb = BigInt(1),
           perPegoutFee = BigInt(1000),
           minPegOutFbtc = BigInt(10000),
-          schedule = sched
+          baseBanDurationMs = BigInt(600000),
+          maxFaultsBeforePermanent = BigInt(3),
+          maxValidityWindowMs = BigInt(3600000),
+          federationCsvBlocks = BigInt(144)
         )
         val tmHash = ByteString.fromHex("dd" * 28)
         val d = ConfigDatum(
           updateAuth = POption.None,
+          params = params,
           bridgedTokenPolicy = ByteString.fromHex("aa" * 28),
           completedPegInsPolicy = ByteString.fromHex("bb" * 28),
           bridgeStatePolicy = ByteString.fromHex("cc" * 28),
@@ -56,46 +61,49 @@ class ConfigDatumEncodingTest extends AnyFunSuite {
           pegInScriptHash = ByteString.fromHex("ee" * 28),
           pegOutScriptHash = ByteString.fromHex("ff" * 28),
           spoBansPolicyId = ByteString.fromHex("bb" * 28),
-          baseBanDurationMs = BigInt(600000),
-          maxFaultsBeforePermanent = BigInt(3),
-          maxValidityWindowMs = BigInt(3600000),
           sposRegistryPolicyId = ByteString.fromHex("c1" * 28),
           treasuryInfoPolicyId = ByteString.fromHex("c2" * 28),
-          treasuryInfoAssetName = ByteString.fromString("TMTx"),
-          params = params
+          yFederation = ByteString.fromHex("f9" * 32)
         )
         d.toData match {
             case Data.Constr(0, fields) =>
                 val fs = fields.asScala.toIndexedSeq
-                assert(fs.size == 15)
+                assert(fs.size == 12)
                 assert(fs(0) == Data.Constr(1, PList()))
-                assert(fs(1) == Data.B(ByteString.fromHex("aa" * 28)))
-                assert(fs(3) == Data.B(ByteString.fromHex("cc" * 28)))
-                assert(fs(4) == Data.B(tmHash))
-                assert(fs(6) == Data.B(ByteString.fromHex("ff" * 28)))
-                // Federation identity, #7-13 (spec [CFG-3]).
-                assert(fs(7) == Data.B(ByteString.fromHex("bb" * 28)))
-                assert(fs(8) == Data.I(BigInt(600000)))
-                assert(fs(10) == Data.I(BigInt(3600000)))
-                assert(fs(11) == Data.B(ByteString.fromHex("c1" * 28)))
-                assert(fs(13) == Data.B(ByteString.fromString("TMTx")))
-                // params is LAST, so appends never move it.
-                assert(fs(14) == params.toData)
+                // params at index 1 ([CFG-5]), so an append can never move it.
+                assert(fs(1) == params.toData)
+                assert(fs(2) == Data.B(ByteString.fromHex("aa" * 28)))
+                // #4 bridge_state_policy: the field TreasuryMovementValidator reads. Rev 5.5 moved
+                // it from #3, and a mirror that missed the shift would silently hand the CPI trie
+                // policy to the singleton lookup.
+                assert(fs(4) == Data.B(ByteString.fromHex("cc" * 28)))
+                assert(fs(5) == Data.B(tmHash))
+                assert(fs(7) == Data.B(ByteString.fromHex("ff" * 28)))
+                // Federation identity, #8-11 (spec [CFG-3]).
+                assert(fs(8) == Data.B(ByteString.fromHex("bb" * 28)))
+                assert(fs(9) == Data.B(ByteString.fromHex("c1" * 28)))
+                assert(fs(10) == Data.B(ByteString.fromHex("c2" * 28)))
+                assert(fs(11) == Data.B(ByteString.fromHex("f9" * 32)))
             case other => fail(s"expected Constr 0, got $other")
         }
     }
 
-    test("ConfigParams nests the schedule at slot 3") {
+    test("ConfigParams nests the schedule at slot 0") {
         val sched = ScheduleParams(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-        val params = ConfigParams(BigInt(1), BigInt(2), BigInt(3), sched)
+        val params =
+            ConfigParams(sched, BigInt(1), BigInt(2), BigInt(3), BigInt(4), BigInt(5), BigInt(6), BigInt(7))
         params.toData match {
             case Data.Constr(0, fields) =>
                 val fs = fields.asScala.toIndexedSeq
-                assert(fs.size == 4)
-                assert(fs(0) == Data.I(BigInt(1)))
-                assert(fs(1) == Data.I(BigInt(2)))
-                assert(fs(2) == Data.I(BigInt(3)))
-                assert(fs(3) == sched.toData)
+                assert(fs.size == 8)
+                assert(fs(0) == sched.toData)
+                assert(fs(1) == Data.I(BigInt(1)))
+                assert(fs(2) == Data.I(BigInt(2)))
+                assert(fs(3) == Data.I(BigInt(3)))
+                // The ban schedule moved in from the top level in rev 5.5 ([CFG-6]).
+                assert(fs(4) == Data.I(BigInt(4)))
+                assert(fs(6) == Data.I(BigInt(6)))
+                assert(fs(7) == Data.I(BigInt(7)))
             case other => fail(s"expected Constr 0, got $other")
         }
     }

@@ -42,19 +42,31 @@ case class BridgeConfig(
     // reconstruct the script in order to SPEND the MPF UTxO. The config NFT, by contrast, is only a
     // reference input, so it is located by its NFT and needs no script. Empty until F3 is deployed.
     completedPegInsOneShotRef: String = "",
-    // Operational-parameter tunables written into the nested config field 7 (`params`) at deploy
-    // (off-chain consensus anchors; the schedule at params[3] uses spec devnet defaults, replaced
+    // Operational-parameter tunables written into the nested config field 1 (`params`) at deploy
+    // (off-chain consensus anchors; the schedule at params[0] uses spec devnet defaults, replaced
     // wholesale by a governance Update). All three are governance-updatable in place —
     // `update-config --fee-rate` et al — which is how the bridge tracks the Bitcoin fee market.
-    // See ConfigDatum field 7.
+    // See ConfigDatum field 1.
     feeRateSatPerVb: Long = 1L,
     perPegoutFeeSat: Long = 1000L,
     minPegOutSat: Long = 10000L,
     // The ban schedule baked into the spo_bans policy id at genesis, and published verbatim as
-    // config #8-10. Unlike the tunables above these are NOT governance-updatable in place: they
-    // are inputs to the policy hash, so changing one names a different ban list — which is exactly
-    // why they are chosen once, here, and then read by every SPO rather than typed by each.
+    // params[4..6] (rev 5.5 moved them in from config #8-10, per [CFG-6]). Unlike the tunables
+    // above these are NOT governance-updatable in place: they are inputs to the policy hash, so
+    // changing one names a different ban list — which is exactly why they are chosen once, here,
+    // and then read by every SPO rather than typed by each.
     banSchedule: BanScheduleConfig = BanScheduleConfig(),
+    // The federation identity, published at genesis: the x-only fallback key at config #11 and its
+    // recovery-leaf CSV delay at params[7] ([CFG-6] splits them — a key is an identity, a block
+    // count is a tunable). Rev 5.5 moved BOTH out of the treasury_info datum, where nothing
+    // on-chain could ever rotate them; a governance Update rotates them here.
+    //
+    // `treasury.ak`'s Update-Y federation branch ([UY-5]) reads the key from the Config reference
+    // input, so a wrong value here is not a local mistake: every SPO rebuilds the treasury Taproot
+    // tree from it, and a node holding a different one derives a well-formed address that holds
+    // nothing.
+    yFederationHex: String = "",
+    federationCsvBlocks: Int = 144,
     // The one-shot wallet UTxO (TX_HASH#INDEX) consumed when the bridge-state singleton NFT
     // ("BSS") was minted. It fixes the bridge_state validator's parameter set — its other
     // parameter is the TM script hash, which confirm derives — hence its policyId, which MUST

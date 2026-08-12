@@ -45,24 +45,37 @@ object SposRegistryContract {
     def apply(
         blueprint: BifrostBlueprint,
         bootstrapTxId: ByteString,
-        bootstrapIndex: BigInt
+        bootstrapIndex: BigInt,
+        treasuryPolicyId: ByteString
     ): SposRegistryContract = {
+        // spec [REG-6]: the third parameter is the Treasury state policy this registry PINS. It
+        // could not have been a parameter before rev 5.5 — treasury_info took registry_policy_id,
+        // so the dependency was a cycle — and without it the registry located the Treasury state
+        // UTxO by redeemer index with no authentication at all.
         val applied = Program
             .fromCborHex(blueprint.compiledCode(ValidatorTitle))
             .$(Data.B(bootstrapTxId))
             .$(Data.I(bootstrapIndex))
+            .$(Data.B(treasuryPolicyId))
         SposRegistryContract(Script.PlutusV3(applied.cborByteString))
     }
 }
 
-/** `treasury_info`, parameterized by the `spos_registry` policy alone.
+/** `treasury_info`, parameterized by its OWN one-shot outpoint and the Config NFT policy.
   *
-  * Rev 5.4 dropped the second parameter, the TM-NFT policy: it fed only the FederationReset spend
-  * branch, which the revision withdrew (spec [UY-7]/[UY-8]).
+  * Rev 5.4 dropped the TM-NFT policy parameter (it fed only the withdrawn FederationReset branch,
+  * spec [UY-7]/[UY-8]); rev 5.5 dropped `registry_policy_id` too ([PRE-1] revised) and added the
+  * one-shot outpoint ([PRE-3]).
   *
-  * The one parameter must be applied identically by every reader or it computes a different hash, a
-  * different address, and a state UTxO nobody can find — which is why bridge genesis publishes the
-  * finished policy id in the Config (#12) instead of leaving each node to re-derive it.
+  * The one-shot is what makes the state NFT a singleton: rev 5.4 minted it one-shot per OUTPOINT
+  * rather than per bridge, so anyone could mint a rival state UTxO with a datum of their choosing.
+  * Dropping `registry_policy_id` is what broke the parameter cycle and let `spo_registry` pin this
+  * policy ([REG-6]); `treasury.ak` reads the registry policy from Config #9 at run time instead
+  * ([PRE-4]).
+  *
+  * The three parameters must be applied identically by every reader or it computes a different
+  * hash, a different address, and a state UTxO nobody can find — which is why bridge genesis
+  * publishes the finished policy id in the Config (#10).
   */
 final case class TreasuryInfoContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash
@@ -73,13 +86,22 @@ final case class TreasuryInfoContract(script: Script.PlutusV3) {
 object TreasuryInfoContract {
     val ValidatorTitle = "bitcoin/treasury.treasury_info.mint"
 
+    /** Asset name of the Treasury state NFT — spec [CFG-4], a protocol constant since rev 5.5.
+      * Uniqueness lives in the policy id, where the one-shot outpoint is a parameter.
+      */
+    val StateAssetName: ByteString = ByteString.fromString("BFRTRY")
+
     def apply(
         blueprint: BifrostBlueprint,
-        sposRegistryPolicyId: ByteString
+        oneShotTxId: ByteString,
+        oneShotIndex: BigInt,
+        configPolicyId: ByteString
     ): TreasuryInfoContract = {
         val applied = Program
             .fromCborHex(blueprint.compiledCode(ValidatorTitle))
-            .$(Data.B(sposRegistryPolicyId))
+            .$(Data.B(oneShotTxId))
+            .$(Data.I(oneShotIndex))
+            .$(Data.B(configPolicyId))
         TreasuryInfoContract(Script.PlutusV3(applied.cborByteString))
     }
 }

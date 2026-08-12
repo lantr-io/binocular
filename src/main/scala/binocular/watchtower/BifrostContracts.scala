@@ -116,14 +116,12 @@ object PegInContract {
     def apply(
         blueprint: BifrostBlueprint,
         oraclePolicyId: ByteString,
-        configNftPolicyId: ByteString,
-        configNftAssetName: ByteString
+        configNftPolicyId: ByteString
     ): PegInContract = {
         val base = Program.fromCborHex(blueprint.compiledCode(ValidatorTitle))
         val applied = base
             .$(Data.B(oraclePolicyId))
             .$(Data.B(configNftPolicyId))
-            .$(Data.B(configNftAssetName))
         PegInContract(Script.PlutusV3(applied.cborByteString))
     }
 
@@ -153,14 +151,13 @@ object ConfigContract {
     def apply(
         blueprint: BifrostBlueprint,
         tx0: ByteString,
-        index0: BigInt,
-        configAssetName: ByteString
+        index0: BigInt
     ): ConfigContract = {
+        // spec [CFG-7]: the asset name is the "BIFCFG" constant, not a parameter.
         val applied = Program
             .fromCborHex(blueprint.compiledCode(ValidatorTitle))
             .$(Data.B(tx0))
             .$(Data.I(index0))
-            .$(Data.B(configAssetName))
         ConfigContract(Script.PlutusV3(applied.cborByteString))
     }
 }
@@ -179,13 +176,11 @@ object BridgedTokenContract {
 
     def apply(
         blueprint: BifrostBlueprint,
-        configNftPolicyId: ByteString,
-        configNftAssetName: ByteString
+        configNftPolicyId: ByteString
     ): BridgedTokenContract = {
         val applied = Program
             .fromCborHex(blueprint.compiledCode(ValidatorTitle))
             .$(Data.B(configNftPolicyId))
-            .$(Data.B(configNftAssetName))
         BridgedTokenContract(Script.PlutusV3(applied.cborByteString))
     }
 }
@@ -209,13 +204,11 @@ object CompletedPegInsContract {
     def apply(
         blueprint: BifrostBlueprint,
         configNftPolicyId: ByteString,
-        configNftAssetName: ByteString,
         oneShotInputRef: TxOutRef
     ): CompletedPegInsContract = {
         val applied = Program
             .fromCborHex(blueprint.compiledCode(ValidatorTitle))
             .$(Data.B(configNftPolicyId))
-            .$(Data.B(configNftAssetName))
             .$(oneShotInputRef.toData)
         CompletedPegInsContract(Script.PlutusV3(applied.cborByteString))
     }
@@ -248,13 +241,11 @@ object PegOutContract {
 
     def apply(
         blueprint: BifrostBlueprint,
-        configNftPolicyId: ByteString,
-        configNftAssetName: ByteString
+        configNftPolicyId: ByteString
     ): PegOutContract = {
         val applied = Program
             .fromCborHex(blueprint.compiledCode(ValidatorTitle))
             .$(Data.B(configNftPolicyId))
-            .$(Data.B(configNftAssetName))
         PegOutContract(Script.PlutusV3(applied.cborByteString))
     }
 }

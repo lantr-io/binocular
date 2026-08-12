@@ -17,22 +17,29 @@ import scalus.uplc.builtin.Data.{FromData, ToData}
 // 12 treasury_info_policy_id, 13 treasury_info_asset_name, 14 params (the nested [[ConfigParams]]
 // record, so governance can replace the tunables wholesale without renumbering their neighbours).
 //
-// Fields 7-13 are the federation identity (spec [CFG-3]): off-chain readers only, published so an
-// SPO configures none of them. Every one is an INPUT to the policy id it identifies, so a node
-// cannot derive the address it would read them from — and one wrong input yields a well-formed
-// address holding NOTHING rather than an error.
+// Fields 8-11 are the federation identity (spec [CFG-3]): published so an SPO configures none of
+// them. Every policy id here is an INPUT to the address it identifies, so a node cannot derive the
+// address it would read them from — and one wrong input yields a well-formed address holding
+// NOTHING rather than an error.
 //
-// `params` is LAST on purpose: every field before it is a scalar at a frozen index, so the datum
-// grows by appending AFTER the nested record instead of pushing it along.
+// `params` is at index 1 ([CFG-5]). Rev 5.4 put it LAST and told the reader to append after it,
+// which invites the one edit that shifts every index: insert before `params` to keep it last. At
+// index 1 there is no "last" property left to preserve.
+//
+// [CFG-6] decides placement: an identity or a key is a top-level field, a tunable number lives
+// inside `params`. That is why `yFederation` is #11 while `federationCsvBlocks` is params[7].
 //
 // Gone from rev 5.1: the bridged-token asset name (now the [CFG-1] constant
 // [[ConfigDatum.BridgedTokenAssetName]]), the peg-in close verifier, both legit_TM verifier
 // hashes, min_stake, initial_btc_treasury_utxo and leader_reward.
+// Gone in rev 5.5: treasuryInfoAssetName — the Treasury state NFT name is the [CFG-4] constant
+// [[ConfigDatum.TreasuryInfoAssetName]].
 //
-// Must mirror ft `config.ak::ConfigDatum` (15 fields), because `config.config`'s genesis path
+// Must mirror ft `config.ak::ConfigDatum` (12 fields), because `config.config`'s genesis path
 // full-casts the datum, so deploy-bridge must write all of them.
 case class ConfigDatum(
     updateAuth: scalus.cardano.onchain.plutus.prelude.Option[AuthorizationMethod],
+    params: ConfigParams,
     bridgedTokenPolicy: ByteString,
     completedPegInsPolicy: ByteString,
     bridgeStatePolicy: ByteString,
@@ -40,13 +47,9 @@ case class ConfigDatum(
     pegInScriptHash: ByteString,
     pegOutScriptHash: ByteString,
     spoBansPolicyId: ByteString,
-    baseBanDurationMs: BigInt,
-    maxFaultsBeforePermanent: BigInt,
-    maxValidityWindowMs: BigInt,
     sposRegistryPolicyId: ByteString,
     treasuryInfoPolicyId: ByteString,
-    treasuryInfoAssetName: ByteString,
-    params: ConfigParams
+    yFederation: ByteString
 ) derives FromData,
       ToData
 
@@ -57,22 +60,48 @@ object ConfigDatum {
       */
     val BridgedTokenAssetName: ByteString = ByteString.fromString("fSAT")
 
+    /** The Config NFT asset name — spec [CFG-7]: a protocol constant, not a validator parameter.
+      * Mirrors `lib/bifrost/constants.ak::config_nft_asset_name`.
+      *
+      * Rev 5.5 removed it from five validators' parameter lists. A constant in one script beside a
+      * parameter in five has no safe failure mode: one divergent deployment argument leaves
+      * `treasury.ak` searching for a token that does not exist, and its `Retire` branch fails with
+      * it, so the Treasury state UTxO can never be spent again.
+      */
+    val ConfigNftAssetName: ByteString = ByteString.fromString("BIFCFG")
+
+    /** The Treasury state NFT asset name — spec [CFG-4]: a protocol constant, not Config #13.
+      * Mirrors `lib/bifrost/constants.ak::treasury_info_nft_asset_name`.
+      *
+      * Uniqueness comes from the one-shot outpoint baked into the policy id, so the name had
+      * nothing left to say.
+      */
+    val TreasuryInfoAssetName: ByteString = ByteString.fromString("BFRTRY")
+
 }
 
-// Scalus mirror of `config.ak::ConfigParams` — the tunable operational parameters, nested as
-// ConfigDatum field 14 (spec §Operational parameters). Positional; keep field order identical to
-// the .ak record: 0 fee_rate_sat_per_vb, 1 per_pegout_fee, 2 min_peg_out_fbtc, 3 schedule.
-// OFF-CHAIN consensus anchors / pinned-copy sources — no Aiken validator reads a current value.
+// Scalus mirror of `config.ak::ConfigParams` — every value with NO on-chain reader, nested as
+// ConfigDatum field 1 (spec §Config datum). Positional; keep field order identical to the .ak
+// record: 0 schedule, 1 fee_rate_sat_per_vb, 2 per_pegout_fee, 3 min_peg_out_fbtc,
+// 4 base_ban_duration_ms, 5 max_faults_before_permanent, 6 max_validity_window_ms,
+// 7 federation_csv_blocks.
+//
+// `schedule` is at index 0 for the same reason `params` is at ConfigDatum index 1: a nested record
+// at the tail invites an append that shifts it.
 case class ConfigParams(
+    schedule: ScheduleParams,
     feeRateSatPerVb: BigInt,
     perPegoutFee: BigInt,
     minPegOutFbtc: BigInt,
-    schedule: ScheduleParams
+    baseBanDurationMs: BigInt,
+    maxFaultsBeforePermanent: BigInt,
+    maxValidityWindowMs: BigInt,
+    federationCsvBlocks: BigInt
 ) derives FromData,
       ToData
 
 // Scalus mirror of `config.ak::ScheduleParams` — the tunable epoch/TM schedule (all Int slot
-// values, spec §TM batches and the protocol schedule), nested as ConfigParams field 3.
+// values, spec §TM batches and the protocol schedule), nested as ConfigParams field 0.
 // Positional; keep field order identical to the .ak record. Off-chain readers only.
 case class ScheduleParams(
     dkgR1Deadline: BigInt,

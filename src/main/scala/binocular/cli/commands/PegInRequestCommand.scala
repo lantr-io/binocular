@@ -70,11 +70,11 @@ case class PegInRequestCommand(
                     Console.error(s"Loading bridge blueprint: ${e.getMessage}"); break(1)
             }
         Console.info("blueprint", blueprintSource)
+        // [CFG-7]: the config NFT asset name is the "BIFCFG" constant, no longer a parameter.
         val pegIn = PegInContract(
           blueprint,
           ByteString.fromArray(oraclePolicyId.bytes),
-          hexBytes("bridge.config-nft-policy-id", config.bridge.configNftPolicyId, Some(56)),
-          hexBytes("bridge.config-nft-asset-name", config.bridge.configNftAssetName, None)
+          hexBytes("bridge.config-nft-policy-id", config.bridge.configNftPolicyId, Some(56))
         )
         Console.info("Oracle policy", oraclePolicyId.toHex)
         Console.info("Peg-in policy", pegIn.policyId.toHex)

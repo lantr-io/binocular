@@ -63,7 +63,7 @@ class PegOutCompleteCekTest extends AnyFunSuite {
     private val blueprint = BifrostBlueprint.packaged
     private val pegOutHash =
         ByteString.fromArray(
-          PegOutContract(blueprint, configNftPolicy, configNftAsset).policyId.bytes
+          PegOutContract(blueprint, configNftPolicy).policyId.bytes
         )
 
     /** The deployed script bytes, with the two CIP-57 parameters applied — exactly what
@@ -73,7 +73,6 @@ class PegOutCompleteCekTest extends AnyFunSuite {
         Program
             .fromCborHex(blueprint.compiledCode(PegOutContract.ValidatorTitle))
             .$(Data.B(configNftPolicy))
-            .$(Data.B(configNftAsset))
 
     // --- fixtures -------------------------------------------------------------------------------
 
@@ -86,8 +85,9 @@ class PegOutCompleteCekTest extends AnyFunSuite {
     private def porId(ref: TxOutRef): ByteString =
         CpoTrieMirror.porId(ref.id.hash, ref.idx.toLong)
 
-    /** The rev-5.4 eight-field ConfigDatum. The withdraw reads fields 1 (bridged token policy) and
-      * 3 (bridge_state_policy); the asset name is the [CFG-1] constant.
+    /** The rev-5.5 twelve-field ConfigDatum. The withdraw reads fields 2 (bridged token policy)
+      * and 4 (bridge_state_policy) — both shifted up by one when `params` moved to index 1 — and
+      * the asset name is the [CFG-1] constant.
       */
     private def configDatum: Data = ConfigDatum(
       updateAuth = Option.None,
@@ -98,13 +98,14 @@ class PegOutCompleteCekTest extends AnyFunSuite {
       pegInScriptHash = ByteString.empty,
       pegOutScriptHash = pegOutHash,
       spoBansPolicyId = ByteString.empty,
-      baseBanDurationMs = BigInt(0),
-      maxFaultsBeforePermanent = BigInt(0),
-      maxValidityWindowMs = BigInt(0),
       sposRegistryPolicyId = ByteString.empty,
       treasuryInfoPolicyId = ByteString.empty,
-      treasuryInfoAssetName = ByteString.empty,
+      yFederation = ByteString.fromHex("f9" * 32),
       params = ConfigParams(
+        baseBanDurationMs = BigInt(0),
+        maxFaultsBeforePermanent = BigInt(0),
+        maxValidityWindowMs = BigInt(0),
+        federationCsvBlocks = BigInt(144),
         feeRateSatPerVb = BigInt(1),
         perPegoutFee = BigInt(fee),
         minPegOutFbtc = BigInt(0),
