@@ -84,6 +84,16 @@ lazy val binocular = (project in file("."))
           // `blueprint-modules` compiler manifests are build-time-only — discard.
           case PathList("META-INF", "scalus", "blueprints", xs @ _*) =>
               MergeStrategy.deduplicate
+          // Swagger UI ships as a webjar under META-INF/resources. tapir's SwaggerUI loads it at
+          // class-init time and throws ExceptionInInitializerError ("META-INF resources are
+          // missing") without it, which kills the proof-server loop and takes the whole watchtower
+          // down with it. Keep it ahead of the blanket META-INF discard below.
+          case PathList("META-INF", "resources", xs @ _*) => MergeStrategy.first
+          // tapir reads the Swagger UI version from the webjar's Maven pom.properties to build the
+          // resource path. Keeping only the resources above is not enough: without this the same
+          // ExceptionInInitializerError is thrown.
+          case PathList("META-INF", "maven", "org.webjars", "swagger-ui", xs @ _*) =>
+              MergeStrategy.first
           case PathList("META-INF", xs @ _*) => MergeStrategy.discard
           case PathList("module-info.class")       => MergeStrategy.discard
           case x if x.endsWith(".proto")           => MergeStrategy.first
