@@ -24,6 +24,10 @@ smart contract written in Scalus.
 - `sbt test` - Run all tests
 - `./generate-pdfs.sh` - Generate PDF versions of whitepapers (requires LaTeX)
 
+**Before you trust a test run, read *Build caching* below.** sbt 2 keeps three
+layers of state, and `sbt clean` clears none of them. A cached run can report a
+small fraction of the suite and still say "All tests passed".
+
 **Key Patterns:**
 
 - Bitcoin consensus validation is in `BitcoinValidator.scala`
@@ -66,6 +70,54 @@ sbt
 > test
 > testOnly *BitcoinValidatorSpec
 ```
+
+### Build caching (sbt 2)
+
+sbt 2 caches far more aggressively than sbt 1, and this project's blueprint pins
+make a stale read look exactly like a real failure. Three layers, outermost
+first:
+
+1. **The sbt server.** It is a long-lived JVM, and it holds the packaged jar
+   OPEN. Anything that resolves a resource off the classpath — notably
+   `BinocularBlueprint.program`, which loads the committed blueprint pins — keeps
+   reading the bytes that jar had when the server started, however many times you
+   rebuild.
+2. **The content-addressed store.** `target/out/.../binocular_3-*.jar` is a
+   symlink into `~/Library/Caches/sbt/v2/cas/`. `cleanFull` does not purge it.
+3. **Incremental compilation and resource copying**, which `cleanFull` does
+   clear.
+
+```bash
+# The full reset. Do this before believing any result you are going to act on,
+# and always after regenerating blueprint pins.
+sbt shutdown
+pkill -f sbt-launch          # the server does not always stop on request
+sbt cleanFull                # NOT `sbt clean` — that leaves layers 1 and 2
+sbt test
+```
+
+How the failure presents: `sbt test` reports "Tests: succeeded 53" instead of
+530 and passes, or `BinocularBlueprintTest` reports a pin stale that is already
+correct on disk. Confirm which you have by printing the resource URL the loader
+actually used —
+
+```scala
+getClass.getClassLoader.getResources("META-INF/scalus/blueprints/X.json")
+```
+
+— a `jar:file:...` URL means you are reading the server's jar, not your file.
+
+### Regenerating blueprint pins
+
+`sbt blueprintPin` regenerates `src/main/resources/META-INF/scalus/blueprints/`
+and copies the result into the tree. That commit IS the decision to deploy a
+changed script, so never hand-edit a pin.
+
+A pin moves whenever the compiled UPLC moves, which includes changes the
+validator source never saw: `TreasuryMovementValidator` reads `ConfigDatum`
+positionally, so re-indexing that mirror moved its pin. After pinning, do the
+full reset above before re-running `BinocularBlueprintTest` — otherwise the
+drift guard compares your new pin against the server's old jar and fails.
 
 ### Testing
 
