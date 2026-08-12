@@ -47,11 +47,11 @@ import cats.syntax.either.*
   * `registerBanWithdrawCredential`.)
   *
   * Run after the bridge config + the (re-minted) peg_in policy are fixed. `deploy-bridge` already
-  * registers all three inside its bootstrap tx, so this command is the idempotent repair path:
-  * each credential is registered in its OWN tx and an already-registered one is skipped (not
-  * fatal), so a partially-registered deployment converges instead of failing wholesale. The command
-  * is therefore safe to re-run. It does NOT touch the config / completed-peg-ins /
-  * completed-peg-outs / fBTC NFTs.
+  * registers all three inside its bootstrap tx, so this command is the idempotent repair path: each
+  * credential is registered in its OWN tx and an already-registered one is skipped (not fatal), so
+  * a partially-registered deployment converges instead of failing wholesale. The command is
+  * therefore safe to re-run. It does NOT touch the config / completed-peg-ins / completed-peg-outs
+  * / fBTC NFTs.
   */
 case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
 
@@ -130,7 +130,10 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
                 case Some(refStr) =>
                     val fedInput = parseRef("bridge.federation-one-shot-ref", refStr)
                     val configAddress =
-                        Address(network, Credential.ScriptHash(ScriptHash.fromHex(configNftPolicy.toHex)))
+                        Address(
+                          network,
+                          Credential.ScriptHash(ScriptHash.fromHex(configNftPolicy.toHex))
+                        )
                     val (_, deployed) = BridgeSweepSetup
                         .loadConfig(
                           provider,
@@ -139,7 +142,9 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
                           AssetName(configNftAsset),
                           timeout
                         )
-                        .valueOr { err => Console.error(err); break(1) }
+                        .valueOr { err =>
+                            Console.error(err); break(1)
+                        }
                     val federation = FederationScripts.derive(
                       blueprint,
                       ByteString.fromArray(fedInput.transactionId.bytes),
@@ -153,7 +158,9 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
                     )
                     FederationScripts
                         .verifyAgainstConfig(federation, deployed)
-                        .valueOr { err => Console.error(err); break(1) }
+                        .valueOr { err =>
+                            Console.error(err); break(1)
+                        }
                     List("spo_bans" -> federation.bans.policyId)
             }
 

@@ -101,7 +101,9 @@ class BridgeBootstrapTest extends AnyFunSuite {
     private val genesisTreasury =
         TreasuryInfoDatum(BridgeBootstrap.EmptyRoot, yFederation)
 
-    test("the treasury state output sits at its own script address, no stake credential ([TSY-5])") {
+    test(
+      "the treasury state output sits at its own script address, no stake credential ([TSY-5])"
+    ) {
         val (addr, _, _) =
             BridgeBootstrap.treasuryStateOutput(treasuryContract, network, genesisTreasury)
         assert(addr == Address(network, Credential.ScriptHash(treasuryContract.policyId)))

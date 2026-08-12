@@ -5,9 +5,9 @@ import pureconfig.ConfigSource
 
 /** `reference.conf` is the ONLY source of defaults for [[BinocularConfig]].
   *
-  * PureConfig's Scala 3 derivation does not read a case class's default arguments, so a field
-  * added to (say) [[binocular.watchtower.BridgeConfig]] with a Scala default and no matching key
-  * in `reference.conf` becomes a REQUIRED key. Every existing config file then fails to load —
+  * PureConfig's Scala 3 derivation does not read a case class's default arguments, so a field added
+  * to (say) [[binocular.watchtower.BridgeConfig]] with a Scala default and no matching key in
+  * `reference.conf` becomes a REQUIRED key. Every existing config file then fails to load —
   * including the deployed watchtower's, which finds out at startup:
   *
   * {{{

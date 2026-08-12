@@ -6,7 +6,7 @@ import scalus.cardano.onchain.plutus.prelude.List as PList
 import scalus.cardano.onchain.plutus.v3.TxOutRef
 import scalus.uplc.Program
 import scalus.uplc.builtin.{Builtins, ByteString, Data}
-import scalus.uplc.builtin.Data.{FromData, ToData, toData}
+import scalus.uplc.builtin.Data.{toData, FromData, ToData}
 
 import java.nio.file.{Files, Paths}
 
@@ -373,7 +373,10 @@ object FederationScripts {
       * well-formed policies that name nothing. The Config is the authority on all three ids, so
       * comparing closes the loop before anything is published or registered against them.
       */
-    def verifyAgainstConfig(scripts: FederationScripts, config: ConfigDatum): Either[String, Unit] = {
+    def verifyAgainstConfig(
+        scripts: FederationScripts,
+        config: ConfigDatum
+    ): Either[String, Unit] = {
         def cmp(what: String, derived: ScriptHash, published: ByteString): Either[String, Unit] =
             Either.cond(
               derived.toHex == published.toHex,
@@ -552,8 +555,8 @@ object FaultVerifierContract {
 }
 
 /** `spo_bans`, the ban-list policy: seven parameters, of which the ban schedule is three. Its hash
-  * is the value bridge genesis publishes as Config #8 — the one field that lets an SPO read the
-  * ban list while configuring nothing at all.
+  * is the value bridge genesis publishes as Config #8 — the one field that lets an SPO read the ban
+  * list while configuring nothing at all.
   */
 final case class SpoBansContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash

@@ -91,7 +91,16 @@ class ConfigDatumEncodingTest extends AnyFunSuite {
     test("ConfigParams nests the schedule at slot 0") {
         val sched = ScheduleParams(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         val params =
-            ConfigParams(sched, BigInt(1), BigInt(2), BigInt(3), BigInt(4), BigInt(5), BigInt(6), BigInt(7))
+            ConfigParams(
+              sched,
+              BigInt(1),
+              BigInt(2),
+              BigInt(3),
+              BigInt(4),
+              BigInt(5),
+              BigInt(6),
+              BigInt(7)
+            )
         params.toData match {
             case Data.Constr(0, fields) =>
                 val fs = fields.asScala.toIndexedSeq
