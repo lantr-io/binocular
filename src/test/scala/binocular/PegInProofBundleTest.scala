@@ -25,8 +25,8 @@ import scala.util.Try
   * raw tx hashes to the proven txid.
   *
   * The deposit fixture is byte-identical to `bifrost/bitcoin.ak`'s `sample_deposit_tx`: vout 0 =
-  * P2TR worth 100000 sat, vout 1 = the dual-key BFR beacon (`6a 43 "BFR" ‖ D(32) ‖ Q_auth(32)`).
-  * The legacy single-key beacon (`6a 23 "BFR" ‖ key`) is REFUSED on-chain by `beacon_payload`, so
+  * P2TR worth 100000 sat, vout 1 = the one-key BFR beacon (`6a 23 "BFR" ‖ Q_auth(32)`). The retired
+  * dual-key beacon (`6a 43 "BFR" ‖ D(32) ‖ Q_auth(32)`) is REFUSED on-chain by `beacon_payload`, so
   * the bundle producer must refuse it too — a bundle for it would fail `deposit_binding_ok` at
   * submission.
   */
@@ -34,14 +34,16 @@ class PegInProofBundleTest extends AnyFunSuite {
 
     // bifrost/bitcoin.ak::sample_deposit_tx, verbatim. Non-witness, two outputs.
     private val depositTxHex =
-        "020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff02a086010000000000225120bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0000000000000000456a43424652ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc00000000"
-
-    // bifrost/bitcoin.ak::legacy_deposit_tx: the retired single-key beacon (6a 23 "BFR" ‖ Q_auth).
-    private val legacyDepositTxHex =
         "020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff02a086010000000000225120bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0000000000000000256a23424652cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc00000000"
 
-    private val refundKey = "dd" * 32
+    // bifrost/bitcoin.ak::legacy_deposit_tx: the retired dual-key beacon (6a 43 "BFR" ‖ D ‖ Q_auth).
+    private val legacyDepositTxHex =
+        "020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff02a086010000000000225120bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0000000000000000456a43424652ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc00000000"
+
+    // The key the one-key beacon carries, and the one the retired form put SECOND. `retiredD` only
+    // ever appeared in that retired form; no current beacon can carry it.
     private val authKey = "cc" * 32
+    private val retiredD = "dd" * 32
 
     private def voutsOf(rawHex: String): Seq[VoutInfo] = {
         val raw = ByteString.fromHex(rawHex)
@@ -118,9 +120,10 @@ class PegInProofBundleTest extends AnyFunSuite {
         val bundle = deposit.assemble(requestedVout = Some(0)).toOption.get
         assert(bundle.pegInVout == 0)
         assert(bundle.pegInAmountSat == 100_000L)
-        // Q_auth (the SECOND beacon key) is the user_source_chain_pub_key — not the refund key D.
+        // The beacon's single key IS the user_source_chain_pub_key. Reading it from the wrong
+        // offset would yield the retired form's leading D, so pin that it does not.
         assert(bundle.userSourceChainPubKey == ByteString.fromHex(authKey))
-        assert(bundle.userSourceChainPubKey != ByteString.fromHex(refundKey))
+        assert(bundle.userSourceChainPubKey != ByteString.fromHex(retiredD))
         assert(
           bundle.pegInUtxoId == deposit.txidLE ++ hex"00000000"
         )
@@ -148,7 +151,7 @@ class PegInProofBundleTest extends AnyFunSuite {
         )
     }
 
-    test("the legacy single-key beacon is refused, exactly like on-chain beacon_payload") {
+    test("the retired dual-key beacon is refused, exactly like on-chain beacon_payload") {
         val legacy = Fixture(legacyDepositTxHex)
         assert(
           legacy.assemble(requestedVout = Some(0)) ==
@@ -156,7 +159,7 @@ class PegInProofBundleTest extends AnyFunSuite {
         )
     }
 
-    test("a dual-key beacon anywhere but vout 1 is refused — on-chain reads vout 1 only") {
+    test("a beacon anywhere but vout 1 is refused — on-chain reads vout 1 only") {
         // Swap the two outputs: P2TR at vout 1, beacon at vout 0.
         val fx = Fixture(depositTxHex)
         val swapped = fx.block.copy(tx =

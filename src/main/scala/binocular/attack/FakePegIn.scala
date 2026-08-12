@@ -7,16 +7,16 @@ import scalus.uplc.builtin.Builtins.{integerToByteString, sha2_256}
 import scala.collection.Seq
 
 /** A fabricated Bitcoin peg-in DEPOSIT transaction (100 BTC) — the artifact the bridge's
-  * PegInProofBundle would recognize: a P2TR output to the treasury plus the dual-key "BFR"
-  * OP_RETURN beacon `"BFR" ‖ D(32) ‖ Q_auth(32)` (bitcoin.ak::beacon_payload). Placeholder
-  * (fabricated) treasury and depositor keys — this is for the adversarial demo, not a real deposit.
+  * PegInProofBundle would recognize: a P2TR output to the treasury plus the one-key "BFR" OP_RETURN
+  * beacon `"BFR" ‖ Q_auth(32)` (bitcoin.ak::beacon_payload). Placeholder (fabricated) treasury and
+  * depositor keys — this is for the adversarial demo, not a real deposit.
   */
 case class FakePegIn(
     amountSat: BigInt, // 10_000_000_000 = 100 BTC
     treasuryQ: ByteString, // 32-byte x-only (fabricated placeholder)
-    depositorXOnly: ByteString, // 32-byte x-only (fabricated "Eve", used as D and Q_auth)
+    depositorXOnly: ByteString, // 32-byte x-only (fabricated "Eve") — Q_auth
     p2trScript: ByteString, // 5120 ++ treasuryQ
-    opReturnScript: ByteString, // 6a43 ++ 424652 ++ D ++ Q_auth
+    opReturnScript: ByteString, // 6a23 ++ 424652 ++ Q_auth
     rawTx: ByteString, // full legacy tx bytes
     txid: ByteString // getTxHash(rawTx), internal (LE) order
 )
@@ -69,10 +69,10 @@ object FakePegIn {
         val scriptLen0 = ByteString.fromHex("22") // 34 bytes: 2 (5120) + 32 (key)
         val vout0 = amount0 ++ scriptLen0 ++ p2trScript
 
-        // vout[1] — the dual-key OP_RETURN BFR beacon; Eve uses one key as both D and Q_auth.
-        val opReturnScript = ByteString.fromHex("6a43424652") ++ DepositorXOnly ++ DepositorXOnly
+        // vout[1] — the one-key OP_RETURN BFR beacon carrying Eve's Q_auth.
+        val opReturnScript = ByteString.fromHex("6a23424652") ++ DepositorXOnly
         val amount1 = integerToByteString(false, 8, 0)
-        val scriptLen1 = ByteString.fromHex("45") // 69 bytes: 5 (6a43424652) + 64 (D + Q_auth)
+        val scriptLen1 = ByteString.fromHex("25") // 37 bytes: 5 (6a23424652) + 32 (Q_auth)
         val vout1 = amount1 ++ scriptLen1 ++ opReturnScript
 
         // locktime: 00000000

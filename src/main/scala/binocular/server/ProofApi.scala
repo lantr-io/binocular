@@ -146,7 +146,7 @@ object ProofApi {
             ApiError(
               404,
               "not_a_deposit",
-              s"tx $txId carries no dual-key BFR beacon at vout 1 — not a bridge deposit"
+              s"tx $txId carries no one-key BFR beacon at vout 1 — not a bridge deposit"
             )
         case PegInProofBundle.NoP2trOutput(txId) =>
             ApiError(404, "not_a_deposit", s"tx $txId has no P2TR deposit output")

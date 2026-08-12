@@ -80,9 +80,9 @@ class ProofApiTest extends AnyFunSuite {
     // --- deposit bundle shape and mapping --------------------------------------------------------
 
     test("depositBundleJson carries the four [OB-12] items plus the PegInDatum fields") {
-        // The dual-key deposit fixture from bitcoin.ak (see PegInProofBundleTest).
+        // The one-key deposit fixture from bitcoin.ak (see PegInProofBundleTest).
         val rawTx = ByteString.fromHex(
-          "020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff02a086010000000000225120bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0000000000000000456a43424652ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc00000000"
+          "020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff02a086010000000000225120bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0000000000000000256a23424652cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc00000000"
         )
         val bundle = PegInProofBundle(
           rawTxHex = rawTx,
