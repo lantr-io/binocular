@@ -5,6 +5,7 @@ import scalus.cardano.ledger.{Credential, Script, ScriptHash}
 import scalus.uplc.Program
 import scalus.cardano.onchain.plutus.prelude.List as PList
 import scalus.uplc.builtin.{ByteString, Data}
+import scalus.uplc.builtin.Data.{FromData, ToData}
 
 /** The ft-bifrost-bridge validators that make up the SPO **federation**: the registry of registered
   * SPOs, the ban list parameterized by it, the `treasury_info` state UTxO their DKG rotates, and
@@ -61,6 +62,35 @@ object SposRegistryContract {
     }
 }
 
+/** Scalus mirror of ft-bifrost-bridge `lib/bifrost/types/treasury.ak::TreasuryDatum` — the Treasury
+  * state UTxO's datum, spec [TSY-1].
+  *
+  * Positional in the Plutus Constr, so the field ORDER here is the contract with `treasury.ak` and
+  * with heimdall's `cardano::treasury_bootstrap::bootstrap_datum`, which builds the same bytes from
+  * Rust. Swapping the two fields still decodes: both are 32-byte strings, and the result is a
+  * treasury whose identity trie root is a public key.
+  *
+  * Rev 5.5 cut it to these two fields. `last_reset_tm_txid` went with the withdrawn
+  * `FederationReset` branch, and `y_federation` / `federation_csv_blocks` moved to the Config
+  * ([CFG-6]) — nothing on-chain could ever rotate them here.
+  *
+  * Unlike [[ConfigDatum]] this type is NOT append-extensible: the validator decodes it as a type,
+  * so the arity is part of the contract. The state UTxO sits behind its own NFT, and replacing it
+  * is a bootstrap.
+  *
+  * @param bifrostIdentityRoot
+  *   MPF root of the active `bifrost_id_pk -> pool_id` bindings, 32 bytes. `spos_registry` owns
+  *   this value through its [REG-5] proof; `treasury.ak` never computes it.
+  * @param currentSposFrostKey
+  *   the treasury group key, 32 bytes x-only: $Y_{51}$ after the first DKG, $Y_{federation}$ until
+  *   then. Update-Y rotates it, and the rotation message commits to the new value.
+  */
+case class TreasuryInfoDatum(
+    bifrostIdentityRoot: ByteString,
+    currentSposFrostKey: ByteString
+) derives FromData,
+      ToData
+
 /** `treasury_info`, parameterized by its OWN one-shot outpoint and the Config NFT policy.
   *
   * Rev 5.4 dropped the TM-NFT policy parameter (it fed only the withdrawn FederationReset branch,
@@ -90,6 +120,11 @@ object TreasuryInfoContract {
       * Uniqueness lives in the policy id, where the one-shot outpoint is a parameter.
       */
     val StateAssetName: ByteString = ByteString.fromString("BFRTRY")
+
+    /** The mint redeemer. `treasury.ak::mint` ignores it (`_redeemer: Data`) — the one-shot is a
+      * parameter and the asset name is a constant, so the mint has nothing left to be told.
+      */
+    val MintRedeemer: Data = Data.Constr(0, PList())
 
     def apply(
         blueprint: BifrostBlueprint,

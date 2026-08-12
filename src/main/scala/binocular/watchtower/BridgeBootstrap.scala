@@ -47,6 +47,40 @@ object BridgeBootstrap {
         (contract.address(network), value, state.toData)
     }
 
+    /** The Treasury state output a genesis mint must create ([TSY-5] – [TSY-8]).
+      *
+      * `treasury.ak::mint` requires exactly one output at the policy's own script address, holding
+      * the single `"BFRTRY"` token and NOTHING else non-ADA, with a `TreasuryDatum` whose two
+      * fields are both 32 bytes. The address must carry NO stake credential ([TSY-5]): a reader
+      * that pins the bare script address could not find a UTxO that drifted to a delegated one.
+      *
+      * `currentSposFrostKey` is $Y_{federation}$ at genesis — the federation is the key-path signer
+      * until the first DKG publishes $Y_{51}$, so Phase-1 address derivation, signing and
+      * governance work with no special cases (spec §Bridge instance creation flow, step 7).
+      * `bifrostIdentityRoot` is the empty root for a fresh deployment; [PRE-2] lets a replacement
+      * deployment seed a non-empty one to carry a registered roster forward.
+      */
+    def treasuryStateOutput(
+        contract: TreasuryInfoContract,
+        network: Network,
+        state: TreasuryInfoDatum
+    ): (Address, Value, Data) = {
+        // [TSY-8] is enforced on chain, so a short field aborts the mint and burns the deploy's
+        // fee. Checking here keeps a malformed genesis off the chain entirely.
+        require(
+          state.bifrostIdentityRoot.bytes.length == 32,
+          s"bifrost_identity_root must be 32 bytes, got ${state.bifrostIdentityRoot.bytes.length}"
+        )
+        require(
+          state.currentSposFrostKey.bytes.length == 32,
+          s"current_spos_frost_key must be 32 bytes, got ${state.currentSposFrostKey.bytes.length}"
+        )
+        val asset = AssetName(TreasuryInfoContract.StateAssetName)
+        val value = Value.lovelace(BootstrapLovelace) +
+            Value.asset(contract.policyId, asset, 1L)
+        (contract.address(network), value, state.toData)
+    }
+
     /** Pick the one-shot UTxO a bootstrap mint consumes.
       *
       * Pure-ADA only, at least [[MinOneShotLovelace]], largest first, and never one of `excluded`.

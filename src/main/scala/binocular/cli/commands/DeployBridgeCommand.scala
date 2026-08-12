@@ -69,9 +69,9 @@ case class DeployBridgeCommand(
     private val ConfigAssetName: ByteString = ByteString.fromString("BIFCFG")
     // Bridged-token asset name — the [CFG-1] protocol constant, not a config field.
     private val BridgedTokenAssetName: ByteString = ConfigDatum.BridgedTokenAssetName
-    // Asset name of the treasury_info state NFT. Chosen here and published as config #13 — it is
-    // derivable from nothing, so publishing it is the only way an SPO avoids typing it.
-    private val TreasuryInfoAssetName: ByteString = ByteString.fromString("TMTx")
+    // Rev 5.5 removed the treasury_info asset-name constant that used to live here: the name is
+    // the [CFG-4] protocol constant "BFRTRY" (TreasuryInfoContract.StateAssetName), and the
+    // Config field that published it is gone.
     private val EmptyRoot: ByteString = BridgeBootstrap.EmptyRoot
 
     override def execute(config: BinocularConfig): Int = boundary {
@@ -433,6 +433,15 @@ case class DeployBridgeCommand(
         Console.info("peg_out withdraw hash", pegOutWithdrawHash.toHex)
         Console.info("TM script hash (config field 4)", tmNftPolicy.toHex)
         println()
+        // The federation half. Every one of these is an INPUT to the policy id it names, so an SPO
+        // handed a wrong one derives a well-formed address holding nothing — printing them is what
+        // lets an operator configure heimdall without re-deriving the chain by hand.
+        Console.info("federation one-shot", s"${federationRef.id.hash.toHex}#${federationRef.idx}")
+        Console.info("treasury policy (config field 10)", treasuryPolicy.toHex)
+        Console.info("treasury asset", TreasuryInfoContract.StateAssetName.toHex)
+        Console.info("registry policy (config field 9)", registryPolicy.toHex)
+        Console.info("spo_bans policy (config field 8)", spoBansContract.policyId.toHex)
+        println()
 
         if dryRun then {
             Console.success(
@@ -441,25 +450,49 @@ case class DeployBridgeCommand(
             break(0)
         }
 
-        // --- Federation tx, FIRST: spend the federation one-shot and mint both linked-list
-        //     roots. It cannot be merged into the bootstrap tx below — the two script sets
-        //     together exceed the 16 kB max_tx_size — and it must PRECEDE it, because the config
-        //     NFT is the bridge's identity: minting the roots first is what makes "a bridge cannot
-        //     exist without a ban list" true by construction rather than by procedure. A crash
-        //     between the two leaves an orphan registry and ban list, which costs a few ADA and is
-        //     simply re-run; the reverse order would leave a live bridge whose published addresses
-        //     hold nothing.
+        // --- Federation tx, FIRST: spend the federation one-shot and mint the whole SPO-side
+        //     state — the Treasury state NFT and both linked-list roots. It cannot be merged into
+        //     the bootstrap tx below — the two script sets together exceed the 16 kB max_tx_size —
+        //     and it must PRECEDE it, because the config NFT is the bridge's identity: minting the
+        //     roots first is what makes "a bridge cannot exist without a ban list" true by
+        //     construction rather than by procedure. A crash between the two leaves an orphan
+        //     federation, which costs a few ADA and is simply re-run; the reverse order would leave
+        //     a live bridge whose published addresses hold nothing.
         //
-        //     Neither mint handler constrains output ORDER (both locate their root by script
-        //     address + asset via find_singleton_asset_output_at_script), unlike config.ak. ---
-        Console.step(1, "Bootstrapping the federation (registry + ban roots) in one tx")
+        //     All THREE mints share this one outpoint, and that is why they share this one
+        //     transaction: a one-shot mint handler requires its outref to be an input of the
+        //     minting tx, so an outpoint spent here can never authorize a mint again. Splitting
+        //     the Treasury state mint out into a later transaction (heimdall
+        //     `bootstrap-treasury-info`) would publish `treasury_info_policy_id` at Config #10 for
+        //     a policy nobody could ever mint under — and with no Treasury state UTxO no SPO can
+        //     register ([REG-6] pins the registry to it) and Update-Y is unreachable.
+        //
+        //     No mint handler here constrains output ORDER: the two roots are located by script
+        //     address + asset via find_singleton_asset_output_at_script, and [TSY-5] filters the
+        //     outputs by the treasury's own script credential — unlike config.ak, which pins
+        //     outputs[0]. ---
+        Console.step(1, "Bootstrapping the federation (treasury + registry + ban roots) in one tx")
         val registryRootAsset = AssetName(SposRegistryContract.RootAssetName)
         val banRootAsset = AssetName(SpoBansContract.RootAssetName)
+        val treasuryAsset = AssetName(TreasuryInfoContract.StateAssetName)
         val registryRootValue =
             Value.lovelace(2_000_000L) +
                 Value.asset(registryContract.policyId, registryRootAsset, 1L)
         val banRootValue =
             Value.lovelace(2_000_000L) + Value.asset(spoBansContract.policyId, banRootAsset, 1L)
+        // spec [PRE-2]: the genesis identity root is empty for a fresh deployment. Seeding a
+        // roster forward belongs to a replacement deployment, which is not this command.
+        val (treasuryAddress, treasuryValue, treasuryDatum) =
+            BridgeBootstrap.treasuryStateOutput(
+              treasuryInfoContract,
+              network,
+              TreasuryInfoDatum(
+                bifrostIdentityRoot = EmptyRoot,
+                // Phase 1 has no DKG yet, so the federation IS the treasury key-path signer. This
+                // is the same key as Config #11 by construction, not by procedure.
+                currentSposFrostKey = yFederation
+              )
+            )
         val federationTx =
             try
                 TxBuilder(provider.cardanoInfo)
@@ -474,12 +507,18 @@ case class DeployBridgeCommand(
                       Map(banRootAsset -> 1L),
                       FederationRoot.banBootstrapRedeemer(federationRef.id.hash, federationRef.idx)
                     )
+                    .mint(
+                      treasuryInfoContract.script,
+                      Map(treasuryAsset -> 1L),
+                      TreasuryInfoContract.MintRedeemer
+                    )
                     .payTo(
                       registryContract.address(network),
                       registryRootValue,
                       FederationRoot.Datum
                     )
                     .payTo(spoBansContract.address(network), banRootValue, FederationRoot.Datum)
+                    .payTo(treasuryAddress, treasuryValue, treasuryDatum)
                     .complete(provider, sponsorAddress)
                     .await(timeout)
                     .sign(signer)
@@ -494,6 +533,7 @@ case class DeployBridgeCommand(
         // the config tx below is never built against a federation that failed to materialise.
         val federationTxHash = submitAndConfirm(provider, federationTx, timeout)
         Console.success(s"Federation bootstrapped: $federationTxHash")
+        Console.info("treasury address", treasuryAddress.encode.getOrElse("?"))
         Console.info("registry address", registryContract.address(network).encode.getOrElse("?"))
         Console.info("ban list address", spoBansContract.address(network).encode.getOrElse("?"))
         println()
@@ -582,6 +622,15 @@ case class DeployBridgeCommand(
               "protocol uses); re-run `register-bridge-creds` only if that tx was partial"
         )
         Console.info("tm-nft-policy", tmNftPolicy.toHex)
+        // The SPO half, for heimdall's [cardano] section. Both bootstrap outrefs are the federation
+        // one-shot this deploy already spent: heimdall re-derives the registry and treasury policy
+        // ids from it, it does not mint against it. `bootstrap-treasury-info` and
+        // `bootstrap-registry` are legacy for a bridge deployed here — step 1 minted both.
+        Console.info(
+          "heimdall registry_bootstrap / treasury_bootstrap",
+          s"${federationRef.id.hash.toHex}:${federationRef.idx}"
+        )
+        Console.info("heimdall config_nft_policy_id", configPolicy.toHex)
         Console.separator()
         0
     }
