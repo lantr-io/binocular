@@ -35,3 +35,6 @@ docs/superpowers/
 # diagnostic-only: verbose-trace peg_out blueprint (regenerate via aiken build --trace-level verbose)
 peg-out-debug-blueprint.json
 anthill-todo/
+
+# POR sweeper / SPI trie mirror state (bridge.state-dir, default .binocular)
+.binocular*/

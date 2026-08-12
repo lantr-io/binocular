@@ -157,21 +157,45 @@ class PorSweeperTest extends AnyFunSuite {
 
     // The rev-5.4 raw layout: 0 update_auth (None), 1 bridged_token_policy, 2-5 inert, 6 the
     // peg_out script hash. The asset name is the [CFG-1] constant, so it is NOT in the datum.
+    // Encoded from the [[ConfigDatum]] mirror rather than hand-listed fields, so a re-index can
+    // never leave this fixture describing a datum shape no deployment has. The hand-listed rev-5.4
+    // version kept these tests green through the rev-5.5 shift, while on a real bridge the sweeper
+    // read `params` where it expected the bridged-token policy and turned itself off.
     private def configUtxo(pegOutField: ScriptHash, policy: ScriptHash): Utxo = {
-        val datum: Data = Data.Constr(
-          0,
-          PList.from(
-            List[Data](
-              Data.Constr(1, PList()), // update_auth = None
-              Data.B(ByteString.fromArray(policy.bytes)),
-              Data.B(ByteString.empty),
-              Data.B(ByteString.empty),
-              Data.B(ByteString.empty),
-              Data.B(ByteString.empty),
-              Data.B(ByteString.fromArray(pegOutField.bytes))
-            )
-          )
-        )
+        val datum: Data = ConfigDatum(
+          updateAuth = scalus.cardano.onchain.plutus.prelude.Option.None,
+          params = ConfigParams(
+            schedule = ScheduleParams(
+              dkgR1Deadline = BigInt(3600),
+              dkgR2Deadline = BigInt(7200),
+              updateYDeadline = BigInt(10800),
+              tmBatchInterval = BigInt(21600),
+              signR1Window = BigInt(1800),
+              signR2Window = BigInt(1800),
+              leaderSlotT = BigInt(600),
+              tmRecoveryWindow = BigInt(129600),
+              finalTmCutoff = BigInt(345600),
+              stabilityWindow = BigInt(129600)
+            ),
+            feeRateSatPerVb = BigInt(1),
+            perPegoutFee = BigInt(1000),
+            minPegOutFbtc = BigInt(10000),
+            baseBanDurationMs = BigInt(600000),
+            maxFaultsBeforePermanent = BigInt(3),
+            maxValidityWindowMs = BigInt(3600000),
+            federationCsvBlocks = BigInt(144)
+          ),
+          bridgedTokenPolicy = ByteString.fromArray(policy.bytes),
+          completedPegInsPolicy = ByteString.empty,
+          bridgeStatePolicy = ByteString.empty,
+          tmScriptHash = ByteString.empty,
+          pegInScriptHash = ByteString.empty,
+          pegOutScriptHash = ByteString.fromArray(pegOutField.bytes),
+          spoBansPolicyId = ByteString.empty,
+          sposRegistryPolicyId = ByteString.empty,
+          treasuryInfoPolicyId = ByteString.empty,
+          yFederation = ByteString.empty
+        ).toData
         Utxo(
           TransactionInput(TransactionHash.fromHex("c0" * 32), 0),
           TransactionOutput.Babbage(
@@ -199,6 +223,38 @@ class PorSweeperTest extends AnyFunSuite {
     test("a Config publishing a different bridged token blocks sweeping") {
         val u = configUtxo(pegOut.policyId, bridgedTokenPolicy)
         assert(PorSweeper.verifyAgainstConfig(u, ctx).isLeft)
+    }
+
+    test("a Config datum of a different arity is reported, not thrown") {
+        // The rev-5.4 seven-field shape, which a bridge deployed before the params insert still
+        // carries. The typed read cannot mistake it for a rev-5.5 datum the way the positional one
+        // did; it must still leave the sweeper reporting rather than throwing, because confirming
+        // is unaffected and has to keep running.
+        val legacy: Data = Data.Constr(
+          0,
+          PList.from(
+            List[Data](
+              Data.Constr(1, PList()),
+              Data.B(ByteString.fromArray(bridgedToken.policyId.bytes)),
+              Data.B(ByteString.empty),
+              Data.B(ByteString.empty),
+              Data.B(ByteString.empty),
+              Data.B(ByteString.empty),
+              Data.B(ByteString.fromArray(pegOut.policyId.bytes))
+            )
+          )
+        )
+        val u = Utxo(
+          TransactionInput(TransactionHash.fromHex("c2" * 32), 0),
+          TransactionOutput.Babbage(
+            Address(network, Credential.ScriptHash(configNftPolicy)),
+            Value(Coin(2_000_000L)),
+            datumOption = Some(DatumOption.Inline(legacy)),
+            scriptRef = None
+          )
+        )
+        val err = PorSweeper.verifyAgainstConfig(u, ctx).swap.getOrElse(fail("expected a decode failure"))
+        assert(err.contains("does not decode as a ConfigDatum"))
     }
 
     test("a Config datum that is not a Constr 0 is reported, not thrown") {

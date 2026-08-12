@@ -600,39 +600,46 @@ object PorSweeper {
     /** A request that will NOT be completed this pass, and why. */
     final case class Skipped(ref: String, reason: String)
 
-    /** Field `i` of a Config UTxO's inline datum, as raw bytes.
+    /** A Config UTxO's inline datum, decoded as the typed [[ConfigDatum]].
       *
-      * A RAW positional read, not a typed [[ConfigDatum]] decode, for the same reason
-      * `ConfirmTmtxCommand.loadTrieContext` reads field 3 raw: a deployed pre-migration datum with
-      * a different field count must still be readable, so the sweeper can report the migration
-      * state instead of throwing.
+      * [LIB-1]: fields are read BY NAME. The positional read this replaced took two indices that
+      * both moved when [CFG-5] inserted the nested `params` record at field 1, and neither move
+      * failed loudly — the old peg-out index still held a hash (`peg_in_script_hash`), so the
+      * sweeper reported a mismatch that reads like a stale deployment. A decode cannot drift that
+      * way: a datum of a different shape does not decode at all.
+      *
+      * Returned as an `Either` rather than thrown, because a deployed datum this binary cannot
+      * decode must leave the sweeper reporting its state — confirming is unaffected and must keep
+      * running.
       */
-    def configField(configUtxo: Utxo, i: Int): Either[String, ByteString] =
+    def deployedConfig(configUtxo: Utxo): Either[String, ConfigDatum] =
         configUtxo.output.inlineDatum match {
-            case Some(Data.Constr(0, fields)) =>
-                fields.asScala.toIndexedSeq.lift(i) match {
-                    case Some(Data.B(b)) => Right(b)
-                    case other           => Left(s"config field $i is not a byte string: $other")
-                }
-            case other => Left(s"config datum is not a Constr 0 inline datum: $other")
+            case Some(datum) =>
+                Try(datum.to[ConfigDatum]).toEither.left.map(e =>
+                    "config UTxO datum does not decode as a ConfigDatum — the deployed bridge is " +
+                        s"not the rev-5.5 twelve-field shape this binary reads: ${e.getMessage}"
+                )
+            case None =>
+                Left("config UTxO carries no inline datum")
         }
 
     /** The scripts this sweeper would use MUST be the ones the deployed Config publishes.
       *
-      * Rev-5.4 layout: field 6 is `peg_out_script_hash` — the script whose reward account the
-      * Complete transaction withdraws from and whose address holds the requests. Field 1 is the
-      * bridged-token policy, the token the completion burns; its asset name is the [CFG-1] constant
-      * `"fSAT"` ([[ConfigDatum.BridgedTokenAssetName]]), not a Config field. A mismatch on any of
-      * them means the derived scripts are not the live ones and every completion would be rejected.
+      * `peg_out_script_hash` is the script whose reward account the Complete transaction withdraws
+      * from and whose address holds the requests. `bridged_token_policy` is the token the
+      * completion burns; its asset name is the [CFG-1] constant `"fSAT"`
+      * ([[ConfigDatum.BridgedTokenAssetName]]), not a Config field. A mismatch on either means the
+      * derived scripts are not the live ones and every completion would be rejected.
       */
     def verifyAgainstConfig(configUtxo: Utxo, ctx: Context): Either[String, Unit] =
         for {
-            pegOut <- configField(configUtxo, 6)
-            policy <- configField(configUtxo, 1)
+            config <- deployedConfig(configUtxo)
+            pegOut = config.pegOutScriptHash
+            policy = config.bridgedTokenPolicy
             _ <- Either.cond(
               pegOut.toHex == ctx.pegOutScript.scriptHash.toHex,
               (),
-              s"config field 6 publishes peg-out withdraw hash ${pegOut.toHex}, but the derived " +
+              s"the Config publishes peg-out withdraw hash ${pegOut.toHex}, but the derived " +
                   s"peg_out validator hashes to ${ctx.pegOutScript.scriptHash.toHex} — run the " +
                   "`update-config --peg-out-withdraw-hash` migration before sweeping"
             )
