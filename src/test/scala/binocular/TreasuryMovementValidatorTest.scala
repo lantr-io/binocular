@@ -442,7 +442,9 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           finalTmCutoff = BigInt(0),
           stabilityWindow = BigInt(0)
         )
-      )
+      ),
+      yFederationPubkey = ByteString.empty,
+      federationCsvBlocks = BigInt(144)
     ).toData
 
     /** The Config reference UTxO carrying the config NFT + a config datum with the bridge-state

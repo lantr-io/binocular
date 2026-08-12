@@ -47,7 +47,9 @@ class UpdateConfigCommandTest extends AnyFunSuite {
         perPegoutFee = 1000,
         minPegOutFbtc = 10000,
         schedule = schedule
-      )
+      ),
+      yFederationPubkey = ByteString.fromHex("f1" * 32),
+      federationCsvBlocks = 144
     )
 
     test("rewrite swaps all four script hashes together in one call") {
@@ -137,15 +139,30 @@ class UpdateConfigCommandTest extends AnyFunSuite {
     // Appending is the legal datum evolution (config.ak's Update accepts any datum), and READERS
     // ignore unknown trailing fields — but this command re-encodes the whole datum, so rewriting a
     // grown datum would silently truncate it. It must be refused, not carried.
-    test("decodeDeployed refuses a datum that grew past the rev-5.4 layout") {
-        val sixteen = config.toData match {
+    test("decodeDeployed refuses a datum that grew past the layout this build knows") {
+        val grown = config.toData match {
             case Data.Constr(0, fields) =>
                 Data.Constr(0, PList.from(fields.asScala.toList :+ (Data.I(BigInt(99)): Data)))
             case other => fail(s"config datum is not a Constr 0: $other")
         }
-        val out = UpdateConfigCommand.decodeDeployed(sixteen)
+        val out = UpdateConfigCommand.decodeDeployed(grown)
         assert(out.isLeft)
-        assert(out.swap.toOption.get.contains("16 fields"))
+        assert(out.swap.toOption.get.contains("18 fields"))
+    }
+
+    /** The pre-[CFG-4] layout. A read-only consumer still decodes it by ignoring the fields it
+      * does not know, but this command re-encodes the WHOLE datum: writing one back would have to
+      * invent a federation key, and that key is what every SPO builds the treasury address from.
+      */
+    test("decodeDeployed refuses a Config written before the federation identity") {
+        val fifteen = config.toData match {
+            case Data.Constr(0, fields) =>
+                Data.Constr(0, PList.from(fields.asScala.toList.take(15)))
+            case other => fail(s"config datum is not a Constr 0: $other")
+        }
+        val out = UpdateConfigCommand.decodeDeployed(fifteen)
+        assert(out.isLeft)
+        assert(out.swap.toOption.get.contains("15 fields"))
     }
 
     test("decodeDeployed refuses short and non-record datums") {

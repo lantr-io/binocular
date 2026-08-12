@@ -72,27 +72,33 @@ class BifrostContractsTest extends AnyFunSuite {
     // --- known-answer (regression lock, re-validated at next deploy) ---
     //
     // All five moved together in the rev-5.4 federation reconciliation, and that is one cause, not
-    // five. `config.ak`'s mint handler full-casts the genesis datum, so widening ConfigDatum to
-    // fifteen fields moved the config script's own hash — which IS the config NFT policy id, and
-    // that id is a parameter to every contract below. A different config policy is a different
-    // bridge instance by construction (spec §Config UTxO), so the whole instance redeploys.
+    // five. `config.ak`'s mint handler full-casts the genesis datum, so widening ConfigDatum moved
+    // the config script's own hash — which IS the config NFT policy id, and that id is a parameter
+    // to every contract below. A different config policy is a different bridge instance by
+    // construction (spec §Config UTxO), so the whole instance redeploys.
+    //
+    // They moved together AGAIN, and for the identical reason, when [CFG-4] appended the
+    // federation identity at #15-16 (WI-069): config.config 57c8143e… → f95397b6…. No other
+    // validator's own compiledCode changed — only this one full-casts the datum — so re-vendoring
+    // touched a single line, and every pin below still moved. That is the cost of a Config field,
+    // measured: it is a new bridge, not an upgrade of this one.
 
     test("config NFT policy matches the deployed value") {
         assert(
-          hex(configContract.policyId) == "647484bac34418331da0f8f8d03123ead340ed3bc204f7a80a086f44"
+          hex(configContract.policyId) == "722f6a0fa731a258fffe4aefcb25d4297c98f5696e555d69046c6114"
         )
     }
 
     test("bridged_token policy matches the deployed value") {
         val bt = BridgedTokenContract(blueprint, configPolicy, configAssetName)
-        assert(hex(bt.policyId) == "dfaafc99a6109e9e27630f922d025ce5894c7cc62b7935ef71290f50")
+        assert(hex(bt.policyId) == "df367c06bd9bba8a72ac9fcda266a0977beb84156037a606ac1494ff")
     }
 
     test("completed-peg-ins policy + asset name match the Variant B rebuild") {
         // policyId regression lock over the Variant B rebuild. The asset name is now the constant
         // "CPI" (bytes 435049), independent of the one-shot ref and the compiledCode.
         val cpi = CompletedPegInsContract(blueprint, configPolicy, configAssetName, cpiRef)
-        assert(hex(cpi.policyId) == "ec46c774f46eaa177ec5bd4c42444b45464ca609a943c5c728f265a4")
+        assert(hex(cpi.policyId) == "5d4f632ac26a2fe8a7be7c624d4d759197fd730e8543fc9c2ee616da")
         assert(CompletedPegInsContract.assetName == ByteString.fromString("CPI"))
     }
 
@@ -111,7 +117,7 @@ class BifrostContractsTest extends AnyFunSuite {
         // hash moved; ConfigDatum field 5 must name the new one at deployment.
         val pegIn =
             PegInContract(blueprint, oraclePolicy, configPolicy, configAssetName)
-        assert(hex(pegIn.policyId) == "23b660ba11bd04a6c9c7cb63da04ac3b7c2d835995b67d00ce359d3d")
+        assert(hex(pegIn.policyId) == "f45044e7d953ddbaf28d9536c9153e659bea222ad014284c916dbbe9")
     }
 
     test("peg_out policy (= withdraw hash) is stable for the trie-v2 2-param encoding") {
@@ -126,7 +132,7 @@ class BifrostContractsTest extends AnyFunSuite {
         // [[PegOutCompleteCekTest]] runs them — so the stale copy would have made every completion
         // fail on-chain. No other validator's compiledCode changed, so no other pin moved.
         val pegOut = PegOutContract(blueprint, configPolicy, configAssetName)
-        assert(hex(pegOut.policyId) == "ab0f6b6a2602b6e6a135724bd004d2be01842483cea8b797da7c6edd")
+        assert(hex(pegOut.policyId) == "ab0252f35f20e477c06581ca52860c045470b28d1dff8f46292589c3")
     }
 
     // --- determinism + parameter-sensitivity ---

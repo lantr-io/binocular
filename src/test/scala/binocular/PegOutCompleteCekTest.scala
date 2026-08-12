@@ -109,7 +109,9 @@ class PegOutCompleteCekTest extends AnyFunSuite {
         perPegoutFee = BigInt(fee),
         minPegOutFbtc = BigInt(0),
         schedule = ScheduleParams(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-      )
+      ),
+      yFederationPubkey = ByteString.empty,
+      federationCsvBlocks = BigInt(144)
     ).toData
 
     private def configRefInput = TxInInfo(

@@ -62,12 +62,14 @@ class ConfigDatumEncodingTest extends AnyFunSuite {
           sposRegistryPolicyId = ByteString.fromHex("c1" * 28),
           treasuryInfoPolicyId = ByteString.fromHex("c2" * 28),
           treasuryInfoAssetName = ByteString.fromString("TMTx"),
-          params = params
+          params = params,
+          yFederationPubkey = ByteString.fromHex("f1" * 32),
+          federationCsvBlocks = BigInt(144)
         )
         d.toData match {
             case Data.Constr(0, fields) =>
                 val fs = fields.asScala.toIndexedSeq
-                assert(fs.size == 15)
+                assert(fs.size == 17)
                 assert(fs(0) == Data.Constr(1, PList()))
                 assert(fs(1) == Data.B(ByteString.fromHex("aa" * 28)))
                 assert(fs(3) == Data.B(ByteString.fromHex("cc" * 28)))
@@ -79,8 +81,12 @@ class ConfigDatumEncodingTest extends AnyFunSuite {
                 assert(fs(10) == Data.I(BigInt(3600000)))
                 assert(fs(11) == Data.B(ByteString.fromHex("c1" * 28)))
                 assert(fs(13) == Data.B(ByteString.fromString("TMTx")))
-                // params is LAST, so appends never move it.
+                // params sits at 14 and appends go AFTER it, so it never moves — which is what
+                // lets a validator compiled against the fifteen-field datum keep reading it.
                 assert(fs(14) == params.toData)
+                // Federation identity, #15-16 (spec [CFG-4]). The x-only PUBLIC key.
+                assert(fs(15) == Data.B(ByteString.fromHex("f1" * 32)))
+                assert(fs(16) == Data.I(BigInt(144)))
             case other => fail(s"expected Constr 0, got $other")
         }
     }

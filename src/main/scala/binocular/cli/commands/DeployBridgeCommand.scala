@@ -327,6 +327,39 @@ case class DeployBridgeCommand(
             }
         }
 
+        // Config #15 (spec [CFG-4]): the treasury's federation PUBLIC key, x-only. Validated here
+        // rather than trusted, because nothing downstream can catch a bad one — no Cardano
+        // validator checks a Bitcoin Taproot tree, and every SPO that reads it will build a
+        // treasury address from it and sign against that address forever after.
+        val yFederationPubkey = {
+            val s = config.bridge.yFederationPubkey.trim
+            if s.isEmpty then {
+                Console.error(
+                  "bridge.y-federation-pubkey is required: it is config #15, the federation key " +
+                      "every SPO rebuilds the treasury Taproot tree from. Run `heimdall " +
+                      "bootstrap-treasury` — it prints the x-only public key next to the treasury " +
+                      "address. Publish the PUBLIC key, never the seed"
+                )
+                break(1)
+            }
+            if s.length != 64 || !s.forall(c => "0123456789abcdefABCDEF".contains(c)) then {
+                // 66 hex is the compressed-SEC form; it is the likeliest wrong paste, and it
+                // would build a different tree rather than fail.
+                Console.error(
+                  s"bridge.y-federation-pubkey must be 32 bytes (64 hex) x-only, got ${s.length} " +
+                      "chars. A 66-char compressed key is not the x-only form — drop the 02/03 prefix"
+                )
+                break(1)
+            }
+            ByteString.fromHex(s)
+        }
+        if config.bridge.federationCsvBlocks <= 0 then {
+            Console.error(
+              s"bridge.federation-csv-blocks must be positive, got ${config.bridge.federationCsvBlocks}"
+            )
+            break(1)
+        }
+
         val configDatum = ConfigDatum(
           // Governance: the binocular owner key (oracle.owner-pkh) may Update/Retire
           // the config (progressive decentralization rotates this via a later update).
@@ -350,6 +383,10 @@ case class DeployBridgeCommand(
           sposRegistryPolicyId = registryPolicy,
           treasuryInfoPolicyId = ByteString.fromArray(treasuryInfoContract.policyId.bytes),
           treasuryInfoAssetName = TreasuryInfoAssetName,
+          // Federation identity (config #15-16, spec [CFG-4]). The x-only PUBLIC key: the seed
+          // never reaches this process, let alone the chain.
+          yFederationPubkey = yFederationPubkey,
+          federationCsvBlocks = BigInt(config.bridge.federationCsvBlocks),
           // Operational-parameter tunables (config field 14, nested; off-chain readers only).
           params = ConfigParams(
             feeRateSatPerVb = BigInt(config.bridge.feeRateSatPerVb),

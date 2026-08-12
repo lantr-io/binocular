@@ -302,8 +302,15 @@ object UpdateConfigCommand {
         )
     }
 
-    /** Field count of the rev-5.4 Config datum (spec §Config datum). */
-    val ConfigFieldCount = 15
+    /** Field count of the rev-5.4 Config datum (spec §Config datum), including the federation
+      * identity appended at #15-16 ([CFG-4]).
+      *
+      * A Config written before that append has 15 fields and is refused below — deliberately.
+      * Unlike a read-only consumer, this command re-encodes the WHOLE datum, so it cannot write
+      * back a shape it does not fully know: an update that quietly invented a federation key would
+      * move the treasury address every SPO derives.
+      */
+    val ConfigFieldCount = 17
 
     /** Decode the deployed Config datum for an UPDATE, refusing any Constr arity other than
       * [[ConfigFieldCount]]. Appends are the legal datum evolution and read-only consumers ignore

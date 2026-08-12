@@ -7,7 +7,7 @@ import scalus.uplc.builtin.Data.{FromData, ToData}
 // positional in the Plutus Constr — keep it identical to the .ak record so `config[N]` reads on the
 // bridge validators line up.
 //
-// Rev-5.4 layout (spec §Config datum, fifteen fields): 0 update_auth (Aiken
+// Rev-5.4 layout (spec §Config datum, seventeen fields): 0 update_auth (Aiken
 // `Option<AuthorizationMethod>`, None = permanently frozen), 1 bridged_token_policy,
 // 2 completed_peg_ins_policy (CPI trie NFT policy), 3 bridge_state_policy (the singleton NFT
 // policy), 4 tm_script_hash (spec [CFG-2]: the TM validator hash = TM NFT policy id, published so
@@ -15,21 +15,24 @@ import scalus.uplc.builtin.Data.{FromData, ToData}
 // 5 peg_in_script_hash, 6 peg_out_script_hash, 7 spo_bans_policy_id, 8 base_ban_duration_ms,
 // 9 max_faults_before_permanent, 10 max_validity_window_ms, 11 spos_registry_policy_id,
 // 12 treasury_info_policy_id, 13 treasury_info_asset_name, 14 params (the nested [[ConfigParams]]
-// record, so governance can replace the tunables wholesale without renumbering their neighbours).
+// record, so governance can replace the tunables wholesale without renumbering their neighbours),
+// 15 y_federation_pubkey, 16 federation_csv_blocks (spec [CFG-4], see below).
 //
 // Fields 7-13 are the federation identity (spec [CFG-3]): off-chain readers only, published so an
 // SPO configures none of them. Every one is an INPUT to the policy id it identifies, so a node
 // cannot derive the address it would read them from — and one wrong input yields a well-formed
 // address holding NOTHING rather than an error.
 //
-// `params` is LAST on purpose: every field before it is a scalar at a frozen index, so the datum
-// grows by appending AFTER the nested record instead of pushing it along.
+// `params` sits at index 14 on purpose: every field before it is a scalar at a frozen index, so
+// the datum grows by appending AFTER the nested record instead of pushing it along. Fields 15-16
+// arrived exactly that way, which is what lets a Config UTxO be migrated in place while validators
+// deployed against the fifteen-field shape keep reading `params` from index 14.
 //
 // Gone from rev 5.1: the bridged-token asset name (now the [CFG-1] constant
 // [[ConfigDatum.BridgedTokenAssetName]]), the peg-in close verifier, both legit_TM verifier
 // hashes, min_stake, initial_btc_treasury_utxo and leader_reward.
 //
-// Must mirror ft `config.ak::ConfigDatum` (15 fields), because `config.config`'s genesis path
+// Must mirror ft `config.ak::ConfigDatum` (17 fields), because `config.config`'s genesis path
 // full-casts the datum, so deploy-bridge must write all of them.
 case class ConfigDatum(
     updateAuth: scalus.cardano.onchain.plutus.prelude.Option[AuthorizationMethod],
@@ -46,7 +49,19 @@ case class ConfigDatum(
     sposRegistryPolicyId: ByteString,
     treasuryInfoPolicyId: ByteString,
     treasuryInfoAssetName: ByteString,
-    params: ConfigParams
+    params: ConfigParams,
+    // 15-16, appended AFTER params (spec [CFG-4]): the federation identity of the BITCOIN
+    // treasury. Y_51 rotates each epoch with the DKG and reaches every SPO over the wire, but the
+    // federation recovery leaf does not rotate — each SPO rebuilds the treasury Taproot tree from
+    // these two, so a node holding a different value derives a different scriptPubKey, signs a
+    // different BIP-341 sighash, and its FROST share is over a message no other signer produced.
+    // Nothing errors; the address is well-formed, just not the one holding the BTC.
+    //
+    // The x-only (32-byte) PUBLIC key, never the seed it derives from: whoever holds that seed can
+    // spend the treasury through the federation leaf, and a reader only needs the public half to
+    // rebuild the tree. binocular therefore never sees the seed at all.
+    yFederationPubkey: ByteString,
+    federationCsvBlocks: BigInt
 ) derives FromData,
       ToData
 

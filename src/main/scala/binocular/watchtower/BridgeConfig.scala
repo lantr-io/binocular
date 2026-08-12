@@ -79,6 +79,19 @@ case class BridgeConfig(
     // bootstrap-bridge-state only.
     initialBtcTreasuryUtxo: String = "",
     initialBtcTreasuryAmountSat: Long = 0L,
+    // The federation identity of the Bitcoin treasury, published verbatim as config #15-16 (spec
+    // [CFG-4]). Like the ban schedule above these are NOT governance-updatable in any meaningful
+    // sense: they are inputs to the treasury ADDRESS, so changing one names a different treasury.
+    // They are chosen once, here, and then read by every SPO rather than typed by each — which is
+    // the whole point, since a mistyped value produces no error, only a well-formed address that
+    // holds nothing.
+    //
+    // The x-only (32-byte hex) PUBLIC key, NOT the seed. binocular never holds the federation
+    // seed: the seed signs treasury recovery spends, and nothing binocular does needs that. Get
+    // both values from `heimdall bootstrap-treasury`, which prints them next to the treasury
+    // address it derives.
+    yFederationPubkey: String = "",
+    federationCsvBlocks: Int = 144,
     // --- POR sweeper (spec rev 5.2) ---
     // Chain peg-out Complete after TM Confirm: after each confirmed TM the watchtower burns the
     // locked fBTC of every PAID PegOutRequest and keeps its MIN_ADA. ON by default — completion is
