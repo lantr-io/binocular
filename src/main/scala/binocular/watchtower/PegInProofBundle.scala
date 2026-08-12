@@ -50,15 +50,17 @@ case class PegInProofBundle(
 
 object PegInProofBundle {
 
-    // The dual-key BFR deposit beacon, always at vout 1:
-    // OP_RETURN (0x6a) + PUSH67 (0x43) + "BFR" (0x42 0x46 0x52) + D(32) + Q_auth(32).
-    // Mirrors bifrost/bitcoin.ak::beacon_payload. The legacy single-key form (PUSH35, "BFR" + one
-    // key) is REFUSED there, so recognizing it here would serve bundles whose PegInRequest mint
-    // fails `deposit_binding_ok` at submission.
-    private val BfrOpReturnPrefix = "6a43424652"
+    // The one-key BFR deposit beacon, always at vout 1:
+    // OP_RETURN (0x6a) + PUSH35 (0x23) + "BFR" (0x42 0x46 0x52) + Q_auth(32).
+    // Mirrors bifrost/bitcoin.ak::beacon_payload. Q_auth is the depositor's Taproot OUTPUT key and
+    // serves both roles — the deposit's refund leaf commits it and the completion's BIP-322
+    // signature verifies against it — so there is no second key to carry. The retired dual-key
+    // form (PUSH67, "BFR" + D + Q_auth) is REFUSED there, so recognizing it here would serve
+    // bundles whose PegInRequest mint fails `deposit_binding_ok` at submission.
+    private val BfrOpReturnPrefix = "6a23424652"
 
-    // Total beacon script: 6a + 43 + "BFR"(3) + 64 payload bytes = 69 bytes = 138 hex chars.
-    private val BfrOpReturnScriptHexLength = 138
+    // Total beacon script: 6a + 23 + "BFR"(3) + 32 payload bytes = 37 bytes = 74 hex chars.
+    private val BfrOpReturnScriptHexLength = 74
 
     // OP_1 (0x51) + PUSH32 (0x20) = the leading 2 bytes of every P2TR scriptPubKey.
     private val P2trPrefix = "5120"
@@ -161,7 +163,7 @@ object PegInProofBundle {
 
         val ourTx = block.tx(txIndex)
 
-        // The dual-key BFR beacon sits at vout 1, and ONLY vout 1 — bitcoin.ak::beacon_payload
+        // The BFR beacon sits at vout 1, and ONLY vout 1 — bitcoin.ak::beacon_payload
         // reads get_vout_scriptpubkey(raw_tx, 1). A beacon anywhere else can never mint.
         val bfr = ourTx.vouts
             .find(v =>
@@ -189,11 +191,12 @@ object PegInProofBundle {
                     case Right(v) => v
         }
 
-        // The beacon payload after "BFR" is D(32) ‖ Q_auth(32). The AUTHORIZATION key Q_auth is
-        // the `user_source_chain_pub_key` (mirrors bitcoin.ak::get_op_return_xonly); D is the
-        // refund key, which the PegInDatum does not carry.
+        // The beacon payload after "BFR" is Q_auth(32) and nothing else — the depositor's Taproot
+        // output key, which IS the `user_source_chain_pub_key` (mirrors
+        // bitcoin.ak::get_op_return_depositor_key). It is also the key the deposit's refund leaf
+        // commits, so no refund key has to be recovered or carried.
         val xonlyHex = bfr.scriptPubKey
-            .drop(BfrOpReturnPrefix.length + 64)
+            .drop(BfrOpReturnPrefix.length)
             .take(64)
         val userXonly = ByteString.fromHex(xonlyHex)
 
