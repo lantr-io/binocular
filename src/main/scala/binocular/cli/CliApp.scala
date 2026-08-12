@@ -37,7 +37,7 @@ object CliApp {
         case Watchtower(dryRun: Boolean)
         case TmScript
         case PegInRequest(btcTxId: String, dryRun: Boolean)
-        case DeployBridge(dryRun: Boolean)
+        case DeployBridge(skipBtcCheck: Boolean, dryRun: Boolean)
         case BootstrapBridgeState(
             oneShotRef: Option[String],
             anchor: Option[String],
@@ -273,7 +273,15 @@ object CliApp {
               "deploy-bridge",
               "Deploy the ft-bifrost-bridge completion contracts (config NFT + completed-peg-ins/outs MPFs)"
             ) {
-                dryRunFlag.map(Cmd.DeployBridge.apply)
+                val skipBtcCheckFlag = Opts
+                    .flag(
+                      "skip-btc-check",
+                      help = "Skip the [DEP-2] gettxout verification of the deployment anchor " +
+                          "outpoint and amount. Only for an unreachable Bitcoin node AND a " +
+                          "hand-verified anchor."
+                    )
+                    .orFalse
+                (skipBtcCheckFlag, dryRunFlag).mapN(Cmd.DeployBridge.apply)
             }
 
         val registerBridgeCredsCommand =
@@ -717,8 +725,8 @@ object CliApp {
                             TmScriptCommand()
                         case Cmd.PegInRequest(btcTxId, dryRun) =>
                             PegInRequestCommand(btcTxId, dryRun)
-                        case Cmd.DeployBridge(dryRun) =>
-                            DeployBridgeCommand(dryRun)
+                        case Cmd.DeployBridge(skipBtcCheck, dryRun) =>
+                            DeployBridgeCommand(skipBtcCheck, dryRun)
                         case Cmd.BootstrapBridgeState(
                               oneShotRef,
                               anchor,

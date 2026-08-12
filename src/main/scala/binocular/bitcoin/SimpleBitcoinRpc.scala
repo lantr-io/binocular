@@ -302,15 +302,20 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) ex
         call("gettxout", ujson.Arr(txid, vout, includeMempool))
             .map(result => result != ujson.Null)
 
-    /** The outpoint's value in satoshi, `None` when spent or never existed. bitcoind reports BTC as
-      * a JSON number; every representable amount is exact in satoshi below 2^53, so the round-trip
-      * is lossless.
+    /** The outpoint's value in satoshi, `None` when spent or never existed.
+      *
+      * Converted through the value's DECIMAL TEXT rather than its `Double`. Rounding the double
+      * does happen to be exact for every valid Bitcoin amount — the parse error is under 0.19 sat
+      * and the multiply adds under 0.13, so `round` recovers the satoshi — but that is an argument
+      * a reader has to reconstruct before trusting a number that pins every FROST signature over
+      * the first Treasury Movement. BigDecimal removes the argument.
+      *
+      * It also removes a smaller trap: `ujson`'s `.num` throws on a `value` returned as a JSON
+      * string, which some RPC proxies do.
       */
     override def getTxOutValueSat(txid: String, vout: Int): Future[Option[Long]] =
-        call("gettxout", ujson.Arr(txid, vout, false)).map {
-            case ujson.Null => None
-            case result     => Some(math.round(result("value").num * 100_000_000L))
-        }
+        call("gettxout", ujson.Arr(txid, vout, false))
+            .map(SimpleBitcoinRpc.satsFromGetTxOut(txid, vout, _))
 
     /** Broadcast a raw transaction to the Bitcoin network */
     def sendRawTransaction(hexString: String): Future[String] = {
@@ -329,6 +334,49 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) ex
             )
         }
     }
+}
+
+object SimpleBitcoinRpc {
+
+    /** Interpret a `gettxout` result as a satoshi amount: `None` when the outpoint is spent or
+      * never existed (bitcoind returns null for both, indistinguishably).
+      *
+      * Converted through the value's DECIMAL TEXT rather than its `Double`. Rounding the double
+      * does happen to be exact for every valid Bitcoin amount — the parse error is under 0.19 sat
+      * and the multiply adds under 0.13, so `round` recovers the satoshi — but that is an argument
+      * a reader has to reconstruct before trusting a number that pins every FROST signature over
+      * the first Treasury Movement. BigDecimal removes the argument instead of winning it.
+      *
+      * It also handles a `value` returned as a JSON STRING, which some RPC proxies do and which
+      * `ujson`'s `.num` throws on.
+      *
+      * Split out of the RPC call so the conversion is testable without a node — it is the only part
+      * of `getTxOutValueSat` that can be wrong in a way nothing downstream would catch.
+      */
+    def satsFromGetTxOut(txid: String, vout: Int, result: ujson.Value): Option[Long] =
+        result match {
+            case ujson.Null => None
+            case res =>
+                val raw = res("value")
+                val text = raw match {
+                    case ujson.Str(s) => s
+                    case other        => other.toString
+                }
+                val btc =
+                    try BigDecimal(text)
+                    catch {
+                        case _: NumberFormatException =>
+                            throw new IllegalStateException(
+                              s"gettxout $txid:$vout returned a non-numeric value: $raw"
+                            )
+                    }
+                val sats = btc * BigDecimal(100_000_000L)
+                if !sats.isWhole then
+                    throw new IllegalStateException(
+                      s"gettxout $txid:$vout value $btc BTC is not a whole number of satoshi"
+                    )
+                Some(sats.toLongExact)
+        }
 }
 
 /** Block header information */
