@@ -20,6 +20,7 @@ case class CardanoConfig(
     network: String = "mainnet",
     backend: String = "blockfrost",
     blockfrostProjectId: String = "",
+    blockfrostUrl: Option[String] = None,
     yaciStoreUrl: String = "http://localhost:8080/api/v1",
     yaciAdminUrl: String = "http://localhost:10000/local-cluster/api"
 ) derives ConfigReader {
@@ -40,13 +41,14 @@ case class CardanoConfig(
                         Left(s"Failed to create Yaci provider: ${ex.getMessage}")
                 }
             case "blockfrost" =>
-                if blockfrostProjectId.isEmpty || blockfrostProjectId == "changeme" then {
+                if blockfrostUrl.isEmpty && (blockfrostProjectId.isEmpty || blockfrostProjectId == "changeme")
+                then {
                     Left(
                       "Blockfrost backend requires valid project ID. Set BLOCKFROST_PROJECT_ID or configure binocular.cardano.blockfrost-project-id"
                     )
                 } else {
                     Try {
-                        val (baseUrl, network, defaultSlotConfig) = cardanoNetwork match {
+                        val (defaultBaseUrl, network, defaultSlotConfig) = cardanoNetwork match {
                             case CardanoNetwork.Mainnet =>
                                 (
                                   BlockfrostProvider.mainnetUrl,
@@ -72,16 +74,25 @@ case class CardanoConfig(
                                   SlotConfig.preview
                                 )
                         }
+                        // A self-hosted Blockfrost-compatible backend (Dolos, Yaci Store) replaces
+                        // the hosted URL implied by the network. Nothing else about the provider
+                        // changes: the endpoint set and response shapes are the same.
+                        val baseUrl = blockfrostUrl.getOrElse(defaultBaseUrl)
+                        // Hosted blockfrost.io authenticates by project_id. A self-hosted backend
+                        // ignores the header, so running one must not require a Blockfrost account.
+                        val projectId =
+                            if blockfrostProjectId.nonEmpty then blockfrostProjectId
+                            else "self-hosted"
                         val slotConfig = CardanoConfig
                             .fetchCalibratedSlotConfig(
-                              blockfrostProjectId,
+                              projectId,
                               baseUrl,
                               defaultSlotConfig
                             )
                             .getOrElse(defaultSlotConfig)
                         BlockfrostProvider
                             .create(
-                              blockfrostProjectId,
+                              projectId,
                               baseUrl,
                               network,
                               slotConfig
@@ -117,7 +128,9 @@ case class CardanoConfig(
         backend.toLowerCase match {
             case "yaci" => Right(())
             case "blockfrost" =>
-                if blockfrostProjectId.isEmpty || blockfrostProjectId == "changeme" then {
+                // A self-hosted backend needs no project ID; only the hosted service does.
+                if blockfrostUrl.isEmpty && (blockfrostProjectId.isEmpty || blockfrostProjectId == "changeme")
+                then {
                     Left("Blockfrost project ID must be configured")
                 } else {
                     Right(())
@@ -131,7 +144,8 @@ case class CardanoConfig(
         val maskedId =
             if blockfrostProjectId.length > 8 then blockfrostProjectId.take(8) + "***"
             else "***"
-        s"CardanoConfig(backend=$backend, network=$network, blockfrostProjectId=$maskedId)"
+        val endpoint = blockfrostUrl.map(u => s", url=$u").getOrElse("")
+        s"CardanoConfig(backend=$backend, network=$network, blockfrostProjectId=$maskedId$endpoint)"
     }
 }
 
