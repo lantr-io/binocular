@@ -72,7 +72,9 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
             break(1)
         }
         val configNftPolicy = ByteString.fromHex(cfg.configNftPolicyId)
-        val configNftAsset = ByteString.fromHex(cfg.configNftAssetName)
+        // [CFG-7]: a protocol constant. It no longer parameterizes any ft validator; binocular's
+        // own TM contract still takes it, so the value is still needed here.
+        val configNftAsset = ConfigContract.AssetName
         val cpiRefInput = parseRef("completed-peg-ins-one-shot-ref", cfg.completedPegInsOneShotRef)
         val cpiOneShotRef = TxOutRef(TxId(cpiRefInput.transactionId), cpiRefInput.index)
         if cfg.bridgeStateOneShotRef.forall(_.trim.isEmpty) then {
@@ -96,12 +98,10 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
               .bytes
         )
         // Rev 5.4: peg_in dropped its tm_nft_policy_id param; tmNftPolicy parameterizes bridge_state.
-        val pegIn =
-            PegInContract(blueprint, oraclePolicyId, configNftPolicy, configNftAsset)
-        val bridgedToken = BridgedTokenContract(blueprint, configNftPolicy, configNftAsset)
-        val cpi =
-            CompletedPegInsContract(blueprint, configNftPolicy, configNftAsset, cpiOneShotRef)
-        val pegOut = PegOutContract(blueprint, configNftPolicy, configNftAsset)
+        val pegIn = PegInContract(blueprint, oraclePolicyId, configNftPolicy)
+        val bridgedToken = BridgedTokenContract(blueprint, configNftPolicy)
+        val cpi = CompletedPegInsContract(blueprint, configNftPolicy, cpiOneShotRef)
+        val pegOut = PegOutContract(blueprint, configNftPolicy)
         val bss = BridgeStateContract(blueprint, tmNftPolicy, bssOneShotRef)
 
         Console.info("peg_in script hash", pegIn.policyId.toHex)

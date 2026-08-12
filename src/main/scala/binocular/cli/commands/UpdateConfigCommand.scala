@@ -126,12 +126,13 @@ case class UpdateConfigCommand(
                     Console.error(s"Loading bridge blueprint: ${e.getMessage}"); break(1)
             }
         Console.info("blueprint", blueprintSource)
-        val configNftAssetName = ByteString.fromHex(config.bridge.configNftAssetName)
+        // [CFG-7]: the Config NFT name is a protocol constant. It no longer parameterizes the
+        // policy either, so the one-shot outpoint alone determines the config identity.
+        val configNftAssetName = ConfigContract.AssetName
         val configContract = ConfigContract(
           blueprint,
           ByteString.fromHex(oneShotHash),
-          BigInt(oneShotIdx),
-          configNftAssetName
+          BigInt(oneShotIdx)
         )
         val configAddress = configContract.address(network)
         if configContract.policyId.toHex != config.bridge.configNftPolicyId then {
@@ -255,7 +256,7 @@ case class UpdateConfigCommand(
 
 object UpdateConfigCommand {
 
-    /** Pure datum rewrite over the rev-5.4 layout: replace each supplied script hash, then patch
+    /** Pure datum rewrite over the rev-5.5 layout: replace each supplied script hash, then patch
       * the named operational parameters inside the nested `params` record.
       *
       * Every supplied swap is applied to the SAME datum, so one call — and therefore one
@@ -289,21 +290,23 @@ object UpdateConfigCommand {
           pegInScriptHash = newPegInHash.getOrElse(cfg.pegInScriptHash),
           pegOutScriptHash = newPegOutHash.getOrElse(cfg.pegOutScriptHash),
           spoBansPolicyId = params.spoBansPolicyId.getOrElse(cfg.spoBansPolicyId),
-          baseBanDurationMs = params.baseBanDurationMs.getOrElse(cfg.baseBanDurationMs),
-          maxFaultsBeforePermanent =
-              params.maxFaultsBeforePermanent.getOrElse(cfg.maxFaultsBeforePermanent),
-          maxValidityWindowMs = params.maxValidityWindowMs.getOrElse(cfg.maxValidityWindowMs),
+          // Rev 5.5 moved the ban schedule out of the datum body and into `params` ([CFG-6]: a
+          // tunable NUMBER lives there), so these three patch the nested record now.
           params = p.copy(
             feeRateSatPerVb = params.feeRateSatPerVb.getOrElse(p.feeRateSatPerVb),
             perPegoutFee = params.perPegoutFee.getOrElse(p.perPegoutFee),
             minPegOutFbtc = params.minPegOutFbtc.getOrElse(p.minPegOutFbtc),
+            baseBanDurationMs = params.baseBanDurationMs.getOrElse(p.baseBanDurationMs),
+            maxFaultsBeforePermanent =
+                params.maxFaultsBeforePermanent.getOrElse(p.maxFaultsBeforePermanent),
+            maxValidityWindowMs = params.maxValidityWindowMs.getOrElse(p.maxValidityWindowMs),
             schedule = patchSchedule(p.schedule, params.schedule)
           )
         )
     }
 
-    /** Field count of the rev-5.4 Config datum (spec §Config datum). */
-    val ConfigFieldCount = 15
+    /** Field count of the rev-5.5 Config datum (spec §Config datum). */
+    val ConfigFieldCount = 12
 
     /** Decode the deployed Config datum for an UPDATE, refusing any Constr arity other than
       * [[ConfigFieldCount]]. Appends are the legal datum evolution and read-only consumers ignore
@@ -317,17 +320,17 @@ object UpdateConfigCommand {
             if n != ConfigFieldCount then
                 Left(
                   s"config datum has $n fields; this build knows the $ConfigFieldCount-field " +
-                      "rev-5.4 layout. Re-encoding would drop the extra fields — update binocular " +
+                      "rev-5.5 layout. Re-encoding would drop the extra fields — update binocular " +
                       "instead of forcing the write."
                 )
             else
                 Try(datum.to[ConfigDatum]).toOption
-                    .toRight("config datum does not decode as the rev-5.4 ConfigDatum")
+                    .toRight("config datum does not decode as the rev-5.5 ConfigDatum")
         case other => Left(s"config datum is not a Constr 0 record: $other")
     }
 
     /** `ScheduleParams` field names, in record order — the `--schedule name=value` keys and the
-      * positions inside the doubly-nested Constr at params[3].
+      * positions inside the doubly-nested Constr at params[0].
       */
     val ScheduleFields: List[String] = List(
       "dkg_r1_deadline",
@@ -342,9 +345,12 @@ object UpdateConfigCommand {
       "stability_window"
     )
 
-    /** Config datum field names (rev 5.4), for the change report. */
+    /** Config datum field names (rev 5.5), for the change report. Positional, so the ORDER is the
+      * on-chain encoding — see the ConfigDatum mirror.
+      */
     private val FieldNames: Vector[String] = Vector(
       "update_auth",
+      "params",
       "bridged_token_policy",
       "completed_peg_ins_policy",
       "bridge_state_policy",
@@ -352,18 +358,15 @@ object UpdateConfigCommand {
       "peg_in_script_hash",
       "peg_out_script_hash",
       "spo_bans_policy_id",
-      "base_ban_duration_ms",
-      "max_faults_before_permanent",
-      "max_validity_window_ms",
       "spos_registry_policy_id",
       "treasury_info_policy_id",
-      "treasury_info_asset_name",
-      "params"
+      "y_federation"
     )
 
-    /** The governed parameter edits (config fields 7-10 and inside field 14). All optional: `None`
-      * means "carry the deployed value over". `schedule` patches individual `ScheduleParams` fields
-      * by name, leaving the rest of the nested record untouched.
+    /** The governed parameter edits: `spo_bans_policy_id` at field 8, everything else inside
+      * `params` at field 1. All optional: `None` means "carry the deployed value over". `schedule`
+      * patches individual `ScheduleParams` fields by name, leaving the rest of the nested record
+      * untouched.
       */
     case class ParamEdits(
         feeRateSatPerVb: Option[BigInt] = None,

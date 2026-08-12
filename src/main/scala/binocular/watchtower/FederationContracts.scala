@@ -18,9 +18,18 @@ import scalus.uplc.builtin.{ByteString, Data}
   * holding nothing rather than an error.
   *
   * ==Derivation order==
-  * The chain is: one-shot outref -> `spos_registry` -> the three fault verifiers (each takes the
-  * registry hash) -> `spo_bans` (takes the registry hash AND the three fault policies). Applying
-  * them in any other order is impossible; every step needs the one before it.
+  * The chain is: `config` (its own one-shot outref) -> `treasury_info` (its own one-shot outref AND
+  * the config policy) -> `spos_registry` (its own one-shot outref AND the treasury policy) -> the
+  * three fault verifiers (each takes the registry hash) -> `spo_bans` (the registry hash AND the
+  * three fault policies). Applying them in any other order is impossible; every step needs the one
+  * before it.
+  *
+  * Rev 5.5 INVERTED the middle of that chain. Rev 5.4 ran registry -> treasury, because
+  * `treasury_info` took `registry_policy_id`; that made the treasury policy a function of the
+  * registry and the dependency a cycle, which is what made the [REG-6] registry-side pin
+  * impossible. [PRE-4] broke it by having `treasury.ak` read the registry policy from the Config
+  * datum at run time instead, so the arrow now points the other way. Anything still deriving in the
+  * old order computes a well-formed policy id for a script nobody deployed.
   *
   * ==The `spo_bans` list parameter==
   * `spo_bans` takes `List<PolicyId>`, and aiken is NOT length-form agnostic: the parameter must be
@@ -42,27 +51,40 @@ object SposRegistryContract {
     /** Asset name of the registry's linked-list root element (`registration_root_key`). */
     val RootAssetName: ByteString = ByteString.fromString("reg-root")
 
+    /** Rev 5.5 appended `treasury_policy_id` ([PRE-4]): `treasury.ak` reads this registry policy
+      * from the Config datum to gate its RegistryUpdate branch, and the registry in turn commits to
+      * the treasury it serves. Derive [[TreasuryInfoContract]] first.
+      */
     def apply(
         blueprint: BifrostBlueprint,
         bootstrapTxId: ByteString,
-        bootstrapIndex: BigInt
+        bootstrapIndex: BigInt,
+        treasuryPolicyId: ByteString
     ): SposRegistryContract = {
         val applied = Program
             .fromCborHex(blueprint.compiledCode(ValidatorTitle))
             .$(Data.B(bootstrapTxId))
             .$(Data.I(bootstrapIndex))
+            .$(Data.B(treasuryPolicyId))
         SposRegistryContract(Script.PlutusV3(applied.cborByteString))
     }
 }
 
-/** `treasury_info`, parameterized by the `spos_registry` policy alone.
+/** `treasury_info`, parameterized by its OWN one-shot outpoint and the Config NFT policy — spec
+  * [PRE-1] (revised) and [PRE-3].
   *
-  * Rev 5.4 dropped the second parameter, the TM-NFT policy: it fed only the FederationReset spend
-  * branch, which the revision withdrew (spec [UY-7]/[UY-8]).
+  * The one-shot outpoint is what makes the state NFT a singleton. Rev 5.4 minted it one-shot per
+  * OUTPOINT rather than per bridge, so anyone could mint a rival state UTxO carrying a datum of
+  * their choosing; baking the outpoint into the policy id means only the deployer can ever mint,
+  * and the asset name becomes the [CFG-4] constant `"BFRTRY"`.
   *
-  * The one parameter must be applied identically by every reader or it computes a different hash, a
-  * different address, and a state UTxO nobody can find — which is why bridge genesis publishes the
-  * finished policy id in the Config (#12) instead of leaving each node to re-derive it.
+  * It takes NO `registry_policy_id` any more — that parameter was the cycle described in this
+  * file's header, and `treasury.ak` now reads the registry policy from the Config datum at run time
+  * ([PRE-4]).
+  *
+  * Every reader must apply the same three parameters in this order or it computes a different hash,
+  * a different address, and a state UTxO nobody can find — which is why bridge genesis publishes
+  * the finished policy id in the Config instead of leaving each node to re-derive it.
   */
 final case class TreasuryInfoContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash
@@ -73,13 +95,23 @@ final case class TreasuryInfoContract(script: Script.PlutusV3) {
 object TreasuryInfoContract {
     val ValidatorTitle = "bitcoin/treasury.treasury_info.mint"
 
+    /** Asset name of the Treasury state NFT — spec [CFG-4], a constant since rev 5.5 (the Config
+      * field that used to carry it is gone). Mirrors
+      * `lib/bifrost/constants.ak::treasury_info_nft_asset_name`.
+      */
+    val AssetName: ByteString = ByteString.fromString("BFRTRY")
+
     def apply(
         blueprint: BifrostBlueprint,
-        sposRegistryPolicyId: ByteString
+        oneShotTxId: ByteString,
+        oneShotIndex: BigInt,
+        configPolicyId: ByteString
     ): TreasuryInfoContract = {
         val applied = Program
             .fromCborHex(blueprint.compiledCode(ValidatorTitle))
-            .$(Data.B(sposRegistryPolicyId))
+            .$(Data.B(oneShotTxId))
+            .$(Data.I(oneShotIndex))
+            .$(Data.B(configPolicyId))
         TreasuryInfoContract(Script.PlutusV3(applied.cborByteString))
     }
 }

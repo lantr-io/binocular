@@ -420,16 +420,16 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
       pegInScriptHash = ByteString.empty,
       pegOutScriptHash = ByteString.empty,
       spoBansPolicyId = ByteString.empty,
-      baseBanDurationMs = BigInt(0),
-      maxFaultsBeforePermanent = BigInt(0),
-      maxValidityWindowMs = BigInt(0),
       sposRegistryPolicyId = ByteString.empty,
       treasuryInfoPolicyId = ByteString.empty,
-      treasuryInfoAssetName = ByteString.empty,
       params = ConfigParams(
         feeRateSatPerVb = BigInt(1),
         perPegoutFee = BigInt(0),
         minPegOutFbtc = BigInt(0),
+        baseBanDurationMs = BigInt(0),
+        maxFaultsBeforePermanent = BigInt(0),
+        maxValidityWindowMs = BigInt(0),
+        federationCsvBlocks = BigInt(0),
         schedule = ScheduleParams(
           dkgR1Deadline = BigInt(0),
           dkgR2Deadline = BigInt(0),
@@ -442,7 +442,8 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
           finalTmCutoff = BigInt(0),
           stabilityWindow = BigInt(0)
         )
-      )
+      ),
+      yFederation = ByteString.empty
     ).toData
 
     /** The Config reference UTxO carrying the config NFT + a config datum with the bridge-state

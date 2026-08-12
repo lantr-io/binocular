@@ -72,6 +72,29 @@ case class BridgeConfig(
     // carries (see CommandHelpers.refScriptUtxosByHash). A script hash not found on-chain falls
     // back to inlining the script in the witness set (only viable for small txs).
     bridgeStateOneShotRef: Option[String] = None,
+    // The one-shot wallet UTxO (TX_HASH#INDEX) that parameterizes `treasury_info` (rev 5.5:
+    // `(tx0, index0, config_policy_id)`). deploy-bridge DERIVES and publishes the resulting policy
+    // id but never mints the Treasury state NFT — heimdall's genesis does that later — so this
+    // outpoint must still be UNSPENT then. deploy-bridge therefore refuses to spend it and fails
+    // if either of its txs would.
+    //
+    // `Option`, and no default, for the usual reason: a guessed outpoint yields a well-formed
+    // policy id for a token nobody can ever mint, and `treasury.ak`'s Retire branch fails with it,
+    // so the Treasury state UTxO would be unspendable for the life of the bridge.
+    treasuryOneShotRef: Option[String] = None,
+    // --- rev 5.5 genesis inputs, both published in the Config datum ---
+    // The federation fallback key: the x-only (32-byte hex) script-leaf key of BOTH Taproot trees.
+    // Rev 5.5 moved it out of TreasuryDatum, where nothing rotated it, into Config #11, where an
+    // ordinary Update rotates it ([UY-5] reads it on-chain).
+    //
+    // The CSV timeout baked into those same leaves lives in `params` instead ([CFG-6]: a key is
+    // top-level, a block count is a tunable).
+    //
+    // Neither has a default, and for the same reason WI-069 gave them none in heimdall: both are
+    // INPUTS to the treasury Taproot ADDRESS, so a guessed value yields a well-formed address
+    // holding nothing rather than an error.
+    yFederation: Option[String] = None,
+    federationCsvBlocks: Option[Long] = None,
     // The initial Bitcoin treasury outpoint ("TXID:VOUT", display txid) and its satoshi amount —
     // the deployment anchor written into the singleton's bootstrap BridgeState (spec §Why the
     // bootstrap datum is not pinned). Nothing on Cardano verifies the amount; a wrong value is

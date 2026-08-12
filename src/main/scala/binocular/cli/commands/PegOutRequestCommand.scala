@@ -117,17 +117,15 @@ case class PegOutRequestCommand(
 
         val configNftPolicy =
             hexBytes("bridge.config-nft-policy-id", config.bridge.configNftPolicyId, Some(56))
-        val configNftAsset =
-            hexBytes("bridge.config-nft-asset-name", config.bridge.configNftAssetName, None)
         val bridgedTokenAsset =
             AssetName(
               hexBytes("bridge.bridged-token-asset-name", config.bridge.bridgedTokenAssetName, None)
             )
 
-        val pegOut = PegOutContract(blueprint, configNftPolicy, configNftAsset)
+        val pegOut = PegOutContract(blueprint, configNftPolicy)
         val pegOutAddress = pegOut.address(network)
         // fBTC policy = bridged_token derived from the config NFT (== bridge.bridged-token-policy-id).
-        val fbtcPolicy = BridgedTokenContract(blueprint, configNftPolicy, configNftAsset).policyId
+        val fbtcPolicy = BridgedTokenContract(blueprint, configNftPolicy).policyId
         if fbtcPolicy.toHex != config.bridge.bridgedTokenPolicyId then
             Console.warn(
               s"derived fBTC policy ${fbtcPolicy.toHex} != bridge.bridged-token-policy-id " +

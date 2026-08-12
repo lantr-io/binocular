@@ -98,9 +98,10 @@ object BifrostBlueprint {
 /** The `peg_in_validator` parameterized with its on-chain params. The script hash is the peg-in NFT
   * `policyId` and the address that `PegInRequest` UTxOs are locked at.
   *
-  * Rev 5.4: the `tm_nft_policy_id` parameter is GONE — `peg_in.ak` reads the bridge-state singleton
-  * through Config field 3 at runtime instead of referencing a Confirmed TM record, so three params
-  * remain: `(oracle_policy_id, config_nft_policy_id, config_nft_asset_name)`.
+  * Rev 5.4 dropped `tm_nft_policy_id` — `peg_in.ak` reads the bridge-state singleton through the
+  * ConfigDatum at runtime instead of referencing a Confirmed TM record. Rev 5.5 dropped
+  * `config_nft_asset_name` too ([CFG-7], see [[ConfigContract.AssetName]]), leaving two:
+  * `(oracle_policy_id, config_nft_policy_id)`.
   */
 final case class PegInContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash
@@ -116,14 +117,12 @@ object PegInContract {
     def apply(
         blueprint: BifrostBlueprint,
         oraclePolicyId: ByteString,
-        configNftPolicyId: ByteString,
-        configNftAssetName: ByteString
+        configNftPolicyId: ByteString
     ): PegInContract = {
         val base = Program.fromCborHex(blueprint.compiledCode(ValidatorTitle))
         val applied = base
             .$(Data.B(oraclePolicyId))
             .$(Data.B(configNftPolicyId))
-            .$(Data.B(configNftAssetName))
         PegInContract(Script.PlutusV3(applied.cborByteString))
     }
 
@@ -137,9 +136,11 @@ object PegInContract {
         Builtins.sha2_256(Builtins.serialiseData(inputRef.toData))
 }
 
-/** The `config.config` one-shot NFT policy: `config(tx0, index0, config_asset_name)`. The script
-  * hash is the config-NFT policyId; the ConfigDatum-bearing UTxO lives at this script's address and
-  * is referenced (never spent — `spend = False`) by the completion path.
+/** The `config.config` one-shot NFT policy: `config(tx0, index0)`. The script hash is the
+  * config-NFT policyId; the ConfigDatum-bearing UTxO lives at this script's address and is
+  * referenced (never spent — `spend = False`) by the completion path.
+  *
+  * Rev 5.5 removed the asset-name parameter ([CFG-7]) — see [[ConfigContract.AssetName]].
   */
 final case class ConfigContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash
@@ -150,25 +151,34 @@ final case class ConfigContract(script: Script.PlutusV3) {
 object ConfigContract {
     val ValidatorTitle = "bitcoin/config.config.mint"
 
+    /** The Config NFT asset name — spec [CFG-7]: a protocol CONSTANT, not a parameter and not an
+      * operator setting. Mirrors `lib/bifrost/constants.ak::config_nft_asset_name`.
+      *
+      * It used to parameterize `config`, `peg_in`, `peg_out`, `bridged_token` and
+      * `completed_peg_ins`, and ft withdrew it from all five for the reason a wrong value has no
+      * safe failure mode: a deployment naming another name leaves `treasury.ak` looking for a token
+      * that does not exist, and its Retire branch fails with it, so the Treasury state UTxO can
+      * never be spent again. Nothing here may take it from configuration.
+      */
+    val AssetName: ByteString = ByteString.fromString("BIFCFG")
+
     def apply(
         blueprint: BifrostBlueprint,
         tx0: ByteString,
-        index0: BigInt,
-        configAssetName: ByteString
+        index0: BigInt
     ): ConfigContract = {
         val applied = Program
             .fromCborHex(blueprint.compiledCode(ValidatorTitle))
             .$(Data.B(tx0))
             .$(Data.I(index0))
-            .$(Data.B(configAssetName))
         ConfigContract(Script.PlutusV3(applied.cborByteString))
     }
 }
 
-/** The `bridged_token` (fBTC/fSAT) mint policy: params `(configNFTPolicyId, configNFTAssetName)`.
-  * The script hash is the token policyId = ConfigDatum index 1. It reads the ConfigDatum from the
-  * config ref input and enforces the Variant B mint/burn rules against the peg-in / peg-out
-  * withdrawals directly.
+/** The `bridged_token` (fBTC/fSAT) mint policy: one param, `configNFTPolicyId` (rev 5.5 dropped the
+  * asset name, [CFG-7]). The script hash is the token policy the ConfigDatum names. It reads the
+  * ConfigDatum from the config ref input and enforces the Variant B mint/burn rules against the
+  * peg-in / peg-out withdrawals directly.
   */
 final case class BridgedTokenContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash
@@ -179,22 +189,20 @@ object BridgedTokenContract {
 
     def apply(
         blueprint: BifrostBlueprint,
-        configNftPolicyId: ByteString,
-        configNftAssetName: ByteString
+        configNftPolicyId: ByteString
     ): BridgedTokenContract = {
         val applied = Program
             .fromCborHex(blueprint.compiledCode(ValidatorTitle))
             .$(Data.B(configNftPolicyId))
-            .$(Data.B(configNftAssetName))
         BridgedTokenContract(Script.PlutusV3(applied.cborByteString))
     }
 }
 
 /** The `completed_peg_ins_merkle_tree` one-shot NFT policy + state validator: params
-  * `(configNFTPolicyId, configNFTAssetName, one_shot_input_ref)`. policyId = ConfigDatum index 2
-  * (`completed_peg_ins_policy`); asset name = the constant `"CPI"`. The MPF state UTxO (datum =
-  * root, empty `0x00*32` at mint) lives at this script's address and is spent+recreated on each
-  * completion.
+  * `(configNFTPolicyId, one_shot_input_ref)` — rev 5.5 dropped the config asset name ([CFG-7]).
+  * policyId = the ConfigDatum's `completed_peg_ins_policy`; asset name = the constant `"CPI"`. The
+  * MPF state UTxO (datum = root, empty `0x00*32` at mint) lives at this script's address and is
+  * spent+recreated on each completion.
   */
 final case class CompletedPegInsContract(script: Script.PlutusV3) {
     def policyId: ScriptHash = script.scriptHash
@@ -209,13 +217,11 @@ object CompletedPegInsContract {
     def apply(
         blueprint: BifrostBlueprint,
         configNftPolicyId: ByteString,
-        configNftAssetName: ByteString,
         oneShotInputRef: TxOutRef
     ): CompletedPegInsContract = {
         val applied = Program
             .fromCborHex(blueprint.compiledCode(ValidatorTitle))
             .$(Data.B(configNftPolicyId))
-            .$(Data.B(configNftAssetName))
             .$(oneShotInputRef.toData)
         CompletedPegInsContract(Script.PlutusV3(applied.cborByteString))
     }
@@ -224,10 +230,10 @@ object CompletedPegInsContract {
     val assetName: ByteString = ByteString.fromString("CPI")
 }
 
-/** The `peg_out_validator` parameterized with `(config_nft_policy_id, config_nft_asset_name)`. The
-  * script hash is the peg-out withdraw script hash = ConfigDatum index 6, and the address that
-  * `PegOut` UTxOs are locked at. The completion path is a `withdraw` (`CompletePegOut`); creation
-  * is a plain pay-to-this-address output.
+/** The `peg_out_validator` parameterized with `config_nft_policy_id` alone (rev 5.5 dropped the
+  * config asset name, [CFG-7]). The script hash is the peg-out withdraw script hash the ConfigDatum
+  * names, and the address that `PegOut` UTxOs are locked at. The completion path is a `withdraw`
+  * (`CompletePegOut`); creation is a plain pay-to-this-address output.
   *
   * The `oracle_policy_id` parameter is GONE (peg-out trie v2, 2026-07): `peg_out.ak` no longer does
   * its own SPV parse of the Treasury Movement. Which Bitcoin payment settles which peg-out request
@@ -248,13 +254,11 @@ object PegOutContract {
 
     def apply(
         blueprint: BifrostBlueprint,
-        configNftPolicyId: ByteString,
-        configNftAssetName: ByteString
+        configNftPolicyId: ByteString
     ): PegOutContract = {
         val applied = Program
             .fromCborHex(blueprint.compiledCode(ValidatorTitle))
             .$(Data.B(configNftPolicyId))
-            .$(Data.B(configNftAssetName))
         PegOutContract(Script.PlutusV3(applied.cborByteString))
     }
 }

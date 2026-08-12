@@ -32,16 +32,9 @@ class PorSweeperTest extends AnyFunSuite {
 
     /** A Context whose scripts are the real derived ones, so `verifyAgainstConfig` is meaningful.
       */
-    private val pegOut = PegOutContract(
-      blueprint,
-      ByteString.fromArray(configNftPolicy.bytes),
-      ByteString.fromString("BIFCFG")
-    )
-    private val bridgedToken = BridgedTokenContract(
-      blueprint,
-      ByteString.fromArray(configNftPolicy.bytes),
-      ByteString.fromString("BIFCFG")
-    )
+    private val pegOut = PegOutContract(blueprint, ByteString.fromArray(configNftPolicy.bytes))
+    private val bridgedToken =
+        BridgedTokenContract(blueprint, ByteString.fromArray(configNftPolicy.bytes))
 
     private val ctx = PorSweeper.Context(
       network = network,

@@ -63,17 +63,16 @@ class PegOutCompleteCekTest extends AnyFunSuite {
     private val blueprint = BifrostBlueprint.packaged
     private val pegOutHash =
         ByteString.fromArray(
-          PegOutContract(blueprint, configNftPolicy, configNftAsset).policyId.bytes
+          PegOutContract(blueprint, configNftPolicy).policyId.bytes
         )
 
-    /** The deployed script bytes, with the two CIP-57 parameters applied — exactly what
-      * [[PegOutContract]] hashes.
+    /** The deployed script bytes, with the one CIP-57 parameter applied — exactly what
+      * [[PegOutContract]] hashes. Rev 5.5 withdrew the config asset name ([CFG-7]).
       */
     private val program: Program =
         Program
             .fromCborHex(blueprint.compiledCode(PegOutContract.ValidatorTitle))
             .$(Data.B(configNftPolicy))
-            .$(Data.B(configNftAsset))
 
     // --- fixtures -------------------------------------------------------------------------------
 
@@ -98,18 +97,19 @@ class PegOutCompleteCekTest extends AnyFunSuite {
       pegInScriptHash = ByteString.empty,
       pegOutScriptHash = pegOutHash,
       spoBansPolicyId = ByteString.empty,
-      baseBanDurationMs = BigInt(0),
-      maxFaultsBeforePermanent = BigInt(0),
-      maxValidityWindowMs = BigInt(0),
       sposRegistryPolicyId = ByteString.empty,
       treasuryInfoPolicyId = ByteString.empty,
-      treasuryInfoAssetName = ByteString.empty,
       params = ConfigParams(
         feeRateSatPerVb = BigInt(1),
         perPegoutFee = BigInt(fee),
         minPegOutFbtc = BigInt(0),
+        baseBanDurationMs = BigInt(0),
+        maxFaultsBeforePermanent = BigInt(0),
+        maxValidityWindowMs = BigInt(0),
+        federationCsvBlocks = BigInt(0),
         schedule = ScheduleParams(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-      )
+      ),
+      yFederation = ByteString.empty
     ).toData
 
     private def configRefInput = TxInInfo(

@@ -71,7 +71,6 @@ case class DeployBridgeCommand(
     private val BridgedTokenAssetName: ByteString = ConfigDatum.BridgedTokenAssetName
     // Asset name of the treasury_info state NFT. Chosen here and published as config #13 — it is
     // derivable from nothing, so publishing it is the only way an SPO avoids typing it.
-    private val TreasuryInfoAssetName: ByteString = ByteString.fromString("TMTx")
     private val EmptyRoot: ByteString = BridgeBootstrap.EmptyRoot
 
     override def execute(config: BinocularConfig): Int = boundary {
@@ -119,9 +118,37 @@ case class DeployBridgeCommand(
                     Some(TransactionInput(TransactionHash.fromHex(h), i.toInt))
                 case _ => None
             }
+        // The treasury one-shot is RESERVED, not consumed: deploy-bridge publishes the policy id
+        // it parameterizes, and heimdall's genesis mints the Treasury state NFT against it later.
+        // Spending it here would publish a policy that can never mint.
+        val treasuryOneShotInput: TransactionInput =
+            config.bridge.treasuryOneShotRef.map(_.trim).filter(_.nonEmpty) match {
+                case Some(s) =>
+                    s.split("#") match {
+                        case Array(h, i) if i.toIntOption.isDefined =>
+                            TransactionInput(TransactionHash.fromHex(h), i.toInt)
+                        case _ =>
+                            Console.error(
+                              s"bridge.treasury-one-shot-ref must be TX_HASH#INDEX, got '$s'"
+                            )
+                            break(1)
+                    }
+                case None =>
+                    Console.error(
+                      "bridge.treasury-one-shot-ref is not set. Rev 5.5 parameterizes treasury_info " +
+                          "by its OWN one-shot outpoint, and deploy-bridge only PUBLISHES the " +
+                          "resulting policy id — the Treasury state NFT is minted later, against " +
+                          "this same outpoint, so it must still be unspent then. Reserve a wallet " +
+                          "UTxO, name it here, and do not spend it."
+                    )
+                    break(1)
+            }
+        val treasuryRef =
+            TxOutRef(TxId(treasuryOneShotInput.transactionId), treasuryOneShotInput.index)
+
         val excludedInputs: Set[TransactionInput] =
             CommandHelpers.refScriptOutpoints(config, sponsorAddress.encode.getOrElse("")) ++
-                staleOneShot
+                staleOneShot + treasuryOneShotInput
 
         val signer = setup.hdAccount.signerForUtxos
 
@@ -142,15 +169,25 @@ case class DeployBridgeCommand(
         val bssRef = oneShotRef
 
         // --- compute the deterministic hash chain ---
-        val configContract =
-            ConfigContract(blueprint, configRef.id.hash, configRef.idx, ConfigAssetName)
+        val configContract = ConfigContract(blueprint, configRef.id.hash, configRef.idx)
         val configPolicy = configContract.policyId
 
-        val bridgedToken = BridgedTokenContract(blueprint, configPolicy, ConfigAssetName)
+        // Rev 5.5 INVERTED the federation chain: Config identity -> treasury -> registry. Rev 5.4
+        // ran registry -> treasury, because treasury_info took registry_policy_id; [PRE-4] moved
+        // that read into the Config datum, which is what let the registry commit to its treasury.
+        val treasuryInfoContract = TreasuryInfoContract(
+          blueprint,
+          treasuryRef.id.hash,
+          treasuryRef.idx,
+          ByteString.fromArray(configPolicy.bytes)
+        )
+        val treasuryPolicy = ByteString.fromArray(treasuryInfoContract.policyId.bytes)
+
+        val bridgedToken = BridgedTokenContract(blueprint, configPolicy)
         val bridgedTokenPolicy = bridgedToken.policyId
 
         val cpiContract =
-            CompletedPegInsContract(blueprint, configPolicy, ConfigAssetName, cpiRef)
+            CompletedPegInsContract(blueprint, configPolicy, cpiRef)
         val cpiPolicy = cpiContract.policyId
         val cpiAssetName = CompletedPegInsContract.assetName
 
@@ -170,11 +207,11 @@ case class DeployBridgeCommand(
         // Rev 5.4: peg_in no longer takes the TM NFT policy — it reads the singleton through
         // Config field 3 at runtime. `tmNftPolicy` still parameterizes the trie below and is
         // published as Config field 4 (`tm_script_hash`, spec [CFG-2]).
-        val pegIn = PegInContract(blueprint, oraclePolicyId, configPolicy, ConfigAssetName)
+        val pegIn = PegInContract(blueprint, oraclePolicyId, configPolicy)
         val pegInWithdrawHash = pegIn.policyId
 
         // --- peg-out side (config index 6 = peg_out script hash) ---
-        val pegOut = PegOutContract(blueprint, configPolicy, ConfigAssetName)
+        val pegOut = PegOutContract(blueprint, configPolicy)
         val pegOutWithdrawHash = pegOut.policyId
 
         // The bridge_state validator takes the TM NFT policy, not the config NFT pair, so it MUST
@@ -292,9 +329,31 @@ case class DeployBridgeCommand(
                 )
                 break(1)
             }
+
+        // The reserved treasury one-shot must survive this deployment: its policy id is published
+        // now and the Treasury state NFT is minted against it later. Coin selection picks fee and
+        // collateral inputs on its own, so excluding it from the one-shot PICK is not proof — check
+        // the finished tx and refuse rather than publish a policy that can never mint.
+        def refuseIfSpendsTreasuryOneShot(tx: Transaction, label: String): Unit =
+            if tx.body.value.inputs.toIndexedSeq.contains(treasuryOneShotInput) then {
+                Console.error(
+                  s"the $label tx spends the reserved treasury one-shot " +
+                      s"${treasuryOneShotInput.transactionId.toHex}#${treasuryOneShotInput.index}. " +
+                      "treasury_info's policy id is derived from it and the Treasury state NFT is " +
+                      "minted against it later, so spending it here would publish a policy nobody " +
+                      "can ever mint. Fund the sponsor wallet with another UTxO and retry."
+                )
+                break(1)
+            }
+
         val federationRef = refOf(federationUtxo)
         val registryContract =
-            SposRegistryContract(blueprint, federationRef.id.hash, federationRef.idx)
+            SposRegistryContract(
+              blueprint,
+              federationRef.id.hash,
+              federationRef.idx,
+              treasuryPolicy
+            )
         val registryPolicy = ByteString.fromArray(registryContract.policyId.bytes)
         val faultPolicies = FaultVerifierContract.all(blueprint, registryPolicy)
         val banSchedule = config.bridge.banSchedule
@@ -308,9 +367,34 @@ case class DeployBridgeCommand(
           bootstrapTxId = federationRef.id.hash,
           bootstrapIndex = federationRef.idx
         )
-        // Rev 5.4: treasury_info takes the registry policy alone — the TM-NFT parameter went with
-        // the FederationReset branch that was its only reader.
-        val treasuryInfoContract = TreasuryInfoContract(blueprint, registryPolicy)
+
+        // Rev 5.5 publishes the federation identity in the Config. Both values are inputs to the
+        // treasury Taproot address, so neither may be guessed — see BridgeConfig.
+        val yFederation: ByteString =
+            config.bridge.yFederation.map(_.trim).filter(_.nonEmpty) match {
+                case Some(h)
+                    if h.length == 64 && h.forall(c => "0123456789abcdefABCDEF".contains(c)) =>
+                    ByteString.fromHex(h)
+                case Some(h) =>
+                    Console.error(
+                      s"bridge.y-federation must be a 32-byte x-only key (64 hex chars), got '$h'"
+                    )
+                    break(1)
+                case None =>
+                    Console.error(
+                      "bridge.y-federation is not set. Rev 5.5 publishes the federation fallback " +
+                          "key in Config #11, and it is the script-leaf key of both Taproot trees " +
+                          "— a wrong or absent value yields a treasury address holding nothing."
+                    )
+                    break(1)
+            }
+        val federationCsvBlocks: Long = config.bridge.federationCsvBlocks.getOrElse {
+            Console.error(
+              "bridge.federation-csv-blocks is not set. It is the CSV timeout baked into both " +
+                  "federation Taproot leaves, so it is an input to the treasury address."
+            )
+            break(1)
+        }
 
         // config Update/Retire authority = the binocular owner key (oracle.owner-pkh),
         // so the same operator that runs the oracle governs the bridge config.
@@ -333,28 +417,19 @@ case class DeployBridgeCommand(
           updateAuth = POption.Some(
             AuthorizationMethod.CardanoSignature(updateAuthPkh)
           ),
-          bridgedTokenPolicy = bridgedTokenPolicy,
-          completedPegInsPolicy = cpiPolicy,
-          bridgeStatePolicy = bssPolicy,
-          // spec [CFG-2]: published so off-chain readers can locate the TM address; no on-chain
-          // reader.
-          tmScriptHash = tmNftPolicy,
-          pegInScriptHash = pegInWithdrawHash,
-          pegOutScriptHash = pegOutWithdrawHash,
-          // Federation identity (config #7-13; off-chain readers only, spec [CFG-3]). Publishing
-          // these is what lets an SPO join this bridge with NO ban or registry configuration.
-          spoBansPolicyId = ByteString.fromArray(spoBansContract.policyId.bytes),
-          baseBanDurationMs = BigInt(banSchedule.baseBanDurationMs),
-          maxFaultsBeforePermanent = BigInt(banSchedule.maxFaultsBeforePermanent),
-          maxValidityWindowMs = BigInt(banSchedule.maxValidityWindowMs),
-          sposRegistryPolicyId = registryPolicy,
-          treasuryInfoPolicyId = ByteString.fromArray(treasuryInfoContract.policyId.bytes),
-          treasuryInfoAssetName = TreasuryInfoAssetName,
-          // Operational-parameter tunables (config field 14, nested; off-chain readers only).
+          // Rev 5.5 [CFG-5]: `params` is index 1 and never moves, so the tunables come first.
           params = ConfigParams(
             feeRateSatPerVb = BigInt(config.bridge.feeRateSatPerVb),
             perPegoutFee = BigInt(config.bridge.perPegoutFeeSat),
             minPegOutFbtc = BigInt(config.bridge.minPegOutSat),
+            // The ban schedule moved in from the datum body ([CFG-6]: tunable NUMBERS live here).
+            // Still not governance-updatable in effect: these three are inputs to the spo_bans
+            // policy id, so changing one names a different ban list.
+            baseBanDurationMs = BigInt(banSchedule.baseBanDurationMs),
+            maxFaultsBeforePermanent = BigInt(banSchedule.maxFaultsBeforePermanent),
+            maxValidityWindowMs = BigInt(banSchedule.maxValidityWindowMs),
+            // The CSV timeout baked into both federation Taproot leaves.
+            federationCsvBlocks = BigInt(federationCsvBlocks),
             // Devnet-scale schedule defaults (spec §TM batches — governance replaces the record
             // wholesale, effective next epoch, so creation values only need to be sane).
             schedule = ScheduleParams(
@@ -369,7 +444,22 @@ case class DeployBridgeCommand(
               finalTmCutoff = BigInt(345600),
               stabilityWindow = BigInt(129600)
             )
-          )
+          ),
+          bridgedTokenPolicy = bridgedTokenPolicy,
+          completedPegInsPolicy = cpiPolicy,
+          bridgeStatePolicy = bssPolicy,
+          // spec [CFG-2]: published so off-chain readers can locate the TM address; no on-chain
+          // reader.
+          tmScriptHash = tmNftPolicy,
+          pegInScriptHash = pegInWithdrawHash,
+          pegOutScriptHash = pegOutWithdrawHash,
+          // Federation identity (spec [CFG-3]). Publishing these is what lets an SPO join this
+          // bridge with NO ban or registry configuration. `sposRegistryPolicyId` gained an
+          // ON-CHAIN reader in rev 5.5 ([PRE-4]: treasury.ak gates RegistryUpdate on it).
+          spoBansPolicyId = ByteString.fromArray(spoBansContract.policyId.bytes),
+          sposRegistryPolicyId = registryPolicy,
+          treasuryInfoPolicyId = treasuryPolicy,
+          yFederation = yFederation
         )
 
         Console.info("Oracle policy", oraclePolicyId.toHex)
@@ -450,6 +540,7 @@ case class DeployBridgeCommand(
             }
         // submitAndConfirm does not return until this is on chain, which is the ordering guarantee:
         // the config tx below is never built against a federation that failed to materialise.
+        refuseIfSpendsTreasuryOneShot(federationTx, "federation")
         val federationTxHash = submitAndConfirm(provider, federationTx, timeout)
         Console.success(s"Federation bootstrapped: $federationTxHash")
         Console.info("registry address", registryContract.address(network).encode.getOrElse("?"))
@@ -502,6 +593,7 @@ case class DeployBridgeCommand(
                     Option(e.getCause).foreach(c => Console.error(s"Cause: ${c.getMessage}"))
                     break(1)
             }
+        refuseIfSpendsTreasuryOneShot(bootstrapTx, "bootstrap")
         val bootstrapTxHash = submitAndConfirm(provider, bootstrapTx, timeout)
         Console.success(s"Bridge bootstrapped in one tx: $bootstrapTxHash")
         Console.info("config address", configContract.address(network).encode.getOrElse("?"))

@@ -110,8 +110,8 @@ case class PegInCompleteCommand(
         // --- bridge config / scripts ---
         val configNftPolicy =
             hexBytes("bridge.config-nft-policy-id", config.bridge.configNftPolicyId, Some(56))
-        val configNftAsset =
-            hexBytes("bridge.config-nft-asset-name", config.bridge.configNftAssetName, None)
+        // [CFG-7]: the Config NFT name is a protocol constant, never configuration.
+        val configNftAsset = ConfigContract.AssetName
         val bridgedTokenAsset =
             AssetName(
               hexBytes("bridge.bridged-token-asset-name", config.bridge.bridgedTokenAssetName, None)
@@ -129,13 +129,11 @@ case class PegInCompleteCommand(
         val cpiRef = TxOutRef(TxId(cpiRefInput.transactionId), cpiRefInput.index)
 
         val oraclePolicyBS = ByteString.fromArray(oracleScriptHash.bytes)
-        val pegIn =
-            PegInContract(blueprint, oraclePolicyBS, configNftPolicy, configNftAsset)
-        val cpiContract =
-            CompletedPegInsContract(blueprint, configNftPolicy, configNftAsset, cpiRef)
+        val pegIn = PegInContract(blueprint, oraclePolicyBS, configNftPolicy)
+        val cpiContract = CompletedPegInsContract(blueprint, configNftPolicy, cpiRef)
         val cpiPolicy = cpiContract.policyId
         val cpiAsset = AssetName(CompletedPegInsContract.assetName)
-        val bridgedToken = BridgedTokenContract(blueprint, configNftPolicy, configNftAsset)
+        val bridgedToken = BridgedTokenContract(blueprint, configNftPolicy)
 
         Console.info("Peg-in policy", pegIn.policyId.toHex)
         Console.info("fBTC policy", bridgedToken.policyId.toHex)
