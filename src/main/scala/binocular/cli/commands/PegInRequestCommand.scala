@@ -29,7 +29,6 @@ case class PegInRequestCommand(
     dryRun: Boolean = false
 ) extends Command {
 
-
     override def execute(config: BinocularConfig): Int = boundary {
         Console.header("Binocular Peg-In Request")
         if dryRun then Console.warn("Dry-run mode — will not submit")
