@@ -357,6 +357,18 @@ case class DeployBridgeCommand(
             )
             break(1)
         }
+        if config.bridge.peginRefundTimeoutBlocks <= config.bridge.federationCsvBlocks
+            || config.bridge.peginRefundTimeoutBlocks > 65535
+        then {
+            Console.error(
+              s"bridge.pegin-refund-timeout-blocks (${config.bridge.peginRefundTimeoutBlocks}) " +
+                  s"must be > bridge.federation-csv-blocks " +
+                  s"(${config.bridge.federationCsvBlocks}) and <= 65535 — it is params[8], the " +
+                  "relative timelock in the peg-in refund leaf, and the federation's sweep " +
+                  "window has to open before the depositor's refund does"
+            )
+            break(1)
+        }
 
         val configDatum = ConfigDatum(
           // Governance: the binocular owner key (oracle.owner-pkh) may Update/Retire
@@ -377,6 +389,9 @@ case class DeployBridgeCommand(
             // params[7]: the CSV delay in the federation recovery leaf of both Taproot trees. A
             // block count, so [CFG-6] puts it here and not beside yFederation.
             federationCsvBlocks = BigInt(config.bridge.federationCsvBlocks),
+            // [CFG-9]: published so no SPO has to be told it, and so no two SPOs can
+            // disagree about the deposit addresses they are meant to reconstruct.
+            peginRefundTimeoutBlocks = BigInt(config.bridge.peginRefundTimeoutBlocks),
             // Devnet-scale schedule defaults (spec §TM batches — governance replaces the record
             // wholesale, effective next epoch, so creation values only need to be sane).
             schedule = ScheduleParams(
