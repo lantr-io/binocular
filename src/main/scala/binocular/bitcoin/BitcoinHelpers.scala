@@ -539,8 +539,8 @@ object BitcoinHelpers {
       * signature (64 B), item 1 leaf script, item 2 control block. A key-path spend is 1 item.
       *
       * The control block is 33 + 32*depth bytes: 33 B for the single-leaf TREASURY tree, and 65 B
-      * for either leaf of the two-leaf PEG-IN tree (WI-081 restored its federation emergency
-      * sweep, so the revealed leaf now carries a sibling hash).
+      * for either leaf of the two-leaf PEG-IN tree (WI-081 restored its federation emergency sweep,
+      * so the revealed leaf now carries a sibling hash).
       *
       * Count == 3 therefore only distinguishes script-path from key-path — it CANNOT tell the
       * federation leaf from a depositor refund leaf (both are 3). To classify WHICH leaf was
