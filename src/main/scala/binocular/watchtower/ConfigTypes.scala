@@ -96,7 +96,13 @@ case class ConfigParams(
     baseBanDurationMs: BigInt,
     maxFaultsBeforePermanent: BigInt,
     maxValidityWindowMs: BigInt,
-    federationCsvBlocks: BigInt
+    federationCsvBlocks: BigInt,
+    // params[8], spec [CFG-9]: the CSV delay of the peg-in tree's DEPOSITOR REFUND leaf.
+    // Beside federationCsvBlocks because the two do the same job — both are block counts
+    // hashed into the peg-in Taproot, so both decide the deposit ADDRESS and both must be
+    // unanimous across SPOs. It was the last of that tree's four inputs left in each
+    // operator's own file, where a disagreement split the federation in silence.
+    peginRefundTimeoutBlocks: BigInt
 ) derives FromData,
       ToData
 
