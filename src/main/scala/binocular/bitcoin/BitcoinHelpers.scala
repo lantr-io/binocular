@@ -426,7 +426,7 @@ object BitcoinHelpers {
     //
     //   item 0: signature            (64 B)
     //   item 1: leaf script          (e.g. 34 B for <32B key> OP_CHECKSIG)
-    //   item 2: control block        (65 B for a 2-leaf tree at depth 1)
+    //   item 2: control block        (33 + 32*depth: 33 B single-leaf, 65 B at depth 1)
     //
     // Example — Y_67 script leaf spend on the treasury:
     //
@@ -445,7 +445,8 @@ object BitcoinHelpers {
     //   03                            ← N = 3, SAME COUNT as a federation spend
     //   40  <sig 64B>
     //   XX  <refund script>           ← item N-2 = the leaf
-    //   41  <control block 33B>       ← 33 B for the single-leaf treasury tree (not 65)
+    //   41  <control block 65B>       ← 65 B: the peg-in tree has TWO leaves (WI-081), so the
+    //                                   revealed refund leaf carries the federation leaf's hash
     //
     // So the item COUNT is NOT a federation-vs-refund discriminator. (An earlier
     // version of this file wrongly assumed the refund leaf hardcodes
@@ -532,11 +533,14 @@ object BitcoinHelpers {
       * key-path/script-path GATE only, NOT a leaf discriminator.
       *
       * Every Bifrost script leaf is `<timeout> OP_CSV OP_DROP <pubkey> OP_CHECKSIG`
-      * (`build_csv_checksig_script` in heimdall taproot.rs) — the depositor peg-in refund tree and
-      * the treasury federation tree share the exact same shape. Each embeds the FULL x-only key and
-      * spends with a single signature, so both produce exactly 3 witness items: item 0 signature
-      * (64 B), item 1 leaf script, item 2 control block (33 + 32*depth bytes; 33 B for a
-      * single-leaf tree). A key-path spend is 1 item.
+      * (`build_csv_checksig_script` in heimdall taproot.rs) — the peg-in tree's two leaves and the
+      * treasury federation leaf share the exact same shape. Each embeds the FULL x-only key and
+      * spends with a single signature, so all of them produce exactly 3 witness items: item 0
+      * signature (64 B), item 1 leaf script, item 2 control block. A key-path spend is 1 item.
+      *
+      * The control block is 33 + 32*depth bytes: 33 B for the single-leaf TREASURY tree, and 65 B
+      * for either leaf of the two-leaf PEG-IN tree (WI-081 restored its federation emergency
+      * sweep, so the revealed leaf now carries a sibling hash).
       *
       * Count == 3 therefore only distinguishes script-path from key-path — it CANNOT tell the
       * federation leaf from a depositor refund leaf (both are 3). To classify WHICH leaf was
