@@ -29,11 +29,6 @@ case class PegInRequestCommand(
     dryRun: Boolean = false
 ) extends Command {
 
-    /** How long the mint transaction stays submittable. It is also the [CLR-7] `created` anchor, so
-      * a longer window only delays the Close grace period's start; one hour keeps the tx usable
-      * across a slow submit without moving `created` far from the real creation time.
-      */
-    private val pegInRequestTtlSeconds: Long = 3600L
 
     override def execute(config: BinocularConfig): Int = boundary {
         Console.header("Binocular Peg-In Request")
@@ -131,7 +126,9 @@ case class PegInRequestCommand(
         // turns the slot back into POSIX ms with the same slot config the builder used.
         val slotConfig = provider.cardanoInfo.slotConfig
         val validToSlot =
-            slotConfig.instantToSlot(java.time.Instant.now().plusSeconds(pegInRequestTtlSeconds))
+            slotConfig.instantToSlot(
+              java.time.Instant.now().plusSeconds(config.bridge.peginRequestTtlSeconds)
+            )
         val created = BigInt(slotConfig.slotToTime(validToSlot))
         val datum = PegInDatum(
           ownerAuth = AuthorizationMethod.CardanoSignature(ByteString.empty),

@@ -282,7 +282,14 @@ case class InitOracleCommand(
         Console.separator()
         Console.tx("Oracle TX", txResult.txHash)
         Console.info("Oracle Address", setup.scriptAddressBech32)
-        Console.info("One-shot", s"${oneShotUtxo.input}")
+        // TXHASH#INDEX, the form `oracle.tx-out-ref` parses — this line exists to be
+        // copied into a config. TransactionInput's own toString renders
+        // `TransactionInput("…",0)`, which every reader of this output then has to
+        // unpick, and which fails at the next command with "Invalid TxOutRef format".
+        Console.info(
+          "One-shot",
+          s"${oneShotUtxo.input.transactionId.toHex}#${oneShotUtxo.input.index}"
+        )
         Console.info("Owner PKH", owner.hash.toHex)
         Console.separator()
         0

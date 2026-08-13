@@ -74,6 +74,15 @@ case class BridgeConfig(
     // Must exceed federationCsvBlocks, or a depositor can take the deposit back while the
     // federation is still recovering it.
     peginRefundTimeoutBlocks: Int = 720,
+    // How long a `pegin-request` mint stays submittable, and therefore its [CLR-7] `created`
+    // anchor. An hour keeps the transaction usable across a slow submit without moving `created`
+    // far from the real creation time — the right choice on a public network.
+    //
+    // It is a SETTING and not a constant because a validity interval cannot end past the node's
+    // era-forecast horizon, which reaches roughly one epoch ahead. On a short-epoch devnet an hour
+    // lands beyond it and the mint is rejected with TimeTranslationPastHorizon — a wall of
+    // consensus call stack that names a future slot and says nothing about this value.
+    peginRequestTtlSeconds: Long = 3600L,
     // The one-shot wallet UTxO (TX_HASH#INDEX) consumed when the bridge-state singleton NFT
     // ("BSS") was minted. It fixes the bridge_state validator's parameter set — its other
     // parameter is the TM script hash, which confirm derives — hence its policyId, which MUST
