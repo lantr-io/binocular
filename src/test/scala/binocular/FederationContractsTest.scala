@@ -225,7 +225,8 @@ class FederationContractsTest extends AnyFunSuite {
         baseBanDurationMs = BigInt(600000),
         maxFaultsBeforePermanent = BigInt(3),
         maxValidityWindowMs = BigInt(3600000),
-        federationCsvBlocks = BigInt(144)
+        federationCsvBlocks = BigInt(144),
+        peginRefundTimeoutBlocks = BigInt(720)
       ),
       bridgedTokenPolicy = ByteString.empty,
       completedPegInsPolicy = ByteString.empty,
