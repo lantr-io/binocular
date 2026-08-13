@@ -8,12 +8,14 @@ import scala.concurrent.ExecutionContext
 /** A bitcoind regtest node, run as a subprocess for the duration of a suite.
   *
   * Lifted out of `BinocularRegtestIntegrationTest`, where it was an inner class, so the federation
-  * suite does not carry a second copy that drifts from it.
+  * suite does not carry a second copy that drifts from it. The RPC port is allocated rather than
+  * fixed at 18543, so a leftover daemon or a second suite in the same sbt session no longer
+  * collides on bind.
   *
-  * Two changes came with the lift. The RPC port is allocated rather than fixed at 18543 — two
-  * suites in one sbt session, or one leftover daemon, otherwise collide on bind. And `bitcoind` is
-  * resolved through [[NixTool]], because it comes from binocular's flake and is not on the PATH
-  * sbt inherits unless the developer launched sbt from inside `nix develop`.
+  * `bitcoind` and `bitcoin-cli` come from this project's flake and are expected ON PATH: run sbt
+  * from inside `nix develop`. That is a precondition, not something to work around — wrapping each
+  * call in `nix develop --command` costs 5.4 s of shell entry per invocation, and a scenario makes
+  * dozens of them. [[start]] checks the precondition once and says exactly that when it fails.
   *
   * @param wallet
   *   the wallet name to create; separate wallets keep a depositor's coins away from the miner's.
@@ -28,29 +30,36 @@ final class RegtestBitcoind(val wallet: String = "test") {
 
     val rpcUrl: String = s"http://127.0.0.1:$rpcPort"
 
-    /** binocular's flake, which packages bitcoind. `it`'s baseDirectory is the binocular root. */
-    private def flakeDir: os.Path = os.pwd
+    /** Fails with the fix rather than with "No such file or directory" from inside a spawn.
+      *
+      * The old inner class used `assume(...)` here, which CANCELLED the suite - and a cancelled
+      * integration test is indistinguishable from a passing one in the summary, which is how that
+      * suite came to be skipped on every run without anyone noticing.
+      */
+    private def requireOnPath(bin: String): Unit =
+        require(
+          os.proc("sh", "-c", s"command -v $bin").call(check = false).exitCode == 0,
+          s"`$bin` is not on PATH. It comes from binocular's flake - run sbt from inside " +
+              "`nix develop`."
+        )
 
     def start(): Unit = {
+        requireOnPath("bitcoind")
+        requireOnPath("bitcoin-cli")
         println(s"[bitcoind] starting regtest, dataDir=$dataDir, rpcPort=$rpcPort")
         val proc = os
             .proc(
-              NixTool.cmd(
-                "bitcoind",
-                Seq(
-                  "-regtest",
-                  s"-datadir=$dataDir",
-                  s"-rpcport=$rpcPort",
-                  s"-rpcuser=$rpcUser",
-                  s"-rpcpassword=$rpcPassword",
-                  "-listen=0",
-                  "-txindex=1",
-                  "-server=1",
-                  "-fallbackfee=0.0001",
-                  "-daemon=0"
-                ),
-                flakeDir
-              )
+              "bitcoind",
+              "-regtest",
+              s"-datadir=$dataDir",
+              s"-rpcport=$rpcPort",
+              s"-rpcuser=$rpcUser",
+              s"-rpcpassword=$rpcPassword",
+              "-listen=0",
+              "-txindex=1",
+              "-server=1",
+              "-fallbackfee=0.0001",
+              "-daemon=0"
             )
             .spawn(stdout = os.root / "dev" / "null", stderr = os.root / "dev" / "null")
         subProcess = Some(proc)
@@ -87,16 +96,12 @@ final class RegtestBitcoind(val wallet: String = "test") {
     /** `bitcoin-cli` against this node, on the base (no-wallet) endpoint. */
     def cli(args: String*): String =
         os.proc(
-          NixTool.cmd(
-            "bitcoin-cli",
-            Seq(
-              "-regtest",
-              s"-rpcport=$rpcPort",
-              s"-rpcuser=$rpcUser",
-              s"-rpcpassword=$rpcPassword"
-            ) ++ args,
-            flakeDir
-          )
+          "bitcoin-cli",
+          "-regtest",
+          s"-rpcport=$rpcPort",
+          s"-rpcuser=$rpcUser",
+          s"-rpcpassword=$rpcPassword",
+          args
         ).call(timeout = 60000, stderr = os.root / "dev" / "null")
             .out
             .text()

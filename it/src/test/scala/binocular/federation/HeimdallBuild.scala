@@ -39,21 +39,33 @@ object HeimdallBuild {
         path
     }
 
-    /** Runs `cargo build --release` once per JVM and yields the target directory.
+    /** How to reach cargo.
       *
-      * heimdall's Rust toolchain comes from its own flake, so `cargo` is normally absent from the
-      * environment sbt inherits; [[NixTool]] wraps the build when it has to.
+      * Unlike bitcoind, cargo is NOT in binocular's own dev shell — it belongs to heimdall's
+      * flake — so "run sbt from inside `nix develop`" does not supply it, and requiring it on
+      * PATH would mean two nested dev shells. Wrapping is right here and wrong for bitcoin-cli:
+      * this is ONE invocation per JVM, where the ~5 s of shell entry disappears into a build that
+      * takes minutes, whereas a scenario makes dozens of bitcoin-cli calls.
       */
+    private lazy val cargoCmd: Seq[String] = {
+        def onPath(bin: String) =
+            os.proc("sh", "-c", s"command -v $bin").call(check = false).exitCode == 0
+        val build = Seq("cargo", "build", "--release", "--bin", "heimdall", "--bin", "depositor")
+        if onPath("cargo") then build
+        else if os.exists(repo / "flake.nix") && onPath("nix") then
+            Seq("nix", "develop", repo.toString, "--command") ++ build
+        else
+            throw new IllegalStateException(
+              s"cargo is not on PATH and $repo has no usable nix flake. Build heimdall by hand " +
+                  "(it has its own `nix develop`), then set HEIMDALL_BIN and HEIMDALL_DEPOSITOR_BIN."
+            )
+    }
+
+    /** Runs `cargo build --release` once per JVM and yields the target directory. */
     private lazy val built: os.Path = {
         println(s"[heimdall] cargo build --release in $repo (first run takes minutes)")
         val res = os
-            .proc(
-              NixTool.cmd(
-                "cargo",
-                Seq("build", "--release", "--bin", "heimdall", "--bin", "depositor"),
-                repo
-              )
-            )
+            .proc(cargoCmd)
             .call(cwd = repo, check = false, stdout = os.Inherit, stderr = os.Inherit)
         require(
           res.exitCode == 0,
