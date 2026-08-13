@@ -660,6 +660,17 @@ case class DeployBridgeCommand(
           s"${federationRef.id.hash.toHex}:${federationRef.idx}"
         )
         Console.info("heimdall config_nft_policy_id", configPolicy.toHex)
+        // The two script ADDRESSES an SPO configures (heimdall
+        // `pegin_script_address` / `pegout_script_address`). Printed as addresses and
+        // not only as withdraw hashes because that is the form heimdall takes, and a
+        // deployer bech32-encoding a script hash by hand will sooner or later encode
+        // it for the wrong network — which scans an address no PegInRequest is ever
+        // minted to, and reports an empty bridge rather than an error.
+        Console.info("heimdall pegin_script_address", pegIn.address(network).encode.getOrElse("?"))
+        Console.info(
+          "heimdall pegout_script_address",
+          pegOut.address(network).encode.getOrElse("?")
+        )
         Console.separator()
         0
     }
