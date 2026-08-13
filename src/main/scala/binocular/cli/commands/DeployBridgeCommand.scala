@@ -57,12 +57,63 @@ import cats.syntax.either.*
   * singleton validator's hash, and the singleton it bootstraps is spendable only inside a TM
   * Confirm ([BSS-1]/[BSS-2]).
   */
+/** Everything a deployment is identified and configured by, as a value.
+  *
+  * `deploy-bridge` PRINTS this set for an operator to paste into binocular's and heimdall's
+  * config files. An in-process caller — the federation integration suite — needs the same set
+  * typed, and scraping stdout for it would tie the test to a print format that exists for humans.
+  *
+  * The printed lines are rendered FROM this record (see [[DeployBridgeCommand.execute]]), so the
+  * two cannot drift: a test reading `federationOneShotRef` and an operator copying
+  * `federation-one-shot-ref` are looking at the same bytes.
+  */
+case class DeployedBridge(
+    configNftPolicyId: ByteString,
+    configNftAssetName: ByteString,
+    bridgedTokenPolicyId: ByteString,
+    completedPegInsPolicyId: ByteString,
+    bridgeStatePolicyId: ByteString,
+    tmScriptHash: ByteString,
+    pegInPolicyId: ByteString,
+    pegOutPolicyId: ByteString,
+    spoBansPolicyId: ByteString,
+    sposRegistryPolicyId: ByteString,
+    treasuryInfoPolicyId: ByteString,
+    yFederation: ByteString,
+    // The completion half's shared one-shot: ONE wallet outpoint spent by the bootstrap tx, which
+    // is why binocular's config carries the identical value under two keys.
+    completedPegInsOneShotRef: TransactionInput,
+    bridgeStateOneShotRef: TransactionInput,
+    // The federation half's one-shot. Spent, but still the input that reproduces treasury_info,
+    // spos_registry and (through the registry and the fault verifiers) spo_bans.
+    federationOneShotRef: TransactionInput
+)
+
+object DeployedBridge {
+
+    /** `TX_HASH#INDEX` — binocular's own config keys (`federation-one-shot-ref` et al). */
+    def refString(ref: TransactionInput): String =
+        s"${ref.transactionId.toHex}#${ref.index}"
+
+    /** `TXID:VOUT` — heimdall's `cardano.registry_bootstrap` / `treasury_bootstrap`.
+      *
+      * Two spellings of one outpoint. Handing either tool the other's form does not fail loudly:
+      * heimdall derives a different policy id and reports a DerivedMismatch against the Config,
+      * which reads like a wrong bridge rather than a wrong separator.
+      */
+    def heimdallRefString(ref: TransactionInput): String =
+        s"${ref.transactionId.toHex}:${ref.index}"
+}
+
 case class DeployBridgeCommand(
     // [DEP-2] escape hatch, mirroring bootstrap-bridge-state: skip the gettxout verification of
     // the deployment anchor. Only for a deployer whose Bitcoin node is unreachable AND whose
     // anchor outpoint and amount were verified by hand.
     skipBtcCheck: Boolean = false,
-    dryRun: Boolean = false
+    dryRun: Boolean = false,
+    // Receives the finished deployment before the summary is printed. Default no-op: the CLI
+    // wants only the print. The integration suite passes a collector instead of parsing stdout.
+    onDeployed: DeployedBridge => Unit = _ => ()
 ) extends Command {
 
     // Config NFT asset name (arbitrary; recorded as config asset name).
@@ -619,31 +670,54 @@ case class DeployBridgeCommand(
         )
         println()
         Console.separator()
+
+        // The finished deployment, as a value. Everything below PRINTS from it, so an operator's
+        // copy-paste and an in-process caller's field read cannot disagree about which bridge
+        // this was.
+        val deployed = DeployedBridge(
+          configNftPolicyId = configPolicy,
+          configNftAssetName = ConfigAssetName,
+          bridgedTokenPolicyId = bridgedTokenPolicy,
+          completedPegInsPolicyId = cpiPolicy,
+          bridgeStatePolicyId = bssPolicy,
+          tmScriptHash = tmNftPolicy,
+          pegInPolicyId = pegInWithdrawHash,
+          pegOutPolicyId = pegOutWithdrawHash,
+          spoBansPolicyId = ByteString.fromArray(spoBansContract.policyId.bytes),
+          sposRegistryPolicyId = registryPolicy,
+          treasuryInfoPolicyId = ByteString.fromArray(treasuryInfoContract.policyId.bytes),
+          yFederation = yFederation,
+          completedPegInsOneShotRef = toInput(configRef),
+          bridgeStateOneShotRef = toInput(configRef),
+          federationOneShotRef = toInput(federationRef)
+        )
+        onDeployed(deployed)
+
         Console.success(
           "Bridge deployed. Set these in binocular.bridge and re-mint the PegInRequests:"
         )
-        Console.info("config-nft-policy-id", configPolicy.toHex)
-        Console.info("config-nft-asset-name", ConfigAssetName.toHex)
-        Console.info("bridged-token-policy-id", bridgedTokenPolicy.toHex)
+        Console.info("config-nft-policy-id", deployed.configNftPolicyId.toHex)
+        Console.info("config-nft-asset-name", deployed.configNftAssetName.toHex)
+        Console.info("bridged-token-policy-id", deployed.bridgedTokenPolicyId.toHex)
         Console.info("bridged-token-asset-name", BridgedTokenAssetName.toHex)
-        Console.info("bridge-state-policy-id", bssPolicy.toHex)
+        Console.info("bridge-state-policy-id", deployed.bridgeStatePolicyId.toHex)
         // Both one-shot refs are the shared bootstrap one-shot; deploy-script-refs and
         // confirm-tmtx require them set to re-derive the cpi / bridge_state scripts.
         Console.info(
           "completed-peg-ins-one-shot-ref",
-          s"${configRef.id.hash.toHex}#${configRef.idx}"
+          DeployedBridge.refString(deployed.completedPegInsOneShotRef)
         )
         Console.info(
           "bridge-state-one-shot-ref",
-          s"${configRef.id.hash.toHex}#${configRef.idx}"
+          DeployedBridge.refString(deployed.bridgeStateOneShotRef)
         )
-        Console.info("peg-out-withdraw-hash", pegOutWithdrawHash.toHex)
+        Console.info("peg-out-withdraw-hash", deployed.pegOutPolicyId.toHex)
         Console.info(
           "next",
           "peg_in/peg_out reward accounts registered in the bootstrap tx (the only two the " +
               "protocol uses); re-run `register-bridge-creds` only if that tx was partial"
         )
-        Console.info("tm-nft-policy", tmNftPolicy.toHex)
+        Console.info("tm-nft-policy", deployed.tmScriptHash.toHex)
         // The SPO half, for heimdall's [cardano] section. Both bootstrap outrefs are the federation
         // one-shot this deploy already spent: heimdall re-derives the registry and treasury policy
         // ids from it, it does not mint against it. `bootstrap-treasury-info` and
@@ -653,13 +727,13 @@ case class DeployBridgeCommand(
         // scripts. Same value heimdall takes as registry_bootstrap / treasury_bootstrap.
         Console.info(
           "federation-one-shot-ref",
-          s"${federationRef.id.hash.toHex}#${federationRef.idx}"
+          DeployedBridge.refString(deployed.federationOneShotRef)
         )
         Console.info(
           "heimdall registry_bootstrap / treasury_bootstrap",
-          s"${federationRef.id.hash.toHex}:${federationRef.idx}"
+          DeployedBridge.heimdallRefString(deployed.federationOneShotRef)
         )
-        Console.info("heimdall config_nft_policy_id", configPolicy.toHex)
+        Console.info("heimdall config_nft_policy_id", deployed.configNftPolicyId.toHex)
         // The two script ADDRESSES an SPO configures (heimdall
         // `pegin_script_address` / `pegout_script_address`). Printed as addresses and
         // not only as withdraw hashes because that is the form heimdall takes, and a
@@ -674,6 +748,12 @@ case class DeployBridgeCommand(
         Console.separator()
         0
     }
+
+    /** Plutus `TxOutRef` (what the derivation chain uses) to the ledger `TransactionInput` the
+      * rest of the off-chain code and the config keys speak in.
+      */
+    private def toInput(ref: TxOutRef): TransactionInput =
+        TransactionInput(TransactionHash.fromHex(ref.id.hash.toHex), ref.idx.toInt)
 
     private def submitAndConfirm(
         provider: BlockchainProvider,
