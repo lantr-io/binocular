@@ -48,7 +48,8 @@ class ConfigDatumEncodingTest extends AnyFunSuite {
           baseBanDurationMs = BigInt(600000),
           maxFaultsBeforePermanent = BigInt(3),
           maxValidityWindowMs = BigInt(3600000),
-          federationCsvBlocks = BigInt(144)
+          federationCsvBlocks = BigInt(144),
+          peginRefundTimeoutBlocks = BigInt(720)
         )
         val tmHash = ByteString.fromHex("dd" * 28)
         val d = ConfigDatum(
@@ -88,7 +89,7 @@ class ConfigDatumEncodingTest extends AnyFunSuite {
         }
     }
 
-    test("ConfigParams nests the schedule at slot 0") {
+    test("ConfigParams nests the schedule at slot 0 and ends at the refund delay") {
         val sched = ScheduleParams(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         val params =
             ConfigParams(
@@ -99,12 +100,13 @@ class ConfigDatumEncodingTest extends AnyFunSuite {
               BigInt(4),
               BigInt(5),
               BigInt(6),
-              BigInt(7)
+              BigInt(7),
+              BigInt(8)
             )
         params.toData match {
             case Data.Constr(0, fields) =>
                 val fs = fields.asScala.toIndexedSeq
-                assert(fs.size == 8)
+                assert(fs.size == 9)
                 assert(fs(0) == sched.toData)
                 assert(fs(1) == Data.I(BigInt(1)))
                 assert(fs(2) == Data.I(BigInt(2)))
@@ -113,6 +115,8 @@ class ConfigDatumEncodingTest extends AnyFunSuite {
                 assert(fs(4) == Data.I(BigInt(4)))
                 assert(fs(6) == Data.I(BigInt(6)))
                 assert(fs(7) == Data.I(BigInt(7)))
+                // params[8], appended by [CFG-9] — the peg-in refund leaf's CSV delay.
+                assert(fs(8) == Data.I(BigInt(8)))
             case other => fail(s"expected Constr 0, got $other")
         }
     }

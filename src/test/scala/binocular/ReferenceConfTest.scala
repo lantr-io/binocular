@@ -35,6 +35,9 @@ class ReferenceConfTest extends AnyFunSuite {
         // address that holds nothing.
         assert(cfg.bridge.yFederationHex.isEmpty)
         assert(cfg.bridge.federationCsvBlocks == 144)
+        // [CFG-9], and it must exceed the federation delay above or the refund opens first.
+        assert(cfg.bridge.peginRefundTimeoutBlocks == 720)
+        assert(cfg.bridge.peginRefundTimeoutBlocks > cfg.bridge.federationCsvBlocks)
     }
 
     test("the one-shot refs stay None when absent, never Some(\"\")") {

@@ -44,6 +44,7 @@ class UpdateConfigCommandTest extends AnyFunSuite {
         maxFaultsBeforePermanent = BigInt(0),
         maxValidityWindowMs = BigInt(0),
         federationCsvBlocks = BigInt(144),
+        peginRefundTimeoutBlocks = BigInt(720),
         feeRateSatPerVb = 2,
         perPegoutFee = 1000,
         minPegOutFbtc = 10000,

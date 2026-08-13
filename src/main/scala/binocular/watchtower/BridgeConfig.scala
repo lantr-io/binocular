@@ -67,6 +67,13 @@ case class BridgeConfig(
     // nothing.
     yFederationHex: String = "",
     federationCsvBlocks: Int = 144,
+    // params[8] ([CFG-9]): the CSV delay of the peg-in tree's DEPOSITOR REFUND leaf. Like
+    // federationCsvBlocks above it is a block count hashed into a Taproot tree, so it decides
+    // the deposit ADDRESS — and unlike the SPOs who read it, this command CHOOSES it: whatever
+    // is published here becomes the value every depositor and every SPO must reconstruct with.
+    // Must exceed federationCsvBlocks, or a depositor can take the deposit back while the
+    // federation is still recovering it.
+    peginRefundTimeoutBlocks: Int = 720,
     // The one-shot wallet UTxO (TX_HASH#INDEX) consumed when the bridge-state singleton NFT
     // ("BSS") was minted. It fixes the bridge_state validator's parameter set — its other
     // parameter is the TM script hash, which confirm derives — hence its policyId, which MUST
