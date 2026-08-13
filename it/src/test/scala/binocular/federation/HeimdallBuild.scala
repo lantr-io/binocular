@@ -39,36 +39,20 @@ object HeimdallBuild {
         path
     }
 
-    /** How to reach cargo: directly, or through heimdall's own nix shell.
+    /** Runs `cargo build --release` once per JVM and yields the target directory.
       *
-      * heimdall's Rust toolchain comes from its flake, so `cargo` is normally absent from the
-      * environment sbt inherits (this is true of the machine this suite was written on). Rather
-      * than make every developer pre-enter `nix develop`, wrap the build when `cargo` is not on
-      * PATH and the flake is there. `nix develop --command` runs one command in the dev shell and
-      * exits, which is exactly the shape needed.
+      * heimdall's Rust toolchain comes from its own flake, so `cargo` is normally absent from the
+      * environment sbt inherits; [[NixTool]] wraps the build when it has to.
       */
-    private lazy val cargoPrefix: Seq[String] = {
-        def onPath(bin: String): Boolean =
-            os.proc("sh", "-c", s"command -v $bin").call(check = false).exitCode == 0
-
-        if onPath("cargo") then Nil
-        else if os.exists(repo / "flake.nix") && onPath("nix") then {
-            println(s"[heimdall] cargo is not on PATH; building through `nix develop` in $repo")
-            Seq("nix", "develop", "--command")
-        } else
-            throw new IllegalStateException(
-              s"cargo is not on PATH and $repo has no usable nix flake. Enter heimdall's " +
-                  "`nix develop` and build it, then set HEIMDALL_BIN and HEIMDALL_DEPOSITOR_BIN."
-            )
-    }
-
-    /** Runs `cargo build --release` once per JVM and yields the target directory. */
     private lazy val built: os.Path = {
         println(s"[heimdall] cargo build --release in $repo (first run takes minutes)")
         val res = os
             .proc(
-              cargoPrefix ++
-                  Seq("cargo", "build", "--release", "--bin", "heimdall", "--bin", "depositor")
+              NixTool.cmd(
+                "cargo",
+                Seq("build", "--release", "--bin", "heimdall", "--bin", "depositor"),
+                repo
+              )
             )
             .call(cwd = repo, check = false, stdout = os.Inherit, stderr = os.Inherit)
         require(

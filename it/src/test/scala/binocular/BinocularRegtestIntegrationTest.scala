@@ -45,98 +45,30 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
     // ===== Bitcoind Regtest Manager =====
 
     /** Manages a bitcoind regtest subprocess for integration testing. */
+    /** bitcoind lifecycle, delegating to the shared [[binocular.federation.RegtestBitcoind]].
+      *
+      * The implementation moved to `federation/RegtestBitcoind.scala` when the federation suite
+      * needed the same daemon: two copies of "spawn bitcoind, wait for RPC, make a wallet" drift,
+      * and the drift shows up as an integration failure rather than a compile error. This shell
+      * keeps the method names this suite already calls.
+      *
+      * It gains two things from the move: an allocated RPC port instead of a fixed 18543, so a
+      * leftover daemon or a second suite no longer collides, and `bitcoind` resolved through
+      * binocular's nix flake, so the suite runs without sbt having been launched from inside
+      * `nix develop`.
+      */
     class RegtestBitcoindManager {
-        private val rpcPort = 18543
-        private val rpcUser = "test"
-        private val rpcPassword = "test"
-        private val dataDir = os.temp.dir(prefix = "binocular-regtest-")
-        private var subProcess: Option[os.SubProcess] = None
+        private val node = new binocular.federation.RegtestBitcoind()
+        private lazy val chain = new binocular.federation.BtcChain(node)
 
-        def start(): Unit = {
-            println(s"[bitcoind] Starting regtest node, dataDir=$dataDir, rpcPort=$rpcPort")
-            val proc = os
-                .proc(
-                  "bitcoind",
-                  "-regtest",
-                  s"-datadir=$dataDir",
-                  s"-rpcport=$rpcPort",
-                  s"-rpcuser=$rpcUser",
-                  s"-rpcpassword=$rpcPassword",
-                  "-listen=0",
-                  "-txindex=0",
-                  "-server=1",
-                  "-fallbackfee=0.0001",
-                  "-daemon=0"
-                )
-                .spawn(stdout = os.root / "dev" / "null", stderr = os.root / "dev" / "null")
-            subProcess = Some(proc)
-            waitForBitcoindReady()
-            bitcoinCli("createwallet", "test")
-        }
-
-        private def waitForBitcoindReady(): Unit = {
-            val maxAttempts = 60
-            var attempts = 0
-            while attempts < maxAttempts do {
-                try {
-                    val result = bitcoinCli("getblockchaininfo")
-                    if result.contains("\"chain\"") then {
-                        println(s"[bitcoind] Ready after $attempts attempts")
-                        return
-                    }
-                } catch { case _: Exception => }
-                Thread.sleep(500)
-                attempts += 1
-            }
-            throw new RuntimeException(
-              s"bitcoind did not become ready after ${maxAttempts * 500}ms"
-            )
-        }
-
-        def bitcoinCli(args: String*): String = {
-            val allArgs = Seq(
-              "bitcoin-cli",
-              "-regtest",
-              s"-rpcport=$rpcPort",
-              s"-rpcuser=$rpcUser",
-              s"-rpcpassword=$rpcPassword"
-            ) ++ args
-            os.proc(allArgs)
-                .call(timeout = 60000, stderr = os.root / "dev" / "null")
-                .out
-                .text()
-        }
-
+        def start(): Unit = node.start()
+        def stop(): Unit = node.stop()
+        def bitcoinCli(args: String*): String = node.cli(args*)
         def generateBlocks(count: Int): Unit = {
-            val address = bitcoinCli("getnewaddress").trim
-            println(s"[bitcoind] Generating $count blocks to $address...")
-            bitcoinCli("generatetoaddress", count.toString, address)
-            println(s"[bitcoind] Generated $count blocks")
+            println(s"[bitcoind] Generating $count blocks...")
+            chain.mine(count)
         }
-
-        def createRpc()(using ec: ExecutionContext): SimpleBitcoinRpc = {
-            new SimpleBitcoinRpc(
-              BitcoinNodeConfig(
-                url = s"http://127.0.0.1:$rpcPort",
-                username = rpcUser,
-                password = rpcPassword,
-                network = "regtest"
-              )
-            )
-        }
-
-        def stop(): Unit = {
-            println("[bitcoind] Stopping...")
-            try {
-                bitcoinCli("stop")
-                Thread.sleep(2000)
-            } catch { case _: Exception => }
-            subProcess.foreach(_.destroy(shutdownGracePeriod = 0))
-            // Clean up temp directory
-            try { os.remove.all(dataDir) }
-            catch { case _: Exception => }
-            println("[bitcoind] Stopped and cleaned up")
-        }
+        def createRpc()(using ec: ExecutionContext): SimpleBitcoinRpc = node.createRpc()
     }
 
     /** Fetch raw block headers from regtest via RPC and convert to BlockHeader objects. */
@@ -155,12 +87,12 @@ class BinocularRegtestIntegrationTest extends AnyFunSuite with YaciDevKit {
     // ===== Test =====
 
     test("full lifecycle with regtest bitcoind: add blocks, wait, promote") {
-        // Check that bitcoind is available
-        val bitcoindAvailable = Try {
-            os.proc("which", "bitcoind").call(check = false).exitCode == 0
-        }.getOrElse(false)
-        assume(bitcoindAvailable, "bitcoind not found on PATH, skipping regtest test")
-
+        // No PATH check any more. `bitcoind` comes from THIS project's flake, so it is absent
+        // from the PATH sbt inherits unless the developer happened to launch sbt from inside
+        // `nix develop` — which meant this suite silently cancelled on a correctly set up
+        // machine, and a cancelled integration test reads exactly like a passing one. It had
+        // been skipping here for that reason. `RegtestBitcoind` resolves the binary through the
+        // flake instead, and fails loudly with what to install when it genuinely cannot.
         val bitcoind = new RegtestBitcoindManager()
         try {
             // Phase 1: Start bitcoind regtest and generate blocks
