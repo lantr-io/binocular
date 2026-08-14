@@ -127,82 +127,80 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
         // an operator having set a local key: it used to default to OFF, which meant a default
         // deployment published no registry reference script at all and every SPO deployed their
         // own copy.
-        val federationScripts: List[(String, Script.PlutusV3)] =
-            {
-                    val configAddress =
-                        Address(
-                          network,
-                          Credential.ScriptHash(ScriptHash.fromHex(cfg.configNftPolicyId))
-                        )
-                    val (_, deployed) = BridgeSweepSetup
-                        .loadConfig(
-                          provider,
-                          configAddress,
-                          ScriptHash.fromHex(cfg.configNftPolicyId),
-                          AssetName(configNftAsset),
-                          timeout
-                        )
-                        .valueOr { err =>
-                            Console.error(err); break(1)
-                        }
-                    val fedInput = deployed.federationOneShot
-                    // The local key is retired but still parsed, so a stale one is caught rather
-                    // than ignored: it used to be the only source, and silently preferring the
-                    // chain over a value someone deliberately typed would hide a real
-                    // disagreement about which bridge this is.
-                    config.bridge.federationOneShotRef.map(_.trim).filter(_.nonEmpty).foreach {
-                        refStr =>
-                            val local = parseRef("bridge.federation-one-shot-ref", refStr)
-                            val same = local.transactionId.bytes.sameElements(
-                              fedInput.id.hash.bytes
-                            ) && BigInt(local.index) == fedInput.idx
-                            if !same then {
-                                Console.error(
-                                  s"bridge.federation-one-shot-ref = $refStr disagrees with the " +
-                                      s"deployed Config #12 = ${fedInput.id.hash.toHex}#${fedInput.idx}. " +
-                                      "The Config is authoritative; unset the local key."
-                                )
-                                break(1)
-                            }
-                    }
-                    val federation = FederationScripts.derive(
-                      blueprint,
-                      fedInput.id.hash,
-                      fedInput.idx,
-                      configNftPolicy,
-                      (
-                        deployed.params.baseBanDurationMs,
-                        deployed.params.maxFaultsBeforePermanent,
-                        deployed.params.maxValidityWindowMs
-                      )
+        val federationScripts: List[(String, Script.PlutusV3)] = {
+            val configAddress =
+                Address(
+                  network,
+                  Credential.ScriptHash(ScriptHash.fromHex(cfg.configNftPolicyId))
+                )
+            val (_, deployed) = BridgeSweepSetup
+                .loadConfig(
+                  provider,
+                  configAddress,
+                  ScriptHash.fromHex(cfg.configNftPolicyId),
+                  AssetName(configNftAsset),
+                  timeout
+                )
+                .valueOr { err =>
+                    Console.error(err); break(1)
+                }
+            val fedInput = deployed.federationOneShot
+            // The local key is retired but still parsed, so a stale one is caught rather
+            // than ignored: it used to be the only source, and silently preferring the
+            // chain over a value someone deliberately typed would hide a real
+            // disagreement about which bridge this is.
+            config.bridge.federationOneShotRef.map(_.trim).filter(_.nonEmpty).foreach { refStr =>
+                val local = parseRef("bridge.federation-one-shot-ref", refStr)
+                val same = local.transactionId.bytes.sameElements(
+                  fedInput.id.hash.bytes
+                ) && BigInt(local.index) == fedInput.idx
+                if !same then {
+                    Console.error(
+                      s"bridge.federation-one-shot-ref = $refStr disagrees with the " +
+                          s"deployed Config #12 = ${fedInput.id.hash.toHex}#${fedInput.idx}. " +
+                          "The Config is authoritative; unset the local key."
                     )
-                    FederationScripts
-                        .verifyAgainstConfig(federation, deployed)
-                        .valueOr { err =>
-                            Console.error(err); break(1)
-                        }
-                    Console.info("spos_registry script hash", federation.registry.policyId.toHex)
-                    Console.info("spo_bans script hash", federation.bans.policyId.toHex)
-                    Console.info("(verified against the deployed Config)", "#8 / #9 / #10 / #12")
-                    println()
-                    // treasury_info is NOT published: nothing ever spends it with the script
-                    // inlined at size — its spend paths are small, and the state UTxO is read as a
-                    // reference input everywhere else.
-                    ("spos_registry", federation.registry.script) ::
-                        ("spo_bans", federation.bans.script) ::
-                        FaultVerifierContract.Titles.zipWithIndex.map { case (title, i) =>
-                            val label =
-                                List("fault_round1", "fault_round2", "fault_equivocation")(i)
-                            (
-                              label,
-                              FaultVerifierContract(
-                                blueprint,
-                                title,
-                                ByteString.fromArray(federation.registry.policyId.bytes)
-                              ).script
-                            )
-                        }
+                    break(1)
+                }
             }
+            val federation = FederationScripts.derive(
+              blueprint,
+              fedInput.id.hash,
+              fedInput.idx,
+              configNftPolicy,
+              (
+                deployed.params.baseBanDurationMs,
+                deployed.params.maxFaultsBeforePermanent,
+                deployed.params.maxValidityWindowMs
+              )
+            )
+            FederationScripts
+                .verifyAgainstConfig(federation, deployed)
+                .valueOr { err =>
+                    Console.error(err); break(1)
+                }
+            Console.info("spos_registry script hash", federation.registry.policyId.toHex)
+            Console.info("spo_bans script hash", federation.bans.policyId.toHex)
+            Console.info("(verified against the deployed Config)", "#8 / #9 / #10 / #12")
+            println()
+            // treasury_info is NOT published: nothing ever spends it with the script
+            // inlined at size — its spend paths are small, and the state UTxO is read as a
+            // reference input everywhere else.
+            ("spos_registry", federation.registry.script) ::
+                ("spo_bans", federation.bans.script) ::
+                FaultVerifierContract.Titles.zipWithIndex.map { case (title, i) =>
+                    val label =
+                        List("fault_round1", "fault_round2", "fault_equivocation")(i)
+                    (
+                      label,
+                      FaultVerifierContract(
+                        blueprint,
+                        title,
+                        ByteString.fromArray(federation.registry.policyId.bytes)
+                      ).script
+                    )
+                }
+        }
 
         if dryRun then {
             Console.success("Dry-run complete (computed hashes, not submitting)")

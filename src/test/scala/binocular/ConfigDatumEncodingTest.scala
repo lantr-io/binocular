@@ -11,11 +11,10 @@ import scalus.uplc.builtin.Data.toData
 /** Pins the Scala mirror of `lib/bifrost/types/config.ak::ConfigDatum` to the on-chain positional
   * encoding (rev 5.5, spec §Config datum): 13 Constr-0 fields — 0 `update_auth` (Aiken `Option`:
   * Some = Constr 0 [v], None = Constr 1 []), 1 `params` (nested ConfigParams, frozen at index 1 by
-  * [CFG-5] so an append can never move it), 2 `bridged_token_policy`, 3
-  * `completed_peg_ins_policy`, 4 `bridge_state_policy`, 5 `tm_script_hash` ([CFG-2]), 6
-  * `peg_in_script_hash`, 7 `peg_out_script_hash`, then the federation identity 8-12:
-  * `spo_bans_policy_id`, `spos_registry_policy_id`, `treasury_info_policy_id`, `y_federation`,
-  * `federation_one_shot`.
+  * [CFG-5] so an append can never move it), 2 `bridged_token_policy`, 3 `completed_peg_ins_policy`,
+  * 4 `bridge_state_policy`, 5 `tm_script_hash` ([CFG-2]), 6 `peg_in_script_hash`, 7
+  * `peg_out_script_hash`, then the federation identity 8-12: `spo_bans_policy_id`,
+  * `spos_registry_policy_id`, `treasury_info_policy_id`, `y_federation`, `federation_one_shot`.
   */
 class ConfigDatumEncodingTest extends AnyFunSuite {
 
