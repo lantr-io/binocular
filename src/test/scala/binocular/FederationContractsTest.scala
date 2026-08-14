@@ -4,6 +4,7 @@ import binocular.watchtower.*
 
 import org.scalatest.funsuite.AnyFunSuite
 import scalus.uplc.builtin.ByteString
+import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 
 /** Cross-implementation lock on the federation policy ids.
   *
@@ -41,16 +42,16 @@ class FederationContractsTest extends AnyFunSuite {
 
     test("spos_registry policy matches heimdall's derivation") {
         assert(
-          registry.policyId.toHex == "1ea9b8e092ae17f7de3d7bfbe477e89df7c72caccbd338c027fa933b"
+          registry.policyId.toHex == "b208953ab15d79539e36ea4362216af379dfeb00de73a918f2460740"
         )
     }
 
     test("the three fault verifiers match heimdall's derivation, in spo_bans order") {
         assert(
           FaultVerifierContract.all(blueprint, registryPolicy).map(_.toHex) == List(
-            "64b5d7226741b0fa8ee739f61486dd61c8f2ba7c6be389e9391f949d",
-            "1da48632d6cf405ec035097aa505820f75e3a4b4cb51de9c62af8286",
-            "f36deb1861a374943c4ef43172d968c1cdead2ac62d3f1c127f8f505"
+            "f30a8f540b0f8e808186b63fab3d5da57149448addbdbccdb3298769",
+            "a16e1d3b5859825d40e08c93d0d0465d907487fade7b5b1519ccc184",
+            "c437d0fdf2790631761e7cda563e90e3063bfa5c7d81521ffd9c249f"
           )
         )
     }
@@ -60,7 +61,7 @@ class FederationContractsTest extends AnyFunSuite {
         // at all — that parameter made the dependency a cycle and so made the [REG-6] pin
         // impossible — so the pinned hash moved with it.
         val ti = treasuryInfo
-        assert(ti.policyId.toHex == "f7ccdddf9f4e4bb4c75064cd4b454223e012f086a56a50181320a10b")
+        assert(ti.policyId.toHex == "935993611500f483c71ef16964698ebfc4f4f2ae5f92719331418db5")
     }
 
     // The seven-parameter application, including the indefinite-array List<PolicyId>.
@@ -75,7 +76,7 @@ class FederationContractsTest extends AnyFunSuite {
           bootstrapTxId = oneShot,
           bootstrapIndex = oneShotIndex
         )
-        assert(bans.policyId.toHex == "3dda71f07642ae9864c693295bbe896f4bfed2b0643b0dbd13a09301")
+        assert(bans.policyId.toHex == "73980c165a6643d22daffa4f851352b8540d22112d26e7cff1234b4a")
     }
 
     // The fault-policy list is baked in UNSORTED, so a permutation is a different bridge. Worth a
@@ -194,12 +195,12 @@ class FederationContractsTest extends AnyFunSuite {
     test("FederationScripts.derive reproduces every pinned policy id") {
         val f = derived
         assert(
-          f.treasury.policyId.toHex == "f7ccdddf9f4e4bb4c75064cd4b454223e012f086a56a50181320a10b"
+          f.treasury.policyId.toHex == "935993611500f483c71ef16964698ebfc4f4f2ae5f92719331418db5"
         )
         assert(
-          f.registry.policyId.toHex == "1ea9b8e092ae17f7de3d7bfbe477e89df7c72caccbd338c027fa933b"
+          f.registry.policyId.toHex == "b208953ab15d79539e36ea4362216af379dfeb00de73a918f2460740"
         )
-        assert(f.bans.policyId.toHex == "3dda71f07642ae9864c693295bbe896f4bfed2b0643b0dbd13a09301")
+        assert(f.bans.policyId.toHex == "73980c165a6643d22daffa4f851352b8540d22112d26e7cff1234b4a")
         assert(f.faultPolicies == FaultVerifierContract.all(blueprint, registryPolicy))
     }
 
@@ -237,7 +238,8 @@ class FederationContractsTest extends AnyFunSuite {
       spoBansPolicyId = ByteString.fromArray(f.bans.policyId.bytes),
       sposRegistryPolicyId = ByteString.fromArray(f.registry.policyId.bytes),
       treasuryInfoPolicyId = ByteString.fromArray(f.treasury.policyId.bytes),
-      yFederation = ByteString.empty
+      yFederation = ByteString.empty,
+      federationOneShot = TxOutRef(TxId(ByteString.fromHex("c3" * 32)), BigInt(0))
     )
 
     test("verifyAgainstConfig accepts the derivation the Config was deployed from") {

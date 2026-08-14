@@ -10,6 +10,7 @@ import scalus.uplc.builtin.{ByteString, Data}
 import scalus.uplc.builtin.Data.toData
 
 import java.nio.file.Files
+import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 
 /** Tests for the sweeper's PURE decisions: which peg-out requests a sweep submits a Complete for,
   * and whether the derived scripts match the deployed Config.
@@ -195,7 +196,8 @@ class PorSweeperTest extends AnyFunSuite {
           spoBansPolicyId = ByteString.empty,
           sposRegistryPolicyId = ByteString.empty,
           treasuryInfoPolicyId = ByteString.empty,
-          yFederation = ByteString.empty
+          yFederation = ByteString.empty,
+          federationOneShot = TxOutRef(TxId(ByteString.fromHex("c3" * 32)), BigInt(0))
         ).toData
         Utxo(
           TransactionInput(TransactionHash.fromHex("c0" * 32), 0),

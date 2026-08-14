@@ -121,74 +121,86 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
         //
         // `register_spo` would otherwise carry the ~6.7 kB registry script twice and miss the 16 kB
         // limit, and `apply-ban` carries spo_bans plus a fault verifier. Their scripts cannot be
-        // rebuilt from the Config, which publishes only the finished policy ids, so this needs the
-        // federation one-shot — and the ban schedule, which is an INPUT to the ban policy id and is
-        // therefore read back from the deployed Config rather than from local config.
-        val federationScripts: List[(String, Script.PlutusV3)] =
-            config.bridge.federationOneShotRef.map(_.trim).filter(_.nonEmpty) match {
-                case None =>
-                    Console.warn(
-                      "bridge.federation-one-shot-ref is not set — publishing the completion half " +
-                          "only. The SPO half (spos_registry, spo_bans, 3 fault verifiers) needs " +
-                          "it; set it to the outpoint deploy-bridge printed and re-run."
+        // rebuilt from a policy id, so this needs the federation one-shot — which the Config now
+        // publishes at #12, alongside the ban schedule (an INPUT to the ban policy id) it already
+        // published. Both come from the deployed Config, so this half is no longer conditional on
+        // an operator having set a local key: it used to default to OFF, which meant a default
+        // deployment published no registry reference script at all and every SPO deployed their
+        // own copy.
+        val federationScripts: List[(String, Script.PlutusV3)] = {
+            val configAddress =
+                Address(
+                  network,
+                  Credential.ScriptHash(ScriptHash.fromHex(cfg.configNftPolicyId))
+                )
+            val (_, deployed) = BridgeSweepSetup
+                .loadConfig(
+                  provider,
+                  configAddress,
+                  ScriptHash.fromHex(cfg.configNftPolicyId),
+                  AssetName(configNftAsset),
+                  timeout
+                )
+                .valueOr { err =>
+                    Console.error(err); break(1)
+                }
+            val fedInput = deployed.federationOneShot
+            // The local key is retired but still parsed, so a stale one is caught rather
+            // than ignored: it used to be the only source, and silently preferring the
+            // chain over a value someone deliberately typed would hide a real
+            // disagreement about which bridge this is.
+            config.bridge.federationOneShotRef.map(_.trim).filter(_.nonEmpty).foreach { refStr =>
+                val local = parseRef("bridge.federation-one-shot-ref", refStr)
+                val same = local.transactionId.bytes.sameElements(
+                  fedInput.id.hash.bytes
+                ) && BigInt(local.index) == fedInput.idx
+                if !same then {
+                    Console.error(
+                      s"bridge.federation-one-shot-ref = $refStr disagrees with the " +
+                          s"deployed Config #12 = ${fedInput.id.hash.toHex}#${fedInput.idx}. " +
+                          "The Config is authoritative; unset the local key."
                     )
-                    Nil
-                case Some(refStr) =>
-                    val fedInput = parseRef("federation-one-shot-ref", refStr)
-                    val configAddress =
-                        Address(
-                          network,
-                          Credential.ScriptHash(ScriptHash.fromHex(cfg.configNftPolicyId))
-                        )
-                    val (_, deployed) = BridgeSweepSetup
-                        .loadConfig(
-                          provider,
-                          configAddress,
-                          ScriptHash.fromHex(cfg.configNftPolicyId),
-                          AssetName(configNftAsset),
-                          timeout
-                        )
-                        .valueOr { err =>
-                            Console.error(err); break(1)
-                        }
-                    val federation = FederationScripts.derive(
-                      blueprint,
-                      ByteString.fromArray(fedInput.transactionId.bytes),
-                      BigInt(fedInput.index),
-                      configNftPolicy,
-                      (
-                        deployed.params.baseBanDurationMs,
-                        deployed.params.maxFaultsBeforePermanent,
-                        deployed.params.maxValidityWindowMs
-                      )
-                    )
-                    FederationScripts
-                        .verifyAgainstConfig(federation, deployed)
-                        .valueOr { err =>
-                            Console.error(err); break(1)
-                        }
-                    Console.info("spos_registry script hash", federation.registry.policyId.toHex)
-                    Console.info("spo_bans script hash", federation.bans.policyId.toHex)
-                    Console.info("(verified against the deployed Config)", "#8 / #9 / #10")
-                    println()
-                    // treasury_info is NOT published: nothing ever spends it with the script
-                    // inlined at size — its spend paths are small, and the state UTxO is read as a
-                    // reference input everywhere else.
-                    ("spos_registry", federation.registry.script) ::
-                        ("spo_bans", federation.bans.script) ::
-                        FaultVerifierContract.Titles.zipWithIndex.map { case (title, i) =>
-                            val label =
-                                List("fault_round1", "fault_round2", "fault_equivocation")(i)
-                            (
-                              label,
-                              FaultVerifierContract(
-                                blueprint,
-                                title,
-                                ByteString.fromArray(federation.registry.policyId.bytes)
-                              ).script
-                            )
-                        }
+                    break(1)
+                }
             }
+            val federation = FederationScripts.derive(
+              blueprint,
+              fedInput.id.hash,
+              fedInput.idx,
+              configNftPolicy,
+              (
+                deployed.params.baseBanDurationMs,
+                deployed.params.maxFaultsBeforePermanent,
+                deployed.params.maxValidityWindowMs
+              )
+            )
+            FederationScripts
+                .verifyAgainstConfig(federation, deployed)
+                .valueOr { err =>
+                    Console.error(err); break(1)
+                }
+            Console.info("spos_registry script hash", federation.registry.policyId.toHex)
+            Console.info("spo_bans script hash", federation.bans.policyId.toHex)
+            Console.info("(verified against the deployed Config)", "#8 / #9 / #10 / #12")
+            println()
+            // treasury_info is NOT published: nothing ever spends it with the script
+            // inlined at size — its spend paths are small, and the state UTxO is read as a
+            // reference input everywhere else.
+            ("spos_registry", federation.registry.script) ::
+                ("spo_bans", federation.bans.script) ::
+                FaultVerifierContract.Titles.zipWithIndex.map { case (title, i) =>
+                    val label =
+                        List("fault_round1", "fault_round2", "fault_equivocation")(i)
+                    (
+                      label,
+                      FaultVerifierContract(
+                        blueprint,
+                        title,
+                        ByteString.fromArray(federation.registry.policyId.bytes)
+                      ).script
+                    )
+                }
+        }
 
         if dryRun then {
             Console.success("Dry-run complete (computed hashes, not submitting)")

@@ -466,7 +466,7 @@ case class DeployBridgeCommand(
           tmScriptHash = tmNftPolicy,
           pegInScriptHash = pegInWithdrawHash,
           pegOutScriptHash = pegOutWithdrawHash,
-          // Federation identity (config #8-11; publishing these is what lets an SPO join this
+          // Federation identity (config #8-12; publishing these is what lets an SPO join this
           // bridge with NO ban or registry configuration, spec [CFG-3]).
           spoBansPolicyId = ByteString.fromArray(spoBansContract.policyId.bytes),
           sposRegistryPolicyId = registryPolicy,
@@ -474,7 +474,12 @@ case class DeployBridgeCommand(
           // #11: read ON-CHAIN by treasury.ak's Update-Y federation branch ([UY-5]). Every SPO
           // also rebuilds the treasury Taproot tree from it, so a wrong value derives a
           // well-formed address holding nothing.
-          yFederation = yFederation
+          yFederation = yFederation,
+          // #12: the outpoint the three ids above were derived FROM — the same value printed
+          // below as `federation-one-shot-ref` and as heimdall's registry/treasury bootstrap.
+          // Publishing it is what removes the last hand-copied build input from an SPO's config:
+          // ids identify a script, this rebuilds it.
+          federationOneShot = federationRef
         )
 
         Console.info("Oracle policy", oraclePolicyId.toHex)

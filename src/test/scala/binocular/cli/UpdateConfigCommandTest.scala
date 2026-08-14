@@ -8,6 +8,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import scalus.cardano.onchain.plutus.prelude.{List as PList, Option as SOption}
 import scalus.uplc.builtin.{ByteString, Data}
 import scalus.uplc.builtin.Data.toData
+import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 
 class UpdateConfigCommandTest extends AnyFunSuite {
 
@@ -39,6 +40,7 @@ class UpdateConfigCommandTest extends AnyFunSuite {
       sposRegistryPolicyId = ByteString.fromHex("11"),
       treasuryInfoPolicyId = ByteString.fromHex("12"),
       yFederation = ByteString.fromHex("f9" * 32),
+      federationOneShot = TxOutRef(TxId(ByteString.fromHex("c3" * 32)), BigInt(0)),
       params = ConfigParams(
         baseBanDurationMs = BigInt(0),
         maxFaultsBeforePermanent = BigInt(0),
@@ -147,7 +149,10 @@ class UpdateConfigCommandTest extends AnyFunSuite {
         }
         val out = UpdateConfigCommand.decodeDeployed(grown)
         assert(out.isLeft)
-        assert(out.swap.toOption.get.contains("13 fields"))
+        // Names both counts: the arity FOUND on chain and the one this build knows, so the
+        // operator can tell "binocular is behind the bridge" from "this is the wrong bridge".
+        assert(out.swap.toOption.get.contains("14 fields"))
+        assert(out.swap.toOption.get.contains(s"${UpdateConfigCommand.ConfigFieldCount}-field"))
     }
 
     test("decodeDeployed refuses short and non-record datums") {
