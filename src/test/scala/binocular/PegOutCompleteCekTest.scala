@@ -101,6 +101,7 @@ class PegOutCompleteCekTest extends AnyFunSuite {
       sposRegistryPolicyId = ByteString.empty,
       treasuryInfoPolicyId = ByteString.empty,
       yFederation = ByteString.fromHex("f9" * 32),
+      federationOneShot = TxOutRef(TxId(ByteString.fromHex("c3" * 32)), BigInt(0)),
       params = ConfigParams(
         baseBanDurationMs = BigInt(0),
         maxFaultsBeforePermanent = BigInt(0),

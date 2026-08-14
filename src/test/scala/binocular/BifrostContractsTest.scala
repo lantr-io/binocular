@@ -38,6 +38,11 @@ import java.nio.file.{Files, Path, Paths}
   * `tm_nft_policy_id` param (3 params now). `completed_peg_outs_merkle_tree_validator` is WITHDRAWN
   * in the ft tree (replaced by `bridge-state.ak`); the min-json keeps its LAST published
   * compiledCode for the interim TM Confirm trie flow, so its pin did not move.
+  *
+  * Refreshed again for WI-090 (2026-08-14): ConfigDatum gained #12 `federation_one_shot`, and the
+  * genesis full cast moved `config.config` once more, cascading through the config policy into all
+  * five pins below. The min-json re-vendor also absorbed `treasury_info`'s pre-existing build
+  * drift, which is why [[RebuildDrift]] could go empty in the same commit.
   */
 class BifrostContractsTest extends AnyFunSuite {
 
@@ -79,20 +84,20 @@ class BifrostContractsTest extends AnyFunSuite {
 
     test("config NFT policy matches the deployed value") {
         assert(
-          hex(configContract.policyId) == "1e442c11fa84a722a5c9a4e59b23a72945124399fb6c4090744a24dd"
+          hex(configContract.policyId) == "c4402d1ada1c5db4af451082f8ef2caf214097dd919148c5efe4c909"
         )
     }
 
     test("bridged_token policy matches the deployed value") {
         val bt = BridgedTokenContract(blueprint, configPolicy)
-        assert(hex(bt.policyId) == "231e3baf3e8921534c1bb59fe70fa69947ff970fe1187b8d60a83330")
+        assert(hex(bt.policyId) == "84c085c4fa43eec1de31a7f459fa12d18f857e4bb671bf0bb0ed665b")
     }
 
     test("completed-peg-ins policy + asset name match the Variant B rebuild") {
         // policyId regression lock over the Variant B rebuild. The asset name is now the constant
         // "CPI" (bytes 435049), independent of the one-shot ref and the compiledCode.
         val cpi = CompletedPegInsContract(blueprint, configPolicy, cpiRef)
-        assert(hex(cpi.policyId) == "7567b9ff44e7c51dea69683da0f45accffd3b9ea0903b37cc20e6a86")
+        assert(hex(cpi.policyId) == "fa4698345161667fe72decbc075e2be8325f458069d2205455cc9026")
         assert(CompletedPegInsContract.assetName == ByteString.fromString("CPI"))
     }
 
@@ -111,7 +116,7 @@ class BifrostContractsTest extends AnyFunSuite {
         // hash moved; ConfigDatum field 5 must name the new one at deployment.
         val pegIn =
             PegInContract(blueprint, oraclePolicy, configPolicy)
-        assert(hex(pegIn.policyId) == "1510d62783c1f3511d009162aa5bef425f8e1f895f7aca80bd66e035")
+        assert(hex(pegIn.policyId) == "aa767109f00f937fae6299315bae9a98de6a4406765f94fe3425b42c")
     }
 
     test("peg_out policy (= withdraw hash) is stable for the trie-v2 2-param encoding") {
@@ -126,7 +131,7 @@ class BifrostContractsTest extends AnyFunSuite {
         // [[PegOutCompleteCekTest]] runs them — so the stale copy would have made every completion
         // fail on-chain. No other validator's compiledCode changed, so no other pin moved.
         val pegOut = PegOutContract(blueprint, configPolicy)
-        assert(hex(pegOut.policyId) == "a5a39919b3a0fb699e0f44d98a6039825c21d317f4cbe24fd54cf143")
+        assert(hex(pegOut.policyId) == "0fc35057187dccea740a3f6f5742e85ac89854eec3f8066b274eaa89")
     }
 
     // --- determinism + parameter-sensitivity ---
@@ -233,28 +238,27 @@ class BifrostContractsTest extends AnyFunSuite {
                 ).map(Paths.get(_)).find(Files.isReadable)
         }
 
-    /** Validators whose vendored bytes are allowed to differ from ft's committed `plutus.json`,
-      * because the difference is BUILD DRIFT and not a source change.
+    /** Validators exempt from the freshness check below. EMPTY, and that is the point.
       *
-      * ft's `plutus.json` does not reproduce from its own source: the committed copy was built by a
-      * local `aiken v1.1.23+unknown` while CI installs `v1.1.23+8949565`, and the two emit
-      * different bytes for the same validators. So every ft commit that rebuilds the blueprint
-      * moves `config` and `treasury` whether or not anything in `config.ak` / `treasury.ak` changed
-      * — WI-073 is the case in point: `git diff ad04ecb..ft-main -- onchain/` touches only
-      * `bitcoin.ak` and `peg-in.ak`, yet both these hashes moved with it.
+      * It used to hold `config` and `treasury`, because ft's `plutus.json` did not reproduce from
+      * its own source — the committed copy came from a local `aiken v1.1.23+unknown` while CI
+      * installs `v1.1.23+8949565`, so every ft commit that rebuilt the blueprint moved those two
+      * whether or not their `.ak` changed. Carrying the deployed bytes and exempting them here was
+      * the honest position while that held, since `config`'s hash IS the config NFT policy id and
+      * absorbing a rebuild-only change re-identifies the whole bridge for no semantic reason.
       *
-      * Taking those bytes anyway is not free. `config`'s hash IS the config NFT policy id, and that
-      * id parameterizes bridged_token, completed_peg_ins, peg_in and peg_out, so vendoring a
-      * rebuild-only change re-identifies the entire bridge and forces a redeploy for no semantic
-      * reason. Until ft's blueprint builds deterministically, the honest position is to carry the
-      * bytes we deployed against and exempt them HERE, in the open, rather than let the check go
-      * green by accident.
+      * Measured 2026-08-14 and no longer true: a pristine rebuild at the pinned `compiler =
+      * "v1.1.23"` (local `v1.1.23+8949565`, the version CI installs) reproduces ft's committed
+      * blueprint byte for byte — only the validator actually edited moves. The exemption is
+      * therefore removed as its own comment asked, and a difference here is real again.
       *
-      * REMOVE both entries the moment ft pins its aiken build — at that point a difference here is
-      * real again.
+      * The one-time cost of removing it was absorbed by the WI-090 re-vendor: `treasury_info` was
+      * carrying pre-existing drift, which re-identifies its policy id. That is free HERE only
+      * because `treasury_info` is parameterized by the config policy id, which the WI-090 datum
+      * append moves regardless — a new bridge instance either way. Do not read it as a precedent
+      * for absorbing drift cheaply.
       */
-    private val RebuildDrift: Set[String] =
-        Set("bitcoin/config.config.mint", "bitcoin/treasury.treasury_info.mint")
+    private val RebuildDrift: Set[String] = Set.empty
 
     test("every vendored compiledCode is ft's current one") {
         // Freshness against ft, for the WHOLE vendored set — a stale peg_in or peg_out is just

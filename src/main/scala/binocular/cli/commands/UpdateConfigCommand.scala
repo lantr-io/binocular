@@ -306,7 +306,7 @@ object UpdateConfigCommand {
     }
 
     /** Field count of the rev-5.5 Config datum (spec §Config datum). */
-    val ConfigFieldCount = 12
+    val ConfigFieldCount = 13
 
     /** Decode the deployed Config datum for an UPDATE, refusing any Constr arity other than
       * [[ConfigFieldCount]]. Appends are the legal datum evolution and read-only consumers ignore
@@ -358,7 +358,8 @@ object UpdateConfigCommand {
       "spo_bans_policy_id",
       "spos_registry_policy_id",
       "treasury_info_policy_id",
-      "y_federation"
+      "y_federation",
+      "federation_one_shot"
     )
 
     /** The governed parameter edits (config fields 7-10 and inside field 14). All optional: `None`

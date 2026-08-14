@@ -1,5 +1,6 @@
 package binocular.watchtower
 
+import scalus.cardano.onchain.plutus.v3.TxOutRef
 import scalus.uplc.builtin.*
 import scalus.uplc.builtin.Data.{FromData, ToData}
 
@@ -35,7 +36,7 @@ import scalus.uplc.builtin.Data.{FromData, ToData}
 // Gone in rev 5.5: treasuryInfoAssetName — the Treasury state NFT name is the [CFG-4] constant
 // [[ConfigDatum.TreasuryInfoAssetName]].
 //
-// Must mirror ft `config.ak::ConfigDatum` (12 fields), because `config.config`'s genesis path
+// Must mirror ft `config.ak::ConfigDatum` (13 fields), because `config.config`'s genesis path
 // full-casts the datum, so deploy-bridge must write all of them.
 case class ConfigDatum(
     updateAuth: scalus.cardano.onchain.plutus.prelude.Option[AuthorizationMethod],
@@ -49,7 +50,16 @@ case class ConfigDatum(
     spoBansPolicyId: ByteString,
     sposRegistryPolicyId: ByteString,
     treasuryInfoPolicyId: ByteString,
-    yFederation: ByteString
+    yFederation: ByteString,
+    // #12: the one-shot outpoint every federation script is compile-parameterized by, so the three
+    // policy ids above are FUNCTIONS of it. The ids serve a node that only READS the bridge;
+    // producing script bytes needs the inputs behind them, and a hash cannot be inverted. Without
+    // this field every operator hand-copied the outpoint from the deployer's terminal into their
+    // own config — to deploy a reference script, or to spend treasury_info, which is embedded
+    // rather than referenced. NO on-chain reader; the UTxO was consumed at genesis and is gone,
+    // only its identity matters. Encodes as Constr(0, [B(txId), I(idx)]) — Aiken's V3
+    // OutputReference, the same shape `banBootstrapRedeemer` writes by hand.
+    federationOneShot: TxOutRef
 ) derives FromData,
       ToData
 
