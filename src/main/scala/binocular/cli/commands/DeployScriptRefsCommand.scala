@@ -28,14 +28,19 @@ import cats.syntax.either.*
   *     need `bridge.federation-one-shot-ref`; without it the command publishes the completion half
   *     and says so. `register_spo` would otherwise carry the registry script twice.
   *
-  * Each script gets pinned to a Babbage-era output at the sponsor's wallet address with
-  * `script_ref` set. Once these outputs land on chain, pegin-/pegout-complete pass their outRefs as
-  * reference inputs and drop the inlined script bytes from their witness sets — bringing each tx
-  * well under Cardano's 16 KB max-tx-size limit (we hit 21 KB without this).
+  * Each script gets pinned to a Babbage-era output with `script_ref` set. Once these outputs land
+  * on chain, pegin-/pegout-complete pass their outRefs as reference inputs and drop the inlined
+  * script bytes from their witness sets — bringing each tx well under Cardano's 16 KB max-tx-size
+  * limit (we hit 21 KB without this).
   *
-  * The outputs live at the wallet's own address so they remain spendable if the bridge is ever
-  * decommissioned; a reference input only requires the UTxO to still exist, not for it to be at a
-  * script address. Prints the resulting outpoints so they can go into the bridge config.
+  * The outputs live at [[binocular.cli.CommandHelpers.refScriptHoldingAddress]], the enterprise
+  * address of the sponsor's `sig(paymentKeyHash)` native script, NOT at the wallet address. Being
+  * at a script address makes them invisible to TxBuilder's fee/change coin selection, which cannot
+  * spend a script UTxO, so a 50 ADA ref can never be pulled in as a fee input and destroyed (the
+  * FeeTooSmallUTxO class of failures). They stay reclaimable if the bridge is ever decommissioned:
+  * the wallet key alone satisfies the native script. A reference input only requires the UTxO to
+  * exist, not for it to be at any particular address. Prints the resulting outpoints so they can go
+  * into the bridge config.
   */
 case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
 
@@ -212,9 +217,14 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
         // 50 ADA per output: generously above the minUTxO formula for a ~13 KB script-bearing
         // output. The excess comes back as change when the ref UTxO is ever spent.
         val baseAda = Coin(50_000_000L)
+        // Refs are parked at the sponsor's native-script holding address, not the wallet address:
+        // coin selection cannot spend a script UTxO, so a ref can never be consumed as a fee input.
+        // Derived from the sponsor key, so discovery recomputes the same address without config.
+        val refHoldingAddress =
+            binocular.cli.CommandHelpers.refScriptHoldingAddress(network, sponsorAddress)
         def refOutput(script: Script.PlutusV3): TransactionOutput =
             TransactionOutput.Babbage(
-              sponsorAddress,
+              refHoldingAddress,
               Value(baseAda),
               datumOption = None,
               scriptRef = Some(ScriptRef(script))
@@ -225,10 +235,10 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
             // BlockfrostProvider drops `scriptRef` from returned UTxOs, so coin selection can pick a
             // reference-script UTxO (e.g. a leftover deploy from a prior run) and under-estimate the
             // Conway reference-script fee → FeeTooSmallUTxO; spending it would also destroy a deployed
-            // ref script. Exclude every ref-script UTxO at the sponsor address from selection and pass
-            // the filtered set to the sync `complete`. Recomputed per tx so refs published earlier in
-            // THIS run are excluded too (their UTxOs are indexed before the next submit). Same fix as
-            // OracleTransactions.buildOptimalUpdateTransaction's `excludeInputs`.
+            // ref script. Exclude every ref-script UTxO at either scanned address from selection
+            // and pass the filtered set to the sync `complete`. Recomputed per tx so refs published
+            // earlier in THIS run are excluded too (their UTxOs are indexed before the next submit).
+            // Same fix as OracleTransactions.buildOptimalUpdateTransaction's `excludeInputs`.
             val excludeInputs = binocular.cli.CommandHelpers.refScriptOutpoints(
               config,
               binocular.cli.CommandHelpers.refScriptScanAddresses(config, network, sponsorAddress)
@@ -274,11 +284,15 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
                             // the next submit, so its fee/change selection doesn't pick the same
                             // already-spent inputs (pollForConfirmation checks tx status, not
                             // the address index; Blockfrost lags by a few slots between them).
-                            // Same convention as DeployBridgeCommand:200-215.
+                            // Same convention as DeployBridgeCommand:200-215. Wait on the HOLDING
+                            // address: that is where the ref output lands, and seeing it there
+                            // proves the block was applied to the UTxO index (so the sponsor's
+                            // change is visible too) and that the next iteration's exclusion
+                            // and already-deployed scans will see this ref.
                             binocular.oracle.OracleTransactions
                                 .waitForUtxoAtAddress(
                                   provider,
-                                  sponsorAddress,
+                                  refHoldingAddress,
                                   TransactionHash.fromHex(txHash),
                                   timeout
                                 ) match {
