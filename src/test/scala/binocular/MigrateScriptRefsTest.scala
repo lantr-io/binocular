@@ -129,6 +129,31 @@ class MigrateScriptRefsTest extends AnyFunSuite {
         assert(MigrateScriptRefsCommand.refShapedUtxoCount(items) == 2)
     }
 
+    test("an empty scan next to an unreachable provider is fatal, never 'nothing to migrate'") {
+        // A total backend outage empties the raw scan AND fails the provider query. Reading that as
+        // a finished migration would be a false success — the one outcome this guard exists to stop.
+        assert(
+          MigrateScriptRefsCommand.emptyScanVerdict(Left("NetworkError(connection refused)")) ==
+              MigrateScriptRefsCommand.EmptyScanVerdict.ProviderUnavailable(
+                "NetworkError(connection refused)"
+              )
+        )
+    }
+
+    test("an empty scan while the provider sees UTxOs is a blind scan, not an empty wallet") {
+        assert(
+          MigrateScriptRefsCommand.emptyScanVerdict(Right(7)) ==
+              MigrateScriptRefsCommand.EmptyScanVerdict.ScanBlind(7)
+        )
+    }
+
+    test("an empty scan the provider agrees with is a genuinely empty wallet") {
+        assert(
+          MigrateScriptRefsCommand.emptyScanVerdict(Right(0)) ==
+              MigrateScriptRefsCommand.EmptyScanVerdict.WalletEmpty
+        )
+    }
+
     test("refShapedUtxoCount tolerates a numeric quantity (Yaci-style JSON)") {
         val item = ujson.Obj(
           "tx_hash" -> ("1" * 64),

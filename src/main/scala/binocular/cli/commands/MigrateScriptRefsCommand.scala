@@ -82,16 +82,32 @@ case class MigrateScriptRefsCommand(dryRun: Boolean = false) extends Command {
         val refs = CommandHelpers.parseRefScriptOutpoints(sponsorItems)
 
         // `fetchAddressUtxos` is best-effort: an HTTP failure returns the same empty Seq an empty
-        // wallet does. Cross-check against the provider before believing "nothing to migrate".
+        // wallet does. Cross-check against the provider before believing "nothing to migrate", and
+        // decide the three cases explicitly — a provider failure is NOT permission to continue,
+        // because "raw scan empty AND provider unreachable" is a total backend outage, precisely
+        // the state in which reporting "nothing to migrate" would be a false success.
         if sponsorItems.isEmpty then {
-            val providerUtxos = provider.findUtxos(sponsorAddress).await(timeout).map(_.size)
-            if providerUtxos.exists(_ > 0) then {
-                Console.error(
-                  s"The address-utxos scan returned nothing while the provider sees " +
-                      s"${providerUtxos.getOrElse(0)} UTxOs at the sponsor address — the scan is " +
-                      s"failing, the wallet is not empty. Check ${CommandHelpers.blockfrostBaseUrl(config)}."
-                )
-                break(1)
+            val providerUtxos =
+                provider.findUtxos(sponsorAddress).await(timeout).map(_.size).left.map(_.toString)
+            emptyScanVerdict(providerUtxos) match {
+                case EmptyScanVerdict.ProviderUnavailable(error) =>
+                    // Includes NotFound: BlockfrostProvider answers an empty address with
+                    // Right(empty), so a Left here is a real failure, never an empty wallet.
+                    Console.error(
+                      s"The address-utxos scan returned nothing and the provider could not be " +
+                          s"queried either ($error) — the backend is down, so whether anything is " +
+                          s"left to migrate is unknown. Check ${CommandHelpers.blockfrostBaseUrl(config)}."
+                    )
+                    break(1)
+                case EmptyScanVerdict.ScanBlind(count) =>
+                    Console.error(
+                      s"The address-utxos scan returned nothing while the provider sees $count " +
+                          s"UTxOs at the sponsor address — the scan is failing, the wallet is not " +
+                          s"empty. Check ${CommandHelpers.blockfrostBaseUrl(config)}."
+                    )
+                    break(1)
+                case EmptyScanVerdict.WalletEmpty =>
+                    () // genuinely empty wallet — falls through to the "nothing to migrate" exit
             }
         }
 
@@ -119,7 +135,11 @@ case class MigrateScriptRefsCommand(dryRun: Boolean = false) extends Command {
         for (hash, outpoint) <- refs do Console.info(hash.toHex, show(outpoint))
         println()
 
-        /** Move one ref UTxO. Returns the outcome; never throws. */
+        /** Move one ref UTxO. Every failure it anticipates comes back as a [[MoveOutcome]] so the
+          * loop continues with the next ref. It can still throw: the `.await(timeout)` calls inside
+          * throw on timeout, which aborts the whole loop and exits 1 through CliApp's handler. That
+          * is acceptable — the command is idempotent, so a re-run picks up whatever is left.
+          */
         def moveOne(hash: ScriptHash, outpoint: TransactionInput): MoveOutcome = {
             val label = s"${hash.toHex.take(12)}… ${show(outpoint)}"
             Console.step(0, s"Moving $label")
@@ -288,7 +308,13 @@ case class MigrateScriptRefsCommand(dryRun: Boolean = false) extends Command {
 
 object MigrateScriptRefsCommand {
 
-    /** Lovelace `deploy-script-refs` puts in every reference UTxO. Used only by the shape guard. */
+    /** The lovelace `deploy-script-refs` ASKS for in every reference UTxO. Not what every ref
+      * holds: at 4310 lovelace per byte, the largest scripts (fault_round1 ~12.8 KB, fault_round2
+      * ~13.6 KB) get bumped above 50 ADA by the min-UTxO rule and hold their own higher value. The
+      * shape guard matches only the exactly-50-ADA ones — that is >= 8 of the current refs, well
+      * over [[RefShapeSuspicionThreshold]], so the guard still trips on a blind scan. Used only
+      * there.
+      */
     val RefUtxoLovelace: Long = 50_000_000L
 
     /** How many wallet UTxOs of the reference-UTxO shape make an empty scan implausible. Five is
@@ -306,6 +332,27 @@ object MigrateScriptRefsCommand {
         case Skipped(hash: ScriptHash, outpoint: TransactionInput, reason: String)
         case Failed(hash: ScriptHash, outpoint: TransactionInput, reason: String)
     }
+
+    /** What an EMPTY raw address-utxos scan means, cross-checked against the provider's independent
+      * view of the same address. Only [[WalletEmpty]] lets the command carry on to report "nothing
+      * to migrate"; the other two are fatal, because both mean the scan's emptiness proves nothing.
+      */
+    enum EmptyScanVerdict {
+        case WalletEmpty
+        case ScanBlind(providerUtxoCount: Int)
+        case ProviderUnavailable(error: String)
+    }
+
+    /** Decide [[EmptyScanVerdict]] from the provider's UTxO count at the sponsor address (`Left` =
+      * the provider query itself failed). Pure, so the "backend outage must not read as success"
+      * rule is pinned by a unit test rather than by an operator noticing a wrong exit code.
+      */
+    def emptyScanVerdict(providerUtxos: Either[String, Int]): EmptyScanVerdict =
+        providerUtxos match {
+            case Left(error)       => EmptyScanVerdict.ProviderUnavailable(error)
+            case Right(n) if n > 0 => EmptyScanVerdict.ScanBlind(n)
+            case Right(_)          => EmptyScanVerdict.WalletEmpty
+        }
 
     /** Outcome of rebuilding a script from a backend's bytes. */
     enum ScriptResolution {
