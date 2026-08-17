@@ -56,6 +56,7 @@ object CliApp {
             dryRun: Boolean
         )
         case DeployScriptRefs(dryRun: Boolean)
+        case MigrateScriptRefs(dryRun: Boolean)
         case RegisterBridgeCreds(dryRun: Boolean)
         case SignPeginMsg(keyPath: String, message: String)
         case PegInComplete(
@@ -504,6 +505,14 @@ object CliApp {
                 dryRunFlag.map(Cmd.DeployScriptRefs.apply)
             }
 
+        val migrateScriptRefsCommand =
+            Opts.subcommand(
+              "migrate-script-refs",
+              "Move all reference-script UTxOs from the sponsor wallet to the native holding address (one tx each)"
+            ) {
+                dryRunFlag.map(Cmd.MigrateScriptRefs.apply)
+            }
+
         val pegInCompleteCommand =
             Opts.subcommand(
               "pegin-complete",
@@ -649,6 +658,7 @@ object CliApp {
                 bootstrapBridgeStateCommand `orElse`
                 updateConfigCommand `orElse`
                 deployScriptRefsCommand `orElse`
+                migrateScriptRefsCommand `orElse`
                 registerBridgeCredsCommand `orElse`
                 pegInCompleteCommand `orElse`
                 signPeginMsgCommand `orElse`
@@ -763,6 +773,8 @@ object CliApp {
                             )
                         case Cmd.DeployScriptRefs(dryRun) =>
                             DeployScriptRefsCommand(dryRun)
+                        case Cmd.MigrateScriptRefs(dryRun) =>
+                            MigrateScriptRefsCommand(dryRun)
                         case Cmd.RegisterBridgeCreds(dryRun) =>
                             RegisterBridgeCredsCommand(dryRun)
                         case Cmd.SignPeginMsg(keyPath, message) =>
