@@ -4,8 +4,8 @@ import binocular.*
 import binocular.bitcoin.*
 import binocular.oracle.*
 import binocular.watchtower.*
-import scalus.cardano.address.{Address, Network}
-import scalus.cardano.ledger.{AssetName, Credential, Script, ScriptHash, ScriptRef, TransactionHash, TransactionInput, TransactionOutput, Utxo, Value}
+import scalus.cardano.address.{Address, Network, ShelleyAddress, ShelleyPaymentPart}
+import scalus.cardano.ledger.{AssetName, Credential, Script, ScriptHash, ScriptRef, Timelock, TransactionHash, TransactionInput, TransactionOutput, Utxo, Value}
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.wallet.hd.HdAccount
 import scalus.uplc.PlutusV3
@@ -194,6 +194,28 @@ object CommandHelpers {
                 }
         }
     }
+
+    /** Native script `sig(paymentKeyHash)` of the sponsor wallet — the holding script for CIP-33
+      * reference UTxOs. Keeping refs at a script address (not the wallet address) means TxBuilder
+      * coin selection can never spend one for fees (the FeeTooSmallUTxO class of failures), while
+      * the wallet key can still reclaim them (decommission path).
+      */
+    def refScriptHoldingScript(sponsorAddress: Address): Script.Native =
+        sponsorAddress match {
+            case ShelleyAddress(_, ShelleyPaymentPart.Key(keyHash), _) =>
+                Script.Native(Timelock.Signature(keyHash))
+            case other =>
+                throw new IllegalArgumentException(
+                  s"Sponsor address has no payment key hash: $other"
+                )
+        }
+
+    /** Enterprise (no-delegation) address of [[refScriptHoldingScript]] — where reference-script
+      * UTxOs are parked. Derived, never configured: any process holding the sponsor wallet
+      * recomputes the same address, so deploy and discovery agree without a recorded value.
+      */
+    def refScriptHoldingAddress(network: Network, sponsorAddress: Address): Address =
+        Address(network, Credential.ScriptHash(refScriptHoldingScript(sponsorAddress).scriptHash))
 
     /** Parse Blockfrost `/addresses/{addr}/utxos` items into the `(reference_script_hash ->
       * outpoint)` pairs of the CIP-33 reference-script UTxOs among them. Items without a

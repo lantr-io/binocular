@@ -5,7 +5,8 @@ import binocular.cli.CommandHelpers
 import binocular.oracle.{CardanoConfig, OracleConfig, WalletConfig}
 
 import org.scalatest.funsuite.AnyFunSuite
-import scalus.cardano.ledger.{ScriptHash, TransactionHash, TransactionInput}
+import scalus.cardano.address.{Address, ShelleyAddress, ShelleyPaymentPart}
+import scalus.cardano.ledger.{Credential, ScriptHash, Timelock, TransactionHash, TransactionInput}
 
 /** Pins the pure parsing of Blockfrost `/addresses/{addr}/utxos` JSON into the
   * `(reference_script_hash -> outpoint)` pairs used to discover CIP-33 reference-script UTxOs by
@@ -138,5 +139,44 @@ class RefScriptDiscoveryTest extends AnyFunSuite {
           CommandHelpers.blockfrostProjectIdHeader(config("preprod", projectId = "preprodABC")) ==
               "preprodABC"
         )
+    }
+
+    /** The preprod sponsor wallet base address. */
+    private val sponsor = Address.fromBech32(
+      "addr_test1qzwg0u9fpl8dac9rkramkcgzerjsfdlqgkw0q8hy5vwk8tzk5pgcmdpe5jeh92guy4mke4zdmagv228nucldzxv95clq68fray"
+    )
+
+    test(
+      "refScriptHoldingAddress derives a deterministic enterprise script address from the sponsor key"
+    ) {
+        val script = CommandHelpers.refScriptHoldingScript(sponsor)
+        val holding = CommandHelpers.refScriptHoldingAddress(sponsor.getNetwork.get, sponsor)
+        assert(holding.isEnterprise)
+        assert(holding.hasScript)
+        assert(holding.scriptHashOption.contains(script.scriptHash))
+        assert(holding.encode.get != sponsor.encode.get)
+        // determinism: derive twice, same result
+        assert(holding == CommandHelpers.refScriptHoldingAddress(sponsor.getNetwork.get, sponsor))
+        // Pinned: the holding address is derived, never configured, so deploy and discovery must
+        // agree across releases. A change here relocates every already-deployed reference UTxO.
+        assert(
+          holding.encode.get == "addr_test1wrr69xp4fm6u9zjjul82ux4v3344r0phtrp322uan5tz4yg7fz5kf"
+        )
+    }
+
+    test("refScriptHoldingScript is sig(sponsor payment key hash), so the wallet can reclaim") {
+        val keyHash = sponsor match {
+            case ShelleyAddress(_, ShelleyPaymentPart.Key(hash), _) => hash
+            case other => fail(s"fixture sponsor address is not key-based: $other")
+        }
+        assert(CommandHelpers.refScriptHoldingScript(sponsor).script == Timelock.Signature(keyHash))
+    }
+
+    test("refScriptHoldingScript rejects an address with no payment key hash") {
+        val scriptAddr = Address(
+          sponsor.getNetwork.get,
+          Credential.ScriptHash(CommandHelpers.refScriptHoldingScript(sponsor).scriptHash)
+        )
+        intercept[IllegalArgumentException](CommandHelpers.refScriptHoldingScript(scriptAddr))
     }
 }
