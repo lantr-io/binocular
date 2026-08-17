@@ -231,16 +231,36 @@ object CommandHelpers {
             }
         }
 
+    /** `project_id` header for raw Blockfrost-API queries. Hosted blockfrost.io authenticates by
+      * it; a self-hosted backend (Dolos, Yaci Store) ignores it, so running one must not require a
+      * Blockfrost account. Same placeholder the provider sends — see
+      * `CardanoConfig.createBlockchainProvider`.
+      */
+    def blockfrostProjectIdHeader(config: BinocularConfig): String =
+        if config.cardano.blockfrostProjectId.nonEmpty then config.cardano.blockfrostProjectId
+        else "self-hosted"
+
+    /** Whether a raw Blockfrost-API scan can be issued at all. Mirrors the admission rule of
+      * `CardanoConfig.validate`: a project id is required ONLY against hosted blockfrost.io,
+      * because a `blockfrost-url` override points at a self-hosted backend that needs no account.
+      * Guarding on the project id alone would silently return no UTxOs for exactly the Dolos
+      * deployment this discovery path exists to serve. Pure — the network fetch lives in
+      * [[fetchAddressUtxos]].
+      */
+    def canScanAddressUtxos(config: BinocularConfig, addressBech32: String): Boolean =
+        config.cardano.backend.toLowerCase == "blockfrost"
+            && addressBech32.nonEmpty
+            && (config.cardano.blockfrostProjectId.nonEmpty
+                || config.cardano.blockfrostUrl.exists(_.nonEmpty))
+
     /** Fetch every UTxO JSON object at `addressBech32` from Blockfrost, following pagination.
       * Best-effort: returns empty on a non-blockfrost backend or any query failure.
       */
     def fetchAddressUtxos(config: BinocularConfig, addressBech32: String): Seq[ujson.Value] = {
-        if config.cardano.backend.toLowerCase != "blockfrost"
-            || config.cardano.blockfrostProjectId.isEmpty
-            || addressBech32.isEmpty
-        then Seq.empty
+        if !canScanAddressUtxos(config, addressBech32) then Seq.empty
         else {
             val base = blockfrostBaseUrl(config)
+            val projectId = blockfrostProjectIdHeader(config)
             try {
                 val client = java.net.http.HttpClient.newHttpClient()
                 def page(p: Int): Seq[ujson.Value] = {
@@ -251,7 +271,7 @@ object CommandHelpers {
                             s"$base/addresses/$addressBech32/utxos?count=100&page=$p"
                           )
                         )
-                        .header("project_id", config.cardano.blockfrostProjectId)
+                        .header("project_id", projectId)
                         .GET()
                         .build()
                     val resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString())

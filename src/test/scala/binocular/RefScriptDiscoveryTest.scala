@@ -58,16 +58,28 @@ class RefScriptDiscoveryTest extends AnyFunSuite {
         )
     }
 
-    /** Minimal config: only `cardano` matters to the base-URL choice, every other section keeps its
+    /** Minimal config: only `cardano` matters to the scan decisions, every other section keeps its
       * defaults.
       */
-    private def config(network: String, blockfrostUrl: Option[String] = None): BinocularConfig =
+    private def config(
+        network: String,
+        blockfrostUrl: Option[String] = None,
+        projectId: String = "",
+        backend: String = "blockfrost"
+    ): BinocularConfig =
         BinocularConfig(
           bitcoinNode = BitcoinNodeConfig(),
-          cardano = CardanoConfig(network = network, blockfrostUrl = blockfrostUrl),
+          cardano = CardanoConfig(
+            network = network,
+            backend = backend,
+            blockfrostProjectId = projectId,
+            blockfrostUrl = blockfrostUrl
+          ),
           wallet = WalletConfig(),
           oracle = OracleConfig()
         )
+
+    private val addr = "addr_test1qq"
 
     test("blockfrostBaseUrl prefers configured blockfrost-url") {
         val cfg = config("preprod", Some("http://127.0.0.1:3000"))
@@ -91,6 +103,40 @@ class RefScriptDiscoveryTest extends AnyFunSuite {
         assert(
           CommandHelpers.blockfrostBaseUrl(config("preview")) ==
               "https://cardano-preview.blockfrost.io/api/v0"
+        )
+    }
+
+    test("canScanAddressUtxos allows a self-hosted backend with no project id") {
+        // Dolos without a Blockfrost account: `blockfrost-url` set, project id empty. This is
+        // exactly what CardanoConfig.validate() admits, so discovery must not bail out here.
+        val cfg = config("preprod", blockfrostUrl = Some("http://127.0.0.1:3000"))
+        assert(CommandHelpers.canScanAddressUtxos(cfg, addr))
+    }
+
+    test("canScanAddressUtxos needs a project id when there is no URL override") {
+        assert(!CommandHelpers.canScanAddressUtxos(config("preprod"), addr))
+        assert(
+          CommandHelpers.canScanAddressUtxos(config("preprod", projectId = "preprodABC"), addr)
+        )
+    }
+
+    test("canScanAddressUtxos rejects a non-blockfrost backend or an empty address") {
+        val hosted = config("preprod", projectId = "preprodABC")
+        assert(!CommandHelpers.canScanAddressUtxos(hosted, ""))
+        assert(
+          !CommandHelpers.canScanAddressUtxos(
+            config("preprod", projectId = "preprodABC", backend = "yaci"),
+            addr
+          )
+        )
+    }
+
+    test("blockfrostProjectIdHeader falls back to the provider's self-hosted placeholder") {
+        val selfHosted = config("preprod", blockfrostUrl = Some("http://127.0.0.1:3000"))
+        assert(CommandHelpers.blockfrostProjectIdHeader(selfHosted) == "self-hosted")
+        assert(
+          CommandHelpers.blockfrostProjectIdHeader(config("preprod", projectId = "preprodABC")) ==
+              "preprodABC"
         )
     }
 }
