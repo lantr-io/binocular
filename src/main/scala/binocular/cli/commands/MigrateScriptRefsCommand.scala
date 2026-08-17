@@ -358,10 +358,14 @@ case class MigrateScriptRefsCommand(dryRun: Boolean = false, outpoints: Option[S
                             // Wait for the address-based UTxO index to catch up before the next
                             // move, so its fee/change selection doesn't pick inputs this tx just
                             // spent (pollForConfirmation checks tx status, not the address index;
-                            // Blockfrost lags by a few slots between them). Wait on the HOLDING
-                            // address: seeing the moved ref there proves the block was applied to
-                            // the index, so the sponsor's change is visible and the next
-                            // iteration's exclusion scan sees the ref at its new home.
+                            // Blockfrost lags by a few slots between them). Waiting on the HOLDING
+                            // address alone is NOT enough: Blockfrost indexes addresses
+                            // independently, and a live run showed the sponsor side lagging — the
+                            // next move re-selected change this tx had already spent and every
+                            // remaining move died on BadInputsUTxO. So wait on BOTH: the holding
+                            // address (the moved ref) and the sponsor address (this tx's change,
+                            // which the next move's fee selection draws from) — the same sponsor
+                            // wait DeployScriptRefsCommand.submitOne does.
                             binocular.oracle.OracleTransactions
                                 .waitForUtxoAtAddress(
                                   provider,
@@ -373,6 +377,23 @@ case class MigrateScriptRefsCommand(dryRun: Boolean = false, outpoints: Option[S
                                     Console.error(s"$label UTxO-index wait: $err")
                                     MoveOutcome.Failed(hash, outpoint, s"UTxO-index wait: $err")
                                 case Right(_) =>
+                                    // The change output is expected at the sponsor; a timeout here
+                                    // is a warning, not a failed move (the ref is already on-chain
+                                    // at the holding address) — a later move that selects stale
+                                    // inputs fails loudly at submit, never destructively.
+                                    binocular.oracle.OracleTransactions
+                                        .waitForUtxoAtAddress(
+                                          provider,
+                                          sponsorAddress,
+                                          TransactionHash.fromHex(txHash),
+                                          timeout
+                                        ) match {
+                                        case Left(err) =>
+                                            Console.warn(
+                                              s"$label sponsor-index wait: $err — continuing"
+                                            )
+                                        case Right(_) => ()
+                                    }
                                     Console.success(
                                       s"moved: ${hash.toHex} ${show(outpoint)} -> $txHash#0"
                                     )
