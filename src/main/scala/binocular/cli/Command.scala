@@ -218,6 +218,19 @@ object CommandHelpers {
             }
         }
 
+    /** Base URL for raw Blockfrost-API queries (discovery/exclusion scans). Honors the same
+      * `cardano.blockfrost-url` override the provider uses (e.g. self-hosted Dolos), so scans and
+      * coin selection see the same view. Falls back to hosted Blockfrost per network.
+      */
+    def blockfrostBaseUrl(config: BinocularConfig): String =
+        config.cardano.blockfrostUrl.map(_.stripSuffix("/")).getOrElse {
+            config.cardano.network.toLowerCase match {
+                case "mainnet" => "https://cardano-mainnet.blockfrost.io/api/v0"
+                case "preview" => "https://cardano-preview.blockfrost.io/api/v0"
+                case _         => "https://cardano-preprod.blockfrost.io/api/v0"
+            }
+        }
+
     /** Fetch every UTxO JSON object at `addressBech32` from Blockfrost, following pagination.
       * Best-effort: returns empty on a non-blockfrost backend or any query failure.
       */
@@ -227,11 +240,7 @@ object CommandHelpers {
             || addressBech32.isEmpty
         then Seq.empty
         else {
-            val base = config.cardano.network.toLowerCase match {
-                case "mainnet" => "https://cardano-mainnet.blockfrost.io/api/v0"
-                case "preview" => "https://cardano-preview.blockfrost.io/api/v0"
-                case _         => "https://cardano-preprod.blockfrost.io/api/v0"
-            }
+            val base = blockfrostBaseUrl(config)
             try {
                 val client = java.net.http.HttpClient.newHttpClient()
                 def page(p: Int): Seq[ujson.Value] = {
