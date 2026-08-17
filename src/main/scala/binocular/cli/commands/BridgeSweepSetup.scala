@@ -188,8 +188,10 @@ object BridgeSweepSetup {
     )(using ExecutionContext): PegOutCompleteTx.ScriptRefs =
         Try {
             val sponsorAddress = hdAccount.baseAddress(network)
-            val refByHash =
-                CommandHelpers.refScriptUtxosByHash(config, sponsorAddress.encode.getOrElse(""))
+            val refByHash = CommandHelpers.refScriptUtxosByHash(
+              config,
+              CommandHelpers.refScriptScanAddresses(config, network, sponsorAddress)
+            )
             // The provider drops `scriptRef` when listing UTxOs, so a reference UTxO fetched back
             // has to be re-enriched with the script it carries or TxBuilder cannot attach it.
             def refUtxo(script: Script.PlutusV3): Option[Utxo] =

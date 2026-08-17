@@ -237,11 +237,14 @@ case class SetStateCommand(height: Long, dryRun: Boolean = false) extends Comman
                 break(1)
         }
 
-        // Keep the bridge's CIP-33 reference-script UTxOs (parked at the sponsor wallet) OUT of fee
-        // selection — BlockfrostProvider drops their scriptRef, so picking one under-estimates the
-        // fee by the Conway ref-script surcharge → FeeTooSmallUTxO. Same fix the update loop applies.
-        val excludeInputs =
-            CommandHelpers.refScriptOutpoints(config, setup.sponsorAddress.encode.getOrElse(""))
+        // Keep the bridge's CIP-33 reference-script UTxOs (at the holding address, plus any still at
+        // the sponsor wallet) OUT of fee selection — BlockfrostProvider drops their scriptRef, so
+        // picking one under-estimates the fee by the Conway ref-script surcharge → FeeTooSmallUTxO.
+        // Same fix the update loop applies.
+        val excludeInputs = CommandHelpers.refScriptOutpoints(
+          config,
+          CommandHelpers.refScriptScanAddresses(config, setup.network, setup.sponsorAddress)
+        )
         if excludeInputs.nonEmpty then
             Console.info(
               "Excluding",

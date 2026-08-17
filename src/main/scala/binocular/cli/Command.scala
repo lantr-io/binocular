@@ -217,6 +217,28 @@ object CommandHelpers {
     def refScriptHoldingAddress(network: Network, sponsorAddress: Address): Address =
         Address(network, Credential.ScriptHash(refScriptHoldingScript(sponsorAddress).scriptHash))
 
+    /** The addresses a reference-script scan must cover: the native-script holding address FIRST,
+      * the sponsor wallet second. Both, not just the holding one, because refs published before the
+      * migration still sit at the wallet address — discovery has to find them there, and fee
+      * exclusion has to keep excluding them, until they are moved. Order is deterministic and
+      * load-bearing: resolution by script hash collapses duplicates to the LAST seen, so a ref that
+      * exists at both addresses resolves to the sponsor copy. Deduped, so a degenerate config where
+      * the two coincide never scans twice.
+      *
+      * `config` is taken for signature symmetry with the scan functions it feeds (and to keep the
+      * call sites stable if the address set ever becomes config-driven); the derivation itself
+      * needs only the network and the sponsor key. Pure — no network access.
+      */
+    def refScriptScanAddresses(
+        config: BinocularConfig,
+        network: Network,
+        sponsorAddress: Address
+    ): Seq[String] =
+        Seq(
+          refScriptHoldingAddress(network, sponsorAddress).encode.getOrElse(""),
+          sponsorAddress.encode.getOrElse("")
+        ).filter(_.nonEmpty).distinct
+
     /** Parse Blockfrost `/addresses/{addr}/utxos` items into the `(reference_script_hash ->
       * outpoint)` pairs of the CIP-33 reference-script UTxOs among them. Items without a
       * `reference_script_hash` (plain wallet UTxOs) are dropped. Duplicate UTxOs carrying the same
@@ -310,30 +332,45 @@ object CommandHelpers {
         }
     }
 
-    /** Query blockfrost for EVERY reference-script (CIP-33) UTxO at `addressBech32` and return
-      * their outpoints. Catches duplicate/leftover ref-script UTxOs from earlier deploy-script-refs
-      * runs (the config-known set alone left the daemon still hitting FeeTooSmallUTxO on an
-      * un-recorded ref UTxO). Needed because BlockfrostProvider drops `scriptRef`, so the only way
-      * to spot a ref-script UTxO is the `reference_script_hash` field of the raw address-utxos
-      * JSON. Best-effort: returns empty on a non-blockfrost backend or any query failure.
+    /** Every `(script hash -> outpoint)` pair found across `addresses`, in the order given. Folds
+      * the single-address [[fetchAddressUtxos]] over the list, so the union of the holding address
+      * and the sponsor wallet (see [[refScriptScanAddresses]]) is one scan to callers.
+      */
+    private def refScriptPairs(
+        config: BinocularConfig,
+        addresses: Seq[String]
+    ): Seq[(ScriptHash, TransactionInput)] =
+        addresses.flatMap(a => parseRefScriptOutpoints(fetchAddressUtxos(config, a)))
+
+    /** Query blockfrost for EVERY reference-script (CIP-33) UTxO at `addresses` and return their
+      * outpoints. Catches duplicate/leftover ref-script UTxOs from earlier deploy-script-refs runs
+      * (the config-known set alone left the daemon still hitting FeeTooSmallUTxO on an un-recorded
+      * ref UTxO). Needed because BlockfrostProvider drops `scriptRef`, so the only way to spot a
+      * ref-script UTxO is the `reference_script_hash` field of the raw address-utxos JSON.
+      *
+      * Used to keep ref UTxOs out of fee selection: excluding an outpoint that coin selection was
+      * never going to consider (one at the holding address, which is not the change address) is a
+      * no-op, so scanning the union is always safe. Best-effort: returns empty on a non-blockfrost
+      * backend or any query failure.
       */
     def refScriptOutpoints(
         config: BinocularConfig,
-        addressBech32: String
+        addresses: Seq[String]
     ): Set[TransactionInput] =
-        parseRefScriptOutpoints(fetchAddressUtxos(config, addressBech32)).map(_._2).toSet
+        refScriptPairs(config, addresses).map(_._2).toSet
 
-    /** Resolve the CIP-33 reference-script UTxOs at `addressBech32` keyed by the script hash each
+    /** Resolve the CIP-33 reference-script UTxOs at `addresses` keyed by the script hash each
       * carries — the discovery path that lets the completion transactions attach their heavy
       * scripts by reference without the outpoints being recorded in config. A script hash present
-      * on more than one UTxO (leftover from a re-run) collapses to the last seen; any of them is a
-      * valid reference input. Best-effort: empty on a non-blockfrost backend or query failure.
+      * on more than one UTxO (leftover from a re-run, or one copy at each scanned address)
+      * collapses to the last seen; any of them is a valid reference input. Best-effort: empty on a
+      * non-blockfrost backend or query failure.
       */
     def refScriptUtxosByHash(
         config: BinocularConfig,
-        addressBech32: String
+        addresses: Seq[String]
     ): Map[ScriptHash, TransactionInput] =
-        parseRefScriptOutpoints(fetchAddressUtxos(config, addressBech32)).toMap
+        refScriptPairs(config, addresses).toMap
 
     /** Derive the TM-NFT policy id = the binocular [[TreasuryMovementValidator]] script hash,
       * parameterized by the oracle script hash + the TM-control NFT `(policy, name)` from config.

@@ -179,4 +179,20 @@ class RefScriptDiscoveryTest extends AnyFunSuite {
         )
         intercept[IllegalArgumentException](CommandHelpers.refScriptHoldingScript(scriptAddr))
     }
+
+    test("refScriptScanAddresses returns holding address first, sponsor second, no duplicates") {
+        val addrs = CommandHelpers.refScriptScanAddresses(
+          config("preprod", projectId = "preprodABC"),
+          sponsor.getNetwork.get,
+          sponsor
+        )
+        assert(addrs.size == 2)
+        assert(
+          addrs.head == CommandHelpers
+              .refScriptHoldingAddress(sponsor.getNetwork.get, sponsor)
+              .encode
+              .get
+        )
+        assert(addrs.last == sponsor.encode.get)
+    }
 }

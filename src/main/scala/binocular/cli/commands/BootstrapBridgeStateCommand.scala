@@ -197,8 +197,10 @@ case class BootstrapBridgeStateCommand(
             case None =>
                 // Same selection rule as deploy-bridge: pure ADA, big enough, and never a CIP-33
                 // reference-script UTxO (spending one destroys a deployed reference script).
-                val excluded =
-                    CommandHelpers.refScriptOutpoints(config, sponsorAddress.encode.getOrElse(""))
+                val excluded = CommandHelpers.refScriptOutpoints(
+                  config,
+                  CommandHelpers.refScriptScanAddresses(config, network, sponsorAddress)
+                )
                 BridgeBootstrap.pickOneShot(walletUtxos, excluded).getOrElse {
                     Console.error(
                       s"No clean pure-ADA wallet UTxO (>=${BridgeBootstrap.MinOneShotLovelace / 1000000} " +

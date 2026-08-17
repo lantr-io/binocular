@@ -229,8 +229,10 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
             // the filtered set to the sync `complete`. Recomputed per tx so refs published earlier in
             // THIS run are excluded too (their UTxOs are indexed before the next submit). Same fix as
             // OracleTransactions.buildOptimalUpdateTransaction's `excludeInputs`.
-            val excludeInputs =
-                binocular.cli.CommandHelpers.refScriptOutpoints(config, sponsorAddress.encode.get)
+            val excludeInputs = binocular.cli.CommandHelpers.refScriptOutpoints(
+              config,
+              binocular.cli.CommandHelpers.refScriptScanAddresses(config, network, sponsorAddress)
+            )
             val sponsorUtxos =
                 provider.findUtxos(sponsorAddress).await(timeout) match {
                     case Right(u) =>
@@ -294,10 +296,12 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
             }
         }
 
-        // Each entry: (label, script). Skip any whose script hash already has a reference UTxO at the
-        // sponsor wallet so re-running (e.g. to add the peg-out side after the peg-in side) doesn't
-        // re-publish — and waste ~50 ADA on — refs that already exist. Discovery is on-chain
-        // (BlockfrostProvider drops scriptRef, so scan `reference_script_hash` directly), not config.
+        // Each entry: (label, script). Skip any whose script hash already has a reference UTxO at
+        // the holding address or the sponsor wallet, so re-running (e.g. to add the peg-out side
+        // after the peg-in side) doesn't re-publish — and waste ~50 ADA on — refs that already
+        // exist. Scanning both means a pre-migration ref still at the wallet also counts as
+        // deployed. Discovery is on-chain (BlockfrostProvider drops scriptRef, so scan
+        // `reference_script_hash` directly), not config.
         val candidates = List(
           ("peg_in", pegIn.script),
           ("bridged_token", bridgedToken.script),
@@ -306,7 +310,10 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
           ("bridge_state", bss.script)
         ) ++ federationScripts
         val deployedHashes = binocular.cli.CommandHelpers
-            .refScriptUtxosByHash(config, sponsorAddress.encode.getOrElse(""))
+            .refScriptUtxosByHash(
+              config,
+              binocular.cli.CommandHelpers.refScriptScanAddresses(config, network, sponsorAddress)
+            )
             .keySet
         val (already, toPublish) =
             candidates.partition { case (_, script) => deployedHashes.contains(script.scriptHash) }

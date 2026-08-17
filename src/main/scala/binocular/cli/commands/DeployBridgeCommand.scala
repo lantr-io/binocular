@@ -171,8 +171,10 @@ case class DeployBridgeCommand(
                 case _ => None
             }
         val excludedInputs: Set[TransactionInput] =
-            CommandHelpers.refScriptOutpoints(config, sponsorAddress.encode.getOrElse("")) ++
-                staleOneShot
+            CommandHelpers.refScriptOutpoints(
+              config,
+              CommandHelpers.refScriptScanAddresses(config, network, sponsorAddress)
+            ) ++ staleOneShot
 
         val signer = setup.hdAccount.signerForUtxos
 

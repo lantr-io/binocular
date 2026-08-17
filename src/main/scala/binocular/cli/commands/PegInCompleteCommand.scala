@@ -310,12 +310,15 @@ case class PegInCompleteCommand(
         // same blueprint + params the original deploy used), so we attach them directly. Each
         // empty config entry skips that ref → its script falls back to the witness set.
         // Discover the CIP-33 reference-script UTxOs by the script hash each carries, scanning the
-        // sponsor wallet where deploy-script-refs publishes them — so the outpoints need not be
-        // recorded in config. A script whose hash isn't found falls back to inlining it in the
-        // witness set (only viable for small txs). The provider drops scriptRef on the fetched UTxO,
-        // so re-attach the reconstructed script for the tx builder.
-        val refScriptUtxos =
-            CommandHelpers.refScriptUtxosByHash(config, setup.sponsorAddress.encode.getOrElse(""))
+        // native-script holding address where deploy-script-refs publishes them (plus the sponsor
+        // wallet, for refs deployed before that migration) — so the outpoints need not be recorded
+        // in config. A script whose hash isn't found falls back to inlining it in the witness set
+        // (only viable for small txs). The provider drops scriptRef on the fetched UTxO, so
+        // re-attach the reconstructed script for the tx builder.
+        val refScriptUtxos = CommandHelpers.refScriptUtxosByHash(
+          config,
+          CommandHelpers.refScriptScanAddresses(config, network, setup.sponsorAddress)
+        )
         def lookupRefUtxo(
             label: String,
             script: Script.PlutusV3

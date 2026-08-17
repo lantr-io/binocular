@@ -193,7 +193,8 @@ class OracleDaemon(
                         .valueOr(err => throw new RuntimeException(err))
                     val excludeInputs = CommandHelpers.refScriptOutpoints(
                       config,
-                      setup.sponsorAddress.encode.getOrElse("")
+                      CommandHelpers
+                          .refScriptScanAddresses(config, setup.network, setup.sponsorAddress)
                     )
                     OracleTransactions.buildAndSubmitSetStateTransaction(
                       setup.provider,
@@ -560,14 +561,16 @@ class OracleDaemon(
                       currentMpf,
                       setup.params,
                       timeout,
-                      // Exclude EVERY reference-script UTxO at the sponsor address from fee selection —
-                      // BlockfrostProvider drops their scriptRef, so the builder under-estimates the
-                      // fee by the Conway ref-script surcharge (→ FeeTooSmallUTxO, which stalled the
-                      // daemon at h135997). The scan catches every deployed ref UTxO by its
-                      // reference_script_hash, including duplicates from earlier deploy-script-refs runs.
+                      // Exclude EVERY reference-script UTxO at the holding + sponsor addresses from
+                      // fee selection — BlockfrostProvider drops their scriptRef, so the builder
+                      // under-estimates the fee by the Conway ref-script surcharge (→ FeeTooSmallUTxO,
+                      // which stalled the daemon at h135997). The scan catches every deployed ref UTxO
+                      // by its reference_script_hash, including duplicates from earlier
+                      // deploy-script-refs runs and pre-migration refs still at the wallet address.
                       excludeInputs = binocular.cli.CommandHelpers.refScriptOutpoints(
                         config,
-                        setup.sponsorAddress.encode.getOrElse("")
+                        binocular.cli.CommandHelpers
+                            .refScriptScanAddresses(config, setup.network, setup.sponsorAddress)
                       )
                     )
 
