@@ -6,7 +6,7 @@ import binocular.cli.commands.MigrateScriptRefsCommand.ScriptResolution
 
 import org.scalatest.funsuite.AnyFunSuite
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{Coin, Script, ScriptRef, Value}
+import scalus.cardano.ledger.{Coin, Script, ScriptRef, TransactionHash, TransactionInput, Value}
 import scalus.uplc.builtin.ByteString
 import scalus.uplc.{Constant, Program, Term}
 
@@ -161,5 +161,146 @@ class MigrateScriptRefsTest extends AnyFunSuite {
           "amount" -> ujson.Arr(ujson.Obj("unit" -> "lovelace", "quantity" -> 50000000))
         )
         assert(MigrateScriptRefsCommand.refShapedUtxoCount(Seq(item)) == 1)
+    }
+
+    // ---- --outpoints bootstrap path -------------------------------------------------------
+    // The address-utxos scan above goes blind whenever a backend stops populating
+    // `reference_script_hash` (hosted Blockfrost regressed to null for base addresses on
+    // 2026-08-16). `--outpoints` names the ref UTxOs explicitly instead; these pin the two pure
+    // pieces that path adds — the operator-typed list, and the per-tx JSON it reads the hash from.
+
+    private val txA = "cb" * 32
+    private val txB = "a2" * 32
+    private val scriptHashHex = "e1" * 28
+
+    test("parseOutpointList accepts a comma-separated TX_HASH#INDEX list") {
+        assert(
+          MigrateScriptRefsCommand.parseOutpointList(s"$txA#0,$txB#3") ==
+              Right(
+                Seq(
+                  TransactionInput(TransactionHash.fromHex(txA), 0),
+                  TransactionInput(TransactionHash.fromHex(txB), 3)
+                )
+              )
+        )
+    }
+
+    test("parseOutpointList tolerates whitespace and a trailing comma, and dedupes") {
+        assert(
+          MigrateScriptRefsCommand.parseOutpointList(s" $txA#0 , $txB#1, $txA#0 ,") ==
+              Right(
+                Seq(
+                  TransactionInput(TransactionHash.fromHex(txA), 0),
+                  TransactionInput(TransactionHash.fromHex(txB), 1)
+                )
+              )
+        )
+    }
+
+    test("parseOutpointList rejects an entry with no '#index'") {
+        val err = MigrateScriptRefsCommand.parseOutpointList(s"$txA").left.getOrElse(fail("parsed"))
+        assert(err.contains("TX_HASH#INDEX"))
+        assert(err.contains(txA))
+    }
+
+    test("parseOutpointList rejects a non-numeric or negative index") {
+        assert(MigrateScriptRefsCommand.parseOutpointList(s"$txA#x").isLeft)
+        assert(MigrateScriptRefsCommand.parseOutpointList(s"$txA#-1").isLeft)
+        assert(MigrateScriptRefsCommand.parseOutpointList(s"$txA#0#1").isLeft)
+    }
+
+    test("parseOutpointList rejects a tx hash that is not 32 bytes of hex") {
+        // Would otherwise throw out of TransactionHash.fromHex and lose the operator's context.
+        assert(MigrateScriptRefsCommand.parseOutpointList("deadbeef#0").isLeft)
+        assert(MigrateScriptRefsCommand.parseOutpointList(s"${"z" * 64}#0").isLeft)
+    }
+
+    test("parseOutpointList reports every bad entry at once, not just the first") {
+        val err =
+            MigrateScriptRefsCommand.parseOutpointList("nope#0,alsonope#1").left.getOrElse("")
+        assert(err.contains("nope#0"))
+        assert(err.contains("alsonope#1"))
+    }
+
+    test("parseOutpointList rejects an empty list") {
+        assert(MigrateScriptRefsCommand.parseOutpointList("").isLeft)
+        assert(MigrateScriptRefsCommand.parseOutpointList("  , ").isLeft)
+    }
+
+    /** Blockfrost `/txs/{hash}/utxos` body, whose `reference_script_hash` is populated correctly
+      * even while the `/addresses/{addr}/utxos` one is null.
+      */
+    private def txUtxos(outputs: (Int, String | Null)*): ujson.Value =
+        ujson.Obj(
+          "hash" -> txA,
+          "inputs" -> ujson.Arr(),
+          "outputs" -> ujson.Arr(
+            outputs.map { case (idx, refHash) =>
+                val o = ujson.Obj(
+                  "address" -> "addr_test1qq",
+                  "output_index" -> idx,
+                  "amount" -> ujson.Arr(ujson.Obj("unit" -> "lovelace", "quantity" -> "50000000"))
+                )
+                o("reference_script_hash") =
+                    if refHash == null then ujson.Null else ujson.Str(refHash)
+                o
+            }*
+          )
+        )
+
+    test("referenceScriptHashAt finds the hash of the requested output index") {
+        val json = txUtxos(0 -> null, 1 -> scriptHashHex)
+        assert(MigrateScriptRefsCommand.referenceScriptHashAt(json, 1).contains(scriptHashHex))
+    }
+
+    test("referenceScriptHashAt returns None for a null reference_script_hash") {
+        // Must never read as "no script here, skip it": the caller turns None into a hard error.
+        assert(MigrateScriptRefsCommand.referenceScriptHashAt(txUtxos(0 -> null), 0).isEmpty)
+    }
+
+    test("referenceScriptHashAt returns None when the field is absent entirely") {
+        val json = ujson.Obj(
+          "outputs" -> ujson.Arr(ujson.Obj("output_index" -> 0, "address" -> "addr_test1qq"))
+        )
+        assert(MigrateScriptRefsCommand.referenceScriptHashAt(json, 0).isEmpty)
+    }
+
+    test("referenceScriptHashAt returns None when the index is not among the outputs") {
+        val json = txUtxos(0 -> scriptHashHex)
+        assert(MigrateScriptRefsCommand.referenceScriptHashAt(json, 4).isEmpty)
+    }
+
+    test("referenceScriptHashAt returns None for a body with no outputs array") {
+        assert(MigrateScriptRefsCommand.referenceScriptHashAt(ujson.Obj(), 0).isEmpty)
+        assert(MigrateScriptRefsCommand.referenceScriptHashAt(ujson.Arr(), 0).isEmpty)
+    }
+
+    /** `migrate-script-refs` through the real decline parser: the bootstrap path is only reachable
+      * if the option is actually wired to the command (same harness as UpdateConfigParseTest).
+      */
+    private def parseCli(args: String*): Either[String, binocular.cli.CliApp.Cmd] =
+        binocular.cli.CliApp.command.parse(args).left.map(_.toString).map(_._2)
+
+    test("--outpoints reaches the migrate-script-refs command, --dry-run still parses") {
+        assert(
+          parseCli("migrate-script-refs", "--outpoints", s"$txA#0,$txB#1", "--dry-run") ==
+              Right(binocular.cli.CliApp.Cmd.MigrateScriptRefs(true, Some(s"$txA#0,$txB#1")))
+        )
+    }
+
+    test("migrate-script-refs without --outpoints keeps the scan behaviour") {
+        assert(
+          parseCli("migrate-script-refs") ==
+              Right(binocular.cli.CliApp.Cmd.MigrateScriptRefs(false, None))
+        )
+    }
+
+    test("referenceScriptHashAt tolerates a string output_index") {
+        val json = ujson.Obj(
+          "outputs" -> ujson.Arr(
+            ujson.Obj("output_index" -> "2", "reference_script_hash" -> scriptHashHex)
+          )
+        )
+        assert(MigrateScriptRefsCommand.referenceScriptHashAt(json, 2).contains(scriptHashHex))
     }
 }

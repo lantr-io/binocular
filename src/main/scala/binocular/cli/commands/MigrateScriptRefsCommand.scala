@@ -38,14 +38,41 @@ import cats.syntax.either.*
   * Idempotent by construction: what it moves is what the source scan still finds at the wallet, so
   * a re-run after a partial failure moves only the remainder, and a run with nothing left to move
   * exits 0.
+  *
+  * `--outpoints TX_HASH#INDEX,…` replaces that source scan with an explicit list. It exists because
+  * the scan has a single point of failure it cannot route around: hosted Blockfrost regressed on
+  * 2026-08-16 and now answers `/addresses/{addr}/utxos` with `reference_script_hash: null` for base
+  * addresses, whatever the output actually carries. The scan then finds nothing, the shape guard
+  * above correctly refuses to call that a finished migration, and an operator restricted to hosted
+  * Blockfrost has no way forward. Naming the outpoints does not weaken any check: each one is still
+  * confirmed to exist, to sit at the sponsor address, and to carry a reference script — the last
+  * read from `/txs/{hash}/utxos`, the endpoint that still reports the field correctly — and then
+  * goes through the very same fetch/verify/move pipeline, hash round-trip included. What it skips
+  * is only the enumeration, which the operator has supplied instead.
+  *
+  * The named list is also fee-exclusion input, so name every ref still at the wallet even if this
+  * run only moves some: the exclusion scan reads the same broken field, and BlockfrostProvider
+  * drops `scriptRef`, so on such a backend nothing else can tell coin selection to leave them
+  * alone.
   */
-case class MigrateScriptRefsCommand(dryRun: Boolean = false) extends Command {
+case class MigrateScriptRefsCommand(dryRun: Boolean = false, outpoints: Option[String] = None)
+    extends Command {
 
     import MigrateScriptRefsCommand.*
 
     override def execute(config: BinocularConfig): Int = boundary {
         Console.header("Migrate Reference Scripts to the Holding Address")
         if dryRun then Console.warn("Dry-run mode — will resolve every move but not submit")
+
+        // Parsed before any network setup: a typo in a 64-char hash list should cost nothing.
+        val explicitOutpoints: Option[Seq[TransactionInput]] = outpoints.map { arg =>
+            parseOutpointList(arg).valueOr { err =>
+                Console.error(err); break(1)
+            }
+        }
+        // Every outpoint the operator vouched for, whether or not it resolves into a move: they are
+        // reference UTxOs, so none of them may ever become a fee input (see `excludeInputs`).
+        val namedOutpoints: Set[TransactionInput] = explicitOutpoints.getOrElse(Seq.empty).toSet
         println()
 
         given ec: ExecutionContext = ExecutionContext.global
@@ -66,70 +93,145 @@ case class MigrateScriptRefsCommand(dryRun: Boolean = false) extends Command {
         Console.info("holding address", holdingAddress.encode.getOrElse("<unencodable>"))
         println()
 
+        // Needed in BOTH modes, and not part of the source scan: the fee-exclusion scan and (in
+        // --outpoints mode) the per-transaction reference-hash lookup are raw Blockfrost-API calls.
         if !CommandHelpers.canScanAddressUtxos(config, sponsorBech32) then {
             Console.error(
-              "Migration cannot enumerate what to move: the reference-script scan needs a " +
-                  "Blockfrost-API backend (cardano.backend = blockfrost, plus a project id or a " +
+              "Migration cannot query the chain: it needs a Blockfrost-API backend " +
+                  "(cardano.backend = blockfrost, plus a project id or a " +
                   "cardano.blockfrost-url override)."
             )
             break(1)
         }
 
-        // SOURCE scan: the sponsor WALLET only. This command enumerates what to move away from it;
-        // refs already at the holding address are, by definition, done. (The exclusion scan below
-        // is the union of both addresses — a different question: what must never be a fee input.)
-        val sponsorItems = CommandHelpers.fetchAddressUtxos(config, sponsorBech32)
-        val refs = CommandHelpers.parseRefScriptOutpoints(sponsorItems)
-
-        // `fetchAddressUtxos` is best-effort: an HTTP failure returns the same empty Seq an empty
-        // wallet does. Cross-check against the provider before believing "nothing to migrate", and
-        // decide the three cases explicitly — a provider failure is NOT permission to continue,
-        // because "raw scan empty AND provider unreachable" is a total backend outage, precisely
-        // the state in which reporting "nothing to migrate" would be a false success.
-        if sponsorItems.isEmpty then {
-            val providerUtxos =
-                provider.findUtxos(sponsorAddress).await(timeout).map(_.size).left.map(_.toString)
-            emptyScanVerdict(providerUtxos) match {
-                case EmptyScanVerdict.ProviderUnavailable(error) =>
-                    // Includes NotFound: BlockfrostProvider answers an empty address with
-                    // Right(empty), so a Left here is a real failure, never an empty wallet.
-                    Console.error(
-                      s"The address-utxos scan returned nothing and the provider could not be " +
-                          s"queried either ($error) — the backend is down, so whether anything is " +
-                          s"left to migrate is unknown. Check ${CommandHelpers.blockfrostBaseUrl(config)}."
+        /** Resolve one operator-named outpoint into the `(script hash, outpoint)` pair the move
+          * pipeline consumes, replacing what the source scan would have supplied. Every failure is
+          * hard and per-outpoint: the run continues to the next one, but the command exits 1.
+          */
+        def resolveNamedOutpoint(
+            outpoint: TransactionInput
+        ): Either[(TransactionInput, String), (ScriptHash, TransactionInput)] =
+            provider.findUtxo(outpoint).await(timeout) match {
+                case Left(err) =>
+                    // Most likely already spent — including by an earlier run of this very command,
+                    // which is a success in substance but is NOT reported as one: only the operator
+                    // knows which, and a silent pass would also swallow a mistyped outpoint.
+                    Left(
+                      outpoint ->
+                          (s"UTxO not found ($err) — it may have been spent already, e.g. moved " +
+                              s"by an earlier run; check the holding address before re-running")
                     )
-                    break(1)
-                case EmptyScanVerdict.ScanBlind(count) =>
-                    Console.error(
-                      s"The address-utxos scan returned nothing while the provider sees $count " +
-                          s"UTxOs at the sponsor address — the scan is failing, the wallet is not " +
-                          s"empty. Check ${CommandHelpers.blockfrostBaseUrl(config)}."
+                case Right(utxo) if utxo.output.address != sponsorAddress =>
+                    val where = utxo.output.address.encode.getOrElse(utxo.output.address.toString)
+                    Left(
+                      outpoint ->
+                          (s"sits at $where, not at the sponsor address $sponsorBech32 — " +
+                              s"refusing to move a UTxO that is not the sponsor's (a ref already " +
+                              s"at the holding address needs no migration)")
                     )
-                    break(1)
-                case EmptyScanVerdict.WalletEmpty =>
-                    () // genuinely empty wallet — falls through to the "nothing to migrate" exit
+                case Right(_) =>
+                    fetchReferenceScriptHash(config, outpoint)
+                        .map(_ -> outpoint)
+                        .left
+                        .map(outpoint -> _)
             }
-        }
 
-        if refs.isEmpty then {
-            // A backend whose `reference_script_hash` field is broken (it has regressed to always
-            // null before) reports the same empty scan a finished migration does. Distinguish them
-            // by shape: several ADA-only 50 ADA UTxOs at the wallet are what deploy-script-refs
-            // makes, and nothing else does. Refuse to declare victory over a blind scan.
-            val suspects = refShapedUtxoCount(sponsorItems)
-            if suspects >= RefShapeSuspicionThreshold then {
-                Console.error(
-                  s"The scan found no reference scripts at the sponsor wallet, but $suspects of its " +
-                      s"UTxOs have the reference-UTxO shape (ADA-only, exactly $RefUtxoLovelace " +
-                      s"lovelace). That means the backend's `reference_script_hash` field is broken, " +
-                      s"not that the migration is done. Re-run against a backend that populates it " +
-                      s"(Dolos); migrating on a blind scan would leave refs at the wallet."
+        // What to move, and which of the operator's outpoints could not even be resolved into a
+        // move. The scan branch produces no unresolved entries: it only ever reports what it found.
+        val (refs, unresolved): (
+            Seq[(ScriptHash, TransactionInput)],
+            Seq[(TransactionInput, String)]
+        ) = explicitOutpoints match {
+            case Some(named) =>
+                Console.warn(
+                  s"--outpoints given: migrating ${named.size} named UTxO(s), skipping the " +
+                      "address-utxos source scan (hosted Blockfrost reports " +
+                      "reference_script_hash: null for base addresses since 2026-08-16)"
                 )
-                break(1)
-            }
-            Console.success("No reference-script UTxOs at the sponsor wallet — nothing to migrate")
-            break(0)
+                Console.warn(
+                  "Name EVERY reference UTxO still at the wallet, even the ones you migrate " +
+                      "later: on a backend that nulls reference_script_hash, the named list is " +
+                      "also the only thing keeping a ref out of this run's fee selection"
+                )
+                val resolved = named.map(resolveNamedOutpoint)
+                for (outpoint, reason) <- resolved.collect { case Left(f) => f } do
+                    Console.error(s"${show(outpoint)}: $reason")
+                (
+                  resolved.collect { case Right(pair) => pair },
+                  resolved.collect { case Left(failure) => failure }
+                )
+
+            case None =>
+                // SOURCE scan: the sponsor WALLET only. This command enumerates what to move away
+                // from it; refs already at the holding address are, by definition, done. (The
+                // exclusion scan below is the union of both addresses — a different question: what
+                // must never be a fee input.)
+                val sponsorItems = CommandHelpers.fetchAddressUtxos(config, sponsorBech32)
+                val scanned = CommandHelpers.parseRefScriptOutpoints(sponsorItems)
+
+                // `fetchAddressUtxos` is best-effort: an HTTP failure returns the same empty Seq an
+                // empty wallet does. Cross-check against the provider before believing "nothing to
+                // migrate", and decide the three cases explicitly — a provider failure is NOT
+                // permission to continue, because "raw scan empty AND provider unreachable" is a
+                // total backend outage, precisely the state in which reporting "nothing to migrate"
+                // would be a false success.
+                if sponsorItems.isEmpty then {
+                    val providerUtxos = provider
+                        .findUtxos(sponsorAddress)
+                        .await(timeout)
+                        .map(_.size)
+                        .left
+                        .map(_.toString)
+                    emptyScanVerdict(providerUtxos) match {
+                        case EmptyScanVerdict.ProviderUnavailable(error) =>
+                            // Includes NotFound: BlockfrostProvider answers an empty address with
+                            // Right(empty), so a Left here is a real failure, never an empty wallet.
+                            Console.error(
+                              s"The address-utxos scan returned nothing and the provider could not be " +
+                                  s"queried either ($error) — the backend is down, so whether anything is " +
+                                  s"left to migrate is unknown. Check ${CommandHelpers.blockfrostBaseUrl(config)}."
+                            )
+                            break(1)
+                        case EmptyScanVerdict.ScanBlind(count) =>
+                            Console.error(
+                              s"The address-utxos scan returned nothing while the provider sees $count " +
+                                  s"UTxOs at the sponsor address — the scan is failing, the wallet is not " +
+                                  s"empty. Check ${CommandHelpers.blockfrostBaseUrl(config)}."
+                            )
+                            break(1)
+                        case EmptyScanVerdict.WalletEmpty =>
+                            () // genuinely empty wallet — falls through to "nothing to migrate"
+                    }
+                }
+
+                if scanned.isEmpty then {
+                    // A backend whose `reference_script_hash` field is broken (hosted Blockfrost
+                    // has done exactly this since 2026-08-16) reports the same empty scan a
+                    // finished migration does. Distinguish them by shape: several ADA-only 50 ADA
+                    // UTxOs at the wallet are what deploy-script-refs makes, and nothing else does.
+                    // Refuse to declare victory over a blind scan.
+                    val suspects = refShapedUtxoCount(sponsorItems)
+                    if suspects >= RefShapeSuspicionThreshold then {
+                        Console.error(
+                          s"The scan found no reference scripts at the sponsor wallet, but $suspects of its " +
+                              s"UTxOs have the reference-UTxO shape (ADA-only, exactly $RefUtxoLovelace " +
+                              s"lovelace). That means the backend's `reference_script_hash` field is broken, " +
+                              s"not that the migration is done. Re-run against a backend that populates it " +
+                              s"(Dolos), or name the reference UTxOs with --outpoints TX_HASH#INDEX,… ; " +
+                              s"migrating on a blind scan would leave refs at the wallet."
+                        )
+                        break(1)
+                    }
+                    Console.success(
+                      "No reference-script UTxOs at the sponsor wallet — nothing to migrate"
+                    )
+                    break(0)
+                }
+                (scanned, Seq.empty)
         }
+
+        // How many moves this run was asked for, resolved or not — the denominator of the summary.
+        val requested = refs.size + unresolved.size
 
         Console.info("reference UTxOs to move", refs.size.toString)
         for (hash, outpoint) <- refs do Console.info(hash.toHex, show(outpoint))
@@ -191,13 +293,20 @@ case class MigrateScriptRefsCommand(dryRun: Boolean = false) extends Command {
             }
 
             // Fee/change pool: sponsor UTxOs minus every ref outpoint at either scanned address,
-            // minus the one being moved (already in that set, kept explicit). Recomputed per tx so
-            // a ref moved earlier in THIS run is excluded at its new location too. Spending a ref
-            // for fees would destroy a deployed script; see DeployScriptRefsCommand.submitOne.
+            // minus every outpoint the operator named, minus the one being moved (already in both
+            // sets, kept explicit). Recomputed per tx so a ref moved earlier in THIS run is excluded
+            // at its new location too. Spending a ref for fees would destroy a deployed script; see
+            // DeployScriptRefsCommand.submitOne.
+            //
+            // The named ones matter precisely in the case --outpoints exists for: the exclusion scan
+            // reads the same `reference_script_hash` field the source scan does, so on a backend
+            // that nulls it the scan protects nothing, and the provider's own view has no scriptRef
+            // to fall back on either (BlockfrostProvider drops it). The operator's list is then the
+            // only thing standing between a still-unmigrated ref and coin selection.
             val excludeInputs = CommandHelpers.refScriptOutpoints(
               config,
               CommandHelpers.refScriptScanAddresses(config, network, sponsorAddress)
-            ) + outpoint
+            ) ++ namedOutpoints + outpoint
             val cleanUtxos = provider.findUtxos(sponsorAddress).await(timeout) match {
                 // Belt and braces: drop anything the raw scan missed but the provider resolved a
                 // scriptRef for. Either way, a UTxO carrying a reference script is never fee money.
@@ -285,15 +394,19 @@ case class MigrateScriptRefsCommand(dryRun: Boolean = false) extends Command {
         val skipped = outcomes.collect { case s: MoveOutcome.Skipped => s }
         val failed = outcomes.collect { case f: MoveOutcome.Failed => f }
 
-        if dryRun then Console.info("would move", s"${planned.size}/${refs.size}")
-        else Console.info("moved", s"${moved.size}/${refs.size}")
+        if dryRun then Console.info("would move", s"${planned.size}/$requested")
+        else Console.info("moved", s"${moved.size}/$requested")
         if skipped.nonEmpty then {
             Console.warn(s"${skipped.size} skipped:")
             for s <- skipped do Console.info(s.hash.toHex, s.reason)
         }
-        if failed.nonEmpty then {
-            Console.error(s"${failed.size}/${refs.size} moves failed:")
+        // Outpoints that never resolved into a move count as failures too: with --outpoints the
+        // operator asserted each one is a ref UTxO at the sponsor, so an unresolved one is either a
+        // wrong assertion or a backend that cannot be trusted — never a quiet success.
+        if failed.nonEmpty || unresolved.nonEmpty then {
+            Console.error(s"${failed.size + unresolved.size}/$requested moves failed:")
             for f <- failed do Console.info(f.hash.toHex, s"${show(f.outpoint)}: ${f.reason}")
+            for (outpoint, reason) <- unresolved do Console.info(show(outpoint), reason)
             break(1)
         }
         if dryRun then Console.success("Dry-run complete (resolved every move, submitted none)")
@@ -364,6 +477,115 @@ object MigrateScriptRefsCommand {
     /** `TX_HASH#INDEX`. */
     private def show(outpoint: TransactionInput): String =
         s"${outpoint.transactionId.toHex}#${outpoint.index}"
+
+    /** Parse the `--outpoints` value: a comma-separated `TX_HASH#INDEX` list, as typed by an
+      * operator. Whitespace around entries and a trailing comma are tolerated; repeats collapse, so
+      * a copy-paste slip does not produce a second move that can only fail (the UTxO is gone after
+      * the first). Every malformed entry is reported, not just the first — retyping a 64-char hash
+      * list one error at a time is how a bootstrap run gets abandoned halfway.
+      *
+      * Rejects rather than throws: `TransactionHash.fromHex` throws on anything that is not exactly
+      * 32 bytes of hex, and that exception would surface without the entry that caused it. Pure.
+      */
+    def parseOutpointList(arg: String): Either[String, Seq[TransactionInput]] = {
+        val entries = arg.split(",", -1).map(_.trim).filter(_.nonEmpty).toSeq
+        if entries.isEmpty then Left("--outpoints is empty: expected TX_HASH#INDEX,TX_HASH#INDEX")
+        else {
+            val parsed = entries.map { entry =>
+                entry.split("#") match {
+                    case Array(hashHex, idx) =>
+                        for {
+                            index <- idx.toIntOption
+                                .filter(_ >= 0)
+                                .toRight(s"'$entry': '$idx' is not an output index")
+                            hash <- Try(TransactionHash.fromHex(hashHex)).toEither.left.map(e =>
+                                s"'$entry': '$hashHex' is not a 32-byte tx hash (${e.getMessage})"
+                            )
+                        } yield TransactionInput(hash, index)
+                    case _ => Left(s"'$entry': expected TX_HASH#INDEX")
+                }
+            }
+            val errors = parsed.collect { case Left(e) => e }
+            if errors.nonEmpty then Left(s"--outpoints: ${errors.mkString("; ")}")
+            else Right(parsed.collect { case Right(i) => i }.distinct)
+        }
+    }
+
+    /** The `reference_script_hash` of output `index` in a Blockfrost `/txs/{hash}/utxos` body, or
+      * None when that output is absent or carries no reference script.
+      *
+      * This endpoint is read INSTEAD of `/addresses/{addr}/utxos` because hosted Blockfrost
+      * regressed on 2026-08-16: the address-utxos items report `reference_script_hash: null` for
+      * base addresses even when the output does carry a script. The per-transaction endpoint still
+      * reports it correctly, so naming the outpoints gives an exact answer where scanning cannot.
+      *
+      * None is deliberately NOT "no script here, skip it" to its caller: the operator asserted this
+      * outpoint IS a reference UTxO, so an empty answer means either the assertion or the backend
+      * is wrong, and moving on quietly is what the address scan already does wrongly. Pure.
+      */
+    def referenceScriptHashAt(txUtxosJson: ujson.Value, index: Int): Option[String] = {
+        def outputIndexIs(o: ujson.Value): Boolean =
+            o.objOpt.flatMap(_.get("output_index")).exists {
+                case ujson.Num(n) => n.toInt == index
+                case ujson.Str(s) => s.toIntOption.contains(index)
+                case _            => false
+            }
+        for {
+            fields <- txUtxosJson.objOpt
+            outputs <- fields.get("outputs").flatMap(_.arrOpt)
+            output <- outputs.find(outputIndexIs)
+            hash <- output.objOpt.flatMap(_.get("reference_script_hash")).collect {
+                case ujson.Str(s) if s.nonEmpty => s
+            }
+        } yield hash
+    }
+
+    /** The reference-script hash of `outpoint`, read from the backend's `/txs/{hash}/utxos` (see
+      * [[referenceScriptHashAt]] for why not the address scan). A `Left` is a hard per-outpoint
+      * error: the caller must never fall through to "nothing to move here".
+      */
+    def fetchReferenceScriptHash(
+        config: BinocularConfig,
+        outpoint: TransactionInput
+    ): Either[String, ScriptHash] = {
+        val path = s"/txs/${outpoint.transactionId.toHex}/utxos"
+        for {
+            json <- blockfrostGet(config, path)
+            hex <- referenceScriptHashAt(json, outpoint.index).toRight(
+              s"$path reports no reference_script_hash for output ${outpoint.index} — that " +
+                  s"output either does not exist or carries no reference script, so there is " +
+                  s"nothing to migrate at this outpoint"
+            )
+            hash <- Try(ScriptHash.fromHex(hex)).toEither.left.map(e =>
+                s"$path: reference_script_hash '$hex' is not a script hash (${e.getMessage})"
+            )
+        } yield hash
+    }
+
+    /** One raw GET against the configured Blockfrost-API backend (same base URL and `project_id`
+      * header the discovery scans use, so a self-hosted Dolos works). Shared by the script fetch
+      * and the per-transaction reference-hash lookup.
+      */
+    private def blockfrostGet(
+        config: BinocularConfig,
+        path: String
+    ): Either[String, ujson.Value] = {
+        val base = CommandHelpers.blockfrostBaseUrl(config)
+        val projectId = CommandHelpers.blockfrostProjectIdHeader(config)
+        try {
+            val client = java.net.http.HttpClient.newHttpClient()
+            val req = java.net.http.HttpRequest
+                .newBuilder()
+                .uri(java.net.URI.create(s"$base$path"))
+                .header("project_id", projectId)
+                .GET()
+                .build()
+            val resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString())
+            if resp.statusCode() != 200 then
+                Left(s"GET $path -> HTTP ${resp.statusCode()}: ${resp.body().take(200)}")
+            else Right(ujson.read(resp.body()))
+        } catch { case e: Exception => Left(s"GET $path failed: ${e.getMessage}") }
+    }
 
     /** The recreated reference output: the source UTxO's full Value and the very same script, at
       * the holding address, with no datum. Pure, so the migration's one on-chain effect is pinned
@@ -455,35 +677,18 @@ object MigrateScriptRefsCommand {
       * [[resolveScript]] — never returns a script that does not hash to `hash`.
       */
     def fetchScript(config: BinocularConfig, hash: ScriptHash): ScriptResolution = {
-        val base = CommandHelpers.blockfrostBaseUrl(config)
-        val projectId = CommandHelpers.blockfrostProjectIdHeader(config)
         val hex = hash.toHex
 
-        def get(path: String): Either[String, ujson.Value] =
-            try {
-                val client = java.net.http.HttpClient.newHttpClient()
-                val req = java.net.http.HttpRequest
-                    .newBuilder()
-                    .uri(java.net.URI.create(s"$base$path"))
-                    .header("project_id", projectId)
-                    .GET()
-                    .build()
-                val resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString())
-                if resp.statusCode() != 200 then
-                    Left(s"GET $path -> HTTP ${resp.statusCode()}: ${resp.body().take(200)}")
-                else Right(ujson.read(resp.body()))
-            } catch { case e: Exception => Left(s"GET $path failed: ${e.getMessage}") }
-
         def str(json: ujson.Value, field: String, path: String): Either[String, String] =
-            json.obj.get(field) match {
+            json.objOpt.flatMap(_.get(field)) match {
                 case Some(ujson.Str(s)) => Right(s)
                 case _                  => Left(s"$path has no string '$field' field")
             }
 
         val resolved = for {
-            info <- get(s"/scripts/$hex")
+            info <- blockfrostGet(config, s"/scripts/$hex")
             scriptType <- str(info, "type", s"/scripts/$hex")
-            cborJson <- get(s"/scripts/$hex/cbor")
+            cborJson <- blockfrostGet(config, s"/scripts/$hex/cbor")
             cborHex <- str(cborJson, "cbor", s"/scripts/$hex/cbor")
         } yield resolveScript(scriptType, cborHex, hash)
 

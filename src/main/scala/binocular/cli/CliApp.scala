@@ -56,7 +56,7 @@ object CliApp {
             dryRun: Boolean
         )
         case DeployScriptRefs(dryRun: Boolean)
-        case MigrateScriptRefs(dryRun: Boolean)
+        case MigrateScriptRefs(dryRun: Boolean, outpoints: Option[String])
         case RegisterBridgeCreds(dryRun: Boolean)
         case SignPeginMsg(keyPath: String, message: String)
         case PegInComplete(
@@ -510,7 +510,18 @@ object CliApp {
               "migrate-script-refs",
               "Move all reference-script UTxOs from the sponsor wallet to the native holding address (one tx each)"
             ) {
-                dryRunFlag.map(Cmd.MigrateScriptRefs.apply)
+                val outpointsOpt = Opts
+                    .option[String](
+                      "outpoints",
+                      help = "Reference UTxOs to move, as TX_HASH#INDEX,TX_HASH#INDEX. " +
+                          "Skips the address-utxos source scan: hosted Blockfrost has reported " +
+                          "reference_script_hash: null for base addresses since 2026-08-16, so " +
+                          "the scan finds nothing and the command refuses to migrate blind. " +
+                          "Each named UTxO is still checked (exists, at the sponsor address, " +
+                          "carries a reference script) and moved by the same pipeline."
+                    )
+                    .orNone
+                (dryRunFlag, outpointsOpt).mapN(Cmd.MigrateScriptRefs.apply)
             }
 
         val pegInCompleteCommand =
@@ -773,8 +784,8 @@ object CliApp {
                             )
                         case Cmd.DeployScriptRefs(dryRun) =>
                             DeployScriptRefsCommand(dryRun)
-                        case Cmd.MigrateScriptRefs(dryRun) =>
-                            MigrateScriptRefsCommand(dryRun)
+                        case Cmd.MigrateScriptRefs(dryRun, outpoints) =>
+                            MigrateScriptRefsCommand(dryRun, outpoints)
                         case Cmd.RegisterBridgeCreds(dryRun) =>
                             RegisterBridgeCredsCommand(dryRun)
                         case Cmd.SignPeginMsg(keyPath, message) =>
