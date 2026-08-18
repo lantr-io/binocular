@@ -103,11 +103,15 @@ in
 
     heapMb = lib.mkOption {
       type = lib.types.int;
-      default = 384;
+      default = 256;
       description = ''
-        -Xmx for each loop, in MiB. The box has ~1.5 GB available with bitcoind, Dolos and v1's
-        JVM (~310 MB RSS) resident, and this module adds two more JVMs. Lower it to 256 if the box
-        starts swapping.
+        -Xmx for each loop, in MiB. Three units share this, so the figure is spent three times over.
+
+        Was 384, with a note to lower it "if the box starts swapping". It did: on 2026-08-18, with
+        these three plus PostgreSQL and the frontend added, bitcoind was pushed 546 MB into zram and
+        its RPC latency reached 180 s, timing out the oracle and both confirm loops. Measured
+        resident use at the time was 251 / 157 / 86 MB, so 256 costs these loops nothing and returns
+        the difference to the process that was starving.
       '';
     };
   };

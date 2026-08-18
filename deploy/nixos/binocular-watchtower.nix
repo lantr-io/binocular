@@ -73,6 +73,18 @@ in
       # txindex is global (top-level); the [testnet4] section binds RPC + P2P to localhost only
       # (defense in depth on top of the host firewall). rpcbind requires rpcallowip alongside.
       extraConfig = ''
+        # 150 MiB, down from the 450 MiB default. This host runs bitcoind beside
+        # Dolos, four JVMs, PostgreSQL and a Next server in 3.7 GB, and on
+        # 2026-08-18 bitcoind ended up with 546 MB of its 695 MB resident set in
+        # zram swap. Every getblockhash then had to fault pages back in: calls that
+        # take milliseconds took up to 180 SECONDS, which blew the oracle's 30 s and
+        # the confirm loop's 120 s awaits and surfaced as timeout alerts.
+        #
+        # The node is synced, so the cache buys validation throughput this
+        # deployment does not need. Trading it for resident memory is what keeps the
+        # RPC responsive, and a responsive RPC is what the oracle and both confirm
+        # loops actually depend on.
+        dbcache=150
         txindex=1
         [testnet4]
         rpcbind=127.0.0.1
