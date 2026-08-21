@@ -32,7 +32,7 @@ object HeimdallCli {
     /** Derive the group key and the treasury address, with no chain and no ceremony.
       *
       * With no `--frost-key`, `frost-treasury` reproduces the deterministic demo DKG — and its
-      * result is byte-identical to what three `heimdall demo` instances converge on over HTTP
+      * result is byte-identical to what three `heimdall run-spo` instances converge on over HTTP
       * (verified against the key `scripts/dkz/demo-spo-{1,2,3}.sh` document). That equality is
       * what lets genesis publish `y_federation` BEFORE the SPOs have run their ceremony, and
       * still have the first TM's treasury input verify: the roster re-derives the same key.
