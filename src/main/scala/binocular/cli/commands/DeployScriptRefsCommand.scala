@@ -21,9 +21,16 @@ import cats.syntax.either.*
 /** Publishes every heavy Plutus script the bridge's transactions would otherwise inline, as
   * reference UTxOs.
   *
-  *   - completion half (5): peg-in side (`peg_in`, `bridged_token`, `completed_peg_ins`), peg-out
-  *     side (`peg_out`), and the `bridge_state` singleton validator (spent every TM Confirm).
-  *     `bridged_token` is shared by both burns/mints.
+  *   - completion half (6): peg-in side (`peg_in`, `bridged_token`, `completed_peg_ins`), peg-out
+  *     side (`peg_out`), the `bridge_state` singleton validator (spent every TM Confirm), and the
+  *     `treasury_movement` validator. `bridged_token` is shared by both burns/mints.
+  *   - `treasury_movement` is published for a DIFFERENT reason from the rest, and must stay
+  *     published even though nothing here spends it: heimdall needs the compiled script to mint the
+  *     TM NFT, and it now sources it FROM THE CHAIN by the hash the Config publishes (#5) rather
+  *     than from an operator-pasted `tm_script_cbor`. A script exists on chain only once something
+  *     uses it, so without this output the very first movement could never be posted — the script
+  *     would be needed to make the transaction that would put it there. Publishing it at deployment
+  *     breaks that circle.
   *   - federation half (5): `spos_registry`, `spo_bans` and the three DKG fault verifiers. These
   *     need `bridge.federation-one-shot-ref`; without it the command publishes the completion half
   *     and says so. `register_spo` would otherwise carry the registry script twice.
@@ -100,12 +107,9 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
         // completed_peg_ins; peg-out: peg_out; confirm: bridge_state) — same constructor invocations
         // DeployBridgeCommand uses, so the hashes line up exactly. (bridged_token is shared.)
         // Blueprint script() — must match DeployBridgeCommand and the watchtower exactly.
-        val tmNftPolicy = ByteString.fromArray(
-          TreasuryMovementContract
-              .script(oraclePolicyId, configNftPolicy, configNftAsset)
-              .scriptHash
-              .bytes
-        )
+        val tmScript =
+            TreasuryMovementContract.script(oraclePolicyId, configNftPolicy, configNftAsset)
+        val tmNftPolicy = ByteString.fromArray(tmScript.scriptHash.bytes)
         // Rev 5.4: peg_in dropped its tm_nft_policy_id param; tmNftPolicy parameterizes bridge_state.
         val pegIn =
             PegInContract(blueprint, oraclePolicyId, configNftPolicy)
@@ -120,6 +124,7 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
         Console.info("completed_peg_ins script hash", cpi.policyId.toHex)
         Console.info("peg_out script hash", pegOut.policyId.toHex)
         Console.info("bridge_state script hash", bss.policyId.toHex)
+        Console.info("treasury_movement script hash", tmScript.scriptHash.toHex)
         println()
 
         // --- the federation half ---
@@ -321,7 +326,8 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
           ("bridged_token", bridgedToken.script),
           ("completed_peg_ins", cpi.script),
           ("peg_out", pegOut.script),
-          ("bridge_state", bss.script)
+          ("bridge_state", bss.script),
+          ("treasury_movement", tmScript)
         ) ++ federationScripts
         val deployedHashes = binocular.cli.CommandHelpers
             .refScriptUtxosByHash(

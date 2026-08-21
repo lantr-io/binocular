@@ -500,7 +500,10 @@ object CliApp {
         val deployScriptRefsCommand =
             Opts.subcommand(
               "deploy-script-refs",
-              "Publish peg_in / bridged_token / completed_peg_ins as CIP-33 reference scripts (shrinks pegin-complete tx)"
+              "Publish the bridge's heavy Plutus scripts as CIP-33 reference outputs. " +
+                  "Shrinks the completion and federation transactions, and puts treasury_movement " +
+                  "on chain so heimdall can source it by its Config-published hash and post the " +
+                  "bridge's first movement. Skips whatever is already deployed"
             ) {
                 dryRunFlag.map(Cmd.DeployScriptRefs.apply)
             }
