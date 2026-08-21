@@ -6,8 +6,8 @@ import org.scalatest.funsuite.AnyFunSuite
 /** The Bitcoin half of the scenario, on its own.
   *
   * Worth its own suite because it needs no Cardano devnet: when the full federation run fails at
-  * "the deposit never confirmed", this says in seconds whether bitcoind, the nix resolution and
-  * the wallet plumbing are the cause or are fine.
+  * "the deposit never confirmed", this says in seconds whether bitcoind, the nix resolution and the
+  * wallet plumbing are the cause or are fine.
   */
 class BtcChainTest extends AnyFunSuite with BeforeAndAfterAll {
 

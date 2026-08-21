@@ -2,29 +2,29 @@ package binocular.federation
 
 /** Locates the heimdall binaries the federation scenario spawns.
   *
-  * heimdall is a sibling Rust repository, not a dependency this build can resolve, so the suite
-  * has to find and build it. Two paths, in order:
+  * heimdall is a sibling Rust repository, not a dependency this build can resolve, so the suite has
+  * to find and build it. Two paths, in order:
   *
-  *   1. `HEIMDALL_BIN` / `HEIMDALL_DEPOSITOR_BIN` — a prebuilt binary. For CI, and for iterating
-  *      on the Scala side without paying for cargo.
+  *   1. `HEIMDALL_BIN` / `HEIMDALL_DEPOSITOR_BIN` — a prebuilt binary. For CI, and for iterating on
+  *      the Scala side without paying for cargo.
   *   2. `cargo build --release` in the sibling checkout, once per JVM.
   *
-  * The build is memoized rather than skipped-if-present on purpose: a stale binary against a
-  * moved checkout is the failure this suite is least equipped to diagnose, since it shows up as a
+  * The build is memoized rather than skipped-if-present on purpose: a stale binary against a moved
+  * checkout is the failure this suite is least equipped to diagnose, since it shows up as a
   * protocol disagreement (a different Config field, a different Taproot tree) rather than as a
   * build error. cargo's own incremental check makes the repeat cost a second or two.
   *
-  * A missing toolchain FAILS rather than cancelling the suite. A silently skipped integration
-  * test is indistinguishable from a passing one on the next run, which is how a suite rots.
+  * A missing toolchain FAILS rather than cancelling the suite. A silently skipped integration test
+  * is indistinguishable from a passing one on the next run, which is how a suite rots.
   */
 object HeimdallBuild {
 
     /** Sibling checkout: `$HEIMDALL_REPO`, else `~/projects/lantr/heimdall`.
       *
       * Not derived from the working directory: sbt sets `it`'s `baseDirectory` to the binocular
-      * root, but this repo is also vendored as a git submodule inside ft-bifrost-bridge, where
-      * the sibling is somewhere else entirely. An explicit default that the env can override
-      * beats a relative walk that silently resolves to a submodule checkout nobody commits to.
+      * root, but this repo is also vendored as a git submodule inside ft-bifrost-bridge, where the
+      * sibling is somewhere else entirely. An explicit default that the env can override beats a
+      * relative walk that silently resolves to a submodule checkout nobody commits to.
       */
     private lazy val repo: os.Path = {
         val configured = sys.env.get("HEIMDALL_REPO").map(_.trim).filter(_.nonEmpty)
@@ -41,11 +41,11 @@ object HeimdallBuild {
 
     /** How to reach cargo.
       *
-      * Unlike bitcoind, cargo is NOT in binocular's own dev shell — it belongs to heimdall's
-      * flake — so "run sbt from inside `nix develop`" does not supply it, and requiring it on
-      * PATH would mean two nested dev shells. Wrapping is right here and wrong for bitcoin-cli:
-      * this is ONE invocation per JVM, where the ~5 s of shell entry disappears into a build that
-      * takes minutes, whereas a scenario makes dozens of bitcoin-cli calls.
+      * Unlike bitcoind, cargo is NOT in binocular's own dev shell — it belongs to heimdall's flake
+      * — so "run sbt from inside `nix develop`" does not supply it, and requiring it on PATH would
+      * mean two nested dev shells. Wrapping is right here and wrong for bitcoin-cli: this is ONE
+      * invocation per JVM, where the ~5 s of shell entry disappears into a build that takes
+      * minutes, whereas a scenario makes dozens of bitcoin-cli calls.
       */
     private lazy val cargoCmd: Seq[String] = {
         def onPath(bin: String) =
@@ -91,9 +91,9 @@ object HeimdallBuild {
     /** The SPO daemon: `heimdall demo`, `heimdall register-spo`, and the rest. */
     def binary(): os.Path = resolve("HEIMDALL_BIN", "heimdall")
 
-    /** The depositor tool. A separate binary, and deliberately not part of the SPO control plane
-      * — it is the one actor that cannot read the bridge Config, so every address-deciding value
-      * is an explicit argument (WI-084).
+    /** The depositor tool. A separate binary, and deliberately not part of the SPO control plane —
+      * it is the one actor that cannot read the bridge Config, so every address-deciding value is
+      * an explicit argument (WI-084).
       */
     def depositor(): os.Path = resolve("HEIMDALL_DEPOSITOR_BIN", "depositor")
 }

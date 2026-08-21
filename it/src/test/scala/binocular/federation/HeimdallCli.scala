@@ -33,9 +33,9 @@ object HeimdallCli {
       *
       * With no `--frost-key`, `frost-treasury` reproduces the deterministic demo DKG — and its
       * result is byte-identical to what three `heimdall run-spo` instances converge on over HTTP
-      * (verified against the key `scripts/dkz/demo-spo-{1,2,3}.sh` document). That equality is
-      * what lets genesis publish `y_federation` BEFORE the SPOs have run their ceremony, and
-      * still have the first TM's treasury input verify: the roster re-derives the same key.
+      * (verified against the key `scripts/dkz/demo-spo-{1,2,3}.sh` document). That equality is what
+      * lets genesis publish `y_federation` BEFORE the SPOs have run their ceremony, and still have
+      * the first TM's treasury input verify: the roster re-derives the same key.
       *
       * So this replaces what would otherwise be a rehearsal phase — three processes on a mock
       * chain, killed once their logs revealed the key.
@@ -74,9 +74,9 @@ object HeimdallCli {
 
     /** One `Label: value` line of heimdall's output.
       *
-      * Trailing commentary is stripped — `frost-treasury` appends
-      * "(defaulted to Y_51 — genesis tree)" to the leaf key when no `--y-federation` is given,
-      * and that annotation is information for an operator, not part of the value.
+      * Trailing commentary is stripped — `frost-treasury` appends "(defaulted to Y_51 — genesis
+      * tree)" to the leaf key when no `--y-federation` is given, and that annotation is information
+      * for an operator, not part of the value.
       */
     private def field(out: String, label: String): String = {
         val re = s"$label:\\s*(\\S+)".r

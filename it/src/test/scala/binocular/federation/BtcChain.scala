@@ -67,7 +67,10 @@ final class BtcChain(val node: RegtestBitcoind, onBlocksMined: Int => Unit = _ =
     /** Confirmations of `txid`, or 0 when it is unconfirmed or unknown. */
     def confirmations(txid: String): Int = {
         val raw = node.walletCli("gettransaction", txid)
-        "\"confirmations\"\\s*:\\s*(-?\\d+)".r.findFirstMatchIn(raw).map(_.group(1).toInt).getOrElse(0)
+        "\"confirmations\"\\s*:\\s*(-?\\d+)".r
+            .findFirstMatchIn(raw)
+            .map(_.group(1).toInt)
+            .getOrElse(0)
     }
 
     def rawTx(txid: String): String = node.cli("getrawtransaction", txid)
