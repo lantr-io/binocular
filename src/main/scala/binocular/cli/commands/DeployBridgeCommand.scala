@@ -59,9 +59,9 @@ import cats.syntax.either.*
   */
 /** Everything a deployment is identified and configured by, as a value.
   *
-  * `deploy-bridge` PRINTS this set for an operator to paste into binocular's and heimdall's
-  * config files. An in-process caller — the federation integration suite — needs the same set
-  * typed, and scraping stdout for it would tie the test to a print format that exists for humans.
+  * `deploy-bridge` PRINTS this set for an operator to paste into binocular's and heimdall's config
+  * files. An in-process caller — the federation integration suite — needs the same set typed, and
+  * scraping stdout for it would tie the test to a print format that exists for humans.
   *
   * The printed lines are rendered FROM this record (see [[DeployBridgeCommand.execute]]), so the
   * two cannot drift: a test reading `federationOneShotRef` and an operator copying
@@ -756,8 +756,8 @@ case class DeployBridgeCommand(
         0
     }
 
-    /** Plutus `TxOutRef` (what the derivation chain uses) to the ledger `TransactionInput` the
-      * rest of the off-chain code and the config keys speak in.
+    /** Plutus `TxOutRef` (what the derivation chain uses) to the ledger `TransactionInput` the rest
+      * of the off-chain code and the config keys speak in.
       */
     private def toInput(ref: TxOutRef): TransactionInput =
         TransactionInput(TransactionHash.fromHex(ref.id.hash.toHex), ref.idx.toInt)
