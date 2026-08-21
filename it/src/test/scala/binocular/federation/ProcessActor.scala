@@ -6,10 +6,9 @@ import scala.util.matching.Regex
 /** One external process in the scenario, with its output captured to a file.
   *
   * The federation scenario runs five processes at once. When an assertion fails, the question is
-  * always "which one stopped doing its job, and what did it say about it" — so every actor's
-  * output goes to its own file that outlives the process, and the failure dumps read from there.
-  * Streaming to the test's stdout instead would interleave three SPOs' logs into an unreadable
-  * braid.
+  * always "which one stopped doing its job, and what did it say about it" — so every actor's output
+  * goes to its own file that outlives the process, and the failure dumps read from there. Streaming
+  * to the test's stdout instead would interleave three SPOs' logs into an unreadable braid.
   *
   * @param name
   *   labels the log file and every error message

@@ -3,8 +3,8 @@ package binocular.federation
 import org.scalatest.funsuite.AnyFunSuite
 import scalus.uplc.builtin.ByteString
 
-/** `frost-treasury` is the seam genesis hangs on, and it needs no chain — so it is tested here,
-  * in seconds, rather than discovered inside a ten-minute scenario.
+/** `frost-treasury` is the seam genesis hangs on, and it needs no chain — so it is tested here, in
+  * seconds, rather than discovered inside a ten-minute scenario.
   */
 class HeimdallCliTest extends AnyFunSuite {
 
@@ -12,8 +12,8 @@ class HeimdallCliTest extends AnyFunSuite {
       * converging on over HTTP. Pinned here because the whole genesis order depends on the
       * one-process derivation agreeing with the ceremony: publish `y_federation` first, let the
       * roster re-derive it later. If heimdall ever changes the demo seed or the derivation, this
-      * fails HERE with the two keys side by side, instead of as a TM whose treasury input will
-      * not verify.
+      * fails HERE with the two keys side by side, instead of as a TM whose treasury input will not
+      * verify.
       */
     private val DkzGroupKey =
         "b1e15a532a4e816ec75af608256b0808e36fb7d22560605178850885e53f2854"
@@ -72,7 +72,11 @@ class HeimdallCliTest extends AnyFunSuite {
         assert(otherKey != genesis.groupKey, "a 2-of-4 roster must derive a different Y_51")
 
         val other =
-            HeimdallCli.frostTreasury(config, federationCsvBlocks = 144, yFederation = Some(otherKey))
+            HeimdallCli.frostTreasury(
+              config,
+              federationCsvBlocks = 144,
+              yFederation = Some(otherKey)
+            )
         assert(other.groupKey == genesis.groupKey, "Y_51 does not depend on the leaf key")
         assert(other.yFederation == otherKey)
         assert(other.treasuryAddress != genesis.treasuryAddress)

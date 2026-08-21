@@ -8,8 +8,8 @@ import scala.concurrent.duration.*
   *
   * Everything here is infrastructure the real scenario cannot fail informatively without: a
   * heimdall binary that is not there, a port already taken, or a log line that never arrives all
-  * surface as "the TM never appeared" five minutes into a run otherwise. Testing them here means
-  * a broken workstation is diagnosed in seconds rather than at the end of the slow suite.
+  * surface as "the TM never appeared" five minutes into a run otherwise. Testing them here means a
+  * broken workstation is diagnosed in seconds rather than at the end of the slow suite.
   */
 class ScaffoldingTest extends AnyFunSuite {
 
@@ -28,7 +28,12 @@ class ScaffoldingTest extends AnyFunSuite {
     test("ProcessActor captures output and awaits a log line") {
         val dir = os.temp.dir(prefix = "actor-test-")
         val actor =
-            ProcessActor("echo-actor", Seq("sh", "-c", "echo hello-marker; sleep 30"), Map.empty, dir)
+            ProcessActor(
+              "echo-actor",
+              Seq("sh", "-c", "echo hello-marker; sleep 30"),
+              Map.empty,
+              dir
+            )
         actor.start()
         try {
             val line = actor.awaitLogLine("hello-(\\w+)".r, 10.seconds)
@@ -39,7 +44,8 @@ class ScaffoldingTest extends AnyFunSuite {
 
     test("awaitLogLine fails with the pattern and the captured tail") {
         val dir = os.temp.dir(prefix = "actor-test-")
-        val actor = ProcessActor("noisy", Seq("sh", "-c", "echo wrong-line; sleep 30"), Map.empty, dir)
+        val actor =
+            ProcessActor("noisy", Seq("sh", "-c", "echo wrong-line; sleep 30"), Map.empty, dir)
         actor.start()
         try {
             val err = intercept[RuntimeException](actor.awaitLogLine("never-appears".r, 2.seconds))

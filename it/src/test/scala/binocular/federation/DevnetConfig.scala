@@ -8,8 +8,8 @@ import binocular.watchtower.BridgeConfig
 /** Builds the [[BinocularConfig]] the scenario's in-process commands run against.
   *
   * Every binocular command takes a `BinocularConfig` and nothing else, so this is the whole
-  * interface between the test harness and the bridge tooling. Built in code rather than loaded
-  * from a HOCON fixture: half these values (container ports, bitcoind's allocated RPC port, temp
+  * interface between the test harness and the bridge tooling. Built in code rather than loaded from
+  * a HOCON fixture: half these values (container ports, bitcoind's allocated RPC port, temp
   * directories, the one-shot refs genesis produces) do not exist until the suite is running, and a
   * fixture file would have to be rewritten mid-run to carry them.
   */
@@ -23,8 +23,8 @@ object DevnetConfig {
     /** Oracle parameters for the scenario (spec: 3-block fork tree, 0 confirmation timeout).
       *
       *   - `maxBlocksInForkTree = 3` keeps the tree small enough to reason about by hand when a
-      *     reorg test is added later; the default 256 would make every fork-tree assertion a
-      *     needle in a haystack.
+      *     reorg test is added later; the default 256 would make every fork-tree assertion a needle
+      *     in a haystack.
       *   - `maturationConfirmations = 0` promotes a block the moment it is relayed. Mainnet waits
       *     100 (~16 h); a test that waited even 6 would spend its whole budget mining.
       *   - `testingMode = false` — real regtest PoW headers are validated, as
@@ -65,9 +65,9 @@ object DevnetConfig {
     /** The bridge half, before genesis has produced anything.
       *
       * `yFederationHex` is the ceremony's `federation_setup_Y`: an INPUT to genesis, since the
-      * treasury address the anchor is funded at derives from it. Everything genesis produces -
-      * the one-shot refs, the config NFT policy - is absent here and filled in afterwards from
-      * the `DeployedBridge` record.
+      * treasury address the anchor is funded at derives from it. Everything genesis produces - the
+      * one-shot refs, the config NFT policy - is absent here and filled in afterwards from the
+      * `DeployedBridge` record.
       */
     def bridge(
         yFederationHex: String,
