@@ -53,6 +53,7 @@ object CliApp {
             pegInWithdrawHash: Option[String],
             pegOutWithdrawHash: Option[String],
             params: binocular.cli.commands.UpdateConfigCommand.ParamEdits,
+            allowUnsafeSchedule: Boolean,
             dryRun: Boolean
         )
         case DeployScriptRefs(dryRun: Boolean)
@@ -484,6 +485,17 @@ object CliApp {
                           maxValidityWindowMs = maxValidityWindow.map(BigInt.apply)
                         )
                 }
+                // Nothing on chain refuses an unworkable schedule (spec: "config.ak accepts any
+                // datum shape by design"), and the failure is silent — an epoch with two batch
+                // opportunities and four idle days reads as an SPO outage. So the constraint check
+                // blocks by default, and an operator who means it says so.
+                val allowUnsafeScheduleFlag = Opts
+                    .flag(
+                      "allow-unsafe-schedule",
+                      help = "Publish a schedule that breaks a spec constraint anyway. For test " +
+                          "deployments; the broken constraints are printed either way"
+                    )
+                    .orFalse
                 // Every option is applied in ONE Update tx — a validator migration requires its
                 // dependent fields to flip together, and a params update is one signed act.
                 (
@@ -492,6 +504,7 @@ object CliApp {
                   pegInHashOpt,
                   pegOutHashOpt,
                   paramsOpt,
+                  allowUnsafeScheduleFlag,
                   dryRunFlag
                 )
                     .mapN(Cmd.UpdateConfig.apply)
@@ -775,6 +788,7 @@ object CliApp {
                               pegInHash,
                               pegOutHash,
                               params,
+                              allowUnsafeSchedule,
                               dryRun
                             ) =>
                             UpdateConfigCommand(
@@ -783,6 +797,7 @@ object CliApp {
                               pegInHash,
                               pegOutHash,
                               params,
+                              allowUnsafeSchedule,
                               dryRun
                             )
                         case Cmd.DeployScriptRefs(dryRun) =>

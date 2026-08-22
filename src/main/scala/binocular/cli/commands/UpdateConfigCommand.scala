@@ -63,6 +63,7 @@ case class UpdateConfigCommand(
     pegInWithdrawHash: Option[String] = None,
     pegOutWithdrawHash: Option[String] = None,
     params: UpdateConfigCommand.ParamEdits = UpdateConfigCommand.ParamEdits.none,
+    allowUnsafeSchedule: Boolean = false,
     dryRun: Boolean = false
 ) extends Command {
 
@@ -206,6 +207,46 @@ case class UpdateConfigCommand(
         // every SPO's TM builder, so an accidental edit is worth seeing before it is signed.
         UpdateConfigCommand.diff(oldData, newDatum).foreach { case (idx, name, before, after) =>
             Console.info(s"field $idx ($name)", s"$before -> $after")
+        }
+
+        // The governing authority's constraint check (spec §TM batches and the protocol schedule:
+        // "config.ak accepts any datum shape by design"). Nothing on chain refuses a schedule that
+        // cannot work, and the failure mode is silence rather than an error — a bridge that offers
+        // two batch opportunities in an epoch and then idles for four days looks exactly like one
+        // whose SPOs are down. Run it whenever the schedule is touched.
+        if params.schedule.nonEmpty then {
+            val cardanoNetwork = config.cardano.cardanoNetwork
+            println()
+            Console.info(
+              "grid now",
+              ScheduleCheck.gridSummary(oldConfig.params.schedule, cardanoNetwork)
+            )
+            Console.info(
+              "grid after",
+              ScheduleCheck.gridSummary(newConfig.params.schedule, cardanoNetwork)
+            )
+            val findings = ScheduleCheck.check(
+              oldConfig.params.schedule,
+              newConfig.params.schedule,
+              cardanoNetwork
+            )
+            findings.foreach { f =>
+                if f.isError then Console.error(s"[${f.rule}] ${f.message}")
+                else Console.warn(s"[${f.rule}] ${f.message}")
+            }
+            val errors = findings.count(_.isError)
+            if errors > 0 && !allowUnsafeSchedule then {
+                Console.error(
+                  s"$errors schedule constraint(s) would be BROKEN by this update. Fix the " +
+                      "values, or pass --allow-unsafe-schedule if this is a test deployment and " +
+                      "you accept the consequences printed above."
+                )
+                break(1)
+            }
+            if errors > 0 then
+                Console.warn(
+                  s"--allow-unsafe-schedule: proceeding over $errors broken constraint(s)"
+                )
         }
         println()
 
