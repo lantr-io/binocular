@@ -1,69 +1,34 @@
-# NixOS module: the Bifrost Bridge v2 TM relay + TM confirm loops.
+# NixOS module: the Bifrost Bridge v2 watchtower.
 #
-# A SECOND bridge beside `binocular-watchtower`, on the same box, against the SAME oracle and the
-# same bitcoind. It runs three units and NOT the `watchtower` command, because that command always
-# starts the oracle sync worker too — and only one process on this box may write to the oracle
-# UTxO, which is `binocular-watchtower`'s job. Those three are exactly what `watchtower` would
-# have started minus that worker.
+# ONE unit, `binocular-bridge-v2`, running the `watchtower` command from main. That command
+# supervises four workers in a single JVM:
 #
-#   binocular-bridge-v2-relay    → `relay`         (Cardano → Bitcoin broadcast)
-#   binocular-bridge-v2-confirm  → `confirm-tmtx`  (Bitcoin inclusion → Cardano Confirmed, and the
-#                                                   POR sweeper that follows each confirm)
-#   binocular-bridge-v2-proofs   → `serve-proofs`  (the [SPI-4]/[OB-13] REST API the frontend
-#                                                   builds its complete-peg-in from)
+#   [oracle]   `run`            Bitcoin header submission to the oracle UTxO (and SetState recovery)
+#   [relay]    `relay`          Cardano → Bitcoin broadcast
+#   [confirm]  `confirm-tmtx`   Bitcoin inclusion → Cardano Confirmed, plus the POR sweeper
+#   [proofs]   `serve-proofs`   the [SPI-4]/[OB-13] REST API the frontend's complete-peg-in uses
 #
-# Out-of-store files, deployed by hand (deploy/deploy.sh ships v1's; this one is copied alongside):
+# History: v2 used to run three units (relay / confirm / proofs) and deliberately NOT `watchtower`,
+# because the 2026-07-17 v1 deployment (`binocular-watchtower`, application-preprod.conf) owned the
+# oracle UTxO and only one process on this box may write it. v1 is retired, so v2 takes the oracle
+# worker back and the three loops collapse into the one command that supervises all four.
+#
+# binocular-watchtower.nix is still imported: it defines the testnet4 bitcoind both this unit and
+# Dolos sit beside, plus the `binocular` user and /var/lib/binocular. Set its `runWatchtower =
+# false` to retire the v1 unit while keeping those.
+#
+# Out-of-store files, deployed by deploy/deploy.sh --v2:
 #   /var/lib/binocular/binocular-v2.jar             (fat jar; NOT v1's binocular.jar)
 #   /var/lib/binocular/application-preprod-v2.conf  (non-secret HOCON config)
-#   /var/lib/binocular/secrets.env                  (shared with v1; WALLET_MNEMONIC et al)
-#
-# Nothing here manages bitcoind: `binocular-watchtower.nix` already runs the testnet4 node both
-# bridges read.
+#   /var/lib/binocular/secrets.env                  (WALLET_MNEMONIC et al; mode 600)
 { config, lib, pkgs, ... }:
 
 let
   cfg = config.services.binocular-bridge-v2;
-
-  # The two loops differ only in their subcommand, so the unit is written once.
-  mkLoop = name: subcommand: description: {
-    inherit description;
-    after = [ "network-online.target" "bitcoind-watchtower.service" ];
-    wants = [ "network-online.target" ];
-    wantedBy = [ "multi-user.target" ];
-
-    serviceConfig = {
-      Type = "simple";
-      User = cfg.user;
-      Group = cfg.user;
-      # Creates /var/lib/binocular-v2 owned by the user, and makes it writable under
-      # ProtectSystem=strict. It holds cpo-trie.json — v2's own mirror of the completed-peg-outs
-      # root, which must never be shared with v1's (a mirror reconciled against the wrong root
-      # HALTS the sweeper).
-      StateDirectory = "binocular-v2";
-      EnvironmentFile = cfg.secretsFile;
-      ExecStart = ''
-        ${cfg.jdk}/bin/java --sun-misc-unsafe-memory-access=allow \
-          -Xmx${toString cfg.heapMb}m \
-          -jar ${cfg.stateDir}/${cfg.jarFile} \
-          --config ${cfg.stateDir}/${cfg.configFile} ${subcommand}
-      '';
-      Restart = "always";
-      RestartSec = 10;
-      # Exit code 3 = unrecoverable watchtower state. Restarting only re-detects it.
-      RestartPreventExitStatus = "3";
-
-      # Hardening, matching binocular-watchtower.nix.
-      NoNewPrivileges = true;
-      ProtectSystem = "strict";
-      ProtectHome = true;
-      PrivateTmp = true;
-      ReadWritePaths = [ "/var/lib/binocular-v2" ];
-    };
-  };
 in
 {
   options.services.binocular-bridge-v2 = {
-    enable = lib.mkEnableOption "Bifrost Bridge v2 relay + confirm loops";
+    enable = lib.mkEnableOption "Bifrost Bridge v2 watchtower (oracle + relay + confirm + proofs)";
 
     jdk = lib.mkOption {
       type = lib.types.package;
@@ -74,13 +39,13 @@ in
     stateDir = lib.mkOption {
       type = lib.types.str;
       default = "/var/lib/binocular";
-      description = "Directory holding the jar, config, and secrets. Shared with v1 on purpose: the secrets file is the same wallet.";
+      description = "Directory holding the jar, config, and secrets. Shared with binocular-watchtower.nix on purpose: the secrets file is the same wallet.";
     };
 
     jarFile = lib.mkOption {
       type = lib.types.str;
       default = "binocular-v2.jar";
-      description = "Jar filename within stateDir. Deliberately NOT binocular.jar — overwriting that one would change the running v1 demo on its next restart.";
+      description = "Jar filename within stateDir. Deliberately NOT binocular.jar — that one is v1's, kept on disk for rollback.";
     };
 
     configFile = lib.mkOption {
@@ -92,26 +57,29 @@ in
     secretsFile = lib.mkOption {
       type = lib.types.str;
       default = "/var/lib/binocular/secrets.env";
-      description = "EnvironmentFile with WALLET_MNEMONIC and BLOCKFROST_PROJECT_ID (mode 600). Shared with v1.";
+      description = "EnvironmentFile with WALLET_MNEMONIC and BLOCKFROST_PROJECT_ID (mode 600).";
     };
 
     user = lib.mkOption {
       type = lib.types.str;
       default = "binocular";
-      description = "Service user. Defaults to the user binocular-watchtower.nix already creates.";
+      description = "Service user. Defaults to the user binocular-watchtower.nix creates.";
     };
 
     heapMb = lib.mkOption {
       type = lib.types.int;
-      default = 256;
+      default = 512;
       description = ''
-        -Xmx for each loop, in MiB. Three units share this, so the figure is spent three times over.
+        -Xmx for the watchtower JVM, in MiB.
 
-        Was 384, with a note to lower it "if the box starts swapping". It did: on 2026-08-18, with
-        these three plus PostgreSQL and the frontend added, bitcoind was pushed 546 MB into zram and
-        its RPC latency reached 180 s, timing out the oracle and both confirm loops. Measured
-        resident use at the time was 251 / 157 / 86 MB, so 256 costs these loops nothing and returns
-        the difference to the process that was starving.
+        Was 256, spent three times over when relay, confirm and proofs were three units: measured
+        resident use was 251 / 157 / 86 MB, i.e. ~494 MB plus three JVM runtimes. One JVM pays that
+        overhead once and adds the oracle worker, which ran inside v1's watchtower on the default
+        heap without incident. 512 in one process is therefore more headroom per worker than the old
+        layout had, at a lower total footprint — which matters on this 3.7 GB box, where on
+        2026-08-18 bitcoind was pushed 546 MB into zram and its RPC latency reached 180 s.
+
+        Raise to 768 if [oracle] GC-thrashes while rebuilding the MPF from start-height.
       '';
     };
   };
@@ -119,22 +87,50 @@ in
   config = lib.mkIf cfg.enable {
     # No users.users block: binocular-watchtower.nix creates this user, and both modules are
     # imported together. Declaring it twice is what a conflicting `home` would break.
-    systemd.services.binocular-bridge-v2-relay =
-      mkLoop "relay" "relay" "Bifrost Bridge v2 TM relay (Cardano to Bitcoin)";
-    systemd.services.binocular-bridge-v2-confirm =
-      mkLoop "confirm" "confirm-tmtx" "Bifrost Bridge v2 TM confirm (Bitcoin inclusion to Cardano)";
+    systemd.services.binocular-bridge-v2 = {
+      description = "Bifrost Bridge v2 watchtower (oracle sync + TM relay + TM confirm + proof API)";
+      after = [ "network-online.target" "bitcoind-watchtower.service" ];
+      # `wants`, not just `after`: the oracle and confirm workers are useless without bitcoind.
+      wants = [ "network-online.target" "bitcoind-watchtower.service" ];
+      wantedBy = [ "multi-user.target" ];
 
-    # [SPI-4]/[OB-13]: the swept-peg-ins membership proof and the deposit-inclusion bundle, over
-    # HTTP, which is what the frontend's complete-peg-in is built from. `watchtower` runs this
-    # in-process, but v2 does not run `watchtower` - that would start the oracle worker too - so
-    # `serve-proofs` is its own unit.
-    #
-    # Its port comes from bridge.proof-server-port in the config, not from a flag, and
-    # ProofServer binds 0.0.0.0 with no option to narrow it (ProofServer.scala:73). That port
-    # MUST therefore stay out of networking.firewall.allowedTCPPorts: the firewall is the only
-    # thing keeping the API off the public internet, and Caddy reaches it over loopback, which
-    # the firewall does not filter.
-    systemd.services.binocular-bridge-v2-proofs =
-      mkLoop "proofs" "serve-proofs" "Bifrost Bridge v2 proof API (SPI-4/OB-13)";
+      serviceConfig = {
+        Type = "simple";
+        User = cfg.user;
+        Group = cfg.user;
+        # Creates /var/lib/binocular-v2 owned by the user, and makes it writable under
+        # ProtectSystem=strict. It holds cpo-trie.json — v2's own mirror of the completed-peg-outs
+        # root, which must never be shared with v1's (a mirror reconciled against the wrong root
+        # HALTS the sweeper).
+        StateDirectory = "binocular-v2";
+        EnvironmentFile = cfg.secretsFile;
+        ExecStart = ''
+          ${cfg.jdk}/bin/java --sun-misc-unsafe-memory-access=allow \
+            -Xmx${toString cfg.heapMb}m \
+            -jar ${cfg.stateDir}/${cfg.jarFile} \
+            --config ${cfg.stateDir}/${cfg.configFile} watchtower
+        '';
+        Restart = "always";
+        RestartSec = 10;
+        # Exit code 3 = unrecoverable watchtower state (deep reorg orphaned the oracle's confirmed
+        # history; see Watchtower.UnrecoverableExitCode). Restarting only re-detects it, so leave
+        # the service stopped for manual re-init.
+        RestartPreventExitStatus = "3";
+
+        # Hardening, matching binocular-watchtower.nix.
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        # Only the v2 state dir is writable; the jar, config and secrets under stateDir are read.
+        #
+        # The proof API worker binds 0.0.0.0 with no option to narrow it (ProofServer.scala:73) on
+        # bridge.proof-server-port (9061). That port MUST stay out of
+        # networking.firewall.allowedTCPPorts: the firewall is the only thing keeping the API off
+        # the public internet, and Caddy reaches it over loopback, which the firewall does not
+        # filter.
+        ReadWritePaths = [ "/var/lib/binocular-v2" ];
+      };
+    };
   };
 }

@@ -1,6 +1,10 @@
-# NixOS module: Binocular watchtower + local testnet4 bitcoind.
+# NixOS module: the `binocular` user, the local testnet4 bitcoind, and the RETIRED v1 watchtower.
 #
 # Import this into your host configuration and set the options under `services.binocular-watchtower`.
+# Keep `enable = true` even after retiring v1: this module owns the `binocular` user,
+# /var/lib/binocular, and the testnet4 bitcoind that binocular-bridge-v2.nix and Dolos both need.
+# Set `runWatchtower = false` to stop defining the v1 unit while keeping all three.
+#
 # The jar, config, and secrets live OUT of the Nix store (they are deployed with deploy.sh):
 #   /var/lib/binocular/binocular.jar               (fat jar; built on your Mac)
 #   /var/lib/binocular/application-preprod.conf    (non-secret HOCON config)
@@ -46,6 +50,22 @@ in
       description = "Service user (also owns stateDir and reads the secrets file).";
     };
 
+    runWatchtower = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Define the v1 `binocular-watchtower` unit (oracle sync + TM relay + TM confirm against
+        application-preprod.conf).
+
+        Set to false to retire v1 while this module keeps managing bitcoind, the `binocular` user
+        and /var/lib/binocular — all of which binocular-bridge-v2.nix depends on and does not
+        declare itself. `enable = false` would take those away with it.
+
+        v1's jar and config stay on disk untouched, so flipping this back to true and running
+        `nixos-rebuild switch` is the rollback.
+      '';
+    };
+
     manageBitcoind = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -60,6 +80,12 @@ in
       home = cfg.stateDir;
     };
     users.groups.${cfg.user} = { };
+
+    # /var/lib/binocular holds the jars, configs and secrets BOTH deployments read. The v1 unit's
+    # `StateDirectory = "binocular"` used to create it as a side effect; with runWatchtower = false
+    # there is no unit, so declare it here. 0755 is what StateDirectory defaulted to, so this is a
+    # no-op on a box that already has the directory.
+    systemd.tmpfiles.rules = [ "d ${cfg.stateDir} 0755 ${cfg.user} ${cfg.user} -" ];
 
     # Local Bitcoin node the config points at (bitcoin-node.url = http://127.0.0.1:48332).
     # testnet4's default RPC port IS 48332, so no rpcport override is needed. rpcauth sits at the
@@ -98,8 +124,11 @@ in
         "a081bd28466131059c6c08124d7cc7be$16f2770f2984c0a5a8de5b653e7a979786c80bec6ea4e6859939f093cd8f0bee";
     };
 
-    systemd.services.binocular-watchtower = {
-      description = "Binocular watchtower (oracle sync + TM relay + TM confirm)";
+    # Gated, unlike bitcoind/user/stateDir above: retiring v1 must not take those with it.
+    # A `mkIf false` definition is dropped entirely, so no unit is generated — the same pattern
+    # `services.bitcoind.watchtower` uses above.
+    systemd.services.binocular-watchtower = lib.mkIf cfg.runWatchtower {
+      description = "Binocular watchtower v1, RETIRED (oracle sync + TM relay + TM confirm)";
       after = [ "network-online.target" ]
         ++ lib.optional cfg.manageBitcoind "bitcoind-watchtower.service";
       wants = [ "network-online.target" ]
