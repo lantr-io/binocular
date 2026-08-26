@@ -55,12 +55,16 @@ class ScheduleCheckTest extends AnyFunSuite {
     test("an interval that does not exceed both sign windows is refused") {
         // 3600 vs sign_r1 1800 + sign_r2 1800: the next opportunity opens exactly as signing ends.
         val proposed = deployed.copy(tmBatchInterval = 3600)
-        assert(errors(ScheduleCheck.check(deployed, proposed, CardanoNetwork.Preprod))
-            .contains("interval>rounds"))
+        assert(
+          errors(ScheduleCheck.check(deployed, proposed, CardanoNetwork.Preprod))
+              .contains("interval>rounds")
+        )
         // Shrinking the rounds to fit clears it.
         val fixed = proposed.copy(signR1Window = 600, signR2Window = 600)
-        assert(!errors(ScheduleCheck.check(deployed, fixed, CardanoNetwork.Preprod))
-            .contains("interval>rounds"))
+        assert(
+          !errors(ScheduleCheck.check(deployed, fixed, CardanoNetwork.Preprod))
+              .contains("interval>rounds")
+        )
     }
 
     test("lowering stability_window is an error, and staying low is a warning") {
@@ -83,14 +87,18 @@ class ScheduleCheckTest extends AnyFunSuite {
     test("a cutoff below one interval means the epoch has no batch at all") {
         val proposed = deployed.copy(tmBatchInterval = 21600, finalTmCutoff = 3600)
         assert(ScheduleCheck.opportunitiesPerEpoch(proposed) == 0)
-        assert(errors(ScheduleCheck.check(deployed, proposed, CardanoNetwork.Preprod))
-            .contains("cutoff>=interval"))
+        assert(
+          errors(ScheduleCheck.check(deployed, proposed, CardanoNetwork.Preprod))
+              .contains("cutoff>=interval")
+        )
     }
 
     test("DKG deadlines must stay ordered") {
         val proposed = deployed.copy(dkgR2Deadline = 1800) // now below r1
-        assert(errors(ScheduleCheck.check(deployed, proposed, CardanoNetwork.Preprod))
-            .contains("dkg-ordering"))
+        assert(
+          errors(ScheduleCheck.check(deployed, proposed, CardanoNetwork.Preprod))
+              .contains("dkg-ordering")
+        )
     }
 
     test("a recovery window under the Binocular latency warns about spurious recovery") {

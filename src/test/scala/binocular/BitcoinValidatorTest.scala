@@ -234,8 +234,8 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
         info(s"Contract size: ${contract.script.script.size}")
 //        println(contract.program.showHighlighted)
         // 8207 before SetState; 8658 with the owner-reset branch; 8754 with its timestamp bounds;
-        // 7387 with Scalus 0.18.2+99 targeting vanRossemPV
-        assert(contract.script.script.size == 7387)
+        // 7387 with Scalus 0.18.2+99 targeting vanRossemPV; 7350 with Scalus 1.1.1
+        assert(contract.script.script.size == 7350)
     }
 
     test("Block header throughput - max headers per transaction") {
@@ -1252,10 +1252,10 @@ class BitcoinValidatorTest extends AnyFunSuite with ScalusTest with ScalaCheckPr
 
         assert(txSize <= maxTxSize, "Tx size exceeded")
         // 943423 before SetState; 958103 on Scalus 0.18.2 targeting plominPV; grows with the
-        // (referenced) oracle script size
+        // (referenced) oracle script size; 824786 with Scalus 1.1.1
         assert(
-          tx.body.value.fee == Coin(857516),
-          s"Tx fee ${tx.body.value.fee} != 857516 lovelace"
+          tx.body.value.fee == Coin(824786),
+          s"Tx fee ${tx.body.value.fee} != 824786 lovelace"
         )
     }
 

@@ -42,9 +42,9 @@ object ScheduleCheck {
         case CardanoNetwork.Testnet => 432000L
     }
 
-    /** `3k/f` for the host chain — the Cardano stability window the spec DERIVES
-      * `stability_window` from. Below it, a rollback can change a batch's membership after every
-      * SPO has already signed the transaction that batch produced.
+    /** `3k/f` for the host chain — the Cardano stability window the spec DERIVES `stability_window`
+      * from. Below it, a rollback can change a batch's membership after every SPO has already
+      * signed the transaction that batch produced.
       */
     def stabilityWindowFloor(network: CardanoNetwork): Long = network match {
         case CardanoNetwork.Preview => 25920L // k=432,  f=0.05
@@ -80,8 +80,11 @@ object ScheduleCheck {
     /** Every constraint, as a predicate that is TRUE when the schedule is broken. Shared by the
       * proposed and deployed evaluations so the two cannot drift.
       */
-    private def violations(s: ScheduleParams, epochLength: Long, network: CardanoNetwork)
-        : List[(Severity, String, String)] = {
+    private def violations(
+        s: ScheduleParams,
+        epochLength: Long,
+        network: CardanoNetwork
+    ): List[(Severity, String, String)] = {
         val b = List.newBuilder[(Severity, String, String)]
 
         if s.tmBatchInterval <= 0 then
@@ -194,14 +197,18 @@ object ScheduleCheck {
             .map { case (sev, rule, msg) =>
                 if before.contains(rule) then
                     // Already broken before this update. Say so and step out of the way.
-                    Finding(Severity.Warning, rule, s"$msg [pre-existing, not caused by this update]")
+                    Finding(
+                      Severity.Warning,
+                      rule,
+                      s"$msg [pre-existing, not caused by this update]"
+                    )
                 else Finding(sev, rule, msg)
             }
         (onProposed ++ deltas(deployed, proposed)).sortBy(f => if f.isError then 0 else 1)
     }
 
-    /** Constraints on the CHANGE rather than on the result. These can never be "pre-existing" —
-      * the movement itself is what they judge — so they are never downgraded.
+    /** Constraints on the CHANGE rather than on the result. These can never be "pre-existing" — the
+      * movement itself is what they judge — so they are never downgraded.
       */
     private def deltas(deployed: ScheduleParams, proposed: ScheduleParams): List[Finding] =
         // Spec §TM batches: stability_window is DERIVED from the host chain's 3k/f, and "the
