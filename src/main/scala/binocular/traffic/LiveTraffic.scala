@@ -150,10 +150,10 @@ final class LiveTraffic(config: BinocularConfig, notifier: Notifier)(using Execu
     /** Submit and wait for inclusion, so that the next tick observes the result instead of building
       * the same transaction again.
       */
-    private def submit(tx: Transaction, label: String): Unit = {
+    private def submit(tx: Transaction, label: String): String = {
         val hash = checked(await(provider.submit(tx)))
         require(hash == tx.id, "Cardano submission returned another transaction ID")
-        Console.log(s"Traffic: $label ${hash.toHex}")
+        Console.log(s"Traffic: $label ${hash.toHex} submitted")
         val deadline = System.nanoTime + 15.minutes.toNanos
         while await(provider.checkTransaction(hash)) != TransactionStatus.Confirmed do {
             require(System.nanoTime < deadline, s"$label ${hash.toHex} unconfirmed after 15 min")
@@ -163,6 +163,7 @@ final class LiveTraffic(config: BinocularConfig, notifier: Notifier)(using Execu
           await(provider.fetchTransactionInfo(hash.toHex)).validContract,
           "Cardano script failed"
         )
+        hash.toHex
     }
     private def references(): PegInCompletion.References =
         PegInCompletion.references(
@@ -226,14 +227,20 @@ final class LiveTraffic(config: BinocularConfig, notifier: Notifier)(using Execu
         )
         action.foreach { a =>
             Console.log(s"Traffic: ${if dryRun then "would " else ""}${LiveTraffic.describe(a)}")
-            if !dryRun then
-                a match {
-                    case Action.Refund(d)       => refund(observed.ctx, d)
-                    case Action.Complete(_, r)  => complete(observed.swept, r)
-                    case Action.Request(d)      => request(d)
-                    case Action.Deposit(amount) => deposit(observed.ctx, observed.coins, amount)
-                    case Action.PegOut(amount)  => withdraw(observed.ctx, amount)
+            if !dryRun then {
+                val done = a match {
+                    case Action.Refund(d)      => refund(observed.ctx, d)
+                    case Action.Complete(d, r) => Some(complete(observed.swept, d, r))
+                    case Action.Request(d)     => Some(request(d))
+                    case Action.Deposit(amount) =>
+                        Some(deposit(observed.ctx, observed.coins, amount))
+                    case Action.PegOut(amount) => Some(withdraw(observed.ctx, amount))
                 }
+                done.foreach { message => // [TRF-126]
+                    Console.log(s"Traffic: $message")
+                    notifier.success("traffic", message)
+                }
+            }
         }
     }
 
@@ -304,15 +311,15 @@ final class LiveTraffic(config: BinocularConfig, notifier: Notifier)(using Execu
         ctx: BridgeSweepSetup.SingletonContext,
         coins: Seq[ScannedBitcoinOutput],
         amountSat: Long
-    ): Unit = {
+    ): String = {
         val tree = treeParams(ctx, treasuryKey(ctx))
         val tx = await(LiveTraffic.depositTransaction(rpc, wallet, tree, amountSat, coins))
         val id = await(rpc.sendRawTransaction(tx.hex))
         require(id == tx.txIdBE.hex, "Bitcoin submission returned another transaction ID")
-        Console.log(s"Traffic: deposit $id of $amountSat sat")
+        s"Deposit $id:${PegInDeposit.DepositVout} of $amountSat sat broadcast"
     }
 
-    private def request(d: DepositView): Unit = {
+    private def request(d: DepositView): String = {
         val proof = proved(LiveTraffic.pegInUtxoId(d.outpoint))
             .getOrElse(throw IllegalStateException("Deposit is no longer provable in the oracle"))
         val bundle = proof.bundle
@@ -359,10 +366,15 @@ final class LiveTraffic(config: BinocularConfig, notifier: Notifier)(using Execu
             excludeInputs = excluded
           )
         )
-        submit(tx, "peg-in request")
+        val hash = submit(tx, "peg-in request")
+        s"Peg-in request $hash confirmed for deposit ${d.outpoint.toHumanReadableString}"
     }
 
-    private def complete(snapshot: ProofService.SweptSnapshot, request: TransactionInput): Unit = {
+    private def complete(
+        snapshot: ProofService.SweptSnapshot,
+        d: DepositView,
+        request: TransactionInput
+    ): String = {
         val pir = checked(await(provider.findUtxo(request)))
         val prepared = checked(
           completion.prepare(provider, history, snapshot, pir.input, sponsor, timeout)
@@ -377,10 +389,12 @@ final class LiveTraffic(config: BinocularConfig, notifier: Notifier)(using Execu
         val tx = await(
           completion.build(provider, setup.hdAccount, prepared, references(), signature)
         )
-        submit(tx, "peg-in completion")
+        val hash = submit(tx, "peg-in completion")
+        s"Peg-in completion $hash confirmed for deposit ${d.outpoint.toHumanReadableString}" +
+            s" (${d.amountSat} sat)"
     }
 
-    private def withdraw(ctx: BridgeSweepSetup.SingletonContext, amountSat: Long): Unit = {
+    private def withdraw(ctx: BridgeSweepSetup.SingletonContext, amountSat: Long): String = {
         val datum = PegOutDatum(
           AuthorizationMethod.CardanoSignature(
             ByteString.fromArray(setup.hdAccount.paymentKeyHash.bytes)
@@ -400,11 +414,12 @@ final class LiveTraffic(config: BinocularConfig, notifier: Notifier)(using Execu
           amountSat,
           datum
         )
-        submit(tx, "peg-out request")
+        val hash = submit(tx, "peg-out request")
+        s"Peg-out request $hash confirmed for $amountSat sat"
     }
 
-    /** [TRF-116], [TRF-80], [TRF-117], [TRF-82]. */
-    private def refund(ctx: BridgeSweepSetup.SingletonContext, d: DepositView): Unit = {
+    /** [TRF-116], [TRF-80], [TRF-117], [TRF-82]. None when no candidate `Y_51` matches. */
+    private def refund(ctx: BridgeSweepSetup.SingletonContext, d: DepositView): Option[String] = {
         val outpoint = d.outpoint.toHumanReadableString
         val script = walk.script(d.outpoint)
         val policyHex = ctx.config.treasuryInfoPolicyId.toHex
@@ -422,6 +437,7 @@ final class LiveTraffic(config: BinocularConfig, notifier: Notifier)(using Execu
                 val message = s"No Y_51 in the treasury-info history rebuilds deposit $outpoint"
                 Console.logError(s"Traffic: $message")
                 notifier.error("traffic", message) // [TRF-49]
+                None
             case Some(t) =>
                 val txid = bitcoinTxid(d.outpoint)
                 require(
@@ -446,9 +462,7 @@ final class LiveTraffic(config: BinocularConfig, notifier: Notifier)(using Execu
                   s"Refund fee $fee sat exceeds the cap of ${TrafficPlan.FeeCapSat} sat"
                 )
                 val id = await(rpc.sendRawTransaction(tx.hex))
-                val message = s"Refund $id broadcast for deposit $outpoint (${d.amountSat} sat)"
-                Console.log(s"Traffic: $message")
-                notifier.success("traffic", message) // [TRF-82]
+                Some(s"Refund $id broadcast for deposit $outpoint (${d.amountSat} sat)") // [TRF-82]
         }
     }
 }

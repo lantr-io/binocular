@@ -165,8 +165,9 @@ have a 36-hour stability window and require the normal 432,000-slot epoch. Start
 cycle with no eligible deposit window.
 
 There is no state file: a restart re-reads the ledgers and carries on, and deposits are found
-by walking the funding address's history. A failed action is logged and notified, and the next
-tick tries again. `--dry-run` checks configuration/connectivity without sending.
+by walking the funding address's history. Every action, successful or failed, is logged and
+posted to the configured notifier (Discord); after a failure the next tick tries again.
+`--dry-run` observes both ledgers and logs what the first tick would do, without sending.
 
 #### Relay only
 
