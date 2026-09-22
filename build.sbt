@@ -151,7 +151,7 @@ lazy val coreDependencies = Seq(
   "com.typesafe.scala-logging" %% "scala-logging" % "3.9.6",
   "com.github.pureconfig" %% "pureconfig-core" % "0.17.10",
   "org.bouncycastle" % "bcprov-jdk18on" % "1.83",
-  ("org.bitcoin-s" % "bitcoin-s-bitcoind-rpc_2.13" % "1.9.11").excludeAll(
+  ("org.bitcoin-s" % "bitcoin-s-bitcoind-rpc_2.13" % "1.9.12").excludeAll(
     ExclusionRule(organization = "com.lihaoyi", name = "upickle_2.13"),
     ExclusionRule(organization = "com.lihaoyi", name = "ujson_2.13"),
     ExclusionRule(organization = "com.lihaoyi", name = "upack_2.13"),

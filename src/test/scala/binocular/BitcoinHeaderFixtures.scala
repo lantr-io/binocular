@@ -5,7 +5,7 @@ import binocular.oracle.*
 
 import org.apache.pekko.actor.ActorSystem
 import org.bitcoins.core.protocol.blockchain.BlockHeader as BtcHeader
-import org.bitcoins.rpc.client.v27.BitcoindV27RpcClient
+import org.bitcoins.rpc.client.v28.BitcoindV28RpcClient
 import scalus.uplc.builtin.ByteString
 import scalus.cardano.onchain.plutus.prelude
 import upickle.default.*
@@ -89,7 +89,7 @@ object BitcoinHeaderFixtures {
         startHeight: Int,
         count: Int,
         outputDir: String = "src/test/resources/fixtures"
-    )(using system: ActorSystem, client: BitcoindV27RpcClient): Future[File] = {
+    )(using system: ActorSystem, client: BitcoindV28RpcClient): Future[File] = {
         given ec: ExecutionContext = system.dispatcher
 
         def fetchHeaders(
@@ -240,7 +240,7 @@ object BitcoinHeaderFixtures {
           rpcUri = bitcoindUri
         )
 
-        given client: BitcoindV27RpcClient = new BitcoindV27RpcClient(instance)
+        given client: BitcoindV28RpcClient = new BitcoindV28RpcClient(instance)
 
         println("=== Bitcoin Header Fixture Generator ===")
         println(s"Connected to: $bitcoindUri")

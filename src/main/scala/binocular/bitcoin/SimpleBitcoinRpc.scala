@@ -10,10 +10,29 @@ import java.net.http.HttpResponse.BodyHandlers
 import java.time.Duration as JavaDuration
 import upickle.default.*
 import java.util.Base64
+import org.bitcoins.core.protocol.BitcoinAddress
+import org.bitcoins.core.number.UInt32
+import org.bitcoins.core.protocol.transaction.TransactionOutPoint
+import org.bitcoins.crypto.DoubleSha256DigestBE
+import scodec.bits.ByteVector
 
 /** Common interface for Bitcoin RPC operations */
 trait BitcoinRpc {
+
+    def scanAddress(address: String): Future[BitcoinUtxoScan] =
+        Future.failed(new UnsupportedOperationException("scantxoutset not implemented"))
+
+    /** A positive estimate in sat/kvB; None when the node has insufficient estimation history. */
+    def estimateSmartFeeSatPerKvb(target: Int, mode: String): Future[Option[Long]] =
+        Future.failed(new UnsupportedOperationException("estimatesmartfee not implemented"))
+
+    /** Current mempool acceptance floor in sat/kvB, not the dust-relay rate. */
+    def getMempoolMinFeeSatPerKvb(): Future[Long] =
+        Future.failed(new UnsupportedOperationException("getmempoolinfo not implemented"))
+
     def getBlockHash(height: Int): Future[String]
+    def getBlockHeaderRaw(hash: String): Future[String] =
+        Future.failed(new UnsupportedOperationException("raw block header lookup not implemented"))
     def getBlockHeader(hash: String): Future[BlockHeaderInfo]
     def getBlock(hash: String): Future[BlockInfo]
     def getBlockchainInfo(): Future[BlockchainInfo]
@@ -49,15 +68,18 @@ trait BitcoinRpc {
   *
   * This avoids the cookie file lookup issues in bitcoin-s.
   */
-class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) extends BitcoinRpc {
+class SimpleBitcoinRpc(
+    config: BitcoinNodeConfig,
+    requestTimeout: JavaDuration = JavaDuration.ofSeconds(60)
+)(using ec: ExecutionContext)
+    extends BitcoinRpc {
 
     private val httpClient = HttpClient
         .newBuilder()
         .connectTimeout(JavaDuration.ofSeconds(30))
         .build()
 
-    private var requestId = 0
-    private val requestTimeout = JavaDuration.ofSeconds(60)
+    private val requestId = new java.util.concurrent.atomic.AtomicInteger()
 
     case class RpcRequest(
         jsonrpc: String = "2.0",
@@ -66,17 +88,11 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) ex
         params: ujson.Value = ujson.Arr()
     ) derives ReadWriter
 
-    case class RpcResponse(
-        result: ujson.Value,
-        error: Option[ujson.Value],
-        id: Int
-    ) derives ReadWriter
-
     /** Make a Bitcoin RPC call */
     private def call(method: String, params: ujson.Value = ujson.Arr()): Future[ujson.Value] =
         Future {
-            requestId += 1
-            val request = RpcRequest(id = requestId, method = method, params = params)
+            val request =
+                RpcRequest(id = requestId.incrementAndGet(), method = method, params = params)
             val requestJson = write(request)
 
             val startTime = System.currentTimeMillis()
@@ -108,22 +124,29 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) ex
                     System.err.println(s"⚠️  Slow RPC call: $method took ${elapsed}ms")
                 }
 
-                if response.statusCode() != 200 then {
+                // Legacy Core uses HTTP 500 for RPC errors; JSON-RPC 2.0 uses HTTP 200.
+                // Authentication/transport errors must never be interpreted as RPC -5 absence.
+                if response.statusCode() != 200 && response.statusCode() != 500 then {
                     throw new RuntimeException(
                       s"HTTP ${response.statusCode()}: ${response.body()}"
                     )
                 }
 
                 // Parse response
-                val rpcResponse = read[RpcResponse](response.body())
-
-                rpcResponse.error match {
+                val rpcResponse = ujson.read(response.body())
+                require(rpcResponse("id").num == request.id, "Bitcoin RPC response ID mismatch")
+                rpcResponse.obj.get("error").filter(_ != ujson.Null) match {
                     case Some(error) =>
-                        throw new RuntimeException(s"RPC error: $error")
+                        throw BitcoinRpcError(
+                          BigDecimal(error("code").toString).toIntExact,
+                          error("message").str
+                        )
                     case None =>
-                        rpcResponse.result
+                        require(response.statusCode() == 200, "HTTP failure without RPC error")
+                        rpcResponse("result")
                 }
             } catch {
+                case e: BitcoinRpcError => throw e
                 case e: java.net.http.HttpTimeoutException =>
                     val elapsed = System.currentTimeMillis() - startTime
                     throw new RuntimeException(
@@ -144,6 +167,55 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) ex
             }
         }
 
+    /** https://bitcoincore.org/en/doc/30.0.0/rpc/blockchain/scantxoutset/ A read-only addr() scan:
+      * no descriptor import, wallet creation or rescan.
+      */
+    override def scanAddress(address: String): Future[BitcoinUtxoScan] = {
+        val script = BitcoinAddress.fromString(address).scriptPubKey.asmBytes
+        call("scantxoutset", ujson.Arr("start", ujson.Arr(s"addr($address)"))).map { result =>
+            require(result("success").bool, "Bitcoin UTxO scan did not complete")
+            val outputs = result("unspents").arr.toVector.map { out =>
+                val txid = out("txid").str
+                val vout = BigDecimal(out("vout").toString).toLongExact
+                val output = ScannedBitcoinOutput(
+                  TransactionOutPoint(
+                    DoubleSha256DigestBE(ByteVector.fromValidHex(txid)),
+                    UInt32(vout)
+                  ),
+                  SimpleBitcoinRpc
+                      .satsFromGetTxOut(txid, vout, ujson.Obj("value" -> out("amount")))
+                      .get,
+                  ByteVector.fromValidHex(out("scriptPubKey").str),
+                  BigDecimal(out("height").toString).toIntExact,
+                  // Core 23+ reports the flag; an older node leaves it out. Treat absent as
+                  // non-coinbase: an immature coinbase spend fails at broadcast, it does not
+                  // lose funds.
+                  out.obj.get("coinbase").exists(_.bool)
+                )
+                require(
+                  output.scriptPubKey == script,
+                  "Scan returned an output for another address"
+                )
+                output
+            }
+            BitcoinUtxoScan(
+              BigDecimal(result("height").toString).toIntExact,
+              result("bestblock").str,
+              outputs
+            )
+        }
+    }
+
+    override def estimateSmartFeeSatPerKvb(target: Int, mode: String): Future[Option[Long]] =
+        call("estimatesmartfee", ujson.Arr(target, mode)).map { result =>
+            result.obj.get("feerate").map(SimpleBitcoinRpc.feeRateSatPerKvb).filter(_ > 0)
+        }
+
+    override def getMempoolMinFeeSatPerKvb(): Future[Long] =
+        call("getmempoolinfo").map(result =>
+            SimpleBitcoinRpc.feeRateSatPerKvb(result("mempoolminfee"))
+        )
+
     /** Get block hash by height */
     def getBlockHash(height: Int): Future[String] = {
         call("getblockhash", ujson.Arr(height)).map { result =>
@@ -152,7 +224,7 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) ex
     }
 
     /** Get raw block header hex by hash (verbose=false) - returns 80 bytes as hex */
-    def getBlockHeaderRaw(hash: String): Future[String] = {
+    override def getBlockHeaderRaw(hash: String): Future[String] = {
         call("getblockheader", ujson.Arr(hash, false)).map(_.str)
     }
 
@@ -338,6 +410,14 @@ class SimpleBitcoinRpc(config: BitcoinNodeConfig)(using ec: ExecutionContext) ex
 
 object SimpleBitcoinRpc {
 
+    /** Core returns BTC/kvB. Preserve fractional sat/vB and round only upward to sat/kvB. */
+    private def feeRateSatPerKvb(value: ujson.Value): Long = {
+        require(value.numOpt.isDefined, "fee rate must be a JSON number")
+        val btcPerKvb = BigDecimal(value.toString)
+        require(btcPerKvb >= 0, "fee rate cannot be negative")
+        (btcPerKvb * BigDecimal(100000000)).setScale(0, BigDecimal.RoundingMode.CEILING).toLongExact
+    }
+
     /** Interpret a `gettxout` result as a satoshi amount: `None` when the outpoint is spent or
       * never existed (bitcoind returns null for both, indistinguishably).
       *
@@ -353,7 +433,7 @@ object SimpleBitcoinRpc {
       * Split out of the RPC call so the conversion is testable without a node — it is the only part
       * of `getTxOutValueSat` that can be wrong in a way nothing downstream would catch.
       */
-    def satsFromGetTxOut(txid: String, vout: Int, result: ujson.Value): Option[Long] =
+    def satsFromGetTxOut(txid: String, vout: Long, result: ujson.Value): Option[Long] =
         result match {
             case ujson.Null => None
             case res =>
