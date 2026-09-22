@@ -140,6 +140,36 @@ binocular --config application-preprod.conf prove-transaction <BTC_TX_ID>
 
 ### Relay TMTx transactions (Bifrost watchtower)
 
+#### Optional demo traffic
+
+Set `binocular.traffic.enabled = true` (or `TRAFFIC_ENABLED=true`) to add demo traffic to
+`watchtower`. Every five minutes it reads both ledgers and does at most one thing: refund a
+deposit the treasury never took, complete a swept peg-in, request a confirmed deposit, or start
+a random deposit or peg-out. Bitcoin and Cardano mainnet are refused.
+
+```bash
+binocular --config application-preprod.conf traffic-address
+# Fund the printed Bitcoin address. The sponsor also needs ADA and deployed bridge script refs.
+binocular --config application-preprod.conf watchtower --dry-run
+binocular --config application-preprod.conf watchtower
+```
+
+Keys: `virtual-epoch-slots` (match Heimdall), `max-amount-sat` (amounts are uniform between
+the live `min_peg_out_fbtc` and this, default 50,000), `mean-interval` (mean time between
+random deposits, and between random peg-outs, default `4h`). Peg-outs only spend fBTC that
+earlier peg-ins minted, so the two sums converge. Fee estimates come from bitcoind, capped at
+10,000 sat per transaction; Treasury Movement fees remain Heimdall's responsibility.
+
+The one-day default epoch requires a shortened live bridge schedule; the deployment defaults
+have a 36-hour stability window and require the normal 432,000-slot epoch. Startup rejects a
+cycle with no eligible deposit window.
+
+There is no state file: a restart re-reads the ledgers and carries on, and deposits are found
+by walking the funding address's history. A failed action is logged and notified, and the next
+tick tries again. `--dry-run` checks configuration/connectivity without sending.
+
+#### Relay only
+
 ```bash
 # Start the relay daemon
 binocular --config application-preprod.conf relay

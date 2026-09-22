@@ -1,11 +1,13 @@
 package binocular.server
 
 import binocular.BinocularConfig
-import binocular.bitcoin.SimpleBitcoinRpc
-import binocular.cli.CommandHelpers
+import binocular.bitcoin.{BitcoinRpc, SimpleBitcoinRpc}
+import binocular.cli.{CommandHelpers, ValidOracleUtxo}
+import binocular.cli.commands.BridgeSweepSetup
 import binocular.oracle.{BitcoinContract, ChainState}
 import binocular.server.ProofApi.ApiError
 import binocular.watchtower.{BridgeState, ConfigDatum, CpoHistorySource, PegInProofBundle, ProviderChainHistory, SweptPegInsProofService, TreasuryMovementValidator}
+import binocular.server.ProofService.{DepositProof, SweptSnapshot}
 
 import scalus.cardano.address.{Address, Network}
 import scalus.cardano.ledger.{AssetName, Credential, ScriptHash, Utxo}
@@ -42,7 +44,7 @@ import scalus.utils.await
 final class ProofService(
     provider: BlockchainProvider,
     history: CpoHistorySource,
-    rpc: SimpleBitcoinRpc,
+    rpc: BitcoinRpc,
     network: Network,
     oraclePolicyId: ScriptHash,
     configNftPolicy: ScriptHash,
@@ -62,11 +64,9 @@ final class ProofService(
                 .parseBtcOutpoint(outpointArg)
                 .left
                 .map(ProofApi.invalidOutpoint)
-            resolved <- resolveBridge()
-            (state, tmAddressBech32) = resolved
-            trie <- spiTrie(state, tmAddressBech32)
+            snapshot <- sweptSnapshot()
             proof <- SweptPegInsProofService
-                .proveFrom(trie, outpoint)
+                .proveFrom(snapshot.trie, outpoint)
                 .left
                 .map(ProofApi.spiError)
         } yield ProofApi.spiProofJson(proof)
@@ -78,27 +78,58 @@ final class ProofService(
                 .parseBtcOutpoint(outpointArg)
                 .left
                 .map(ProofApi.invalidOutpoint)
-            chainState <- oracleState()
-            mpf <- confirmedBlocksMpf(chainState)
+            result <- depositProofFor(outpoint)
+        } yield ProofApi.depositBundleJson(
+          result.bundle,
+          result.oracle.chainState.confirmedBlocksRoot
+        )
+
+    /** Resolve one deposit bundle together with the exact oracle input/state that anchored it. Only
+      * the root-keyed MPF is cached; every call resolves a fresh oracle UTxO.
+      */
+    def depositProofFor(outpoint: ByteString): Either[ApiError, DepositProof] =
+        for {
+            oracle <- oracleState()
+            mpf <- confirmedBlocksMpf(oracle.chainState)
             bundle <- backend("building the deposit bundle") {
                 PegInProofBundle.produceForOutpoint(rpc, mpf, outpoint).await(timeout)
             }.flatMap(_.left.map(ProofApi.depositError))
-        } yield ProofApi.depositBundleJson(bundle, chainState.confirmedBlocksRoot)
+        } yield DepositProof(oracle, bundle)
+
+    /** Resolve the full confirmed swept trie together with the exact Config/singleton inputs and
+      * datums that anchor it. Only the root/head-keyed trie is cached; both UTxOs stay fresh.
+      */
+    def sweptSnapshot(): Either[ApiError, SweptSnapshot] =
+        for {
+            context <- resolveBridge()
+            tmAddress <- Address(
+              network,
+              Credential.ScriptHash(ScriptHash.fromHex(context.config.tmScriptHash.toHex))
+            ).encode.toOption
+                .toRight(
+                  ApiError(
+                    503,
+                    "config_malformed",
+                    s"cannot encode the TM address for script hash " +
+                        context.config.tmScriptHash.toHex
+                  )
+                )
+            trie <- spiTrie(context.state, tmAddress)
+        } yield SweptSnapshot(context, trie)
 
     /** A one-pass construction check for `--dry-run`: resolve both proof sources without serving.
       */
     def dryRunCheck(): Either[ApiError, Unit] =
         for {
-            resolved <- resolveBridge()
-            _ <- spiTrie(resolved._1, resolved._2)
-            chainState <- oracleState()
-            _ <- confirmedBlocksMpf(chainState)
+            _ <- sweptSnapshot()
+            oracle <- oracleState()
+            _ <- confirmedBlocksMpf(oracle.chainState)
         } yield ()
 
     // --- bridge state singleton ------------------------------------------------------------------
 
-    /** The singleton's `BridgeState` and the TM address (Config field 4, [CFG-2]). */
-    private def resolveBridge(): Either[ApiError, (BridgeState, String)] =
+    /** The matching live Config and bridge-state singleton inputs and decoded datums. */
+    private def resolveBridge(): Either[ApiError, BridgeSweepSetup.SingletonContext] =
         for {
             configUtxo <- findByNft(
               configNftPolicy,
@@ -133,18 +164,7 @@ final class ProofService(
                         "refusing to guess at a root ([LIB-1])"
                   )
                 )
-            tmAddress <- Address(
-              network,
-              Credential.ScriptHash(ScriptHash.fromHex(config.tmScriptHash.toHex))
-            ).encode.toOption
-                .toRight(
-                  ApiError(
-                    503,
-                    "config_malformed",
-                    s"cannot encode the TM address for script hash ${config.tmScriptHash.toHex}"
-                  )
-                )
-        } yield (state, tmAddress)
+        } yield BridgeSweepSetup.SingletonContext(configUtxo, config, singletonUtxo, state)
 
     /** The reconciled SPI trie for `state`, cached by `(spi_root, head)`. */
     private def spiTrie(
@@ -177,12 +197,13 @@ final class ProofService(
 
     // --- oracle ----------------------------------------------------------------------------------
 
-    private def oracleState(): Either[ApiError, ChainState] =
+    private def oracleState(): Either[ApiError, ValidOracleUtxo] =
         backend("reading the oracle UTxO") {
             CommandHelpers.findOracleUtxo(provider, oraclePolicyId).await(timeout)
         }.flatMap(utxo =>
             CommandHelpers
                 .parseChainState(utxo)
+                .map(ValidOracleUtxo(utxo, _))
                 .toRight(
                   ApiError(503, "oracle_malformed", "oracle UTxO has no valid ChainState datum")
                 )
@@ -247,6 +268,13 @@ final class ProofService(
 }
 
 object ProofService {
+
+    final case class DepositProof(oracle: ValidOracleUtxo, bundle: PegInProofBundle)
+
+    final case class SweptSnapshot(
+        context: BridgeSweepSetup.SingletonContext,
+        trie: OffChainMPF
+    )
 
     /** Wire a [[ProofService]] from the loaded configuration — the one construction path both the
       * watchtower worker and the standalone `serve-proofs` command use. No wallet is needed:

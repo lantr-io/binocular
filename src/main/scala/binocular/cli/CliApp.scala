@@ -60,6 +60,7 @@ object CliApp {
         case MigrateScriptRefs(dryRun: Boolean, outpoints: Option[String])
         case RegisterBridgeCreds(dryRun: Boolean)
         case SignPeginMsg(keyPath: String, message: String)
+        case TrafficAddress
         case PegInComplete(
             pir: String,
             recipient: String,
@@ -557,7 +558,7 @@ object CliApp {
                 val priorOpt = Opts
                     .options[String](
                       "prior-pegin",
-                      "peg_in_utxo_id of an earlier completion (repeatable, insertion order)"
+                      "Override automatic chain-history reconstruction: supply every earlier completed peg_in_utxo_id (repeatable)"
                     )
                     .map(_.toList)
                     .withDefault(Nil)
@@ -565,6 +566,11 @@ object CliApp {
                   Cmd.PegInComplete.apply
                 )
             }
+
+        val trafficAddressCommand = Opts.subcommand(
+          "traffic-address",
+          "Print the demo Bitcoin funding address (offline; test networks only)"
+        )(Opts.unit.as(Cmd.TrafficAddress))
 
         val signPeginMsgCommand =
             Opts.subcommand(
@@ -689,6 +695,7 @@ object CliApp {
                 registerBridgeCredsCommand `orElse`
                 pegInCompleteCommand `orElse`
                 signPeginMsgCommand `orElse`
+                trafficAddressCommand `orElse`
                 pegOutRequestCommand `orElse`
                 pegOutCompleteCommand `orElse`
                 spiProofCommand `orElse`
@@ -808,6 +815,8 @@ object CliApp {
                             RegisterBridgeCredsCommand(dryRun)
                         case Cmd.SignPeginMsg(keyPath, message) =>
                             SignPeginMsgCommand(keyPath, message)
+                        case Cmd.TrafficAddress =>
+                            TrafficAddressCommand()
                         case Cmd.PegInComplete(
                               pir,
                               recipient,

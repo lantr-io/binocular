@@ -1,6 +1,6 @@
 package binocular.watchtower
 
-import binocular.bitcoin.{BitcoinHelpers, BlockInfo, RawTransactionInfo, SimpleBitcoinRpc}
+import binocular.bitcoin.{BitcoinHelpers, BitcoinRpc, BlockInfo, RawTransactionInfo}
 import binocular.oracle.{reverse, BlockHeader, MerkleTree}
 
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
@@ -93,7 +93,7 @@ object PegInProofBundle {
       *   BTC block holding the tx, otherwise `proveMembership` will produce a useless proof.
       */
     def produce(
-        rpc: SimpleBitcoinRpc,
+        rpc: BitcoinRpc,
         confirmedBlocksMpf: OffChainMPF,
         btcTxId: String
     )(using ec: ExecutionContext): Future[Either[ProduceError, PegInProofBundle]] =
@@ -104,7 +104,7 @@ object PegInProofBundle {
       * it must be the P2TR deposit output, exactly as `deposit_binding_ok` requires at mint.
       */
     def produceForOutpoint(
-        rpc: SimpleBitcoinRpc,
+        rpc: BitcoinRpc,
         confirmedBlocksMpf: OffChainMPF,
         pegInUtxoId: ByteString
     )(using ec: ExecutionContext): Future[Either[ProduceError, PegInProofBundle]] =
@@ -119,16 +119,19 @@ object PegInProofBundle {
                   )
                 )
             case Some((txidLE, vout)) =>
-                fetchAndAssemble(
-                  rpc,
-                  confirmedBlocksMpf,
-                  txidLE.reverse.toHex,
-                  requestedVout = Some(vout.toInt)
-                )
+                if vout > Int.MaxValue then
+                    Future.successful(Left(BadOutpoint(s"deposit vout $vout exceeds Int.MaxValue")))
+                else
+                    fetchAndAssemble(
+                      rpc,
+                      confirmedBlocksMpf,
+                      txidLE.reverse.toHex,
+                      requestedVout = Some(vout.toInt)
+                    )
         }
 
     private def fetchAndAssemble(
-        rpc: SimpleBitcoinRpc,
+        rpc: BitcoinRpc,
         confirmedBlocksMpf: OffChainMPF,
         btcTxId: String,
         requestedVout: Option[Int]

@@ -3,14 +3,13 @@ package binocular.cli.commands
 import binocular.*
 import binocular.oracle.*
 import binocular.watchtower.*
-import binocular.cli.{Command, CommandHelpers, Console}
+import binocular.cli.{Command, CommandHelpers, Console, DaemonExecution}
 
 import org.bitcoins.core.protocol.BitcoinAddress
 
-import scalus.cardano.ledger.{AssetName, Utxo, Value}
-import scalus.cardano.txbuilder.TxBuilder
+import scalus.cardano.address.Address
+import scalus.cardano.ledger.{AssetName, Credential, ScriptHash}
 import scalus.uplc.builtin.ByteString
-import scalus.uplc.builtin.Data.toData
 import scalus.utils.Hex.hexToBytes
 
 import scala.concurrent.ExecutionContext
@@ -29,13 +28,13 @@ import cats.syntax.either.*
   *   - `source_chain_destination_address` — the raw Bitcoin scriptPubKey the TM must pay (derived
   *     from `--btc-address`; e.g. P2WPKH `0014…`, P2TR `5120…`). The on-chain produced verifier
   *     ([[PegOutProducedVerifier]]) later checks a TM output pays exactly this scriptPubKey.
-  *   - `source_chain_treasury_utxo_id` — the treasury outpoint the peg-out TM will spend, as the
-  *     36-byte Bitcoin internal form `prev_txid(LE) ++ vout(LE)` (from `--treasury-outpoint`).
+  *   - `per_pegout_fee` — pinned from the live Config, not the local deployment defaults.
+  *   - `created` — current Cardano tip time, not wall-clock time.
   *   - `owner_auth` — authority that can reclaim the fBTC if the TM excludes this peg-out
   *     (`Cancel`, out of scope this iteration). Defaults to the sponsor's payment key hash.
   *
-  * The peg-out **amount** is the fBTC quantity locked in the value (no datum field). With the
-  * demo's `per_pegout_fee = 0`, the TM pays exactly this many satoshis to the destination.
+  * The peg-out amount is the fBTC quantity locked in the value (no datum field). The TM pays that
+  * amount minus the pinned fee. `--treasury-outpoint` remains a legacy display-only argument.
   */
 case class PegOutRequestCommand(
     btcAddress: String,
@@ -51,7 +50,7 @@ case class PegOutRequestCommand(
         if dryRun then Console.warn("Dry-run mode — will assemble but not submit")
         println()
 
-        given ec: ExecutionContext = ExecutionContext.global
+        given ec: ExecutionContext = DaemonExecution.ec
         val timeout = config.oracle.transactionTimeout.seconds
 
         def hexBytes(label: String, s: String, expectedChars: Option[Int]): ByteString = {
@@ -140,19 +139,34 @@ case class PegOutRequestCommand(
                 .map(hexBytes("--owner-pkh", _, Some(56)))
                 .getOrElse(ByteString.fromArray(setup.hdAccount.paymentKeyHash.bytes))
 
-        // rev-5.1 datum: 4 fields. `per_pegout_fee` is PINNED here from the operator's configured
-        // Config-field-13 value — `peg_out.ak`'s Complete branch binds the trie value against THIS
-        // field, so a later fee Update can never strand an existing request. `created` gates Cancel
-        // at `created + 30 d`.
-        //
-        // NOT REFRESHED BEYOND THIS (out of scope, see task 11): `--treasury-outpoint` is now
-        // vestigial — the SPO batcher decides which TM pays a request at build time — and the fee
-        // should be read from the live Config UTxO rather than from local config.
+        val liveConfig = BridgeSweepSetup
+            .loadConfig(
+              provider,
+              Address(network, Credential.ScriptHash(ScriptHash.fromHex(configNftPolicy.toHex))),
+              ScriptHash.fromHex(configNftPolicy.toHex),
+              AssetName(configNftAsset),
+              timeout
+            )
+            .valueOr { err =>
+                Console.error(err); break(1)
+            }
+            ._2
+        if liveConfig.pegOutScriptHash.toHex != pegOut.policyId.toHex ||
+            liveConfig.bridgedTokenPolicy.toHex != fbtcPolicy.toHex
+        then {
+            Console.error("Derived peg-out scripts do not match the live Config"); break(1)
+        }
+        if amountSat < liveConfig.params.minPegOutFbtc then {
+            Console.error(s"Amount is below the live minimum ${liveConfig.params.minPegOutFbtc}")
+            break(1)
+        }
+        val tipSlot = provider.currentSlot.await(timeout)
+        // Pin the live fee and chain time in the request. A later Config update must not change it.
         val datum = PegOutDatum(
           ownerAuth = AuthorizationMethod.CardanoSignature(ownerHash),
           sourceChainDestinationAddress = destinationSpk,
-          perPegoutFee = BigInt(config.bridge.perPegoutFeeSat),
-          created = BigInt(System.currentTimeMillis())
+          perPegoutFee = liveConfig.params.perPegoutFee,
+          created = BigInt(provider.cardanoInfo.slotConfig.slotToTime(tipSlot))
         )
 
         Console.info("Oracle policy", oraclePolicyId.toHex)
@@ -164,53 +178,40 @@ case class PegOutRequestCommand(
         Console.info("fBTC to lock (sat)", amountSat.toString)
         println()
 
-        // --- find an fBTC-bearing wallet UTxO with enough balance ---
-        Console.step(1, "Selecting an fBTC input")
+        Console.step(1, "Reading sponsor funding")
         val walletUtxos = provider.findUtxos(sponsorAddress).await(timeout) match {
-            case Right(utxos) => utxos.toList.map { case (i, o) => Utxo(i, o) }
+            case Right(utxos) => utxos
             case Left(err)    => Console.error(s"Fetching wallet UTxOs: $err"); break(1)
         }
-        // Smallest fBTC UTxO that still covers the amount (minimise leftover-fBTC change dust).
-        val chosen = walletUtxos
-            .filter(_.output.value.asset(fbtcPolicy, bridgedTokenAsset) >= amountSat)
-            .sortBy(_.output.value.asset(fbtcPolicy, bridgedTokenAsset))
-            .headOption
-            .getOrElse {
-                Console.error(s"No wallet UTxO holds >= $amountSat fBTC (${fbtcPolicy.toHex})")
-                break(1)
-            }
-        Console.info(
-          "fBTC input",
-          s"${chosen.input.transactionId.toHex}#${chosen.input.index}"
+        val excluded = CommandHelpers.refScriptOutpoints(
+          config,
+          CommandHelpers.refScriptScanAddresses(config, network, sponsorAddress)
         )
-        println()
-
-        if dryRun then {
-            Console.success(
-              "Dry-run complete (assembled PegOutDatum + selected input; not submitting)"
-            )
-            break(0)
-        }
-
-        Console.step(2, "Building + submitting peg-out lock tx")
-        val pegOutValue =
-            Value.lovelace(minAda) + Value.asset(fbtcPolicy, bridgedTokenAsset, amountSat)
-        val signer = setup.hdAccount.signerForUtxos
+        Console.step(2, "Building peg-out lock tx")
         val tx =
             try
-                TxBuilder(provider.cardanoInfo)
-                    .spend(chosen)
-                    .payTo(pegOutAddress, pegOutValue, datum.toData)
-                    .complete(provider, sponsorAddress)
-                    .await(timeout)
-                    .sign(signer)
-                    .transaction
+                PegOutRequestTx.build(
+                  provider.cardanoInfo,
+                  setup.hdAccount,
+                  walletUtxos,
+                  excluded,
+                  pegOutAddress,
+                  fbtcPolicy,
+                  bridgedTokenAsset,
+                  amountSat,
+                  datum,
+                  minAda
+                )
             catch {
                 case e: Exception =>
                     Console.error(s"Building tx: ${e.getMessage}")
                     Option(e.getCause).foreach(c => Console.error(s"Cause: ${c.getMessage}"))
                     break(1)
             }
+        if dryRun then {
+            Console.success(s"Dry-run complete: built ${tx.id.toHex}; not submitting")
+            break(0)
+        }
         val txHash = OracleTransactions.submitTx(provider, tx, timeout) match {
             case Right(h)  => h
             case Left(err) => Console.error(s"Submit: $err"); break(1)

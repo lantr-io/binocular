@@ -57,6 +57,34 @@ the service. No `nixos-rebuild` needed — that's only for changes to the servic
 `--no-restart` stages the jar without bouncing the service, which is how you pre-flight a build
 before committing to it.
 
+## Demo Bitcoin funding address (offline)
+
+With the configured `WALLET_MNEMONIC` available to the process:
+
+```bash
+java -jar binocular-v2.jar --config application-preprod-v2.conf traffic-address
+```
+
+Prints only the funding address and a newline. It does not contact either chain, export keys,
+write files, start a worker, or send funds. Both configured networks must be test networks;
+mainnet and unknown networks are refused. Errors go to stderr with a nonzero exit status.
+
+The existing mnemonic derives two fixed BIP86 roles with an empty BIP39 passphrase:
+
+- `m/86'/1'/0'/0/0`: depositor identity (`Q_auth` is the tweaked Taproot output key).
+- `m/86'/1'/0'/0/1`: funding, change, refunds and peg-out destination (the printed address).
+
+Testnet and testnet4 share these keys and `tb1p` addresses; regtest uses `bcrt1p`.
+Back up the existing mnemonic; changing it changes both addresses. Never put it on the command
+line or use the public test mnemonic. This command prepares the wallet only; it does not enable
+demo traffic.
+
+## Demo traffic
+
+The watchtower can run one sequential Bitcoin-to-Cardano-to-Bitcoin demo trip at a time, keeping
+its progress only in memory. See [Optional demo traffic](../Readme.md#optional-demo-traffic) for
+configuration, commands, and restart limitations.
+
 ## Watching logs
 
 ```bash

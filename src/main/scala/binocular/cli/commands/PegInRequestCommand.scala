@@ -146,9 +146,16 @@ case class PegInRequestCommand(
         )
 
         Console.step(3, "Selecting one-shot input_ref")
+        val excluded = CommandHelpers.refScriptOutpoints(
+          config,
+          CommandHelpers.refScriptScanAddresses(config, setup.network, sponsorAddress)
+        )
         val walletUtxos = provider.findUtxos(sponsorAddress).await(timeout) match {
-            case Right(utxos) => utxos.toList.map { case (i, o) => Utxo(i, o) }
-            case Left(err)    => Console.error(s"Fetching wallet UTxOs: $err"); break(1)
+            case Right(utxos) =>
+                CardanoFunding.eligible(utxos, sponsorAddress, excluded).toList.map { case (i, o) =>
+                    Utxo(i, o)
+                }
+            case Left(err) => Console.error(s"Fetching wallet UTxOs: $err"); break(1)
         }
         val inputRefUtxo = walletUtxos
             .filter(u => u.output.value.assets.isEmpty && u.output.value.coin.value >= 10_000_000L)
@@ -179,7 +186,8 @@ case class PegInRequestCommand(
                       oracleUtxo,
                       inputRefUtxo,
                       request,
-                      validToSlot
+                      validToSlot,
+                      excludeInputs = excluded
                     )
                     .await(timeout)
             catch {

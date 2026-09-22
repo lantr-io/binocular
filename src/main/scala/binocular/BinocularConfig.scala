@@ -1,6 +1,7 @@
 package binocular
 
 import binocular.bitcoin.BitcoinNodeConfig
+import binocular.traffic.TrafficConfig
 import binocular.notify.NotificationConfig
 import binocular.oracle.{CardanoConfig, OracleConfig, WalletConfig}
 import binocular.watchtower.{BridgeConfig, RelayConfig}
@@ -18,7 +19,8 @@ case class BinocularConfig(
     oracle: OracleConfig,
     relay: RelayConfig = RelayConfig(),
     bridge: BridgeConfig = BridgeConfig(),
-    notifications: NotificationConfig = NotificationConfig()
+    notifications: NotificationConfig = NotificationConfig(),
+    traffic: TrafficConfig = TrafficConfig()
 ) derives ConfigReader
 
 object BinocularConfig {

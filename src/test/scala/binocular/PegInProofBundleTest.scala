@@ -151,6 +151,19 @@ class PegInProofBundleTest extends AnyFunSuite {
         )
     }
 
+    test("an outpoint vout above Int.MaxValue is refused instead of wrapping") {
+        given scala.concurrent.ExecutionContext = scala.concurrent.ExecutionContext.global
+        val tooLarge =
+            deposit.txidLE ++ Builtins.integerToByteString(false, 4, BigInt(Int.MaxValue) + 1)
+        assert(
+          scala.concurrent.Await.result(
+            PegInProofBundle.produceForOutpoint(new MockBitcoinRpc(), deposit.mpf, tooLarge),
+            scala.concurrent.duration.Duration.Inf
+          ) ==
+              Left(PegInProofBundle.BadOutpoint("deposit vout 2147483648 exceeds Int.MaxValue"))
+        )
+    }
+
     test("the retired dual-key beacon is refused, exactly like on-chain beacon_payload") {
         val legacy = Fixture(legacyDepositTxHex)
         assert(
@@ -342,7 +355,7 @@ class PegInProofBundleTest extends AnyFunSuite {
         )
     }
 
-    test("the completed-peg-ins insert records sweeping_tm_input_0 as the value, not the key") {
+    test("the completed-peg-ins insert reuses the reconstructed nonempty trie") {
         // `peg-in.ak` CompletePegIn step 5 checks
         //   mpf.insert(input_tree, peg_in_utxo_id, sweeping_tm_input_0, proof) == output_tree
         // (spec §The two deposit tries). The CPI trie therefore holds the SAME value the SPI trie
@@ -352,24 +365,27 @@ class PegInProofBundleTest extends AnyFunSuite {
         val spiTrie = OffChainMPF.empty
             .insert(pegInUtxoId, sweepingTmInput0)
             .insert(priorId, priorInput0)
+        val completedTrie = OffChainMPF.empty.insert(priorId, priorInput0)
 
         val update = PegInCompleteTx
-            .completedPegInsUpdate(Seq(priorId), spiTrie, pegInUtxoId)
+            .completedPegInsUpdate(completedTrie, spiTrie, pegInUtxoId)
             .fold(err => fail(s"the CPI update refused a swept deposit: $err"), x => x)
 
-        val expectedInput = OffChainMPF.empty.insert(priorId, priorInput0)
         assert(
-          update.tree.rootHash == expectedInput.rootHash,
-          "the reconstructed input trie must record each prior completion under its own " +
-              "sweeping_tm_input_0, not under its key"
+          update.tree eq completedTrie,
+          "the update must retain the exact reconstructed trie instead of replaying its entries"
         )
-        val expectedNew = expectedInput.insert(pegInUtxoId, sweepingTmInput0).rootHash
+        assert(
+          update.tree.get(priorId).contains(priorInput0),
+          "the existing completed entry must survive the update"
+        )
+        val expectedNew = completedTrie.insert(pegInUtxoId, sweepingTmInput0).rootHash
         assert(
           update.newRoot == expectedNew,
           s"the new completed-peg-ins root ${update.newRoot.toHex} != ${expectedNew.toHex} — " +
               "the insert must carry sweeping_tm_input_0 as the value"
         )
-        val keyAsValue = expectedInput.insert(pegInUtxoId, pegInUtxoId).rootHash
+        val keyAsValue = completedTrie.insert(pegInUtxoId, pegInUtxoId).rootHash
         assert(
           update.newRoot != keyAsValue,
           "the new root still matches the retired insert-key-as-value shape, which " +
@@ -382,6 +398,44 @@ class PegInProofBundleTest extends AnyFunSuite {
               .insert(pegInUtxoId, sweepingTmInput0, update.insertProof) == MPF(update.newRoot),
           "the served proof does not carry the input trie to the new root under an insert of " +
               "(peg_in_utxo_id -> sweeping_tm_input_0)"
+        )
+    }
+
+    test("the manual prior-pegin path still replays explicit completed deposit ids") {
+        val priorId = ByteString.fromHex("b2" * 32) ++ hex"01000000"
+        val priorInput0 = ByteString.fromHex("99" * 32) ++ hex"02000000"
+        val spiTrie = OffChainMPF.empty
+            .insert(pegInUtxoId, sweepingTmInput0)
+            .insert(priorId, priorInput0)
+
+        val replayed = PegInCompleteTx
+            .replayCompletedPegIns(Seq(priorId), spiTrie)
+            .fold(err => fail(s"the manual CPI replay refused a swept deposit: $err"), x => x)
+
+        assert(replayed.rootHash == OffChainMPF.empty.insert(priorId, priorInput0).rootHash)
+        assert(replayed.get(priorId).contains(priorInput0))
+    }
+
+    test("the completed-peg-ins insert refuses an already completed deposit") {
+        val completedTrie = OffChainMPF.empty.insert(pegInUtxoId, sweepingTmInput0)
+        val spiTrie = OffChainMPF.empty.insert(pegInUtxoId, sweepingTmInput0)
+
+        assert(
+          PegInCompleteTx.completedPegInsUpdate(completedTrie, spiTrie, pegInUtxoId).isLeft,
+          "a deposit already present in the reconstructed completed trie must be refused"
+        )
+    }
+
+    test("the completed-peg-ins insert refuses a deposit absent from the swept trie") {
+        val unknownId = ByteString.fromHex("d3" * 32) ++ hex"03000000"
+        val completedTrie = OffChainMPF.empty
+            .insert(ByteString.fromHex("b2" * 32) ++ hex"01000000", sweepingTmInput0)
+
+        assert(
+          PegInCompleteTx
+              .completedPegInsUpdate(completedTrie, OffChainMPF.empty, unknownId)
+              .isLeft,
+          "a deposit absent from the confirmed swept trie has no trustworthy CPI value"
         )
     }
 

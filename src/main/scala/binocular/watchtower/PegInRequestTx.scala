@@ -1,6 +1,6 @@
 package binocular.watchtower
 
-import scalus.cardano.ledger.{AssetName, Transaction, Utxo, ValidityInterval, Value}
+import scalus.cardano.ledger.{AssetName, Transaction, TransactionInput, Utxo, ValidityInterval, Value}
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
 import scalus.cardano.txbuilder.TxBuilder
@@ -32,11 +32,16 @@ object PegInRequestTx {
         inputRefUtxo: Utxo,
         request: PegInRequest,
         validToSlot: Long,
-        lovelaceAmount: Long = 5_000_000L
+        lovelaceAmount: Long = 5_000_000L,
+        excludeInputs: Set[TransactionInput] = Set.empty
     )(using ExecutionContext): Future[Transaction] = {
         val network = provider.cardanoInfo.network
         val signer = sponsor.signerForUtxos
         val sponsorAddress = sponsor.baseAddress(network)
+        require(
+          !excludeInputs(inputRefUtxo.input) && inputRefUtxo.output.scriptRef.isEmpty,
+          "The one-shot input must not be a reference script"
+        )
 
         val inputRef =
             TxOutRef(TxId(inputRefUtxo.input.transactionId), inputRefUtxo.input.index)
@@ -48,7 +53,7 @@ object PegInRequestTx {
 
         // The output datum MUST equal the redeemer's expected_datum (peg_in.ak checks
         // peg_in_output.datum == InlineDatum(expected_datum)) — derive it, never pass it separately.
-        TxBuilder(provider.cardanoInfo)
+        val builder = TxBuilder(provider.cardanoInfo)
             .validDuring(
               ValidityInterval(invalidBefore = None, invalidHereafter = Some(validToSlot))
             )
@@ -56,7 +61,8 @@ object PegInRequestTx {
             .references(oracleUtxo)
             .mint(pegInContract.script, Map(assetName -> 1L), redeemer)
             .payTo(pegInContract.address(network), nftValue, request.expectedDatum)
-            .complete(provider, sponsorAddress)
+        CardanoFunding
+            .complete(builder, provider, sponsorAddress, excludeInputs)
             .map(_.sign(signer).transaction)
     }
 }

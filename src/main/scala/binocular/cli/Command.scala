@@ -336,7 +336,7 @@ object CommandHelpers {
       * the single-address [[fetchAddressUtxos]] over the list, so the union of the holding address
       * and the sponsor wallet (see [[refScriptScanAddresses]]) is one scan to callers.
       */
-    private def refScriptPairs(
+    def refScriptPairs(
         config: BinocularConfig,
         addresses: Seq[String]
     ): Seq[(ScriptHash, TransactionInput)] =

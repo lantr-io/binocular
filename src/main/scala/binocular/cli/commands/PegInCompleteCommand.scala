@@ -4,17 +4,16 @@ import binocular.*
 import binocular.oracle.*
 import binocular.watchtower.*
 import binocular.cli.{Command, CommandHelpers, Console}
+import binocular.server.ProofService
 
 import scalus.cardano.address.Address
-import scalus.cardano.ledger.{AssetName, Credential, LedgerToPlutusTranslation, Script, ScriptHash, ScriptRef, TransactionHash, TransactionInput, TransactionOutput, Utxo}
+import scalus.cardano.ledger.{AssetName, LedgerToPlutusTranslation, TransactionHash, TransactionInput}
 import scalus.cardano.node.TransactionStatus
 import scalus.cardano.onchain.plutus.v3.{TxId, TxOutRef}
-import scalus.uplc.builtin.{ByteString, Data}
-import scalus.uplc.builtin.Data.{fromData, toData}
+import scalus.uplc.builtin.ByteString
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
-import scala.util.Try
 import scala.util.boundary
 import boundary.break
 import scalus.utils.await
@@ -39,8 +38,8 @@ import cats.syntax.either.*
   *
   * Preconditions (one-time setup): the peg_in withdraw reward cred is registered
   * (`register-bridge-creds`), the sweeping TM has been confirmed (so the singleton's `spi_root`
-  * covers this deposit), and `--prior-pegin` is supplied for every earlier completion so the
-  * completed-peg-ins MPF reconstructs to the on-chain root.
+  * covers this deposit). The completed set is reconstructed from chain history and checked against
+  * the live root; `--prior-pegin` remains an optional manual override supplying the full set.
   */
 case class PegInCompleteCommand(
     pirRef: String,
@@ -80,10 +79,11 @@ case class PegInCompleteCommand(
         // Resolve the recipient all the way to its plutus form here, inside the guard, so a
         // bech32-valid but non-payment address (stake/Byron) fails cleanly rather than throwing an
         // uncaught exception later when getAddress runs.
-        val (recipientLedger, recipientData) =
+        val recipientLedger =
             try {
                 val addr = Address.fromBech32(recipient)
-                (addr, LedgerToPlutusTranslation.getAddress(addr).toData)
+                LedgerToPlutusTranslation.getAddress(addr)
+                addr
             } catch {
                 case e: Exception =>
                     Console.error(
@@ -110,8 +110,7 @@ case class PegInCompleteCommand(
         // --- bridge config / scripts ---
         val configNftPolicy =
             hexBytes("bridge.config-nft-policy-id", config.bridge.configNftPolicyId, Some(56))
-        val configNftAsset =
-            hexBytes("bridge.config-nft-asset-name", config.bridge.configNftAssetName, None)
+        hexBytes("bridge.config-nft-asset-name", config.bridge.configNftAssetName, None)
         val bridgedTokenAsset =
             AssetName(
               hexBytes("bridge.bridged-token-asset-name", config.bridge.bridgedTokenAssetName, None)
@@ -134,7 +133,6 @@ case class PegInCompleteCommand(
         val cpiContract =
             CompletedPegInsContract(blueprint, configNftPolicy, cpiRef)
         val cpiPolicy = cpiContract.policyId
-        val cpiAsset = AssetName(CompletedPegInsContract.assetName)
         val bridgedToken = BridgedTokenContract(blueprint, configNftPolicy)
 
         Console.info("Peg-in policy", pegIn.policyId.toHex)
@@ -142,151 +140,37 @@ case class PegInCompleteCommand(
         Console.info("completed-peg-ins policy", cpiPolicy.toHex)
         println()
 
-        // --- locate the UTxOs ---
-        def findWithAsset(addr: Address, pol: ScriptHash, an: AssetName): Option[Utxo] =
-            provider.findUtxos(addr).await(timeout) match {
-                case Right(us) =>
-                    us.toList.collectFirst {
-                        case (i, o) if o.value.hasAsset(pol, an) => Utxo(i, o)
-                    }
-                case Left(_) => None
-            }
-
-        Console.step(1, "Locating UTxOs (PIR, completed-peg-ins, config, bridge state singleton)")
-        val pirUtxo = provider.findUtxos(pegIn.address(network)).await(timeout) match {
-            case Right(us) =>
-                us.toList
-                    .collectFirst { case (i, o) if i == pirInput => Utxo(i, o) }
-                    .getOrElse {
-                        Console.error(s"PIR $pirRef not found at peg-in address"); break(1)
-                    }
-            case Left(err) => Console.error(s"Fetching peg-in UTxOs: $err"); break(1)
-        }
-        val datum = pirUtxo.output.inlineDatum
-            .map(fromData[PegInDatum])
-            .getOrElse { Console.error("PIR has no inline PegInDatum"); break(1) }
-
-        val cpiUtxo = findWithAsset(cpiContract.address(network), cpiPolicy, cpiAsset)
-            .getOrElse { Console.error("Completed-peg-ins MPF UTxO not found"); break(1) }
-        val configAddr = Address(
-          network,
-          Credential.ScriptHash(ScriptHash.fromHex(config.bridge.configNftPolicyId))
-        )
-        val configUtxo = findWithAsset(
-          configAddr,
-          ScriptHash.fromHex(config.bridge.configNftPolicyId),
-          AssetName(configNftAsset)
-        )
-            .getOrElse { Console.error("Config NFT UTxO not found"); break(1) }
-
-        // --- the bridge state singleton ([CPI-10], [PAR-1]) ---
-        // `bridge_state_policy` and `tm_script_hash` are read from the Config datum at runtime: no
-        // reader may hard-code either ([PAR-1]). Typed decode, fields by name ([LIB-1]).
-        val configDatum = configUtxo.output.inlineDatum
-            .flatMap(d => Try(d.to[ConfigDatum]).toOption)
-            .getOrElse {
-                Console.error("Config datum does not decode as the rev-5.4 ConfigDatum")
-                break(1)
-            }
-        val bridgeStatePolicy = ScriptHash.fromHex(configDatum.bridgeStatePolicy.toHex)
-        val tmScriptHash = ScriptHash.fromHex(configDatum.tmScriptHash.toHex)
-        val tmAddress = Address(network, Credential.ScriptHash(tmScriptHash))
-        Console.info("bridge state policy (config)", bridgeStatePolicy.toHex)
-        Console.info("TM validator (config)", tmScriptHash.toHex)
-
-        val bridgeStateUtxo = findWithAsset(
-          Address(network, Credential.ScriptHash(bridgeStatePolicy)),
-          bridgeStatePolicy,
-          AssetName(TreasuryMovementValidator.BridgeStateAssetName)
-        ).getOrElse {
-            Console.error(
-              s"No UTxO carrying the (${bridgeStatePolicy.toHex}, \"BSS\") NFT — the bridge state " +
-                  "singleton does not exist under the policy config field 3 publishes."
-            )
-            break(1)
-        }
-        // Decode defensively: anyone can park a UTxO with a poison inline datum at that address,
-        // and fromData throws on a shape it cannot decode.
-        val bridgeState = bridgeStateUtxo.output.inlineDatum
-            .flatMap(d => Try(fromData[BridgeState](d)).toOption)
-            .getOrElse {
-                Console.error(
-                  "The singleton UTxO's datum does not decode as the 4-field BridgeState — " +
-                      "refusing to guess at a root ([LIB-1])."
-                )
-                break(1)
-            }
-        Console.info(
-          "bridge state singleton",
-          s"${bridgeStateUtxo.input.transactionId.toHex}#${bridgeStateUtxo.input.index}"
-        )
-        Console.info("  spi_root", bridgeState.spiRoot.toHex)
-
-        // --- the [CPI-9] sweep proof ([OB-10]) ---
-        // Membership of (peg_in_utxo_id -> sweeping_tm_input_0) in the singleton's spi_root, served
-        // by the same reconciliation the `spi-proof` command and the REST endpoint use. It refuses
-        // rather than guessing when the deposit is not in the CONFIRMED swept set ([SPI-6]).
-        val tmAddressBech32 = tmAddress.encode.toOption.getOrElse {
-            Console.error(s"Cannot encode the TM address for script hash ${tmScriptHash.toHex}")
-            break(1)
-        }
+        val completion = PegInCompletion(pegIn, cpiContract, bridgedToken, bridgedTokenAsset)
         val history = ProviderChainHistory.from(provider, timeout).valueOr { err =>
-            Console.error(s"No chain-history backend for the swept-peg-ins proof: $err"); break(1)
+            Console.error(err); break(1)
         }
-        val fetchRawTx = SweptPegInsProofService
-            .cardanoFetcher(history, tmAddressBech32, msg => Console.info("spi", msg))
-            .valueOr { err =>
-                Console.error(s"Reading the TM history at $tmAddressBech32: $err"); break(1)
-            }
-        // The reconciled swept set, kept whole rather than thrown away after one proof: it is also
-        // the only source of the completed-peg-ins VALUES (spec §The two deposit tries — both
-        // tries map peg_in_utxo_id to the same sweeping_tm_input_0).
-        val spiTrie = SweptPegInsProofService
-            .confirmedTrie(bridgeState.spiRoot, bridgeState.treasuryUtxoId, fetchRawTx)
-            .valueOr { err =>
-                Console.error(err.message); break(1)
-            }
-        val spi = SweptPegInsProofService
-            .proveFrom(spiTrie, datum.pegInUtxoId)
-            .valueOr { err =>
-                Console.error(err.message); break(1)
-            }
-        Console.info("sweeping TM input 0", spi.sweepingTmInput0.toHex)
-        println()
-
-        // --- completed-peg-ins MPF: reconstruct, verify root, produce proofs ---
-        Console.step(2, "Reconstructing completed-peg-ins MPF + proofs")
-        val cpiDatum = cpiUtxo.output.inlineDatum
-            .map(fromData[CompletedPegInsMerkleTreeDatum])
-            .getOrElse { Console.error("Completed-peg-ins UTxO has no datum"); break(1) }
-        // Each entry's VALUE is its sweeping_tm_input_0, recovered from the reconciled swept set —
-        // never the key. `peg-in.ak` inserts that value, so a key-as-value replay reproduces
-        // neither the on-chain root nor the root the validator computes.
-        val priorIds = priorPegins.map(k => hexBytes("--prior-pegin", k, None))
-        val cpi = PegInCompleteTx
-            .completedPegInsUpdate(priorIds, spiTrie, datum.pegInUtxoId)
+        Console.step(1, "Preparing sweep and completed-peg-ins proofs")
+        val snapshot = ProofService
+            .fromConfig(config, msg => Console.info("spi", msg))
             .valueOr { err =>
                 Console.error(err); break(1)
             }
-        if cpi.tree.rootHash != cpiDatum.root then {
-            Console.error(
-              s"Reconstructed completed-peg-ins root ${cpi.tree.rootHash.toHex} != on-chain ${cpiDatum.root.toHex}. " +
-                  "Pass --prior-pegin <pegInUtxoId> for every earlier completion (in insertion order)."
+            .sweptSnapshot()
+            .valueOr { err =>
+                Console.error(err.message); break(1)
+            }
+        val prepared = completion
+            .prepare(
+              provider,
+              history,
+              snapshot,
+              pirInput,
+              recipientLedger,
+              timeout,
+              priorPegins.map(k => hexBytes("--prior-pegin", k, None))
             )
-            break(1)
-        }
-        println()
-
-        // --- signing message (recipientData was resolved up front, in the recipient guard) ---
-        // [CPI-3] REVISED: sha2_256(mint_tag ‖ peg_in_utxo_id ‖ serialiseData(recipient)). The TM
-        // txid is gone from the preimage — [CPI-9] proves the sweep instead.
-        val msgDigest = BifrostMessages.completionDigest(datum.pegInUtxoId, recipientData)
-        // BIP-322: the depositor signs the ASCII text below from their Taproot wallet
-        // (signMessage(text, "bip322-simple")); peg_in.ak verifies it against the beacon output key.
-        val signText = BifrostMessages.completionSignText(msgDigest)
-        Console.info("Depositor signs (BIP-322 text)", signText)
+            .valueOr { err =>
+                Console.error(err); break(1)
+            }
+        Console.info("sweeping TM input 0", prepared.sweep.sweepingTmInput0.toHex)
+        Console.info("Depositor signs (BIP-322 text)", prepared.signText)
         Console.info("  → in a wallet: signMessage(text, \"bip322-simple\")", "")
-        Console.info("  digest (for sign-pegin-msg --message)", msgDigest.toHex)
+        Console.info("  digest (for sign-pegin-msg --message)", prepared.digest.toHex)
         println()
 
         if dryRun then {
@@ -303,83 +187,18 @@ case class PegInCompleteCommand(
         }
 
         Console.step(3, "Building + submitting completion tx")
-        // Look up any configured CIP-33 reference-script UTxOs and enrich them with the actual
-        // script bytes (BlockfrostProvider's findUtxo returns scriptRef=None even when the
-        // on-chain output carries one — its parseUtxoOutput skips the second /scripts/<h>/cbor
-        // round-trip). We have the scripts locally already (we derive them every time from the
-        // same blueprint + params the original deploy used), so we attach them directly. Each
-        // empty config entry skips that ref → its script falls back to the witness set.
-        // Discover the CIP-33 reference-script UTxOs by the script hash each carries, scanning the
-        // native-script holding address where deploy-script-refs publishes them (plus the sponsor
-        // wallet, for refs deployed before that migration) — so the outpoints need not be recorded
-        // in config. A script whose hash isn't found falls back to inlining it in the witness set
-        // (only viable for small txs). The provider drops scriptRef on the fetched UTxO, so
-        // re-attach the reconstructed script for the tx builder.
-        val refScriptUtxos = CommandHelpers.refScriptUtxosByHash(
-          config,
-          CommandHelpers.refScriptScanAddresses(config, network, setup.sponsorAddress)
-        )
-        def lookupRefUtxo(
-            label: String,
-            script: Script.PlutusV3
-        ): Option[Utxo] =
-            refScriptUtxos.get(script.scriptHash).map { ref =>
-                provider.findUtxo(ref).await(timeout) match {
-                    case Right(u) =>
-                        val enrichedOutput = u.output match {
-                            case b: TransactionOutput.Babbage =>
-                                b.copy(scriptRef = Some(ScriptRef(script)))
-                            case s: TransactionOutput.Shelley =>
-                                TransactionOutput.Babbage(
-                                  s.address,
-                                  s.value,
-                                  datumOption = None,
-                                  scriptRef = Some(ScriptRef(script))
-                                )
-                        }
-                        Utxo(u.input, enrichedOutput)
-                    case Left(err) =>
-                        Console.error(
-                          s"Looking up $label ref (${ref.transactionId.toHex}#${ref.index}): $err"
-                        )
-                        break(1)
-                }
-            }
-        val scriptRefs = PegInCompleteTx.ScriptRefs(
-          pegIn = lookupRefUtxo("peg_in", pegIn.script),
-          completedPegIns = lookupRefUtxo("completed_peg_ins", cpiContract.script),
-          bridgedToken = lookupRefUtxo("bridged_token", bridgedToken.script)
-        )
-
         val tx =
-            try
-                PegInCompleteTx
-                    .build(
-                      provider = provider,
-                      sponsor = setup.hdAccount,
-                      scripts = PegInCompleteTx.Scripts(
-                        pegIn.script,
-                        cpiContract.script,
-                        bridgedToken.script
-                      ),
-                      scriptRefs = scriptRefs,
-                      inputs =
-                          PegInCompleteTx.Inputs(pirUtxo, cpiUtxo, configUtxo, bridgeStateUtxo),
-                      datum = datum,
-                      recipientAddress = recipientLedger,
-                      recipientData = recipientData,
-                      signature = sigBytes,
-                      completedPegInsProof = cpi.insertProof,
-                      completedPegInsNewRoot = cpi.newRoot,
-                      sweepingTmInput0 = spi.sweepingTmInput0,
-                      pegInSweptMembershipProof = spi.proof,
-                      bridgedTokenPolicy = bridgedToken.policyId,
-                      bridgedTokenAsset = bridgedTokenAsset,
-                      completedPegInsPolicy = cpiPolicy,
-                      completedPegInsAsset = cpiAsset
-                    )
-                    .await(timeout)
-            catch {
+            try {
+                val refs = PegInCompletion.references(
+                  provider,
+                  CommandHelpers.refScriptPairs(
+                    config,
+                    CommandHelpers.refScriptScanAddresses(config, network, setup.sponsorAddress)
+                  ),
+                  timeout
+                )
+                completion.build(provider, setup.hdAccount, prepared, refs, sigBytes).await(timeout)
+            } catch {
                 case e: Exception =>
                     Console.error(s"Building tx: ${e.getMessage}")
                     Option(e.getCause).foreach(c => Console.error(s"Cause: ${c.getMessage}"))
@@ -401,10 +220,10 @@ case class PegInCompleteCommand(
         println()
         Console.separator()
         Console.tx("Peg-in complete TX", txHash)
-        Console.info("fBTC minted (sat)", datum.pegInAmount.toString)
+        Console.info("fBTC minted (sat)", prepared.datum.pegInAmount.toString)
         Console.info("recipient", recipient)
-        Console.info("new completed-peg-ins root", cpi.newRoot.toHex)
-        Console.info("this peg_in_utxo_id (for next --prior-pegin)", datum.pegInUtxoId.toHex)
+        Console.info("new completed-peg-ins root", prepared.update.newRoot.toHex)
+        Console.info("completed peg_in_utxo_id", prepared.datum.pegInUtxoId.toHex)
         Console.separator()
         0
     }

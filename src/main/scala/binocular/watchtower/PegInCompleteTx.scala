@@ -1,7 +1,7 @@
 package binocular.watchtower
 
 import scalus.cardano.address.{Address, StakeAddress, StakePayload}
-import scalus.cardano.ledger.{AssetName, Coin, PlutusScript, ScriptHash, Transaction, Utxo, Value}
+import scalus.cardano.ledger.{AssetName, Coin, PlutusScript, ScriptHash, Transaction, TransactionInput, Utxo, Value}
 import scalus.cardano.node.BlockchainProvider
 import scalus.cardano.onchain.plutus.crypto.trie.MerklePatriciaForestry.ProofStep
 import scalus.cardano.onchain.plutus.prelude.List as ScalusList
@@ -100,7 +100,7 @@ object PegInCompleteTx {
         insertProof: ScalusList[ProofStep]
     )
 
-    /** Replay the completed-peg-ins trie and insert this deposit.
+    /** Insert this deposit into an already reconstructed completed-peg-ins trie.
       *
       * The CPI trie is keyed by `peg_in_utxo_id` and VALUED by `sweeping_tm_input_0`, the same
       * value the SPI trie holds (spec §The two deposit tries). `peg-in.ak` CompletePegIn step 5
@@ -109,33 +109,17 @@ object PegInCompleteTx {
       * such completion has landed, a reconstruction that repeats the mistake never reproduces the
       * on-chain root either.
       *
-      * Every value therefore comes from `spiTrie`, the reconciled swept set
+      * The value therefore comes from `spiTrie`, the reconciled swept set
       * [[SweptPegInsProofService.confirmedTrie]] built: the two tries agree on the value by
-      * construction, and a prior completion the swept set does not know is reported rather than
-      * guessed at.
-      *
-      * @param priorPegInUtxoIds
-      *   the `peg_in_utxo_id` of every earlier completion, in insertion order.
+      * construction.
       */
     def completedPegInsUpdate(
-        priorPegInUtxoIds: Seq[ByteString],
+        tree: OffChainMPF,
         spiTrie: OffChainMPF,
         pegInUtxoId: ByteString
     ): Either[String, CompletedPegInsUpdate] = {
-        def valueOf(key: ByteString): Either[String, ByteString] =
-            spiTrie
-                .get(key)
-                .toRight(
-                  s"peg-in ${key.toHex} is not in the confirmed swept set, so its " +
-                      "completed-peg-ins value (the sweeping TM's input-0 outpoint) is unknown"
-                )
-        val replayed =
-            priorPegInUtxoIds.foldLeft[Either[String, OffChainMPF]](Right(OffChainMPF.empty)) {
-                (acc, key) => acc.flatMap(t => valueOf(key).map(v => t.insert(key, v)))
-            }
         for {
-            tree <- replayed
-            value <- valueOf(pegInUtxoId)
+            value <- sweptValue(spiTrie, pegInUtxoId)
             _ <- Either.cond(
               tree.get(pegInUtxoId).isEmpty,
               (),
@@ -148,6 +132,23 @@ object PegInCompleteTx {
           insertProof = tree.proveNonMembership(pegInUtxoId)
         )
     }
+
+    /** Replay an explicit `--prior-pegin` list into the manual recovery path's input trie. */
+    def replayCompletedPegIns(
+        priorPegInUtxoIds: Seq[ByteString],
+        spiTrie: OffChainMPF
+    ): Either[String, OffChainMPF] =
+        priorPegInUtxoIds.foldLeft[Either[String, OffChainMPF]](Right(OffChainMPF.empty)) {
+            (acc, key) => acc.flatMap(t => sweptValue(spiTrie, key).map(v => t.insert(key, v)))
+        }
+
+    private def sweptValue(spiTrie: OffChainMPF, key: ByteString): Either[String, ByteString] =
+        spiTrie
+            .get(key)
+            .toRight(
+              s"peg-in ${key.toHex} is not in the confirmed swept set, so its " +
+                  "completed-peg-ins value (the sweeping TM's input-0 outpoint) is unknown"
+            )
 
     /** The PegInRequest NFT the spent request carries, and the quantity the completion must mint
       * for it: `−1`.
@@ -196,11 +197,18 @@ object PegInCompleteTx {
         bridgedTokenAsset: AssetName,
         completedPegInsPolicy: ScriptHash,
         completedPegInsAsset: AssetName,
-        fbtcMinAda: Long = 2_000_000L
+        fbtcMinAda: Long = 2_000_000L,
+        excludeInputs: Set[TransactionInput] = Set.empty
     )(using ExecutionContext): Future[Transaction] = {
         val network = provider.cardanoInfo.network
         val signer = sponsor.signerForUtxos
         val sponsorAddress = sponsor.baseAddress(network)
+        require(
+          Seq(inputs.pir, inputs.completedPegIns).forall(u =>
+              !excludeInputs(u.input) && u.output.scriptRef.isEmpty
+          ),
+          "Completion inputs must not be reference scripts"
+        )
 
         val pegInAmount = datum.pegInAmount.toLong
 
@@ -380,7 +388,7 @@ object PegInCompleteTx {
                   pirBurnRedeemer
                 )
 
-        withBurn
+        val builder = withBurn
             .withdrawRewards(stake(scripts.pegIn.scriptHash), Coin.zero, withdrawWitness)
             .payTo(recipientAddress, fbtcValue)
             .payTo(
@@ -388,7 +396,8 @@ object PegInCompleteTx {
               inputs.completedPegIns.output.value,
               newCpiDatum.toData
             )
-            .complete(provider, sponsorAddress)
+        CardanoFunding
+            .complete(builder, provider, sponsorAddress, excludeInputs ++ extraRefs.map(_.input))
             .map(_.sign(signer).transaction)
     }
 }
