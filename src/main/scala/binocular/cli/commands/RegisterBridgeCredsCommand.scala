@@ -89,7 +89,7 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
         val oraclePolicyId = ByteString.fromArray(setup.script.scriptHash.bytes)
 
         val (blueprint, blueprintSource) =
-            try BifrostBlueprint.resolve(config.bridge.plutusJson)
+            try BifrostBlueprint.forBridge(config.bridge)
             catch {
                 case e: Exception =>
                     Console.error(s"Loading bridge blueprint: ${e.getMessage}"); break(1)
@@ -157,11 +157,23 @@ case class RegisterBridgeCredsCommand(dryRun: Boolean = false) extends Command {
                       )
                     )
                     FederationScripts
-                        .verifyAgainstConfig(federation, deployed)
+                        .standing(federation, deployed)
                         .valueOr { err =>
                             Console.error(err); break(1)
-                        }
-                    List("spo_bans" -> federation.bans.policyId)
+                        } match {
+                        case FederationScripts.Standing.Genesis =>
+                            List("spo_bans" -> federation.bans.policyId)
+                        // The revised ban list is heimdall's to register (`init-scripts`), with
+                        // the fault policies of the revised registry; the one this one-shot
+                        // compiles to is the list the bridge no longer reads.
+                        case FederationScripts.Standing.RegistryRevised(_, bans) =>
+                            Console.info(
+                              "spo_bans",
+                              s"skipped — the Config names a revised ban list ${bans.toHex}; " +
+                                  "heimdall init-scripts registers its credential"
+                            )
+                            Nil
+                    }
             }
 
         val creds: List[(String, ScriptHash)] = List(

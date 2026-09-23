@@ -126,7 +126,7 @@ case class UpdateConfigCommand(
                 break(1)
         }
         val (blueprint, blueprintSource) =
-            try BifrostBlueprint.resolve(config.bridge.plutusJson)
+            try BifrostBlueprint.forBridge(config.bridge)
             catch {
                 case e: Exception =>
                     Console.error(s"Loading bridge blueprint: ${e.getMessage}"); break(1)
@@ -144,7 +144,7 @@ case class UpdateConfigCommand(
             Console.error(
               s"Derived config policy ${configContract.policyId.toHex} does not match " +
                   s"bridge.config-nft-policy-id ${config.bridge.configNftPolicyId} — check the " +
-                  "one-shot ref and plutus.json"
+                  "one-shot ref and bridge.contracts (the release this bridge was deployed with)"
             )
             break(1)
         }

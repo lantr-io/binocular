@@ -10,6 +10,45 @@ import scalus.uplc.builtin.Data.{toData, FromData, ToData}
 
 import java.nio.file.{Files, Paths}
 
+/** The ft-bifrost-bridge contracts release a bridge was DEPLOYED with — `bridge.contracts`.
+  *
+  * A property of the bridge, fixed at genesis, and not of this binary: a running bridge keeps the
+  * `config.ak`, peg and TM scripts it was deployed with, because the Config is updated in place and
+  * never redeployed. A registry revision does not change it either. It replaces the registry and
+  * the ban list, which heimdall deploys, and binocular reads their new policy ids from the Config
+  * (#8, #9) rather than deriving them.
+  *
+  * What differs between the two, for what binocular derives:
+  *   - `config.ak`: same parameters, different code (rev 5.6's genesis mint casts a 14-field datum),
+  *     so a different Config policy id.
+  *   - `spos_registry`: rev 5.6 adds the Config NFT policy as a fourth parameter ([MIG-1] reads #13
+  *     through it).
+  *   - `spo_bans`: its first parameter is the registry policy in rev 5.5 and the Config NFT policy
+  *     in rev 5.6 ([PRE-5]).
+  *   - the Config datum a genesis writes: 13 fields, or 14 with #13 empty ([CFG-10]).
+  *
+  * @param configFieldCount
+  *   the arity of the Config datum a genesis under this release writes.
+  */
+enum ContractsRelease(val label: String, val resource: String, val configFieldCount: Int) {
+    case Rev55 extends ContractsRelease("rev5.5", "/bifrost-plutus-min.json", 13)
+    case Rev56 extends ContractsRelease("rev5.6", "/bifrost-plutus-min-rev5.6.json", 14)
+}
+
+object ContractsRelease {
+
+    /** Parse `bridge.contracts`. An unknown value is an error, never a default: the two releases
+      * derive different policy ids for the same bridge.
+      */
+    def parse(value: String): Either[String, ContractsRelease] =
+        values
+            .find(_.label == value.trim)
+            .toRight(
+              s"bridge.contracts = '$value' is not a contracts release this binocular knows " +
+                  s"(${values.map(_.label).mkString(", ")})"
+            )
+}
+
 /** Reads ft-bifrost-bridge Aiken validators from a CIP-57 `plutus.json` blueprint.
   *
   * Parameter application mirrors `aiken blueprint apply` / Blaze `applyParamsToScript`: each
@@ -17,7 +56,13 @@ import java.nio.file.{Files, Paths}
   * `ByteArray` params used here that is `Data.B(bytes)`, which is exactly what Scalus's
   * `Program.$(data: Data)` produces.
   */
-final class BifrostBlueprint(json: ujson.Value) {
+final class BifrostBlueprint(
+    json: ujson.Value,
+    /** The release these validators belong to. It decides how two of them are parameterized (see
+      * [[ContractsRelease]]), so it travels with the bytes rather than beside them.
+      */
+    val release: ContractsRelease = ContractsRelease.Rev55
+) {
 
     /** Single-CBOR `compiledCode` hex for `title` (all handlers of one Aiken validator share it).
       */
@@ -35,14 +80,17 @@ final class BifrostBlueprint(json: ujson.Value) {
 
 object BifrostBlueprint {
 
-    /** Classpath path of the blueprint vendored into binocular's own jar. */
-    val PackagedResource = "/bifrost-plutus-min.json"
+    /** Classpath path of the rev-5.5 blueprint vendored into binocular's own jar. */
+    val PackagedResource: String = ContractsRelease.Rev55.resource
 
-    def fromFile(path: String): BifrostBlueprint =
-        fromString(Files.readString(Paths.get(path)))
+    def fromFile(path: String, release: ContractsRelease = ContractsRelease.Rev55): BifrostBlueprint =
+        fromString(Files.readString(Paths.get(path)), release)
 
-    def fromString(json: String): BifrostBlueprint =
-        new BifrostBlueprint(ujson.read(json))
+    def fromString(
+        json: String,
+        release: ContractsRelease = ContractsRelease.Rev55
+    ): BifrostBlueprint =
+        new BifrostBlueprint(ujson.read(json), release)
 
     /** The blueprint vendored as a jar resource: the `compiledCode` of every ft-bifrost-bridge
       * validator binocular applies parameters to, copied byte for byte from
@@ -68,32 +116,48 @@ object BifrostBlueprint {
       * Refresh with a straight copy of the `compiledCode` fields from ft's `plutus.json`, then move
       * the affected pins in the same commit.
       */
-    def packaged: BifrostBlueprint = {
-        val stream = getClass.getResourceAsStream(PackagedResource)
+    def packaged: BifrostBlueprint = packaged(ContractsRelease.Rev55)
+
+    /** The blueprint of `release`, vendored as a jar resource. */
+    def packaged(release: ContractsRelease): BifrostBlueprint = {
+        val stream = getClass.getResourceAsStream(release.resource)
         if stream == null then
             throw new IllegalStateException(
-              s"Blueprint resource $PackagedResource not found on the classpath — the jar is built wrong"
+              s"Blueprint resource ${release.resource} not found on the classpath — the jar is built wrong"
             )
-        try fromString(scala.io.Source.fromInputStream(stream).mkString)
+        try fromString(scala.io.Source.fromInputStream(stream).mkString, release)
         finally stream.close()
     }
 
-    /** Resolve the blueprint to use, preferring an on-disk override.
+    /** The blueprint of `release`: the vendored one, or `path` when it is set.
       *
-      * `path` is `bridge.plutus-json` (env `BIFROST_PLUTUS_JSON`), whose default points at a
-      * sibling ft checkout. When that file EXISTS it wins, so a developer working on the Aiken
-      * validators sees their edits immediately. When it does not — the normal state of a deployed
-      * image — the [[packaged]] resource is used, and startup succeeds.
+      * `path` is `bridge.plutus-json` (env `BIFROST_PLUTUS_JSON`), an override for a developer
+      * working on the Aiken validators. It is empty by default and must name a readable file when
+      * set. It used to default to a sibling ft checkout and fall back silently when that was
+      * absent, which made the contracts a command built with depend on whether, and on which
+      * branch, such a checkout happened to sit next to the working directory.
       *
       * Returns the blueprint and a human-readable description of where it came from, so every
-      * command can log which one it used instead of leaving it ambiguous.
+      * command can log which one it used.
       */
-    def resolve(path: String): (BifrostBlueprint, String) = {
+    def resolve(release: ContractsRelease, path: String): (BifrostBlueprint, String) = {
         val trimmed = Option(path).map(_.trim).getOrElse("")
-        if trimmed.nonEmpty && Files.isReadable(Paths.get(trimmed)) then
-            (fromFile(trimmed), trimmed)
-        else (packaged, s"packaged $PackagedResource")
+        if trimmed.isEmpty then (packaged(release), s"packaged ${release.label} ${release.resource}")
+        else if Files.isReadable(Paths.get(trimmed)) then
+            (fromFile(trimmed, release), s"$trimmed (as ${release.label})")
+        else
+            throw new IllegalArgumentException(
+              s"bridge.plutus-json = '$trimmed' is not readable. It is an override, and an override " +
+                  "that cannot be read is refused rather than replaced by the packaged blueprint"
+            )
     }
+
+    /** [[resolve]] for a bridge's configuration: its `contracts` release and `plutus-json`. */
+    def forBridge(bridge: BridgeConfig): (BifrostBlueprint, String) =
+        ContractsRelease.parse(bridge.contracts) match {
+            case Right(release) => resolve(release, bridge.plutusJson)
+            case Left(err)      => throw new IllegalArgumentException(err)
+        }
 }
 
 /** The `peg_in_validator` parameterized with its on-chain params. The script hash is the peg-in NFT
@@ -348,14 +412,20 @@ object FederationScripts {
         val treasury =
             TreasuryInfoContract(blueprint, federationTxId, federationIndex, configPolicyId)
         val treasuryPolicy = ByteString.fromArray(treasury.policyId.bytes)
-        val registry =
-            SposRegistryContract(blueprint, federationTxId, federationIndex, treasuryPolicy)
+        val registry = SposRegistryContract(
+          blueprint,
+          federationTxId,
+          federationIndex,
+          treasuryPolicy,
+          configPolicyId
+        )
         val registryPolicy = ByteString.fromArray(registry.policyId.bytes)
         val faultPolicies = FaultVerifierContract.all(blueprint, registryPolicy)
         val (baseBanDurationMs, maxFaultsBeforePermanent, maxValidityWindowMs) = banSchedule
         val bans = SpoBansContract(
           blueprint,
           registryPolicy,
+          configPolicyId,
           faultPolicies,
           baseBanDurationMs = baseBanDurationMs,
           maxFaultsBeforePermanent = maxFaultsBeforePermanent,
@@ -364,6 +434,38 @@ object FederationScripts {
           bootstrapIndex = federationIndex
         )
         FederationScripts(treasury, registry, faultPolicies, bans)
+    }
+
+    /** How a derivation from the federation one-shot stands against the deployed Config.
+      *
+      * `Genesis`: all three policies are the ones this one-shot compiles to, as deployed.
+      * `RegistryRevised`: the treasury still is, but #9 is not — a registry revision has moved #9
+      * and #8 to scripts compiled from fresh one-shots, which heimdall deploys and which binocular
+      * therefore does not publish or register. A wrong one-shot fails the treasury too, so it is
+      * still an error, as is a ban list that disagrees while the registry does not.
+      */
+    enum Standing {
+        case Genesis
+        case RegistryRevised(sposRegistryPolicyId: ByteString, spoBansPolicyId: ByteString)
+    }
+
+    def standing(scripts: FederationScripts, config: ConfigDatum): Either[String, Standing] = {
+        def same(derived: ScriptHash, published: ByteString) = derived.toHex == published.toHex
+        if !same(scripts.treasury.policyId, config.treasuryInfoPolicyId) then
+            Left(
+              s"derived treasury_info policy ${scripts.treasury.policyId.toHex} does not match the " +
+                  s"Config's ${config.treasuryInfoPolicyId.toHex} — this is not the outpoint the " +
+                  "bridge was deployed from, or bridge.contracts is not the release it was deployed with"
+            )
+        else if !same(scripts.registry.policyId, config.sposRegistryPolicyId) then
+            Right(Standing.RegistryRevised(config.sposRegistryPolicyId, config.spoBansPolicyId))
+        else if !same(scripts.bans.policyId, config.spoBansPolicyId) then
+            Left(
+              s"derived spo_bans policy ${scripts.bans.policyId.toHex} does not match the Config's " +
+                  s"${config.spoBansPolicyId.toHex} although the registry does — the ban schedule " +
+                  "must be read from the deployed Config, not from local settings"
+            )
+        else Right(Standing.Genesis)
     }
 
     /** Check a derivation against what the deployed Config publishes (#8 bans, #9 registry, #10
@@ -423,17 +525,23 @@ object SposRegistryContract {
         blueprint: BifrostBlueprint,
         bootstrapTxId: ByteString,
         bootstrapIndex: BigInt,
-        treasuryPolicyId: ByteString
+        treasuryPolicyId: ByteString,
+        configPolicyId: ByteString
     ): SposRegistryContract = {
         // spec [REG-6]: the third parameter is the Treasury state policy this registry PINS. It
         // could not have been a parameter before rev 5.5 — treasury_info took registry_policy_id,
         // so the dependency was a cycle — and without it the registry located the Treasury state
         // UTxO by redeemer index with no authentication at all.
-        val applied = Program
+        val base = Program
             .fromCborHex(blueprint.compiledCode(ValidatorTitle))
             .$(Data.B(bootstrapTxId))
             .$(Data.I(bootstrapIndex))
             .$(Data.B(treasuryPolicyId))
+        // Rev 5.6 adds the Config NFT policy: its `Migrate` branch reads Config #13 ([MIG-1]).
+        val applied = blueprint.release match {
+            case ContractsRelease.Rev55 => base
+            case ContractsRelease.Rev56 => base.$(Data.B(configPolicyId))
+        }
         SposRegistryContract(Script.PlutusV3(applied.cborByteString))
     }
 }
@@ -603,6 +711,7 @@ object SpoBansContract {
     def apply(
         blueprint: BifrostBlueprint,
         sposRegistryPolicyId: ByteString,
+        configPolicyId: ByteString,
         faultProofPolicyIds: List[ByteString],
         baseBanDurationMs: BigInt,
         maxFaultsBeforePermanent: BigInt,
@@ -618,9 +727,16 @@ object SpoBansContract {
         require(baseBanDurationMs > 0, "base_ban_duration_ms must be > 0")
         require(maxFaultsBeforePermanent > 0, "max_faults_before_permanent must be > 0")
         require(maxValidityWindowMs >= 0, "max_validity_window_ms must be >= 0")
+        // The first parameter is what `spo_bans` learns the registry THROUGH: the registry policy
+        // itself in rev 5.5, the Config NFT policy in rev 5.6, which reads #9 at run time
+        // ([PRE-5]).
+        val identity = blueprint.release match {
+            case ContractsRelease.Rev55 => sposRegistryPolicyId
+            case ContractsRelease.Rev56 => configPolicyId
+        }
         val applied = Program
             .fromCborHex(blueprint.compiledCode(ValidatorTitle))
-            .$(Data.B(sposRegistryPolicyId))
+            .$(Data.B(identity))
             // Indefinite-length array — see the note on [[SposRegistryContract]].
             .$(Data.List(PList.from(faultProofPolicyIds.map(p => Data.B(p): Data))))
             .$(Data.I(baseBanDurationMs))

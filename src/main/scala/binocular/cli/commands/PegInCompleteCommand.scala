@@ -100,7 +100,7 @@ case class PegInCompleteCommand(
         val oracleScriptHash = setup.script.scriptHash
 
         val (blueprint, blueprintSource) =
-            try BifrostBlueprint.resolve(config.bridge.plutusJson)
+            try BifrostBlueprint.forBridge(config.bridge)
             catch {
                 case e: Exception =>
                     Console.error(s"Loading bridge blueprint: ${e.getMessage}"); break(1)

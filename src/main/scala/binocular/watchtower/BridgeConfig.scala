@@ -31,7 +31,15 @@ case class BanScheduleConfig(
 )
 
 case class BridgeConfig(
-    plutusJson: String = "../../FluidTokens/ft-bifrost-bridge/onchain/plutus.json",
+    // The ft-bifrost-bridge contracts release this bridge was DEPLOYED with: "rev5.5" or "rev5.6"
+    // (see ContractsRelease). Fixed at genesis — a running bridge keeps its config/peg/TM scripts
+    // for good, and a registry revision does not change it either: the revised registry and ban
+    // list are heimdall's, and binocular reads their ids from the Config.
+    contracts: String = "rev5.5",
+    // An on-disk blueprint that replaces the packaged one of `contracts`, for a developer working
+    // on the Aiken validators. Empty = packaged. Must be readable when set: an override that
+    // silently falls back is an override nobody can rely on.
+    plutusJson: String = "",
     configNftPolicyId: String = "00000000000000000000000000000000000000000000000000000000",
     configNftAssetName: String = "",
     bridgedTokenPolicyId: String = "00000000000000000000000000000000000000000000000000000000",

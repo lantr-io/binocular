@@ -37,7 +37,13 @@ class FederationContractsTest extends AnyFunSuite {
     private def treasuryPolicyForTest = ByteString.fromArray(treasuryInfo.policyId.bytes)
 
     private def registry =
-        SposRegistryContract(blueprint, oneShot, oneShotIndex, treasuryPolicyForTest)
+        SposRegistryContract(
+          blueprint,
+          oneShot,
+          oneShotIndex,
+          treasuryPolicyForTest,
+          configPolicyForTest
+        )
     private def registryPolicy = ByteString.fromArray(registry.policyId.bytes)
 
     test("spos_registry policy matches heimdall's derivation") {
@@ -69,6 +75,7 @@ class FederationContractsTest extends AnyFunSuite {
         val bans = SpoBansContract(
           blueprint,
           registryPolicy,
+          configPolicyForTest,
           FaultVerifierContract.all(blueprint, registryPolicy),
           baseBanDurationMs = BigInt(600000),
           maxFaultsBeforePermanent = BigInt(3),
@@ -86,6 +93,7 @@ class FederationContractsTest extends AnyFunSuite {
         def bans(policies: List[ByteString]) = SpoBansContract(
           blueprint,
           registryPolicy,
+          configPolicyForTest,
           policies,
           BigInt(600000),
           BigInt(3),
@@ -103,6 +111,7 @@ class FederationContractsTest extends AnyFunSuite {
         def bans(base: BigInt, maxFaults: BigInt, window: BigInt) = SpoBansContract(
           blueprint,
           registryPolicy,
+          configPolicyForTest,
           policies,
           base,
           maxFaults,
@@ -121,6 +130,7 @@ class FederationContractsTest extends AnyFunSuite {
         def build(policies: List[ByteString]) = SpoBansContract(
           blueprint,
           registryPolicy,
+          configPolicyForTest,
           policies,
           BigInt(600000),
           BigInt(3),
@@ -167,7 +177,8 @@ class FederationContractsTest extends AnyFunSuite {
           blueprint,
           ByteString.fromHex("cc" * 32),
           oneShotIndex,
-          treasuryPolicyForTest
+          treasuryPolicyForTest,
+          configPolicyForTest
         )
         val otherPolicy = ByteString.fromArray(other.policyId.bytes)
         assert(other.policyId.toHex != registry.policyId.toHex)
@@ -276,5 +287,88 @@ class FederationContractsTest extends AnyFunSuite {
           (BigInt(600001), BigInt(3), BigInt(3600000))
         )
         assert(FederationScripts.verifyAgainstConfig(other, configFor(derived)).isLeft)
+    }
+
+    // --- rev 5.6 ---
+    //
+    // The same inputs through the rev-5.6 blueprint (ft 096f76c, the one heimdall embeds). Every
+    // hash below was derived by heimdall's Rust from those bytes, so these pin binocular's two
+    // version-dependent parameterizations — the registry's added Config policy and the ban list's
+    // Config policy in place of the registry hash — against an independent implementation.
+
+    private val rev56 = BifrostBlueprint.packaged(ContractsRelease.Rev56)
+
+    private def derived56 = FederationScripts.derive(
+      rev56,
+      oneShot,
+      oneShotIndex,
+      configPolicyForTest,
+      (BigInt(600000), BigInt(3), BigInt(3600000))
+    )
+
+    test("rev 5.6: FederationScripts.derive matches heimdall's derivation") {
+        val f = derived56
+        // treasury_info did not change between the releases, so neither did its policy.
+        assert(
+          f.treasury.policyId.toHex == "935993611500f483c71ef16964698ebfc4f4f2ae5f92719331418db5"
+        )
+        assert(
+          f.registry.policyId.toHex == "90bbf858a6d699e5a82b3b5c7e2f7ac8960c1908743cfde129496d12"
+        )
+        assert(
+          f.faultPolicies.map(_.toHex) == List(
+            "4fecea15ff61fb722fb3f084444d671e45c7d07c8931bb6e14fce1da",
+            "ae0e4fa378bf2f027dc2a146ec067e9c5c76e8431e31d4cd1d03020e",
+            "84f9bac4cc2c8fc0d63fe1ea564f3c28bc49d95c06e2563efe88dae2"
+          )
+        )
+        assert(f.bans.policyId.toHex == "6abf2d55cc123885a09c6c3bdcddd801f8822e827db164af736a72e0")
+    }
+
+    // --- standing after a registry revision ---
+
+    test("standing: the Config genesis wrote is Genesis") {
+        assert(FederationScripts.standing(derived, configFor(derived)) == Right(FederationScripts.Standing.Genesis))
+    }
+
+    // After a revision #9 and #8 name scripts compiled from fresh one-shots. The treasury is never
+    // revised, so a matching #10 says the one-shot is right and the moved registry is a revision,
+    // not a mistake — and binocular leaves those scripts to heimdall.
+    test("standing: a moved registry with the treasury intact is a revision, not an error") {
+        val revised = configFor(derived).copy(
+          sposRegistryPolicyId = ByteString.fromHex("a1" * 28),
+          spoBansPolicyId = ByteString.fromHex("a2" * 28)
+        )
+        assert(
+          FederationScripts.standing(derived, revised) == Right(
+            FederationScripts.Standing.RegistryRevised(
+              ByteString.fromHex("a1" * 28),
+              ByteString.fromHex("a2" * 28)
+            )
+          )
+        )
+    }
+
+    test("standing: a wrong one-shot still fails, on the treasury") {
+        val wrong = FederationScripts.derive(
+          blueprint,
+          ByteString.fromHex("cc" * 32),
+          oneShotIndex,
+          configPolicyForTest,
+          (BigInt(600000), BigInt(3), BigInt(3600000))
+        )
+        val err = FederationScripts.standing(wrong, configFor(derived)).swap.getOrElse(fail("expected a mismatch"))
+        assert(err.contains("treasury_info"))
+    }
+
+    test("standing: a ban list that disagrees while the registry agrees is an error") {
+        val other = FederationScripts.derive(
+          blueprint,
+          oneShot,
+          oneShotIndex,
+          configPolicyForTest,
+          (BigInt(600001), BigInt(3), BigInt(3600000))
+        )
+        assert(FederationScripts.standing(other, configFor(derived)).isLeft)
     }
 }
