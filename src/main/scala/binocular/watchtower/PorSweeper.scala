@@ -615,10 +615,13 @@ object PorSweeper {
     def deployedConfig(configUtxo: Utxo): Either[String, ConfigDatum] =
         configUtxo.output.inlineDatum match {
             case Some(datum) =>
-                Try(datum.to[ConfigDatum]).toEither.left.map(e =>
-                    "config UTxO datum does not decode as a ConfigDatum — the deployed bridge is " +
-                        s"not the rev-5.5 twelve-field shape this binary reads: ${e.getMessage}"
-                )
+                // Through [[DeployedConfig]], so a Config that has grown an appended field — rev
+                // 5.6's #13 is the first — still reads as the bridge it is.
+                DeployedConfig
+                    .decode(datum)
+                    .map(_.config)
+                    .left
+                    .map(e => s"config UTxO datum does not decode as a ConfigDatum: $e")
             case None =>
                 Left("config UTxO carries no inline datum")
         }

@@ -70,8 +70,8 @@ object BridgeSweepSetup {
                 }
                 .toRight(s"no UTxO carrying the config NFT at $configAddress")
             cfg <- configUtxo.output.inlineDatum
-                .flatMap(d => Try(d.to[ConfigDatum]).toOption)
-                .toRight("config datum does not decode as the rev-5.5 ConfigDatum")
+                .toRight("config UTxO carries no inline datum")
+                .flatMap(d => DeployedConfig.decode(d).map(_.config))
         } yield (configUtxo, cfg)
 
     def loadSingletonContext(

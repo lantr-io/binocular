@@ -53,6 +53,7 @@ object CliApp {
             pegInWithdrawHash: Option[String],
             pegOutWithdrawHash: Option[String],
             params: binocular.cli.commands.UpdateConfigCommand.ParamEdits,
+            registry: binocular.cli.commands.UpdateConfigCommand.RegistryEdit,
             allowUnsafeSchedule: Boolean,
             dryRun: Boolean
         )
@@ -358,8 +359,9 @@ object CliApp {
             Opts.subcommand(
               "update-config",
               "Update the deployed Config UTxO in place (governance): the script hashes in " +
-                  "fields 3-6, the ban policy in fields 7-10, and the operational parameters " +
-                  "nested in field 14. Only what you name changes"
+                  "fields 3-6, the ban policy in fields 7-10, the operational parameters " +
+                  "nested in field 14, and a registry migration (fields 9 and 13). Only what you " +
+                  "name changes"
             ) {
                 val bridgeStatePolicyOpt = Opts
                     .option[String](
@@ -497,6 +499,39 @@ object CliApp {
                           "deployments; the broken constraints are printed either way"
                     )
                     .orFalse
+                // spec [CFG-10]: a registry migration moves field 9 and records the registry it
+                // held in field 13, in one edit — the two mean something only together, and a
+                // hand-typed field 13 that is not the old field 9 strands every registration.
+                val migrateRegistryOpt: Opts[UpdateConfigCommand.RegistryEdit] = Opts
+                    .option[String](
+                      "migrate-registry-to",
+                      help = "Begin a registry migration: config field 9 := this spos_registry " +
+                          "policy (56 hex), field 13 := the one it replaces. Needs " +
+                          "--spo-bans-policy in the same Update"
+                    )
+                    .mapValidated(arg =>
+                        val h = arg.trim
+                        if h.length == 56 && h.forall(c => "0123456789abcdefABCDEF".contains(c))
+                        then
+                            cats.data.Validated.validNel(
+                              UpdateConfigCommand.RegistryEdit.MigrateTo(ByteString.fromHex(h))
+                            )
+                        else
+                            cats.data.Validated.invalidNel(
+                              s"--migrate-registry-to must be a 56-hex-char policy id, got '$arg'"
+                            )
+                    )
+                val endMigrationOpt: Opts[UpdateConfigCommand.RegistryEdit] = Opts
+                    .flag(
+                      "end-registry-migration",
+                      help = "End a registry migration: empty config field 13 once every pool " +
+                          "has crossed. Roster reads go back to checking the current list alone"
+                    )
+                    .as(UpdateConfigCommand.RegistryEdit.EndMigration)
+                val registryOpt: Opts[UpdateConfigCommand.RegistryEdit] =
+                    migrateRegistryOpt
+                        .orElse(endMigrationOpt)
+                        .withDefault(UpdateConfigCommand.RegistryEdit.Keep)
                 // Every option is applied in ONE Update tx — a validator migration requires its
                 // dependent fields to flip together, and a params update is one signed act.
                 (
@@ -505,6 +540,7 @@ object CliApp {
                   pegInHashOpt,
                   pegOutHashOpt,
                   paramsOpt,
+                  registryOpt,
                   allowUnsafeScheduleFlag,
                   dryRunFlag
                 )
@@ -795,6 +831,7 @@ object CliApp {
                               pegInHash,
                               pegOutHash,
                               params,
+                              registry,
                               allowUnsafeSchedule,
                               dryRun
                             ) =>
@@ -804,6 +841,7 @@ object CliApp {
                               pegInHash,
                               pegOutHash,
                               params,
+                              registry,
                               allowUnsafeSchedule,
                               dryRun
                             )

@@ -6,7 +6,7 @@ import binocular.cli.{CommandHelpers, ValidOracleUtxo}
 import binocular.cli.commands.BridgeSweepSetup
 import binocular.oracle.{BitcoinContract, ChainState}
 import binocular.server.ProofApi.ApiError
-import binocular.watchtower.{BridgeState, ConfigDatum, CpoHistorySource, PegInProofBundle, ProviderChainHistory, SweptPegInsProofService, TreasuryMovementValidator}
+import binocular.watchtower.{BridgeState, CpoHistorySource, DeployedConfig, PegInProofBundle, ProviderChainHistory, SweptPegInsProofService, TreasuryMovementValidator}
 import binocular.server.ProofService.{DepositProof, SweptSnapshot}
 
 import scalus.cardano.address.{Address, Network}
@@ -138,12 +138,12 @@ final class ProofService(
               code = "config_missing"
             )
             config <- configUtxo.output.inlineDatum
-                .flatMap(d => Try(d.to[ConfigDatum]).toOption)
+                .flatMap(d => DeployedConfig.decode(d).toOption.map(_.config))
                 .toRight(
                   ApiError(
                     503,
                     "config_malformed",
-                    "the config UTxO's datum does not decode as the rev-5.4 ConfigDatum"
+                    "the config UTxO's datum does not decode as a bridge ConfigDatum"
                   )
                 )
             singletonUtxo <- findByNft(
