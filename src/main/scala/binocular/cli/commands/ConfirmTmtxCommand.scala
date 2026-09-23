@@ -103,10 +103,11 @@ case class ConfirmTmtxCommand(dryRun: Boolean = false, notifier: Option[Notifier
         // The bridge_state validator takes (TM script hash, one-shot ref). Its hash must equal
         // Config field 3 (`bridge_state_policy`), which is checked against the live config each
         // cycle. Defaults to the blueprint vendored in binocular's own jar, so a Docker image or a
-        // systemd unit with no sibling ft checkout still starts. `bridge.plutus-json` /
-        // BIFROST_PLUTUS_JSON overrides it when the file exists (development).
+        // systemd unit with no sibling ft checkout still starts. `bridge.contracts` picks the
+        // release; `bridge.plutus-json` / BIFROST_PLUTUS_JSON overrides it with a file, which must
+        // then exist (development).
         val (bridgeBlueprint, blueprintSource) =
-            try BifrostBlueprint.resolve(config.bridge.plutusJson)
+            try BifrostBlueprint.forBridge(config.bridge)
             catch {
                 case e: Exception =>
                     Console.error(s"Loading bridge blueprint: ${e.getMessage}"); break(1)

@@ -90,7 +90,77 @@ object ConfigDatum {
 
 }
 
-// Scalus mirror of `config.ak::ConfigParams` — every value with NO on-chain reader, nested as
+/** A deployed Config datum: the typed rev-5.5 fields, and whatever the bridge has APPENDED since.
+  *
+  * [CFG-5] makes appending the legal way the datum evolves, and the first append is rev 5.6's #13,
+  * `previous_spos_registry_policy_id` ([CFG-10]), written by the governance Update that moves the
+  * registry. [[ConfigDatum]] stays the thirteen-field rev-5.5 mirror on purpose:
+  * `TreasuryMovementValidator` decodes it ON CHAIN, so a fourteenth field there would move that
+  * validator's pinned hash — a new TM script for a change that does not concern it. Appended fields
+  * are therefore kept here as raw [[Data]], and every off-chain read and write goes through this
+  * one type, so none of them depends on how the derived decoder treats a longer record.
+  *
+  * Deliberately NOT the [[ConfigDatum]] companion: nothing a compiled validator can reach.
+  */
+final case class DeployedConfig(config: ConfigDatum, appended: List[Data]) {
+
+    /** The datum as it goes back on chain: the typed fields, then the appended ones verbatim. */
+    def toData: Data = DeployedConfig.encode(this)
+
+    /** Config #13 ([CFG-10]): the registry a migration is coming FROM. `None` when the field is
+      * absent (a datum written before rev 5.6) or empty (no migration in progress) — the two mean
+      * the same, exactly as heimdall reads them.
+      */
+    def previousSposRegistryPolicyId: Option[ByteString] = appended.headOption.collect {
+        case Data.B(b) if b.size > 0 => b
+    }
+}
+
+object DeployedConfig {
+
+    /** Field count of the rev-5.5 layout [[ConfigDatum]] mirrors. */
+    val TypedFieldCount = 13
+
+    /** The typed fields, then the appended ones verbatim. Here rather than in the class, where the
+      * class's own `toData` would shadow the `ConfigDatum` encoder.
+      */
+    def encode(d: DeployedConfig): Data = {
+        import scalus.uplc.builtin.Data.toData
+        d.config.toData match {
+            case Data.Constr(tag, fields) =>
+                Data.Constr(
+                  tag,
+                  scalus.cardano.onchain.plutus.prelude.List.from(fields.asScala.toList ++ d.appended)
+                )
+            case other => other
+        }
+    }
+
+    /** Decode a deployed Config datum of ANY arity from [[TypedFieldCount]] up. */
+    def decode(datum: Data): Either[String, DeployedConfig] = datum match {
+        case Data.Constr(0, fields) =>
+            val all = fields.asScala.toList
+            if all.size < TypedFieldCount then
+                Left(
+                  s"config datum has ${all.size} fields; the rev-5.5 layout has $TypedFieldCount " +
+                      "and a Config only ever grows ([CFG-5]) — this is not a bridge Config"
+                )
+            else
+                val (typed, appended) = all.splitAt(TypedFieldCount)
+                scala.util
+                    .Try(
+                      Data.Constr(0, scalus.cardano.onchain.plutus.prelude.List.from(typed))
+                          .to[ConfigDatum]
+                    )
+                    .toEither
+                    .left
+                    .map(e => s"config datum does not decode as the rev-5.5 ConfigDatum: $e")
+                    .map(DeployedConfig(_, appended))
+        case other => Left(s"config datum is not a Constr 0 record: $other")
+    }
+}
+
+// Scalus mirror of `config.ak::ConfigParams` — every value with NO on-chain reader, nested as// Scalus mirror of `config.ak::ConfigParams` — every value with NO on-chain reader, nested as
 // ConfigDatum field 1 (spec §Config datum). Positional; keep field order identical to the .ak
 // record: 0 schedule, 1 fee_rate_sat_per_vb, 2 per_pegout_fee, 3 min_peg_out_fbtc,
 // 4 base_ban_duration_ms, 5 max_faults_before_permanent, 6 max_validity_window_ms,

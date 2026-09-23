@@ -454,7 +454,8 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
       */
     private def configRefInput(
         withNft: Boolean = true,
-        bridgeStatePolicyArg: ByteString = bssPolicy
+        bridgeStatePolicyArg: ByteString = bssPolicy,
+        appended: List[Data] = Nil
     ): TxInInfo = TxInInfo(
       outRef = TxOutRef(TxId(filled(0x03, 32)), BigInt(0)),
       resolved = TxOut(
@@ -463,7 +464,12 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
             if withNft then
                 Value.unsafeFromList(PList((configNftPolicy, PList((configNftName, BigInt(1))))))
             else Value.lovelace(2_000_000),
-        datum = OutputDatum.OutputDatum(configDatum(bridgeStatePolicyArg)),
+        datum = OutputDatum.OutputDatum(configDatum(bridgeStatePolicyArg) match {
+            // Fields a later revision APPENDED ([CFG-5]) — rev 5.6's #13 is the first.
+            case Data.Constr(tag, fields) if appended.nonEmpty =>
+                Data.Constr(tag, PList.from(fields.asScala.toList ++ appended))
+            case d => d
+        }),
         referenceScript = Option.None
       )
     )
@@ -849,6 +855,47 @@ class TreasuryMovementValidatorTest extends AnyFunSuite {
         // NB: `.contract` (typed .apply) and `.script` (UPLC bytesParam) produce different-but-
         // equivalent UPLC, so their hashes differ — that is fine: only `.script` is ever deployed
         // (address, NFT policy, spend all use it).
+    }
+
+    // spec [CFG-10], [CFG-5]: the registry migration APPENDS Config #13, and this validator is
+    // already deployed — its pin cannot move to accommodate it. So the question is not whether the
+    // source compiles against a longer datum but whether the UPLC on chain decodes one. It reads
+    // `bridge_state_policy` through the derived `ConfigDatum` decoder; if that decoder insisted on
+    // exactly thirteen fields, the governance Update that begins a migration would stop every
+    // treasury movement on the bridge. Evaluated on the DEPLOYED blueprint form, both reads.
+    private def deployedTmProgram =
+        binocular.blueprint.BinocularBlueprint
+            .program("TreasuryMovementContract")
+            .$(binocular.blueprint.BinocularBlueprint.bytesParam(oracleHash))
+            .$(binocular.blueprint.BinocularBlueprint.bytesParam(configNftPolicy))
+            .$(binocular.blueprint.BinocularBlueprint.bytesParam(configNftName))
+            .deBruijnedProgram
+
+    private val field13Values: List[(String, Data)] = List(
+      "a migration in progress (#13 = the previous registry)" -> Data.B(filled(0xb2, 28)),
+      "a migration ended (#13 empty)" -> Data.B(ByteString.empty)
+    )
+
+    for (what, field13) <- field13Values do {
+        test(s"deployed TM confirm accepts a Config with #13 appended: $what") {
+            val sc = scriptContext(
+              confirmRdmr(),
+              cfgRefs = List(configRefInput(appended = List(field13)))
+            )
+            val result = deployedTmProgram.applyArg(sc.toData).evaluateDebug
+            assert(result.isSuccess, s"expected success, got: $result")
+        }
+
+        test(s"deployed TM mint accepts a Config with #13 appended: $what") {
+            val sc = mintContext(
+              BigInt(1),
+              postRdmr,
+              PList.from(List(configRefInput(appended = List(field13)), bssRefInput())),
+              PList.from(List(mintedTmOutput()))
+            )
+            val result = deployedTmProgram.applyArg(sc.toData).evaluateDebug
+            assert(result.isSuccess, s"expected success, got: $result")
+        }
     }
 
     test("block header not in oracle's confirmed-blocks root fails") {

@@ -68,7 +68,7 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
         val oraclePolicyId = ByteString.fromArray(setup.script.scriptHash.bytes)
 
         val (blueprint, blueprintSource) =
-            try BifrostBlueprint.resolve(config.bridge.plutusJson)
+            try BifrostBlueprint.forBridge(config.bridge)
             catch {
                 case e: Exception =>
                     Console.error(s"Loading bridge blueprint: ${e.getMessage}"); break(1)
@@ -184,32 +184,47 @@ case class DeployScriptRefsCommand(dryRun: Boolean = false) extends Command {
                 deployed.params.maxValidityWindowMs
               )
             )
-            FederationScripts
-                .verifyAgainstConfig(federation, deployed)
+            val standing = FederationScripts
+                .standing(federation, deployed)
                 .valueOr { err =>
                     Console.error(err); break(1)
                 }
-            Console.info("spos_registry script hash", federation.registry.policyId.toHex)
-            Console.info("spo_bans script hash", federation.bans.policyId.toHex)
-            Console.info("(verified against the deployed Config)", "#8 / #9 / #10 / #12")
-            println()
-            // treasury_info is NOT published: nothing ever spends it with the script
-            // inlined at size — its spend paths are small, and the state UTxO is read as a
-            // reference input everywhere else.
-            ("spos_registry", federation.registry.script) ::
-                ("spo_bans", federation.bans.script) ::
-                FaultVerifierContract.Titles.zipWithIndex.map { case (title, i) =>
-                    val label =
-                        List("fault_round1", "fault_round2", "fault_equivocation")(i)
-                    (
-                      label,
-                      FaultVerifierContract(
-                        blueprint,
-                        title,
-                        ByteString.fromArray(federation.registry.policyId.bytes)
-                      ).script
+            standing match {
+                // A registry revision moved #9 and #8 to scripts compiled from fresh one-shots.
+                // heimdall's revision steps deploy their reference scripts (deploy-registry-ref,
+                // deploy-fault-ref, deploy-spo-bans-ref); the ones this one-shot compiles to are
+                // the scripts the bridge left, and publishing them would lock ADA for nothing.
+                case FederationScripts.Standing.RegistryRevised(registry, bans) =>
+                    Console.info(
+                      "federation half",
+                      s"skipped — the Config names a revised registry ${registry.toHex} and ban " +
+                          s"list ${bans.toHex}; heimdall publishes their reference scripts"
                     )
-                }
+                    println()
+                    Nil
+                case FederationScripts.Standing.Genesis =>
+                    Console.info("spos_registry script hash", federation.registry.policyId.toHex)
+                    Console.info("spo_bans script hash", federation.bans.policyId.toHex)
+                    Console.info("(verified against the deployed Config)", "#8 / #9 / #10 / #12")
+                    println()
+                    // treasury_info is NOT published: nothing ever spends it with the script
+                    // inlined at size — its spend paths are small, and the state UTxO is read as
+                    // a reference input everywhere else.
+                    ("spos_registry", federation.registry.script) ::
+                        ("spo_bans", federation.bans.script) ::
+                        FaultVerifierContract.Titles.zipWithIndex.map { case (title, i) =>
+                            val label =
+                                List("fault_round1", "fault_round2", "fault_equivocation")(i)
+                            (
+                              label,
+                              FaultVerifierContract(
+                                blueprint,
+                                title,
+                                ByteString.fromArray(federation.registry.policyId.bytes)
+                              ).script
+                            )
+                        }
+            }
         }
 
         if dryRun then {

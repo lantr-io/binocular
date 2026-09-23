@@ -142,12 +142,13 @@ case class DeployBridgeCommand(
         val oraclePolicyId = setup.script.scriptHash
 
         val (blueprint, blueprintSource) =
-            try BifrostBlueprint.resolve(config.bridge.plutusJson)
+            try BifrostBlueprint.forBridge(config.bridge)
             catch {
                 case e: Exception =>
                     Console.error(s"Loading bridge blueprint: ${e.getMessage}"); break(1)
             }
         Console.info("blueprint", blueprintSource)
+        Console.info("contracts", s"${blueprint.release.label} (bridge.contracts)")
 
         def refOf(u: Utxo): TxOutRef =
             TxOutRef(TxId(u.input.transactionId), u.input.index)
@@ -632,7 +633,11 @@ case class DeployBridgeCommand(
                     .mint(cpiContract.script, Map(cpiAsset -> 1L), Data.unit)
                     .mint(bssContract.script, Map(bssAsset -> 1L), Data.unit)
                     // config UTxO first (config.ak::mint reads self.outputs[0]).
-                    .payTo(configContract.address(network), configValue, configDatum.toData)
+                    .payTo(
+                      configContract.address(network),
+                      configValue,
+                      DeployBridgeCommand.genesisConfigData(configDatum, blueprint.release)
+                    )
                     .payTo(cpiContract.address(network), cpiValue, cpiDatum.toData)
                     .payTo(bssAddress, bssValue, bssDatum)
                     // Register the withdraw reward accounts here (deposit-less Shelley RegCert, no
@@ -786,6 +791,19 @@ case class DeployBridgeCommand(
 }
 
 object DeployBridgeCommand {
+
+    /** The Config datum genesis writes, in the arity of `release` ([[ContractsRelease]]).
+      *
+      * Rev 5.6's `config.ak` genesis mint casts the full fourteen-field datum, so #13
+      * (`previous_spos_registry_policy_id`, spec [CFG-10]) must be present — empty, since no
+      * migration is in progress at genesis. Rev 5.5's casts thirteen.
+      */
+    def genesisConfigData(config: ConfigDatum, release: ContractsRelease): Data =
+        release match {
+            case ContractsRelease.Rev55 => DeployedConfig(config, Nil).toData
+            case ContractsRelease.Rev56 => DeployedConfig(config, List(Data.B(ByteString.empty))).toData
+        }
+
     // Confirmation polling budget. The `.await` window MUST exceed the poll's own budget
     // (`attempts * delayMs`); otherwise the await preempts the poll and throws a TimeoutException at
     // the same instant the poll would have observed confirmation — a spurious failure on a tx that

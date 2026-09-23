@@ -10,12 +10,10 @@ import scalus.cardano.node.TransactionStatus
 import scalus.cardano.onchain.plutus.prelude.{List as PList, Option as SOption}
 import scalus.cardano.txbuilder.TxBuilder
 import scalus.uplc.builtin.{ByteString, Data}
-import scalus.uplc.builtin.Data.toData
 import scalus.utils.await
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.*
-import scala.util.Try
 import scala.util.boundary
 import boundary.break
 import cats.syntax.either.*
@@ -41,6 +39,12 @@ import cats.syntax.either.*
   *     deliberately, and for all of them at once. It takes effect from the next batch, never
   *     retroactively; the schedule (params[3]) from the next epoch boundary.
   *
+  *   - optionally begins or ends a REGISTRY MIGRATION (spec [CFG-10]): `--migrate-registry-to`
+  *     moves field 9 (`spos_registry_policy_id`) to the new registry and writes the policy it held
+  *     into field 13 (`previous_spos_registry_policy_id`, appended if the datum predates it) — the
+  *     on-chain statement "pools are crossing from here", which the `Migrate` branch and every
+  *     heimdall read. `--end-registry-migration` empties field 13 once they have.
+  *
   * ALL of the above happen in ONE transaction: a validator swap must flip every dependent field in
   * the same Update that precedes its first use, or readers chase hashes whose UTxOs do not exist.
   *
@@ -49,9 +53,9 @@ import cats.syntax.either.*
   * non-ADA value are preserved (config.ak enforces this); all other datum fields are carried over
   * verbatim.
   *
-  * The rewrite decodes the typed [[ConfigDatum]] and edits fields by name ([LIB-1]). Because the
-  * whole datum is re-encoded, a deployed datum whose field count grew past the layout this build
-  * knows is REFUSED up front: re-encoding it would silently drop the appended fields.
+  * The rewrite decodes the typed [[ConfigDatum]] and edits fields by name ([LIB-1]). Fields
+  * appended after the rev-5.5 layout are carried through [[DeployedConfig]] verbatim, so an Update
+  * never truncates a grown datum.
   *
   * The config script is rebuilt from the bridge blueprint parameterized by the bootstrap one-shot
   * (`bridge.completed-peg-ins-one-shot-ref` — deploy-bridge uses ONE shared one-shot for config,
@@ -63,6 +67,7 @@ case class UpdateConfigCommand(
     pegInWithdrawHash: Option[String] = None,
     pegOutWithdrawHash: Option[String] = None,
     params: UpdateConfigCommand.ParamEdits = UpdateConfigCommand.ParamEdits.none,
+    registry: UpdateConfigCommand.RegistryEdit = UpdateConfigCommand.RegistryEdit.Keep,
     allowUnsafeSchedule: Boolean = false,
     dryRun: Boolean = false
 ) extends Command {
@@ -99,12 +104,12 @@ case class UpdateConfigCommand(
         // With every option now optional, a bare `update-config` would spend and recreate the config
         // UTxO with an identical datum — a fee for nothing, and a needless spend of the config NFT.
         if newBridgeStatePolicy.isEmpty && newTmScriptHash.isEmpty && newPegInHash.isEmpty
-            && newPegOutHash.isEmpty && params.isEmpty
+            && newPegOutHash.isEmpty && params.isEmpty && registry == UpdateConfigCommand.RegistryEdit.Keep
         then {
             Console.error(
               "Nothing to update. Pass at least one of --bridge-state-policy, --tm-script-hash, " +
                   "--peg-in-withdraw-hash, --peg-out-withdraw-hash, --fee-rate, --per-pegout-fee, " +
-                  "--min-peg-out, --schedule."
+                  "--min-peg-out, --schedule, --migrate-registry-to, --end-registry-migration."
             )
             break(1)
         }
@@ -121,7 +126,7 @@ case class UpdateConfigCommand(
                 break(1)
         }
         val (blueprint, blueprintSource) =
-            try BifrostBlueprint.resolve(config.bridge.plutusJson)
+            try BifrostBlueprint.forBridge(config.bridge)
             catch {
                 case e: Exception =>
                     Console.error(s"Loading bridge blueprint: ${e.getMessage}"); break(1)
@@ -139,7 +144,7 @@ case class UpdateConfigCommand(
             Console.error(
               s"Derived config policy ${configContract.policyId.toHex} does not match " +
                   s"bridge.config-nft-policy-id ${config.bridge.configNftPolicyId} — check the " +
-                  "one-shot ref and plutus.json"
+                  "one-shot ref and bridge.contracts (the release this bridge was deployed with)"
             )
             break(1)
         }
@@ -167,18 +172,25 @@ case class UpdateConfigCommand(
             Console.error("Config UTxO has no inline datum")
             break(1)
         }
-        val oldConfig = UpdateConfigCommand.decodeDeployed(oldData).valueOr { err =>
+        val deployed = UpdateConfigCommand.decodeDeployed(oldData).valueOr { err =>
             Console.error(err); break(1)
         }
-        val newConfig = UpdateConfigCommand.rewrite(
-          oldConfig,
-          newBridgeStatePolicy,
-          newTmScriptHash,
-          newPegInHash,
-          newPegOutHash,
-          params
+        val oldConfig = deployed.config
+        val rewritten = deployed.copy(config =
+            UpdateConfigCommand.rewrite(
+              oldConfig,
+              newBridgeStatePolicy,
+              newTmScriptHash,
+              newPegInHash,
+              newPegOutHash,
+              params
+            )
         )
-        val newDatum: Data = newConfig.toData
+        val updated = UpdateConfigCommand
+            .applyRegistryEdit(rewritten, registry, banPolicyMoved = params.spoBansPolicyId.nonEmpty)
+            .valueOr { err => Console.error(err); break(1) }
+        val newConfig = updated.config
+        val newDatum: Data = updated.toData
         val updateAuthPkh = oldConfig.updateAuth match {
             case SOption.Some(AuthorizationMethod.CardanoSignature(pkh)) => pkh
             case SOption.Some(other) =>
@@ -202,6 +214,17 @@ case class UpdateConfigCommand(
         newTmScriptHash.foreach(h => Console.info("new TM script hash (field 4)", h.toHex))
         newPegInHash.foreach(h => Console.info("new peg-in hash (field 5)", h.toHex))
         newPegOutHash.foreach(h => Console.info("new peg-out hash (field 6)", h.toHex))
+        registry match {
+            case UpdateConfigCommand.RegistryEdit.MigrateTo(r) =>
+                Console.info(
+                  "registry migration",
+                  s"${oldConfig.sposRegistryPolicyId.toHex} -> ${r.toHex} (field 13 records " +
+                      "the old one until --end-registry-migration)"
+                )
+            case UpdateConfigCommand.RegistryEdit.EndMigration =>
+                Console.info("registry migration", "ended — field 13 emptied")
+            case UpdateConfigCommand.RegistryEdit.Keep => ()
+        }
         Console.info("update_auth pkh", updateAuthPkh.toHex)
         // Every changed field, old -> new. The operational parameters are consensus inputs for
         // every SPO's TM builder, so an accidental edit is worth seeing before it is signed.
@@ -347,28 +370,85 @@ object UpdateConfigCommand {
     }
 
     /** Field count of the rev-5.5 Config datum (spec §Config datum). */
-    val ConfigFieldCount = 13
+    val ConfigFieldCount: Int = DeployedConfig.TypedFieldCount
 
-    /** Decode the deployed Config datum for an UPDATE, refusing any Constr arity other than
-      * [[ConfigFieldCount]]. Appends are the legal datum evolution and read-only consumers ignore
-      * unknown trailing fields, but this command re-encodes the WHOLE datum — a
-      * decode-copy-reencode of a grown datum would silently drop the appended fields, so it is
-      * refused instead.
+    /** Decode the deployed Config datum for an UPDATE.
+      *
+      * This used to REFUSE any arity but [[ConfigFieldCount]], because it re-encoded the typed
+      * record and a longer datum would have lost its appended fields. [[DeployedConfig]] carries
+      * them through verbatim instead, which is what lets this command write rev 5.6's #13 — and
+      * keep writing every other field after it exists.
       */
-    def decodeDeployed(datum: Data): Either[String, ConfigDatum] = datum match {
-        case Data.Constr(0, fields) =>
-            val n = fields.asScala.size
-            if n != ConfigFieldCount then
+    def decodeDeployed(datum: Data): Either[String, DeployedConfig] = DeployedConfig.decode(datum)
+
+    /** Beginning or ending a registry migration ([CFG-10]). */
+    enum RegistryEdit {
+        case Keep
+
+        /** Field 9 := `newRegistry`, field 13 := the policy field 9 held. */
+        case MigrateTo(newRegistry: ByteString)
+
+        /** Field 13 := empty. */
+        case EndMigration
+    }
+
+    /** Apply a [[RegistryEdit]] to a deployed Config.
+      *
+      * One edit, not a free-standing "set field 13": the two fields mean something only together.
+      * Field 13 names the registry the pools are crossing FROM, so it must be exactly what field 9
+      * held — a hand-typed value that is not strands every pool in a list nothing reads. And it
+      * is written in the same Update that moves field 9, or there is a window in which the
+      * registry has moved and no reader knows where the registrations went.
+      *
+      * `banPolicyMoved` must be true for [[RegistryEdit.MigrateTo]]. The three fault verifiers are
+      * compiled from the registry hash and the ban policy from theirs, so a ban list built for the
+      * old registry authorizes fault proofs no new node can mint: field 7 moves in the same Update.
+      */
+    def applyRegistryEdit(
+        deployed: DeployedConfig,
+        edit: RegistryEdit,
+        banPolicyMoved: Boolean
+    ): Either[String, DeployedConfig] = edit match {
+        case RegistryEdit.Keep => Right(deployed)
+        case RegistryEdit.MigrateTo(newRegistry) =>
+            val current = deployed.config.sposRegistryPolicyId
+            if newRegistry.size != 28 then
+                Left(s"--migrate-registry-to must be a 28-byte policy id, got ${newRegistry.size}")
+            else if newRegistry == current then
                 Left(
-                  s"config datum has $n fields; this build knows the $ConfigFieldCount-field " +
-                      "rev-5.5 layout. Re-encoding would drop the extra fields — update binocular " +
-                      "instead of forcing the write."
+                  s"--migrate-registry-to names the registry field 9 already holds (${current.toHex})"
+                )
+            else if deployed.previousSposRegistryPolicyId.nonEmpty then
+                Left(
+                  "a registry migration is already in progress, from " +
+                      s"${deployed.previousSposRegistryPolicyId.get.toHex} (field 13). End it with " +
+                      "--end-registry-migration once every pool has crossed, then start the next"
+                )
+            else if !banPolicyMoved then
+                Left(
+                  "--migrate-registry-to needs --spo-bans-policy in the same Update: the fault " +
+                      "verifiers are compiled from the registry hash and the ban policy from " +
+                      "theirs, so the ban list for the new registry is a new policy too"
                 )
             else
-                Try(datum.to[ConfigDatum]).toOption
-                    .toRight("config datum does not decode as the rev-5.5 ConfigDatum")
-        case other => Left(s"config datum is not a Constr 0 record: $other")
+                Right(
+                  deployed.copy(
+                    config = deployed.config.copy(sposRegistryPolicyId = newRegistry),
+                    appended = withField13(deployed.appended, Data.B(current))
+                  )
+                )
+        case RegistryEdit.EndMigration =>
+            if deployed.previousSposRegistryPolicyId.isEmpty then
+                Left("no registry migration is in progress: field 13 is absent or empty")
+            else
+                Right(
+                  deployed.copy(appended = withField13(deployed.appended, Data.B(ByteString.empty)))
+                )
     }
+
+    /** `appended` with its first entry — Config #13 — set to `value`, appending it if absent. */
+    private def withField13(appended: List[Data], value: Data): List[Data] =
+        value :: appended.drop(1)
 
     /** `ScheduleParams` field names, in record order — the `--schedule name=value` keys and the
       * positions inside the doubly-nested Constr at params[3].
@@ -400,7 +480,8 @@ object UpdateConfigCommand {
       "spos_registry_policy_id",
       "treasury_info_policy_id",
       "y_federation",
-      "federation_one_shot"
+      "federation_one_shot",
+      "previous_spos_registry_policy_id"
     )
 
     /** The governed parameter edits (config fields 7-10 and inside field 14). All optional: `None`

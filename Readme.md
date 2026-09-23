@@ -71,6 +71,10 @@ Pass a config file with `--config`:
 | `wallet`       | Wallet mnemonic for signing          | `WALLET_MNEMONIC`                                 |
 | `oracle`       | Oracle parameters (UTxO ref, owner)  | `ORACLE_TX_OUT_REF`, `ORACLE_OWNER_PKH`, `ORACLE_START_HEIGHT` |
 | `relay`        | TMTx relay settings                  | `RELAY_TMTX_POLICY_ID`, `RELAY_TMTX_ASSET_NAME`  |
+| `bridge`       | The Bifrost bridge this binocular serves: its contracts release and identity | `BIFROST_CONTRACTS`, `CONFIG_NFT_POLICY_ID` |
+
+Running a Bifrost bridge — genesis, the watchtower, and changing the Config — is covered in
+[docs/operator-guide.md](docs/operator-guide.md).
 
 ### Bitcoin networks
 
@@ -101,16 +105,22 @@ All commands accept `--config <path>` to specify a configuration file.
 | `blueprint`         | Print the CIP-57 Blueprint JSON                          |
 | `prove-transaction` | Prove a Bitcoin transaction's inclusion in a confirmed block |
 
-### Bifrost relay commands
+### Bifrost bridge commands
 
-These commands support the [Bifrost](https://github.com/nicofunke/ft-bifrost-bridge) bridge
-protocol by relaying signed Treasury Movement transactions from Cardano to Bitcoin.
+These serve a [Bifrost](https://github.com/FluidTokens/ft-bifrost-bridge) bridge. What each is for,
+and in what order, is in [docs/operator-guide.md](docs/operator-guide.md).
 
-| Command        | Description                                                      |
-|----------------|------------------------------------------------------------------|
-| `relay`        | Poll Cardano for TMTx UTxOs and broadcast signed Bitcoin transactions. Option: `--dry-run` |
-| `create-tmtx`  | Create a test TMTx UTxO on Cardano. Argument: `BTC_TX_HEX`      |
-| `spend-tmtx`   | Spend (destroy) all TMTx UTxOs at the script address             |
+| Command | Description |
+|---------|-------------|
+| `watchtower` | Oracle sync, TM relay, TM confirm, peg-out completion and the proof API, in one process |
+| `relay` / `confirm-tmtx` / `serve-proofs` | The same workers, one at a time |
+| `deploy-bridge` | Genesis: the Config, the completion contracts, the treasury and the SPO registry and ban list |
+| `deploy-script-refs` | Publish the bridge's heavy scripts as reference scripts |
+| `register-bridge-creds` | Register the withdraw reward accounts, if genesis stopped partway |
+| `update-config` | Change the Config in place (governance), including a registry migration |
+| `tm-script` | Print the TM validator's policy id, address and CBOR |
+| `pegin-request`, `pegin-complete`, `peg-out-request`, `peg-out-complete` | Peg-in and peg-out, for testing and demos |
+| `deposit-proof`, `spi-proof` | One proof, for one deposit outpoint |
 
 ### Other
 

@@ -274,8 +274,11 @@ class BifrostContractsTest extends AnyFunSuite {
                 )
             case Some(path) =>
                 val ft = BifrostBlueprint.fromFile(path.toString)
-                val stale =
-                    blueprint.validatorTitles.filterNot(RebuildDrift.contains).filter { title =>
+                // Two releases are vendored, and the ft checkout may be on either — main, or the
+                // branch of the next release. It must match ONE of them exactly; a checkout that
+                // matches neither means a vendored copy is stale.
+                def staleAgainst(vendored: BifrostBlueprint): Seq[String] =
+                    vendored.validatorTitles.filterNot(RebuildDrift.contains).filter { title =>
                         val ftCode =
                             try ft.compiledCode(title)
                             catch {
@@ -285,13 +288,106 @@ class BifrostContractsTest extends AnyFunSuite {
                                           "the two blueprints no longer describe the same bridge"
                                     )
                             }
-                        ftCode != blueprint.compiledCode(title)
+                        ftCode != vendored.compiledCode(title)
                     }
+                val byRelease = ContractsRelease.values.toList.map { r =>
+                    r -> staleAgainst(BifrostBlueprint.packaged(r))
+                }
                 assert(
-                  stale.isEmpty,
-                  s"vendored compiledCode is stale against $path for: ${stale.mkString(", ")} " +
-                      "– re-vendor bifrost-plutus-min.json"
+                  byRelease.exists(_._2.isEmpty),
+                  s"the ft checkout at $path matches no vendored release — " +
+                      byRelease
+                          .map { case (r, st) => s"${r.label} differs in ${st.mkString(", ")}" }
+                          .mkString("; ") +
+                      ". Re-vendor the release that checkout is on"
                 )
         }
+    }
+
+    // --- bridge.contracts and bridge.plutus-json ---
+
+    test("bridge.contracts names a vendored release, and an unknown one is an error") {
+        assert(ContractsRelease.parse("rev5.5") == Right(ContractsRelease.Rev55))
+        assert(ContractsRelease.parse(" rev5.6 ") == Right(ContractsRelease.Rev56))
+        assert(ContractsRelease.parse("rev5.7").isLeft)
+        // Each release's vendored blueprint loads, and carries its release.
+        ContractsRelease.values.foreach { r =>
+            assert(BifrostBlueprint.packaged(r).release == r)
+        }
+    }
+
+    // The releases differ in exactly the three validators rev 5.6 changed. The Config policy moves
+    // with config.ak, which is what lets a command tell the release a Config was deployed with.
+    test("the vendored releases differ in config, spos_registry and spo_bans only") {
+        val a = BifrostBlueprint.packaged(ContractsRelease.Rev55)
+        val b = BifrostBlueprint.packaged(ContractsRelease.Rev56)
+        val differ = a.validatorTitles.filter(t => a.compiledCode(t) != b.compiledCode(t)).toSet
+        assert(
+          differ == Set(
+            "bitcoin/config.config.mint",
+            "bitcoin/spos_registry.spo_registry.mint",
+            "bitcoin/spo_bans.spo_bans.mint"
+          )
+        )
+    }
+
+    test("an empty plutus-json uses the packaged release; an unreadable one is refused") {
+        val (bp, source) = BifrostBlueprint.resolve(ContractsRelease.Rev56, "")
+        assert(bp.release == ContractsRelease.Rev56)
+        assert(source.contains("rev5.6"))
+        // It used to fall back to the packaged blueprint silently, so the contracts a command
+        // built with depended on whether a sibling checkout existed.
+        intercept[IllegalArgumentException](
+          BifrostBlueprint.resolve(ContractsRelease.Rev55, "/nonexistent/plutus.json")
+        )
+    }
+
+    // Rev 5.6's genesis mint casts the fourteen-field datum, so genesis must write #13 — empty.
+    test("genesis writes the Config arity of its release") {
+        val cfg = ConfigDatum(
+          updateAuth = scalus.cardano.onchain.plutus.prelude.Option.None,
+          params = ConfigParams(
+            schedule = ScheduleParams(
+              BigInt(3600),
+              BigInt(7200),
+              BigInt(10800),
+              BigInt(21600),
+              BigInt(1800),
+              BigInt(1800),
+              BigInt(600),
+              BigInt(129600),
+              BigInt(345600),
+              BigInt(129600)
+            ),
+            feeRateSatPerVb = BigInt(1),
+            perPegoutFee = BigInt(1000),
+            minPegOutFbtc = BigInt(10000),
+            baseBanDurationMs = BigInt(600000),
+            maxFaultsBeforePermanent = BigInt(3),
+            maxValidityWindowMs = BigInt(3600000),
+            federationCsvBlocks = BigInt(144),
+            peginRefundTimeoutBlocks = BigInt(720)
+          ),
+          bridgedTokenPolicy = ByteString.empty,
+          completedPegInsPolicy = ByteString.empty,
+          bridgeStatePolicy = ByteString.empty,
+          tmScriptHash = ByteString.empty,
+          pegInScriptHash = ByteString.empty,
+          pegOutScriptHash = ByteString.empty,
+          spoBansPolicyId = ByteString.empty,
+          sposRegistryPolicyId = ByteString.empty,
+          treasuryInfoPolicyId = ByteString.empty,
+          yFederation = ByteString.empty,
+          federationOneShot = TxOutRef(TxId(ByteString.fromHex("c3" * 32)), BigInt(0))
+        )
+        def arity(d: scalus.uplc.builtin.Data) = d match {
+            case scalus.uplc.builtin.Data.Constr(0, fs) => fs.asScala.toList
+            case other                                  => fail(s"not a Constr 0: $other")
+        }
+        import binocular.cli.commands.DeployBridgeCommand.genesisConfigData
+        assert(arity(genesisConfigData(cfg, ContractsRelease.Rev55)).size == 13)
+        val f56 = arity(genesisConfigData(cfg, ContractsRelease.Rev56))
+        assert(f56.size == 14)
+        assert(f56(13) == scalus.uplc.builtin.Data.B(ByteString.empty))
     }
 }

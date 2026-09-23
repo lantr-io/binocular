@@ -42,7 +42,7 @@ final class LiveTraffic(config: BinocularConfig, notifier: Notifier)(using Execu
     )
     private val qAuth = wallet.identity.outputKey
     private val fundingScript = ByteString.fromArray(wallet.funding.scriptPubKey.toArray)
-    private val blueprint = BifrostBlueprint.resolve(config.bridge.plutusJson)._1
+    private val blueprint = BifrostBlueprint.forBridge(config.bridge)._1
     private val configPolicy = ScriptHash.fromHex(config.bridge.configNftPolicyId)
     private val configAsset = AssetName(ByteString.fromHex(config.bridge.configNftAssetName))
     private val configBytes = ByteString.fromArray(configPolicy.bytes)

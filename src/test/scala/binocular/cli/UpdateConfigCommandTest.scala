@@ -2,7 +2,8 @@ package binocular.cli
 
 import binocular.cli.commands.UpdateConfigCommand
 import binocular.cli.commands.UpdateConfigCommand.ParamEdits
-import binocular.watchtower.{AuthorizationMethod, ConfigDatum, ConfigParams, ScheduleParams}
+import binocular.cli.commands.UpdateConfigCommand.RegistryEdit
+import binocular.watchtower.{AuthorizationMethod, ConfigDatum, ConfigParams, DeployedConfig, ScheduleParams}
 
 import org.scalatest.funsuite.AnyFunSuite
 import scalus.cardano.onchain.plutus.prelude.{List as PList, Option as SOption}
@@ -135,24 +136,105 @@ class UpdateConfigCommandTest extends AnyFunSuite {
     }
 
     test("decodeDeployed round-trips the rev-5.5 datum") {
-        assert(UpdateConfigCommand.decodeDeployed(config.toData) == Right(config))
+        val d = UpdateConfigCommand.decodeDeployed(config.toData)
+        assert(d == Right(DeployedConfig(config, Nil)))
+        assert(d.toOption.get.toData == config.toData)
     }
 
-    // Appending is the legal datum evolution (config.ak's Update accepts any datum), and READERS
-    // ignore unknown trailing fields — but this command re-encodes the whole datum, so rewriting a
-    // grown datum would silently truncate it. It must be refused, not carried.
-    test("decodeDeployed refuses a datum that grew past the rev-5.5 layout") {
-        val grown = config.toData match {
-            case Data.Constr(0, fields) =>
-                Data.Constr(0, PList.from(fields.asScala.toList :+ (Data.I(BigInt(99)): Data)))
-            case other => fail(s"config datum is not a Constr 0: $other")
+    /** The rev-5.5 datum with `extra` appended ([CFG-5]). */
+    private def grown(extra: Data*): Data = config.toData match {
+        case Data.Constr(0, fields) => Data.Constr(0, PList.from(fields.asScala.toList ++ extra))
+        case other                  => fail(s"config datum is not a Constr 0: $other")
+    }
+
+    // This was a refusal: the command re-encoded the typed record, so a grown datum would have
+    // lost its appended fields. It now carries them — which is what lets it write rev 5.6's #13 and
+    // keep updating every other field once #13 exists.
+    test("an update of a grown datum carries the appended fields through verbatim") {
+        val datum = grown(Data.B(ByteString.fromHex("b2" * 28)), Data.I(BigInt(99)))
+        val deployed = UpdateConfigCommand.decodeDeployed(datum).toOption.get
+        assert(deployed.config == config)
+        val edited = deployed.copy(config =
+            UpdateConfigCommand.rewrite(
+              deployed.config,
+              None,
+              None,
+              None,
+              None,
+              ParamEdits(schedule = Map("tm_batch_interval" -> BigInt(600)))
+            )
+        )
+        val out = edited.toData match {
+            case Data.Constr(0, fs) => fs.asScala.toList
+            case other              => fail(s"not a Constr 0: $other")
         }
-        val out = UpdateConfigCommand.decodeDeployed(grown)
-        assert(out.isLeft)
-        // Names both counts: the arity FOUND on chain and the one this build knows, so the
-        // operator can tell "binocular is behind the bridge" from "this is the wrong bridge".
-        assert(out.swap.toOption.get.contains("14 fields"))
-        assert(out.swap.toOption.get.contains(s"${UpdateConfigCommand.ConfigFieldCount}-field"))
+        assert(out.size == 15)
+        assert(out(13) == Data.B(ByteString.fromHex("b2" * 28)))
+        assert(out(14) == Data.I(BigInt(99)))
+    }
+
+    private val newRegistry = ByteString.fromHex("c7" * 28)
+
+    // spec [CFG-10]: the migration's governance Update. Field 9 moves and field 13 records what it
+    // held, in one edit — on a datum written before #13 existed, which is every deployed bridge.
+    test("--migrate-registry-to moves field 9 and appends the old registry as field 13") {
+        val deployed = UpdateConfigCommand.decodeDeployed(config.toData).toOption.get
+        val out = UpdateConfigCommand
+            .applyRegistryEdit(deployed, RegistryEdit.MigrateTo(newRegistry), banPolicyMoved = true)
+            .toOption
+            .get
+        assert(out.config.sposRegistryPolicyId == newRegistry)
+        assert(out.previousSposRegistryPolicyId == Some(config.sposRegistryPolicyId))
+        val d = UpdateConfigCommand.diff(config.toData, out.toData).map(x => (x._1, x._2)).toSet
+        assert(d == Set((9, "spos_registry_policy_id"), (13, "previous_spos_registry_policy_id")))
+    }
+
+    // Field 13 must be what field 9 held, so the edit takes it from the datum rather than from the
+    // operator; and a second migration cannot begin while the first is still recorded.
+    test("a migration cannot begin while one is in progress, and ending one empties field 13") {
+        val inProgress =
+            UpdateConfigCommand.decodeDeployed(grown(Data.B(config.sposRegistryPolicyId))).toOption.get
+        val again = UpdateConfigCommand.applyRegistryEdit(
+          inProgress,
+          RegistryEdit.MigrateTo(newRegistry),
+          banPolicyMoved = true
+        )
+        assert(again.isLeft && again.swap.toOption.get.contains("already in progress"))
+
+        val ended = UpdateConfigCommand
+            .applyRegistryEdit(inProgress, RegistryEdit.EndMigration, banPolicyMoved = false)
+            .toOption
+            .get
+        assert(ended.previousSposRegistryPolicyId.isEmpty)
+        assert(ended.appended == List(Data.B(ByteString.empty)), "emptied, never removed ([CFG-5])")
+
+        // Once ended, the next migration may begin.
+        assert(
+          UpdateConfigCommand
+              .applyRegistryEdit(ended, RegistryEdit.MigrateTo(newRegistry), banPolicyMoved = true)
+              .isRight
+        )
+    }
+
+    test("a registry migration is refused without the ban policy, and when there is none to end") {
+        val deployed = UpdateConfigCommand.decodeDeployed(config.toData).toOption.get
+        val noBans = UpdateConfigCommand.applyRegistryEdit(
+          deployed,
+          RegistryEdit.MigrateTo(newRegistry),
+          banPolicyMoved = false
+        )
+        assert(noBans.isLeft && noBans.swap.toOption.get.contains("--spo-bans-policy"))
+        val same = UpdateConfigCommand.applyRegistryEdit(
+          deployed,
+          RegistryEdit.MigrateTo(config.sposRegistryPolicyId),
+          banPolicyMoved = true
+        )
+        assert(same.isLeft)
+        assert(
+          UpdateConfigCommand
+              .applyRegistryEdit(deployed, RegistryEdit.EndMigration, banPolicyMoved = false)
+              .isLeft
+        )
     }
 
     test("decodeDeployed refuses short and non-record datums") {
