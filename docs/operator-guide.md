@@ -191,9 +191,17 @@ to the ban policy id, so changing it means deploying a new ban list.
 ### A registry revision
 
 A contracts release can replace the SPO registry, and with it the ban list. heimdall carries every
-registration across with no cold key. Operators install the new heimdall, and the federation runs
-one command for the stragglers. binocular's part is the single governance Update in the middle,
-and ending the window afterwards:
+registration across with no cold key. The order is **upgrade first, switch later**:
+
+1. Operators upgrade heimdall at their own pace. The new version runs the unrevised bridge exactly
+   as the previous one does, so a roster that is half upgraded keeps holding ceremonies.
+2. Once every node runs it, the federation deploys the new registry and ban list, and you make the
+   governance Update below.
+3. The nodes see the Update and carry themselves across, and the federation runs one command for
+   any stragglers.
+4. When everyone has crossed, you end the window.
+
+binocular's part is the Update in the middle, and ending the window afterwards:
 
 ```bash
 binocular --config bridge.conf update-config \
