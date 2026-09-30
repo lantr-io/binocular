@@ -249,3 +249,14 @@ Requirements:
 - On Linux: Chromium is provided through Nix
 
 Output: `pdfs/Litepaper.pdf`, `pdfs/Whitepaper.pdf`
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or https://www.apache.org/licenses/LICENSE-2.0)
+- GNU General Public License v3.0 or later ([LICENSE-GPL](LICENSE-GPL) or https://www.gnu.org/licenses/gpl-3.0.html)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this work by you shall be dual licensed as above, without any additional terms or conditions.
